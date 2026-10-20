@@ -1,0 +1,11 @@
+{
+  "actual_task": "/root",
+  "owner": "coordinator",
+  "added_paths": [
+    "tests/test_instance_analysis.py",
+    "tests/test_native_classifier_currentness_r33.py"
+  ],
+  "copies_only_in_idle_isolated_workspaces": true,
+  "stage_write": false,
+  "root_write": false
+}

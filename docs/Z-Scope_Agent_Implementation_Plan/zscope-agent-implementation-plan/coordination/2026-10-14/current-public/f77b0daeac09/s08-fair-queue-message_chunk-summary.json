@@ -1,0 +1,13 @@
+{
+  "session_id": "sess_a3dc643fae",
+  "kinds": "message_chunk",
+  "start_offset": 142,
+  "next_offset": 221,
+  "pages": 2,
+  "total_matching": 221,
+  "has_more": false,
+  "events_read": 79,
+  "latest_at": "2026-10-14T09:42:20.515764+00:00",
+  "failed_tools": [],
+  "completed_tail": []
+}

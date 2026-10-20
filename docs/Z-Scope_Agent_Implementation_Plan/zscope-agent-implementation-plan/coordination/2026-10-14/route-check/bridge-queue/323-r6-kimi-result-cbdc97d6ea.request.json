@@ -1,0 +1,8 @@
+{
+  "id": "r6-kimi-result-cbdc97d6ea",
+  "arguments": {
+    "task_id": "task_c5ebd65572",
+    "max_chars": 60000
+  },
+  "tool": "get_result"
+}

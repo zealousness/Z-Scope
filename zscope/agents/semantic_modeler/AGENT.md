@@ -52,3 +52,11 @@ Output contract:
 字段路径必须包含实际访问运算符：`"member_path": "->field"`，不能写 `"field"` 或 `"pool->field"`。`protocol.head_path/link_path` 同样必须带 `->`。弹出空闲节点的成功效果应以返回值表示，例如 `{"when":{"op":"compare","left":{"kind":"return"},"operator":"!=","right":{"kind":"literal","value":null}},"effect":"applies"}`；不要把调用后已修改的链表头作为调用前状态判断。无法表达的条件用 `{"op":"unknown"}`，不能填入自然语言。
 
 ownership_transfer 只用于成功后调用者交出清理义务的接口，必须绑定资源载体和成功条件。普通借用、日志、名称含 add/put/register 的函数不能据此推断转移。
+
+若源码只证明把资源指针保存在接收方字段，应提出 `role=reference_retention`，绑定 carrier（保存的指针参数）与 resource_domain（接收方参数）。单槽、失败早退后保存指针的实现可提出 `protocol.kind=single_slot_retention` 与 `slot_path`（例如 `->pending`）。成功保存和失败未保存分别列出 typed effect_cases；引用留存不表示释放责任转移，也不证明线程安全或对象仍存活。仍需有依据的业务约定或其他实现证据才能提出 ownership_transfer；不猜测 complete/cancel 端的责任。
+
+内嵌单槽池可提出 `protocol.kind=single_slot_pool`，指定 `slot_path`、`live_path`，以及源码存在时的 `generation_path`、`invalid_return_path`。取出接口的 carrier 是返回值，归还接口的 carrier 是节点参数，resource_domain 始终是池参数。返回槽地址不是堆分配，清空 live 标记也不是 free。归还的有效条件必须同时包括同槽成员身份和调用前 live 状态，不能把任意非空指针视为同池资源。条件引用槽地址时使用带 member_path 的 operand 和 `address_of: true`，不要混淆字段值与字段地址。代际自增不证明永不回绕，也不证明异步回调持有的是当前代际。
+
+单槽归还若明确返回 1 表示生效、0 表示拒绝，可提出 `return_status: true`。非原子引用计数可提出 `role=standard_operation`、`protocol.kind=non_atomic_refcount`、`operation=init/retain/drop` 和资源参数的 `count_path`；首批核验仅支持有明确失败/饱和守卫的 signed 32-bit 成员。retain/drop 不是分配/free，2→1 不销毁对象；1→0 的实际清理必须另核对当前 callback 实现、对象与分支。计数为零、函数名称或借用均不能代替清理责任、有效持有和并发安全证明。
+
+有界整数句柄表可提出 `role=standard_operation`、`protocol.kind=bounded_handle_table`、`operation=open/close/dup`、`handle_slots`（2–4 个固定非负 value，分别指定 live_path/object_path）。resource_domain 是第 0 个表参数；open carrier 为返回值，并提供 sequence_path；close/dup carrier 为第 1 个句柄参数；close 的第 2 个参数控制失败，close_failure=preserves/consumes 必须据真实源码提出。句柄 0 可以有效，dup 创建独立描述符并共享底层对象，复制整数不等于 dup；close 返回失败与是否消费描述符分别记录。该子域不替代平台 open/close/dup2 规范，不以整数相等、最后关闭或顺序执行推断同一代次、物理析构或线程安全。

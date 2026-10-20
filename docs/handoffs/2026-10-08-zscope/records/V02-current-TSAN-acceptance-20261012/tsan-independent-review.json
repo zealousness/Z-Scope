@@ -1,0 +1,51 @@
+{
+  "passed": true,
+  "checks": {
+    "five_actual_nodes_no_skips": true,
+    "isolation_verified": true,
+    "same_image": true,
+    "inputs_unchanged": true,
+    "host_aslr_unchanged": true,
+    "owned_container_cleaned": true,
+    "approved_exact_policy": true,
+    "symbolizer_route_is_frozen_readonly_wrapper": true,
+    "observer_readonly_and_error_free": true,
+    "two_independent_replays": true,
+    "replay_identity_bound": true,
+    "positive_primary_and_replay_records": true,
+    "replay_records_match_observed_executions": true,
+    "positive_evidence_object_site_thread_source": true,
+    "negative_no_finding": true,
+    "memory_actual_sampled_bound": true,
+    "unset_memory_truthful": true,
+    "flaky_ten_samples": true,
+    "flaky_consistency_truthful": true,
+    "raw_logs_hashes": true,
+    "original_test_file_unchanged": true
+  },
+  "flaky_distribution": {
+    "classifications": [
+      "none",
+      "none",
+      "none",
+      "none",
+      "data-race",
+      "none",
+      "none",
+      "data-race",
+      "none",
+      "data-race"
+    ],
+    "data_race_runs": 3,
+    "no_report_runs": 7,
+    "observed_non_deterministic": true
+  },
+  "mixed_real_replay_observed": true,
+  "actual_runner_executions": 33,
+  "raw_files": 96,
+  "raw_bytes": 11952,
+  "source_result": "/mnt/c/Users/10273/Documents/Codex/2026-10-12/task-3/v01-v02-kimi-resume-20261012/post-probe-acceptance-symbolizer-route/tsan-acceptance-result.json",
+  "source_evidence": "/mnt/c/Users/10273/Documents/Codex/2026-10-12/task-3/v01-v02-kimi-resume-20261012/post-probe-acceptance-symbolizer-route/zscope-common-tsan-20261012-h_jgiqr1",
+  "first_failed_attempt_preserved": "/mnt/c/Users/10273/Documents/Codex/2026-10-12/task-3/v01-v02-kimi-resume-20261012/post-probe-acceptance/tsan-acceptance-result.json",
+  "scope": "bounded micro-fixture real TSAN acceptance with approved process-ASLR exception; not arbitrary-project safety"
+}

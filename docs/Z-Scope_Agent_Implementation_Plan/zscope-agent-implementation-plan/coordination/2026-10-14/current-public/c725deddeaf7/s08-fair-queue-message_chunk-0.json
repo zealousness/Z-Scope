@@ -1,0 +1,130 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T08:45:32.779765+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "我先"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:33.089320+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "读取隔离目录的 AGENTS 说明、协调契约和相关现有源码，再开始"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:33.273123+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "实现 WorkQueue 切片。"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:42.692842+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "隔离"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:42.898958+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "目录是仓库快照。我先读隔离 AGENTS.md 和根协调契约。"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:56.437250+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "隔离"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:56.752620+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " AGENTS 与根版本一致。现在找 NEXT_BACKEND_CONTRACT.md 和现有 jobs/owner/store "
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:56.754131+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "代码。"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:19.779538+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "找到"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:19.843290+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "契约文件。读取 NEXT_BACKEND_CONTRACT.md："
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:26.114178+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "契约"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:26.400682+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "明确。现在读取现有 jobs 模块源码（"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:26.455123+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "输入，只读）："
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:35.060298+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "继续"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:35.220553+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "读取 owner、scheduler_hook、identity 与现有测试模式："
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 15,
+  "next_offset": 15,
+  "has_more": false,
+  "total_matching": 15
+}

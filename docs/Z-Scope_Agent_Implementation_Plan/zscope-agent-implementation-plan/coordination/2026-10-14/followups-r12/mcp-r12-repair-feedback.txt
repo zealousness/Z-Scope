@@ -1,0 +1,7 @@
+MCP-FINDINGS-R12 原task_a3a56d31b4、收尾task_abdc75ecbf有最终DELIVERY/DELIVERY.md及自验收据，但协调者实际独立探针失败，尚未接受/集成。请同sess_3b6b9a19b2、GLM5.3、原mcp-findings-r12副本修复此实测问题。保留当前交付/原结果，用新版本交付记录追加。不启动任何服务，不重做其它任务。
+
+真实独立反例 artifacts/coordinator-mcp-findings-r12-boundary-probes-20261015/{review.json,results.xml,command-0.log}，1fail/0error/skip，1004个源输入冻结稳定且仍与你交付字节一致。探针根 coordination/2026-10-14/followups-r12/test_mcp_findings_boundaries.py 可直接经test_slot --workspace本副本运行。实际MCP provider→adapter→真实ScanJobService/SQLite→detached owner/真实resume，受控scanner产出完全相同字节，只有resume时间点控制在service.result()取出旧信封之后、project_job_result第一次_attempt_binding之前。probe无伪造service成功，实际不同run、相同reporthash已断言。
+
+现代码先取旧response payload，再取binding（此时已新run），load_bound_report返回新run，hash相同→最终_binding_matches也通过；返回旧run artifacts（launch/scanner/report路径）却binding.run_id为新run。不能用报告hash认为同attempt；外层coverage/questions/artifacts亦必须同job/run/input绑定，不只是findings。结果日志明确old launch run_069... vs new run_67ab...。需在信封前后完整fence、正式reader及最终投影中遵守同轮身份，变动则有限重试/诚实拒绝；没有报告的分支也不能混入后来run binding。不要靠只换binding标签、丢弃artifacts、停止真实resume或只断言reporthash修绿。
+
+保留plain/shared JSON、损坏对象图/hash/missing、当前报告不同/丢失、review_scope精确相等、readonly/candidateblind/null/policy、恢复/幂等/取消等全部已有测试及质量；新增修复回归，原5个owned文件外均只读。Web共享接线由协调者在独验通过后统一，不自行改Web/service/配置。测试必须WSL login shell、两槽、ext4TMPDIR/default fd，禁止skip/xfail或排除探针。交新稳定SHA/JUnit/完整命令日志/实际时间/边界，后台全部结束后再最终交付。

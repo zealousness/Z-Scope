@@ -1,0 +1,48 @@
+{
+  "session_id": "sess_8fa76506e8",
+  "kinds": "tool_call,tool_call_update",
+  "pages": 119,
+  "total_matching": 5375,
+  "has_more": false,
+  "latest_at": "2026-10-14T04:01:59.950694+00:00",
+  "failures": [
+    {
+      "at": "2026-10-14T03:55:15.944370+00:00",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Write_55",
+        "status": "failed",
+        "output": "Invalid args for tool \"Write\": must have required property 'path'; must have required property 'content'"
+      }
+    }
+  ],
+  "completed_tail": [
+    {
+      "at": "2026-10-14T03:59:24.897989+00:00",
+      "tool_call_id": "0:Bash_59",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T03:59:45.914080+00:00",
+      "tool_call_id": "0:Bash_60",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:00:48.336608+00:00",
+      "tool_call_id": "0:Bash_61",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:01:41.647795+00:00",
+      "tool_call_id": "0:Read_62",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:01:59.950694+00:00",
+      "tool_call_id": "0:TodoList_63",
+      "title": null
+    }
+  ],
+  "tool_content_complete": false,
+  "limitation": "Bridge drops content and truncates rawOutput; these pages cannot restore it"
+}

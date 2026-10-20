@@ -1,0 +1,9 @@
+{
+  "at": "2026-10-15T11:17:03.468958+00:00",
+  "coordinator_authorized": true,
+  "write_paths": [
+    "zscope/common/cancellation.py"
+  ],
+  "reason": "Actual shared session token hides stop budget from HTTP consumers; two independently reproduced failures. Prospective extension only.",
+  "evidence": "artifacts/coordinator-stop-deadline-r18-probes-20261015/review.json"
+}

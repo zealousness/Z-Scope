@@ -1,0 +1,46 @@
+{
+  "ok": true,
+  "task_id": "task_d98c531060",
+  "session_id": "sess_e10155a00c",
+  "agent": "zcode",
+  "status": "failed",
+  "stop_reason": "error",
+  "error": "Internal error",
+  "failure": {
+    "operation": "session/prompt",
+    "kind": "protocol_error",
+    "prompt_may_have_been_sent": true,
+    "exit_code": null,
+    "stderr_summary": null
+  },
+  "warnings": [],
+  "files_changed": [
+    ".coordination/20261014/bridge-route-check/logs/bridge-20261014.log",
+    ".coordination/20261014/bridge-route-check/pids.json",
+    "docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/followups-r12/job-cli-window-r20-protocol-reconciled.json",
+    "docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/tasks.json"
+  ],
+  "files_changed_total": 4,
+  "files_changed_truncated": false,
+  "files_changed_state": "collected",
+  "files_outside_cwd": [],
+  "files_outside_cwd_total": 0,
+  "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+  "effort": null,
+  "observed_model": null,
+  "observed_effort": null,
+  "created_at": "2026-10-15T14:17:30.966475+00:00",
+  "started_at": "2026-10-15T14:17:30.996367+00:00",
+  "finished_at": "2026-10-15T14:17:56.539023+00:00",
+  "recent_activity": [
+    "raw",
+    "message_chunk: [Network error, retrying (5/5)…]",
+    "raw",
+    "raw",
+    "raw"
+  ],
+  "elapsed_sec": 25,
+  "silent_for_sec": null,
+  "stall_timeout_sec": 1800,
+  "persisted": true
+}

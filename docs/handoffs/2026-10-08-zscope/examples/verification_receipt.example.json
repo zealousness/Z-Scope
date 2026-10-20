@@ -1,0 +1,29 @@
+{
+  "example_only": true,
+  "schema_status": "design_draft_not_product_api",
+  "provider_kind": "asan",
+  "execution_status": "not_run",
+  "candidate_binding": null,
+  "source_revision": null,
+  "build_context_id": null,
+  "compiler_identity": null,
+  "binary_digest": null,
+  "harness_digest": null,
+  "input_digest": null,
+  "argv": [],
+  "environment_policy": "allowlist_required",
+  "working_directory": null,
+  "sandbox": {
+    "authorized": false,
+    "implementation": null
+  },
+  "exit_code": null,
+  "raw_artifacts": [],
+  "sanitizer_observation": null,
+  "replay_count": 0,
+  "witness_matches_candidate": null,
+  "limitations": [
+    "没有执行任何构建／程序，本样例不是验证证据。"
+  ],
+  "product_disposition_change": null
+}

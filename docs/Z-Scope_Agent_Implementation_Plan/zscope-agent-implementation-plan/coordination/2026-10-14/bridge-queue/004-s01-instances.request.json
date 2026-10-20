@@ -1,0 +1,13 @@
+{
+  "tool": "dispatch_task",
+  "id": "s01-instances",
+  "arguments": {
+    "agent": "kimi",
+    "model": "volceapi/kimi-k3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S01 全编译变体入口调度（独立隔离分支）",
+    "user_requested": true,
+    "request_id": "3931c801-1560-46ca-93ed-6c523c1267c5",
+    "message": "undefined\n本任务S01-INST：隔离目录 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-instances（Linux /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-instances）。\n可修改仅本隔离目录 zscope/orchestration/scan_session.py、global_modeler.py、zscope/retrieval/code_index.py、indexing_inventory.py、tests/test_all_variant_scan.py；可新增最小实例规划helper，先在DELIVERY.md列明；不得修改其它既有共享协议/Validator/native/catalog/配置文件。原根这些文件仍由协调者统一合并，S08 owner分支不改这些文件，UI不在本范围。\n当前已验收精确BuildContext+nativeUSR查询、候选到反馈的构建隔离、真实C链接/const ops切片。实际问题：完整扫描仍走旧按文件导航投影，可能静默只调度某一编译变体，metadata.build_coverage不能代替真实调度。\n先核对入口/函数调度及callee选择真实调用方，在同一输入中对每个当前有效编译实例保留明确BuildContext/USR的分析工作单元，不按裸名或源码文件跨构建去重。精确构建/符号身份传入模型单元、callee事实、候选与结果；未知/过期/不可消费的变体必须保留coverage gap，不回退第一条命令。保持当前候选身份链，不新建第二套事实库，不把compile_commands当链接证据。没有足够源码API时保守明确缺口，不能签发新证明。遇到需要修改被占用协议/native时停止该扩大部分并报告，继续不依赖它的调度实现。\n添加实际双宏同源/两TU static同名/重载/删除或新增变体/未支持后端及cache/resume差异正反例。能用已有真实native工具时只读使用 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399；不重建。不具工具事实时合成只验隔离，不宣称native/完整扫描。请使用受控模型响应验调度与候选身份，同时给真实native集成范围；不启动LLM/formal，不把此任务当S01全部类型/宏/复杂链接迁移完成。\n验收ID01-04 + tests/test_candidate_build_identity.py/test_compilation_symbols.py/test_build_context.py直接相关集合；只有相关新变更正反例，不重复无关大回归。返回精确输入/改动/实际调度计数/未消费变体/测试pass-fail-skip和集成接线。"
+  }
+}

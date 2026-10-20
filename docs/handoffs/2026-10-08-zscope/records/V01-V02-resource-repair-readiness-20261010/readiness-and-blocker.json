@@ -1,0 +1,79 @@
+{
+  "at": "2026-10-10T05:09:09.697Z",
+  "status": "blocked_by_auto_review_sensitive_egress",
+  "action": "Send only the frozen RG01/RG02 necessary source/test/trace payload through the existing official DeepSeek Harness gateway",
+  "automatic_review_reason": "This transmits private source excerpts, tests, and failure logs to an external DeepSeek destination; although harness-based repair is generally authorized, the user-authored evidence does not specifically authorize disclosing this payload to that destination under the sensitive-egress rule.",
+  "review_constraints": "Do not bypass through workaround or indirect execution; ask explicit user approval.",
+  "endpoint": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
+  "model": "deepseek-v4.1-flash",
+  "packet": {
+    "at": "2026-10-10T05:04:45.963Z",
+    "scope": "Only RG01 build memory limit and RG02 hard output capture; same approved provider/model/endpoint and credential resolver",
+    "sourceDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+    "promptDigest": "aee9134833f696a600a714010bb5b76510dd5944bf581abd52763b21d0357dd6",
+    "promptBytes": 34007,
+    "spans": [
+      [
+        90,
+        111
+      ],
+      [
+        344,
+        393
+      ],
+      [
+        1933,
+        1966
+      ],
+      [
+        2210,
+        2294
+      ],
+      [
+        2378,
+        2444
+      ],
+      [
+        2588,
+        2782
+      ]
+    ],
+    "testsDigest": "73afe4850d485a2b8ddeca3f53be31972ab4dcbdfed1e1f7edd14c4543f834db",
+    "counts": {
+      "passed": 1,
+      "failed": 4,
+      "errors": 0,
+      "skipped": 0
+    },
+    "no_credentials": true,
+    "no_unrelated_files": true,
+    "model_tools_disabled": true
+  },
+  "model_process_started": false,
+  "new_session_id": null,
+  "private_source_transmitted": false,
+  "product_changed": false,
+  "new_model_requests": 0,
+  "approval": "requested; pending direct user reply",
+  "local_tests": {
+    "passed": 1,
+    "failed": 4,
+    "errors": 0,
+    "skipped": 0
+  },
+  "test_assertions_frozen": true,
+  "pressure": false,
+  "fixture_output_bytes_per_stream": 64,
+  "initial_product_sha256": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "changed_existing_inputs": [],
+  "TSAN": {
+    "status": "blocked; real fixture not_run",
+    "image_unique_compilers": 1,
+    "compiler": "gcc14.2.0",
+    "new_probe_executions": 0,
+    "same_failing_configuration_not_retried": true,
+    "host_versions_only": "clang18.1.3; gcc13.3.0; not tested outside approved boundary",
+    "minimum_needed": "An already installed compiler/runtime demonstrably runnable inside the same approved hard boundary; do not disable ASLR or weaken kernel/container settings."
+  },
+  "automatic_generator_or_CBMC_added_as_blocker": false
+}

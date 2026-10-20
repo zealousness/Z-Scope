@@ -1,0 +1,1 @@
+{"id": "full-tools-s08-179", "tool": "get_transcript", "arguments": {"session_id": "sess_66640fd67a", "offset": 179, "limit": 1000, "kinds": "tool_call,tool_call_update"}}

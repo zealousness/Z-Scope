@@ -1,0 +1,1 @@
+{"id": "r18-doc-tools-count", "tool": "get_transcript", "arguments": {"session_id": "sess_bdab8c13fb", "kinds": "tool_call", "offset": 0, "limit": 20}}

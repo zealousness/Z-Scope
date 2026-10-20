@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "ldd",
+    "/usr/bin/x86_64-linux-gnu-gcc-13"
+  ],
+  "exit_code": 0,
+  "stdout": "\tlinux-vdso.so.1 (0x00007ffff2f82000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x0000765828e00000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007658291c7000)\n",
+  "stderr": ""
+}

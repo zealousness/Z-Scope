@@ -1,0 +1,19 @@
+{
+  "args": [
+    "-q",
+    "-s",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/pytest-tsan-minimal",
+    "--junitxml=/work/tsan.xml",
+    "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+    "tests/test_dynamic_reproduction_execution.py::test_tsan_negative_fixture_is_not_reproduced"
+  ],
+  "nodes": [
+    "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+    "tests/test_dynamic_reproduction_execution.py::test_tsan_negative_fixture_is_not_reproduced"
+  ],
+  "observer": "read-only sys.setprofile; no monkeypatch",
+  "started_utc": "2026-10-10T04:52:39.356356+00:00"
+}

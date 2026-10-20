@@ -1,0 +1,12 @@
+继续原Kimi K3六文件范围。task_85cb7c65cb于16:01:20结束，DELIVERY16:00停写、producer WSL空；前三authority独立冻结探针3/0（16:02:35）已确认，但这只是局部，尚未整体独验/集成。
+
+代码审查发现 _load_bound_completion 在 verify 之后只执行 with JobStore.bound_attempt(...): pass，事务释放后才更新state/返回，再由 _finalize_instance_run 写当前报告。这是“复核”而非“发布围栏”，owner仍可在空事务结束到实际写文件之间切换。
+新增第四独立反例 test_final_report_publication_is_fenced_against_actual_owner_handoff 对同一1014稳定字节运行：真实native首轮→真实service.resume→在_finalization入口前用独立线程执行真实SQL/service第三run交接；当前空检查已释放写锁，因此第三run确实赢在报告发布前，旧reader仍改写report.json。四项实际3过1失败、0error/skip，收据 artifacts/coordinator-checkpoint-r17-publication-fence-20261015/review.json。源码前后不变、producer==frozen。未改测试标准/timeout。
+
+必须让实际“报告发布”与job/run/owner/input绑定检查共享不可被另一job-store writer穿透的事务围栏，而不是在更多位置加一个空with或stand_down_reason然后释放。当前 `_finalize_instance_run` 只做结果投影/JSON及Markdown发布，模型/native/验证应已结束；可以把整个最终发布包在bound_attempt内或提取纯文件发布阶段置于同一事务。先检查调用树，避免在持有同一jobs.db写锁时再开第二JobStore写连接（不要死锁，不在锁内跑扫描/模型）。保存并传入本轮真实分析时捕获的 input_revision，不能报告发布时重新读取已变的输入再冒充旧结果的期望值。普通完成与恢复完成都要保护，各当前报告/任务报告/Markdown不能留下围栏外窗口。
+
+为防仅在_finalization入口再加空检查，新增第五只读独立反例 test_report_write_blocks_a_competing_job_store_writer 在真实write_report_atomic调用点，以另一真实SQLite连接 timeout=0 尝试 BEGIN IMMEDIATE：正确发布围栏下应立即busy/locked；否则该时点实际可被另一owner re-arm。本测试不写数据、不调生产timeout、不在相同连接递归写。最终完整五项authority必须全部执行，且协调者会审查锁覆盖真正文件发布，而非只测guard存在。
+
+其余前三修复保留，确认/证明内容miss后必须重走当前链，不降级为仅标签；current compiler/default registry version依赖仍保留。原19相关文件、Java10+C++10、旧9实际native/crash/queue/deadline探针、119owned回归全部保留，最终完整Linux checks+quality后交付。历史 r17-owned/r17-repair-* 和协调者失败收据不覆盖；新用r17-fence-*或等价独立名称。DELIVERY里 test_scan_session_instances.py SHA仍多一个e、长度65，最终从实际文件重新计算六项SHA，不能复制旧表。
+
+唯一六路径和原任务约束不变，sharedAPI/store/queue/owner/service及Root/ZCode/Astra/父冻结目录只读；不恢复S06-R02、不启重复服务、不改权限/provider/凭据，不commit/push/reset/clean。WSL zeal bash -lc、venv313、根test_slot.py两槽/defaultfd/ext4tmp、只读真实native SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399、compileall/mypy/必要Black不变。全部稳定、后台清空停写后等协调者独验；whole-plan !=逐实例durable，不关闭整S01/S08。审批/平台/额度限制不能改路由规避。

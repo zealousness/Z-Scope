@@ -1,0 +1,13 @@
+{
+  "session_id": "sess_b2d3c1d8e8",
+  "kinds": "message_chunk",
+  "start_offset": 0,
+  "next_offset": 257,
+  "pages": 6,
+  "total_matching": 257,
+  "has_more": false,
+  "events_read": 257,
+  "latest_at": "2026-10-14T09:32:38.804025+00:00",
+  "failed_tools": [],
+  "completed_tail": []
+}

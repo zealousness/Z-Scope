@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "task_id": "task_50e0a2b910",
+  "session_id": "sess_bdab8c13fb",
+  "agent": "dsh",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "effort": null,
+  "persisted": true,
+  "request_id": "975e47bf-635d-4c5b-8abe-1b0f80fcc68a",
+  "reused": false
+}

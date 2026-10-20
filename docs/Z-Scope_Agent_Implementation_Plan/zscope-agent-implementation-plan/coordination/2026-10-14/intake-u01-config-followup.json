@@ -1,0 +1,22 @@
+{
+  "at": "2026-10-14T08:16:27.941289+00:00",
+  "task_id": "task_6d1d8b525e",
+  "existing_source_changes": [],
+  "independent_collection": {
+    "junit": "u01-preparation-independent-tests.xml",
+    "tests": 87
+  },
+  "files": [
+    {
+      "path": "tests/test_config_v3_preparation.py",
+      "before_sha256": null,
+      "sha256": "50c9b72ce8896eeec4f134c7a928c49816940566aaf09e12d2f56c33e467c0ce"
+    },
+    {
+      "path": "zscope/config/v3_preparation.py",
+      "before_sha256": null,
+      "sha256": "2e421661a87b8063c1988ba1fc728828d90f1be1fc5a7065498cce644df02fe6"
+    }
+  ],
+  "state": "partial_slice_intaken_pending_same_root_integration_full_package_unfinished"
+}

@@ -1,0 +1,60 @@
+{
+  "product": "zscope/core/validation/dynamic_reproduction.py",
+  "sha256": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "findings": [
+    {
+      "id": "RG01",
+      "severity": "P1",
+      "status": "static_confirmed; not dynamically pressure-tested",
+      "title": "Build has no product memory bound",
+      "standard": "WORK_PACKAGES.md:171; prior F06 resource boundary in V01-V02-acceptance-review.md:69-77 / reacceptance-review.md:106",
+      "explanation": "Build invokes _run_once with address_space_limit_mb=0 and omits rss_limit_mb, which defaults to 0. Thus neither product memory path is enabled for build. The outer acceptance container 2GiB limit is infrastructure, not a product runner bound.",
+      "evidence": [
+        {
+          "start": 2254,
+          "end": 2265,
+          "text": "2254:            if plan.build is not None:\n2255:                build_argv = tuple(plan.build.argv)\n2256:                build_env = dict(plan.build.environment) or self._base_env(plan, workdir)\n2257:                build_result = self._run_once(\n2258:                    argv=(*prefix, *plan.build.argv),\n2259:                    cwd=plan.build.cwd,\n2260:                    env=build_env,\n2261:                    timeout_seconds=plan.build.timeout_seconds,\n2262:                    address_space_limit_mb=0,\n2263:                    tag=\"build\",\n2264:                    workdir=workdir,\n2265:                )"
+        },
+        {
+          "start": 2588,
+          "end": 2599,
+          "text": "2588:    def _run_once(\n2589:        self,\n2590:        *,\n2591:        argv: Sequence[str],\n2592:        cwd: str,\n2593:        env: Mapping[str, str],\n2594:        timeout_seconds: int,\n2595:        address_space_limit_mb: int,\n2596:        tag: str,\n2597:        workdir: str,\n2598:        rss_limit_mb: int = 0,\n2599:    ) -> _RunResult:"
+        }
+      ],
+      "minimal_repair": "Apply and truthfully record an approved bounded memory mechanism for build; preserve own-process cancellation and undecided resource failure."
+    },
+    {
+      "id": "RG02",
+      "severity": "P1",
+      "status": "static_confirmed; not dynamically pressure-tested",
+      "title": "Output capture is polled, not a hard spool limit",
+      "standard": "WORK_PACKAGES.md:171/173; prior F06/R06 output-resource boundary and author hard-cap assertion at R01-R09-response.md:121-128",
+      "explanation": "Popen writes directly to regular files. _spool_within_cap only tests existing lengths. It never prevents or truncates writes; process.poll can break before the check. _read_output then hashes the entire file and bounds only the returned excerpt. Existing assertions cover classification and termination after overshoot, not actual capture byte bounds.",
+      "evidence": [
+        {
+          "start": 2632,
+          "end": 2645,
+          "text": "2632:        with out_path.open(\"wb\") as out_stream, err_path.open(\"wb\") as err_stream:\n2633:            try:\n2634:                process = subprocess.Popen(\n2635:                    list(argv),\n2636:                    cwd=cwd,\n2637:                    env=dict(env),\n2638:                    stdin=subprocess.DEVNULL,\n2639:                    stdout=out_stream,\n2640:                    stderr=err_stream,\n2641:                    start_new_session=True,\n2642:                    preexec_fn=preexec,\n2643:                    close_fds=True,\n2644:                )\n2645:            except FileNotFoundError:"
+        },
+        {
+          "start": 2651,
+          "end": 2689,
+          "text": "2651:            rss_deadline = 0.0\n2652:            try:\n2653:                while True:\n2654:                    if process.poll() is not None:\n2655:                        break\n2656:                    if token is not None and token.is_cancelled():\n2657:                        self._kill_group(process)\n2658:                        process.wait(timeout=10)\n2659:                        raise CancellationError(token.reason or \"cancelled\")\n2660:                    now = time.monotonic()\n2661:                    if now >= deadline:\n2662:                        timed_out = True\n2663:                        self._kill_group(process)\n2664:                        process.wait(timeout=10)\n2665:                        break\n2666:                    if rss_limit_mb > 0 and now >= rss_deadline:\n2667:                        rss_deadline = now + max(0.01, float(self.policy.rss_poll_seconds))\n2668:                        if self._rss_exceeds(process.pid, rss_limit_mb):\n2669:                            rss_exceeded = True\n2670:                            self._kill_group(process)\n2671:                            process.wait(timeout=10)\n2672:                            break\n2673:                    # Captured output is a hard resource boundary too: the files\n2674:                    # are capped here and never grow past the declared budget, and\n2675:                    # a capped run is reported as truncated instead of being\n2676:                    # mistaken for a clean non-reproduction.\n2677:                    if not self._spool_within_cap(out_path, err_path, cap):\n2678:                        output_capped = True\n2679:                        self._kill_group(process)\n2680:                        process.wait(timeout=10)\n2681:                        break\n2682:                    time.sleep(0.02)\n2683:                exit_code = process.returncode\n2684:            finally:\n2685:                if process.poll() is None:\n2686:                    self._kill_group(process)\n2687:                    process.wait(timeout=10)\n2688:        stdout_digest, stdout_bytes, stdout_excerpt, stdout_truncated = self._read_output(out_path)\n2689:        stderr_digest, stderr_bytes, stderr_excerpt, stderr_truncated = self._read_output(err_path)"
+        },
+        {
+          "start": 2705,
+          "end": 2712,
+          "text": "2705:    @staticmethod\n2706:    def _spool_within_cap(out_path: Path, err_path: Path, cap: int) -> bool:\n2707:        \"\"\"Whether both spooled streams are still inside the declared byte cap.\"\"\"\n2708:\n2709:        try:\n2710:            return out_path.stat().st_size <= cap and err_path.stat().st_size <= cap\n2711:        except OSError:\n2712:            return True"
+        },
+        {
+          "start": 2750,
+          "end": 2764,
+          "text": "2750:    def _read_output(self, path: Path) -> tuple[str, int, bytes, bool]:\n2751:        \"\"\"Digest the captured bytes, keep a bounded prefix, report truncation.\n2752:\n2753:        The stream is spooled with a hard byte cap while it is produced, so the\n2754:        digest covers exactly the bytes that were captured; ``truncated`` is set\n2755:        when the cap stopped the stream (or a larger file was found), and a\n2756:        truncated stream is never treated as a complete one.\n2757:        \"\"\"\n2758:\n2759:        limit = max(1, int(self.policy.output_capture_limit_bytes))\n2760:        digest, _ = hash_file(path)\n2761:        size = path.stat().st_size if path.exists() else 0\n2762:        with path.open(\"rb\") as stream:\n2763:            excerpt = stream.read(limit)\n2764:        return digest, size, excerpt, size > limit"
+        }
+      ],
+      "minimal_repair": "Enforce the capture budget as bytes are consumed, bound digest/publication work, and retain truncated/inconclusive classification. Use only small bounded benign regression data, not pressure tests."
+    }
+  ],
+  "implementation_changed": false,
+  "external_payload_sent": false
+}

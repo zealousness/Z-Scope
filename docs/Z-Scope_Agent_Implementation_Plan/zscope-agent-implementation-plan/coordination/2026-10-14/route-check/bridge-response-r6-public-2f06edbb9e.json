@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T12:20:21.829035+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: ls \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-session-r6\" && echo --- && ls \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\"",
+        "tool_call_id": "call_cdd71d348cf44dd7bb4f88d6",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"ls \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-session-r6\\\" && echo --- && ls \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\"\", \"description\": \"List isolated workspace and coordination directory\"}"
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 1,
+  "next_offset": 1,
+  "has_more": true,
+  "total_matching": 1087
+}

@@ -1,0 +1,8 @@
+{
+  "arguments": {
+    "max_chars": 60000,
+    "task_id": "task_54d185892a"
+  },
+  "tool": "get_result",
+  "id": "audit-64bfa25b89d3-task_54d185892a-result"
+}

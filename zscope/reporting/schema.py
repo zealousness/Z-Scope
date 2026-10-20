@@ -7,6 +7,7 @@ import json
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from ..orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
+from ..common.validator_protocol import VALIDATION_POLICY_VERSION
 
 REPORT_SCHEMA_VERSION = 2
 FINDING_STATUSES = {"clean", "needs_review", "confirmed"}
@@ -408,10 +409,16 @@ def report_reuse_blockers(
     report: Mapping[str, Any],
     *,
     expected_manifest: Mapping[str, Any] | None = None,
+    business_answer_store: Any = None,
 ) -> list[str]:
     """Explain why a historical report cannot safely short-circuit analysis."""
 
     blockers: list[str] = []
+    from ..semantics.business_assumptions import feedback_reuse_problem
+
+    feedback_problem = feedback_reuse_problem(report, business_answer_store)
+    if feedback_problem:
+        blockers.append(feedback_problem)
     try:
         schema_version = int(report.get("schema_version") or 0)
     except (TypeError, ValueError):
@@ -429,6 +436,8 @@ def report_reuse_blockers(
         manifest = {}
     if str(manifest.get("candidate_schema_version") or "") != CANDIDATE_SCHEMA_VERSION:
         blockers.append("candidate_schema_mismatch")
+    if str(manifest.get("validation_policy_version") or "") != VALIDATION_POLICY_VERSION:
+        blockers.append("validation_policy_mismatch")
 
     unresolved_dispositions = {
         "needs_review",
@@ -532,6 +541,7 @@ def build_run_manifest(
         ),
         "knowledge_db_version": metadata.get("knowledge_db_version") or "",
         "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
+        "validation_policy_version": VALIDATION_POLICY_VERSION,
         "finding_status": finding,
         "completeness": completeness,
         "issue_count": int(issue_count),

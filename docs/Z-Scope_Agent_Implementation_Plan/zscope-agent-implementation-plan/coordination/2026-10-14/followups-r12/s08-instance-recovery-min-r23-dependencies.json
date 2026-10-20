@@ -1,0 +1,18 @@
+{
+  "captured_at": "2026-10-16T10:34:16.403929+08:00",
+  "files": [
+    {
+      "path": "artifacts/design-contract-independent-review-r23-20261016/review.json",
+      "previous_sha256": null,
+      "sha256": "5d28543a9a199ba264c096db1194556b5d73f2ebc8607a2e4d398e6f1271c5e2",
+      "read_only": true
+    },
+    {
+      "path": "artifacts/design-contract-independent-review-r23-20261016/DELIVERY.md",
+      "previous_sha256": null,
+      "sha256": "a0d51312911e352856cfcbf60aa915d64e0dcfb53997bbc3009cf62ea3bdaa8f",
+      "read_only": true
+    }
+  ],
+  "coordinator_authorized": true
+}

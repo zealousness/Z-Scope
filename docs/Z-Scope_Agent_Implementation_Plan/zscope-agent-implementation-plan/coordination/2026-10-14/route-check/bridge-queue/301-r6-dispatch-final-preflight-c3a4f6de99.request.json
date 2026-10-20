@@ -1,0 +1,7 @@
+{
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  },
+  "id": "r6-dispatch-final-preflight-c3a4f6de99"
+}

@@ -1,0 +1,57 @@
+{
+  "session_id": "sess_66640fd67a",
+  "kinds": "tool_call,tool_call_update",
+  "pages": 271,
+  "total_matching": 12334,
+  "has_more": false,
+  "latest_at": "2026-10-14T04:14:31.167670+00:00",
+  "failures": [
+    {
+      "at": "2026-10-14T02:09:08.857543+00:00",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_4",
+        "status": "failed",
+        "output": "---\n---\nls: cannot access '/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/': No such file or directory\nCommand failed with exit code: 2."
+      }
+    },
+    {
+      "at": "2026-10-14T03:57:11.056429+00:00",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Write_58",
+        "status": "failed",
+        "output": "Invalid args for tool \"Write\": must have required property 'path'; must have required property 'content'"
+      }
+    }
+  ],
+  "completed_tail": [
+    {
+      "at": "2026-10-14T04:03:23.818713+00:00",
+      "tool_call_id": "1:Write_59",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:08:34.797099+00:00",
+      "tool_call_id": "1:Edit_60",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:09:07.699770+00:00",
+      "tool_call_id": "1:Edit_61",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:09:28.024112+00:00",
+      "tool_call_id": "1:Edit_62",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:14:31.167670+00:00",
+      "tool_call_id": "1:Write_63",
+      "title": null
+    }
+  ],
+  "tool_content_complete": false,
+  "limitation": "Bridge drops content and truncates rawOutput; these pages cannot restore it"
+}

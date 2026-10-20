@@ -1,0 +1,5 @@
+{
+  "coordinator_authorized": true,
+  "write_paths": ["zscope/core/validation/runner.py"],
+  "reason": "Coordinator-only current-input guard before scoped Validator cache, disposition, Ledger and history admission; required by Astra precheck. Legacy callers default to no guard. No worker file ownership change, no Root intake."
+}

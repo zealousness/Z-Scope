@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-10T05:22:07.520523+00:00",
+  "report": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-resource-review-blocked-20261010.md",
+  "directory": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-resource-review-blocked-20261010",
+  "files_verified": 14,
+  "original_inputs_checked": 406,
+  "existing_inputs_changed": [],
+  "implementation_changes": false,
+  "shared_status_files_changed": false,
+  "DeepSeek_requests": 0,
+  "product_sha256": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e"
+}

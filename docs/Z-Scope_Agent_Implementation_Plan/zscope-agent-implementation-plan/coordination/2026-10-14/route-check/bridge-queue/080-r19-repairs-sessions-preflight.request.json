@@ -1,0 +1,7 @@
+{
+  "id": "r19-repairs-sessions-preflight",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": false
+  }
+}

@@ -1,0 +1,60 @@
+*** Begin Patch
+*** Update File: .coordination/20261014/workspaces/coordinator-shared-r14/zscope/orchestration/jobs/store.py
+@@
+    def list_events(
++    def latest_event(self, job_id: str, *, run_id: str, kind: str) -> Optional[Dict[str, Any]]:
++        """Read one current-attempt receipt without paging historical events."""
++        with self._read() as connection:
++            row = connection.execute(
++                "SELECT * FROM events WHERE job_id=? AND run_id=? AND kind=? "
++                "ORDER BY seq DESC LIMIT 1", (job_id, run_id, kind)
++            ).fetchone()
++        if row is None:
++            return None
++        try:
++            data = json.loads(row["data_json"] or "{}")
++        except (ValueError, TypeError):
++            data = {}
++        return {"seq":int(row["seq"]),"job_id":row["job_id"],"run_id":row["run_id"],
++                "at":row["at"],"kind":row["kind"],"message":row["message"],
++                "data":data if isinstance(data,dict) else {}}
++
++    def list_events(
+*** Update File: .coordination/20261014/workspaces/coordinator-shared-r14/zscope/orchestration/jobs/owner.py
+@@
+    def _finalize(
++    def _attempt_work_queue_path(self) -> Optional[Path]:
++        """Use the actual scheduler receipt, never glob or a report-supplied path."""
++        job_dir = (self.store.db_path.parent / self.job_id).resolve()
++        receipt = self.store.latest_event(
++            self.job_id, run_id=self.run_id, kind="session_scheduler_started"
++        )
++        if receipt is None:
++            return job_dir / "work-queue.db"
++        data = receipt["data"]
++        if data.get("input_revision") != self.job.get("input_revision"):
++            return None
++        raw = data.get("work_queue")
++        if not isinstance(raw,str) or not Path(raw).is_absolute():
++            return None
++        path = Path(raw).resolve()
++        if path.parent not in {job_dir,self.run_dir.resolve()}:
++            return None
++        if path.name != "work-queue.db" and not path.name.startswith("work-queue.db."):
++            return None
++        return path
++
++    def _finalize(
+@@
+-        counts = read_bound_queue_counts(
+-            self.store.db_path.parent / self.job_id / "work-queue.db",
+-            job_id=self.job_id,
+-            input_revision=str(self.job.get("input_revision") or ""),
+-        )
++        queue_path = self._attempt_work_queue_path()
++        counts = (
++            read_bound_queue_counts(queue_path,job_id=self.job_id,
++                                    input_revision=str(self.job.get("input_revision") or ""))
++            if queue_path is not None else None
++        )
+*** End Patch

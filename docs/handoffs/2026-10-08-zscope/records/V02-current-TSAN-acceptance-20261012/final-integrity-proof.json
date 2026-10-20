@@ -1,0 +1,67 @@
+{
+  "checked_utc": "2026-10-11T21:15:24.890797+00:00",
+  "HEAD": "010f40210b54ba0f79a088312ce5d8be3a82ace0",
+  "V01": "done",
+  "V02": "blocked",
+  "common_image_promoted": false,
+  "TSAN": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ASAN": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ordinary": {
+    "passed": 1734,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2
+  },
+  "quality": {
+    "compileall-final": 0,
+    "mypy": 0
+  },
+  "final_documentation": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "frozen_inputs": 403,
+  "changed_frozen_inputs": [],
+  "staged_public_files": 968,
+  "unexpected_changes_to_staged_inputs": [],
+  "intentional_handoff_updates": [
+    "docs/handoffs/2026-10-08-zscope/PROGRESS.md",
+    "docs/handoffs/2026-10-08-zscope/TASKS.yaml"
+  ],
+  "protected_config_and_bridge_files_unchanged": true,
+  "git_diff_check": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "warning: in the working copy of 'zscope/web/static/offline_template.html', LF will be replaced by CRLF the next time Git touches it\n",
+    "configuration": "core.autocrlf=true per command, matching Windows checkout"
+  },
+  "default_seccomp_unchanged": true,
+  "host_aslr": "2",
+  "parent_personality": "0",
+  "owned_container_names": [
+    "zscope-v02-common-cq38zka2",
+    "zscope-common-tsan-f5ulni66",
+    "zscope-common-tsan-h_jgiqr1",
+    "zscope-common-asan-a8lga4np",
+    "zscope-common-ordinary-5av2bgq7",
+    "zscope-common-ordinary-1oofs_h6",
+    "zscope-common-ordinary-f_cz3sgi",
+    "zscope-common-ordinary-_z84d9_f",
+    "zscope-common-ordinary-v8qg2gqr",
+    "zscope-v02-docs-pkc3wd8y"
+  ],
+  "owned_containers_remaining": [],
+  "pending": "Two Java sidecar nodes; additional fixed read-only JDK/Maven/cache input and budget not applied"
+}

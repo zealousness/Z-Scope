@@ -1,0 +1,185 @@
+{
+  "schema": "zscope.scan-demand-equivalence-fixture.v1",
+  "spec": "s07-oracle-fixture-spec-v1",
+  "notes": [
+    "Synthetic inputs for the S07-ORACLE test oracle (tests/test_scan_demand_equivalence.py).",
+    "Inputs only: no defect truth, no answer labels, no expected verdicts. Expectations live in test assertions and never enter scanner or model context.",
+    "Not INC05/RAPI10 acceptance and not a production event record; the test module docstring lists the untested dimensions."
+  ],
+  "entries": [
+    "entry",
+    "on_event",
+    "standalone"
+  ],
+  "builds": {
+    "primary": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+    "secondary": "2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e"
+  },
+  "functions": [
+    {
+      "name": "entry",
+      "file": "src/entry.c",
+      "signature": "int entry(void)",
+      "callees": [
+        "consume",
+        "release_slot"
+      ]
+    },
+    {
+      "name": "consume",
+      "file": "src/consume.c",
+      "signature": "int consume(void)",
+      "callees": []
+    },
+    {
+      "name": "on_event",
+      "file": "src/on_event.c",
+      "signature": "int on_event(void)",
+      "callees": []
+    },
+    {
+      "name": "release_slot",
+      "file": "src/release_slot.c",
+      "signature": "int release_slot(void)",
+      "callees": [
+        "helper"
+      ]
+    },
+    {
+      "name": "helper",
+      "file": "src/helper.c",
+      "signature": "void helper(void)",
+      "callees": []
+    },
+    {
+      "name": "standalone",
+      "file": "src/standalone.c",
+      "signature": "int standalone(void)",
+      "callees": []
+    }
+  ],
+  "code": {
+    "entry": "int entry(void) {\n    consume();\n    release_slot();\n    return 0;\n}\n",
+    "consume": "int consume(void) {\n    return 0;\n}\n",
+    "on_event": "int on_event(void) {\n    return 0;\n}\n",
+    "release_slot": "int release_slot(void) {\n    helper();\n    return 0;\n}\n",
+    "helper": "void helper(void) {\n    opaque_destroy(0);\n}\n",
+    "standalone": "int standalone(void) {\n    return 0;\n}\n"
+  },
+  "build_variants": {
+    "consume": {
+      "secondary": "int consume(void) {\n    return 2;\n}\n"
+    }
+  },
+  "stages": {
+    "add_unknown_callback": {
+      "code": {
+        "on_event": "int on_event(void) {\n    int (*handler)(int);\n    return (*handler)(0);\n}\n"
+      }
+    },
+    "macro_and_target_change": {
+      "code": {
+        "release_slot": "int release_slot(void) {\n    helper();\n    return TARGET_RESULT;\n}\n"
+      }
+    },
+    "delete_helper": {
+      "delete": [
+        "helper"
+      ]
+    },
+    "restore": {}
+  },
+  "hints": [
+    {
+      "id": "consume-candidate-blind",
+      "symbol": "consume",
+      "kind": "candidate_missing_facts",
+      "details": [
+        "retained slot has no candidate object in this build"
+      ]
+    },
+    {
+      "id": "release-slot-document-conflict",
+      "symbol": "release_slot",
+      "kind": "document_conflict",
+      "details": [
+        "manual document conflicts with the current release order"
+      ]
+    }
+  ],
+  "manual_contract_rows": [
+    {
+      "symbol_name": "opaque_destroy",
+      "kind": "deallocator",
+      "source": "user"
+    }
+  ],
+  "audit_units": [
+    {
+      "unit_id": "synthetic-unit-release-slot-0001",
+      "unit_kind": "resource_protocol",
+      "fingerprint": "synthetic-fingerprint-0001",
+      "risk_score": 20,
+      "risk_reasons": [
+        "synthetic-retained-slot"
+      ],
+      "unknown_refs": [
+        "synthetic-unknown-destroy-ref"
+      ],
+      "skill_families": [
+        "resource_lifecycle"
+      ],
+      "candidate_desert": true,
+      "record": {
+        "function_uid": "synthetic-uid-release-slot-0001",
+        "function_name": "release_slot",
+        "file_path": "src/release_slot.c",
+        "signature": "int release_slot(void)",
+        "index_name": "release_slot@src/release_slot.c:1-4",
+        "start_line": 1,
+        "end_line": 4,
+        "entry_identities": [
+          "synthetic-entry-0001"
+        ],
+        "entry_paths": [
+          [
+            "synthetic-entry-0001",
+            "entry"
+          ]
+        ]
+      },
+      "coverage_keys": [
+        {
+          "object": "slot-a",
+          "site": "release_slot:2",
+          "build": null,
+          "scope_discriminator": "src-release-slot-scope"
+        },
+        {
+          "object": "slot-a",
+          "site": "release_slot:2",
+          "build": "secondary",
+          "scope_discriminator": "src-release-slot-scope"
+        },
+        {
+          "object": null,
+          "site": "release_slot:3",
+          "build": null,
+          "scope_discriminator": "src-release-slot-scope"
+        }
+      ],
+      "occurrences": [
+        {
+          "entry_identity": "synthetic-entry-0001",
+          "entry_path": [
+            "synthetic-entry-0001",
+            "entry"
+          ],
+          "event_refs": [
+            "synthetic-event-0001"
+          ]
+        }
+      ]
+    }
+  ]
+}

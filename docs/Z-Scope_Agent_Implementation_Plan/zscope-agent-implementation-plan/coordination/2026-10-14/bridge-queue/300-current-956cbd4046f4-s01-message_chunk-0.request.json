@@ -1,0 +1,1 @@
+{"id": "current-956cbd4046f4-s01-message_chunk-0", "tool": "get_transcript", "arguments": {"session_id": "sess_0dfdf879d4", "offset": 0, "limit": 1000, "kinds": "message_chunk"}}

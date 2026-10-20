@@ -1,0 +1,20 @@
+{
+  "files": {
+    "acceptance-container.py": {
+      "sha256": "624504e1d80764f443072257afceac37b81cee45efe3fcb601911d445e98e1f5",
+      "bytes": 12138
+    },
+    "acceptance-inside.py": {
+      "sha256": "6d66e17c4f80058c47e18bf8f1b9764044870de697c6553ccbd7234369f799b0",
+      "bytes": 11445
+    },
+    "llvm-symbolizer-18.wrapper": {
+      "sha256": "e658766da63d258579dc5f1a8eb9ebb28f17b9d30fe18e4e5e51bcc7f04e83b8",
+      "bytes": 142
+    }
+  },
+  "reason": "archived TSAN first real positive failed invalid external symbolizer; runtime embeds /usr/bin/llvm-symbolizer-18; distro symbolizer-path.diff confirms fixed path",
+  "repair": "read-only alias mount of identical already approved wrapper, no new tools/image/product changes",
+  "previous_failure_preserved": "C:\\Users\\10273\\Documents\\Codex\\2026-10-12\\task-3\\v01-v02-kimi-resume-20261012\\post-probe-acceptance\\tsan-acceptance-result.json",
+  "startup_probe_repeated": false
+}

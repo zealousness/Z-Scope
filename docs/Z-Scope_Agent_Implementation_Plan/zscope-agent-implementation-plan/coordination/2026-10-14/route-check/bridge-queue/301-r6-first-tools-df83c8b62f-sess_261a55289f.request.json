@@ -1,0 +1,10 @@
+{
+  "tool": "get_transcript",
+  "id": "r6-first-tools-df83c8b62f-sess_261a55289f",
+  "arguments": {
+    "limit": 1000,
+    "kinds": "tool_call,tool_call_update",
+    "session_id": "sess_261a55289f",
+    "offset": 0
+  }
+}

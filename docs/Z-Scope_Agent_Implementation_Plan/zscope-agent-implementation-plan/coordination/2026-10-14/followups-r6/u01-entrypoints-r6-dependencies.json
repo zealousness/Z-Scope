@@ -1,0 +1,53 @@
+{
+  "product_changes": false,
+  "at": "2026-10-14T20:49:09.366773+08:00",
+  "schema": "zscope.coordination.readonly-dependency-refresh.v1",
+  "owner": "coordinator",
+  "files": [
+    {
+      "path": ".editorconfig",
+      "sha256": "6e4fba2bf32da6bfe4a9de013c33c9d664f86190477d2221a70a9acdc4a371fd"
+    },
+    {
+      "path": ".gitattributes",
+      "sha256": "b06bd4ee002f37a8b5ed320d78504e025e150e16feed695e3609a5709b397812"
+    },
+    {
+      "path": "zscope/web/static/vendor/alpine.LICENSE",
+      "sha256": "5f05c4925dd3edf049a70b4b403ac0dd43b20f72501d9359911ddd25d5ac657d"
+    },
+    {
+      "path": "zscope/web/static/vendor/daisyui.LICENSE",
+      "sha256": "8709e3ac65c84637c422dc8082b893d9997fce093751c77b2f1983bf29dbf9ea"
+    },
+    {
+      "path": "zscope/web/static/vendor/fflate.LICENSE",
+      "sha256": "805f6cb28bb8b6d3a0badd83c93bccd9671fa01a3b4b92b7042b0743325ac243"
+    },
+    {
+      "path": "zscope/web/static/vendor/js-yaml.LICENSE",
+      "sha256": "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98bd63961f9550"
+    },
+    {
+      "path": "zscope/web/static/vendor/markdown-it.LICENSE",
+      "sha256": "792c48c5a849a15fdf9e37e8bcf9e6d1dd13b32b46c642a748a0a46a9919d473"
+    },
+    {
+      "path": "zscope/web/static/vendor/prism.LICENSE",
+      "sha256": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b"
+    },
+    {
+      "path": "zscope/web/static/vendor/tailwind.LICENSE",
+      "sha256": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "971c2de8c58848a2755354474711bbb2712a204cd6db11a3b85da511e7924a16"
+    }
+  ],
+  "reason": "isolation omitted repository metadata required by test_agent_docs; preserve that test and original baseline receipt",
+  "workspace": "u01-entrypoints-r6",
+  "previous_receipt": "followups-r6/u01-entrypoints-r6-dependencies-metadata-only.json",
+  "vendor_refresh_at": "2026-10-14T20:57:05.5012997+08:00",
+  "vendor_reason": "extension inventory omitted LICENSE inputs, not a root defect or Astra change"
+}

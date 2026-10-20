@@ -1,0 +1,19 @@
+{
+  "coordinator_authorized": true,
+  "write_paths": [
+    "tests/test_stage_independent_quality.py"
+  ],
+  "authorization": "Human current instruction: progress S01-independent Stage quality repairs",
+  "already_owned_modified_paths": [
+    "zscope/core/analysis/analyzer.py",
+    "zscope/orchestration/parallel_analyzer.py",
+    "zscope/orchestration/candidates.py",
+    "zscope/orchestration/jobs/scan_work.py",
+    "zscope/orchestration/instance_semantics_context.py",
+    "tests/test_instance_semantics_context.py",
+    "docs/modules/analysis-pipeline.md",
+    "docs/modules/execution-orchestration.md"
+  ],
+  "actual_coordinator_task": "/root",
+  "reason": "Native-free real-method regression of exception preservation, pending ledger owner projection and detached recovery summary; no S01 stub or native proof claim."
+}

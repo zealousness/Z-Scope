@@ -1,0 +1,190 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-15T09:28:20.359626+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:21.363836+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:22.375359+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:23.379699+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:24.392794+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:25.395072+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:26.400717+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:27.409918+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:28.419143+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:29.425072+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:30.436058+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:31.445848+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:32.453286+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:33.460648+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:34.463598+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:35.468846+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:36.473478+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:37.476707+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:38.484834+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:28:39.494987+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_753ef8c4e73045f691dcebb1",
+        "status": "in_progress"
+      }
+    }
+  ],
+  "offset": 7617,
+  "count": 20,
+  "next_offset": 7637,
+  "has_more": true,
+  "total_matching": 7672
+}

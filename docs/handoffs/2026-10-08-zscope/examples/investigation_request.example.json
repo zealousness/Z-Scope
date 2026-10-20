@@ -1,0 +1,49 @@
+{
+  "example_only": true,
+  "schema_status": "design_draft_not_product_api",
+  "task_id": "example-task-not-runtime-id",
+  "audit_unit_id": "example-unit-not-runtime-id",
+  "code_context": {
+    "project_id": "example-authorized-fixture",
+    "source_revision": null,
+    "build_context_id": null,
+    "wiki_revision": null
+  },
+  "objective": "核对一个已授权资源生命周期单元中的错误出口；仅提出有来源的假设。",
+  "candidate_visibility": "blind",
+  "initial_evidence_refs": [],
+  "missing_fact_kinds": [
+    "callee_effect",
+    "ownership_on_failure"
+  ],
+  "permissions": {
+    "allowed_tools": [
+      "search_code",
+      "read_code",
+      "get_semantic_context",
+      "query_code_graph",
+      "trace_data_flow"
+    ],
+    "semantic_refresh_policy": "cache_only",
+    "allowed_relative_paths": [
+      "src/",
+      "include/",
+      "tests/"
+    ],
+    "executable_commands": [],
+    "network": false,
+    "workspace_writes": false,
+    "candidate_or_truth_access": false,
+    "scan_start": false
+  },
+  "local_experiment_limits": {
+    "max_query_rounds": 4,
+    "max_scope_expansions": 1
+  },
+  "program_must_fill_before_execution": [
+    "source_revision",
+    "build_context_id",
+    "authorized_scope",
+    "initial_evidence_refs"
+  ]
+}

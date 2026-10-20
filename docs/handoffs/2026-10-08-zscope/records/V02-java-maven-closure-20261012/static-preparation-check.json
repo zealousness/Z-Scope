@@ -1,0 +1,16 @@
+{
+  "status": "static_checks_only_passed",
+  "ast_parse_files": 3,
+  "original_compatibility_nodes_verified": [
+    "test_javaparser_structure_frontend_real_cli_contract",
+    "test_spoon_structure_frontend_lombok_processor_real_cli_contract"
+  ],
+  "original_xml_sha256": "a3e0feca6df88ed41aeecd3a683c42ca02a5fb80fb266f1e1c450eb1c23ed74d",
+  "normalized_destination_paths_unique": true,
+  "generated_offline_settings_valid": true,
+  "control_copy_content_bytes": 3386290,
+  "no_runtime_test_or_tool_executions_in_this_preparation": true,
+  "new_tools_copied": 0,
+  "new_mounts": 0,
+  "source_security_and_old_sealed_result_changes": false
+}

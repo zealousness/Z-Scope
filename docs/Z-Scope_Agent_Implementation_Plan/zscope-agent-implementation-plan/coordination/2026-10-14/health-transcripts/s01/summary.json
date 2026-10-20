@@ -1,0 +1,78 @@
+{
+  "session_id": "sess_9669ed4555",
+  "kinds": "tool_call,tool_call_update",
+  "pages": 55,
+  "total_matching": 2431,
+  "has_more": false,
+  "latest_at": "2026-10-14T03:52:45.144249+00:00",
+  "failures": [
+    {
+      "at": "2026-10-14T02:10:18.227458+00:00",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_11",
+        "status": "failed",
+        "output": "=== workspaces/doc-audit/ ===\n=== workspaces/s01-instances/ ===\n=== workspaces/s07-oracle/ ===\n=== workspaces/s08-owner/ ===\n=== workspaces/s09-prep/ ===\n=== workspaces/u02-disposition/ ===\n=== workspaces/u02-projection/ ===\nCommand failed with exit code: 1."
+      }
+    },
+    {
+      "at": "2026-10-14T02:12:48.933559+00:00",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_13",
+        "status": "failed",
+        "output": "ls: cannot access 'tests/test_all_variant_scan.py': No such file or directory\n-rw-r--r-- 1 10273 197121  14139 Oct 14 10:01 tests/test_build_context.py\n-rw-r--r-- 1 10273 197121  11087 Oct 14 10:01 tests/test_candidate_build_identity.py\n-rw-r--r-- 1 10273 197121   6073 Oct 14 10:01 tests/test_compilation_symbols.py\n-rw-r--r-- 1 10273 197121  36045 Oct 14 10:01 zscope/orchestration/global_modeler.py\n-rw-r--r-- 1 10273 197121  43273 Oct 14 10:01 zscope/orchestration/scan_session.py\n-rw-r--r-- 1 10…"
+      }
+    },
+    {
+      "at": "2026-10-14T02:31:30.503445+00:00",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Bash_16",
+        "status": "failed",
+        "output": "=== git status (target files) ===\n?? zscope/orchestration/global_modeler.py\n?? zscope/orchestration/scan_session.py\n?? zscope/retrieval/code_index.py\n?? zscope/retrieval/indexing_inventory.py\n=== untracked in workspace ===\n?? ../../../\n?? ../../../../benchmarks/experiments/balanced_confirmed_tp/dashboard/server.pid\n?? ../../../../benchmarks/experiments/balanced_confirmed_tp/m5tpr_replay_results.jsonl\n?? ../../../../docs/Z-Scope_Agent_Implementation_Plan/\n?? ../../../../docs/c-ai-scanner-design/\n…"
+      }
+    },
+    {
+      "at": "2026-10-14T03:52:45.144249+00:00",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Read_57",
+        "status": "failed",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-instances/tests/test_build_context.py"
+        ],
+        "output": "Invalid args for tool \"Read\": must NOT have additional property 'limit'"
+      }
+    }
+  ],
+  "completed_tail": [
+    {
+      "at": "2026-10-14T03:29:20.626012+00:00",
+      "tool_call_id": "1:Read_52",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T03:33:22.753882+00:00",
+      "tool_call_id": "1:Read_53",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T03:33:45.219620+00:00",
+      "tool_call_id": "1:Bash_54",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T03:34:09.588548+00:00",
+      "tool_call_id": "1:Read_55",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T03:48:50.333027+00:00",
+      "tool_call_id": "1:Read_56",
+      "title": null
+    }
+  ],
+  "tool_content_complete": false,
+  "limitation": "Bridge drops content and truncates rawOutput; these pages cannot restore it"
+}

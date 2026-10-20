@@ -1,0 +1,30 @@
+{
+  "at": "2026-10-10T04:43:55.161730+00:00",
+  "same_native_runtime_comparison_unchanged": true,
+  "earlier_cross_runtime_comparison_was_false": true,
+  "WSL_timestamp_representation_differences": [
+    {
+      "file": "C:/Users/10273/.dsh/.credentials.yaml",
+      "native_mtime": "2026-09-04T07:48:03.310Z",
+      "WSL_converted_mtime": "2026-09-04T07:48:03.309Z",
+      "WSL_mtime_ns": 1788508083309725400,
+      "bytes_unchanged": true
+    },
+    {
+      "file": "C:/Users/10273/.dsh/profiles/desktop/cordis.patch.yml",
+      "native_mtime": "2026-10-05T12:06:02.907Z",
+      "WSL_converted_mtime": "2026-10-05T12:06:02.906Z",
+      "WSL_mtime_ns": 1791201962906668200,
+      "bytes_unchanged": true
+    },
+    {
+      "file": "C:/Users/10273/.dsh/profiles/desktop/package.json",
+      "native_mtime": "2026-10-05T12:05:55.080Z",
+      "WSL_converted_mtime": "2026-10-05T12:05:55.079Z",
+      "WSL_mtime_ns": 1791201955079967600,
+      "bytes_unchanged": true
+    }
+  ],
+  "credential_values_read": false,
+  "method": "Compare initial and final fs.statSync sizes and mtime.toISOString using the same native Node runtime; preserve the earlier cross-runtime result separately."
+}

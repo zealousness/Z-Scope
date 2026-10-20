@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-15T09:35:10.054508+00:00",
+  "pid": 77860,
+  "restored_home": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\bridge-dsh-native",
+  "all_old_tasks_terminal": true,
+  "prior_owner_and_worker_absent": true,
+  "normal_bridge_80748_restarted": false,
+  "external_configuration_changed": false,
+  "credentials_copied": false,
+  "route_changed": false,
+  "scope": "Existing dedicated DSH route only; no competing owner or task. Public list_agents must permit dispatch before any work."
+}

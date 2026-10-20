@@ -1,0 +1,42 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:03:24.779764+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "现在"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:03:25.116642+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "看现有测试如何构造 code_index 假件与 stored"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:03:25.382600+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " context manifest，特别是 entry_instances 和 build"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:03:25.437002+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "_coverage 相关测试。"
+      }
+    }
+  ],
+  "offset": 27,
+  "count": 4,
+  "next_offset": 31,
+  "has_more": false,
+  "total_matching": 31
+}

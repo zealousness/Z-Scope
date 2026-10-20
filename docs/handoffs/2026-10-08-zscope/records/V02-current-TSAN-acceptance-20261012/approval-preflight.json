@@ -1,0 +1,27 @@
+{
+  "checked_utc": "2026-10-11T20:48:46.231425+00:00",
+  "approval_source_thread": "01a12c9d-f969-71d6-bf79-c926d4a070bd",
+  "human_approval_text": "\u540c\u610f",
+  "approval_scope": "only selected TSAN acceptance containers: personality argument exactly 262144; one harmless probe; stop on failure; original conditional matrix after success",
+  "approval_basis": "human reply quoted in coordinator continuation; explicit flag is not permission",
+  "expected_proposal_hashes": {
+    "tsan-personality-seccomp.proposed.json": "a56f617057f60b6b569678d7f8cf569a771aab7b721ca5e980199078e0a1a46b",
+    "tsan-personality-container.proposed.py": "a77cfd2d74df78ae0293d29d2e83ce0efbb8f7460731c9d3430a72951a7330ea",
+    "tsan-personality-probe.proposed.py": "6dc5b4f2ea3dfaecce25846306b758f7eafd5710cd67b6693d0f2f34dbe4db6c"
+  },
+  "actual_proposal_hashes": {
+    "tsan-personality-seccomp.proposed.json": "a56f617057f60b6b569678d7f8cf569a771aab7b721ca5e980199078e0a1a46b",
+    "tsan-personality-container.proposed.py": "a77cfd2d74df78ae0293d29d2e83ce0efbb8f7460731c9d3430a72951a7330ea",
+    "tsan-personality-probe.proposed.py": "6dc5b4f2ea3dfaecce25846306b758f7eafd5710cd67b6693d0f2f34dbe4db6c"
+  },
+  "frozen_input_count": 403,
+  "changed_frozen_inputs": [],
+  "default_profile_sha256": "cc374cf23846ce1f62f4dc807a8e2b8673c783c6f56cb475467621035d281e6c",
+  "image_id": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "claim_exists": false,
+  "result_exists": false,
+  "active_containers": [],
+  "security_exception_applied_by_preflight": false,
+  "probe_executions_by_preflight": 0,
+  "ready": true
+}

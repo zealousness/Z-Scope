@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "pytest_exit_code": 0,
+  "counts": {
+    "passed": 2,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "audit_errors": [],
+  "generated_jars": [
+    {
+      "path": "/tmp/java-targets/javaparser/zscope-java-structure-javaparser-0.1.0.jar",
+      "bytes": 1464939,
+      "sha256": "a169e68d3be3b9cad3d4b487e3a188a985e1f868e69bcdf5226ee9e16a3ae497"
+    },
+    {
+      "path": "/tmp/java-targets/javaparser/original-zscope-java-structure-javaparser-0.1.0.jar",
+      "bytes": 15308,
+      "sha256": "23563d6a51549d7ad38beeb6e67f4ac460e7510a73c1a56cc7625d7ac3da33be"
+    },
+    {
+      "path": "/tmp/java-targets/spoon/zscope-java-structure-spoon-0.1.0.jar",
+      "bytes": 17580061,
+      "sha256": "778a64a4a5072e6b1d043e245a4ec45288ae02472adf4443b6291d25e7be9b47"
+    },
+    {
+      "path": "/tmp/java-targets/spoon/original-zscope-java-structure-spoon-0.1.0.jar",
+      "bytes": 22940,
+      "sha256": "979ed8e13459e8dd3a776fcab3be5c9c9928bfda68ac4fa8d972631d17da6907"
+    }
+  ],
+  "elapsed_seconds": 9.634,
+  "old_results_not_reexecuted": true
+}

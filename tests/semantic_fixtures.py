@@ -37,6 +37,13 @@ def configured_test_semantics() -> LocalPatternSemantics:
             contract = ApiContract.from_row(
                 {"symbol_name": name, "kind": role, "source": "test:user_config", "pair": pair}
             )
+            if role == "lock":
+                from dataclasses import replace
+
+                contract = replace(
+                    contract,
+                    protocol={"lock_mode": "shared" if name == "LOCK_READ" else "exclusive"},
+                )
             if role in {"allocator", "calloc", "reallocator"}:
                 from zscope.semantics.standard_api import standard_contracts
                 from dataclasses import replace

@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "/tmp/v02-compat-main"
+  ],
+  "binary_sha256": "8a09017ad7937cfd9a69b0404c469f5e7c8214f0a6faea8f8e997ef880834242",
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "==21==WARNING: ThreadSanitizer: memory layout is incompatible, possibly due to high-entropy ASLR.\nRe-execing with fixed virtual address space.\nN.B. reducing ASLR entropy is preferable.\n==21==Installed the sigaction for signal 11\n==21==Installed the sigaction for signal 7\n==21==Installed the sigaction for signal 8\n***** Running under ThreadSanitizer v3 (pid 21) *****\nStats: SizeClassAllocator64: 1M mapped (0M rss) in 512 allocations; remains 512\n  02 (    32): mapped:    256K allocs:     128 frees:       0 inuse:    128 num_freed_chunks    8064 avail:   8192 rss:      4K releases:      0 last released:      0K region: 0x720800000000\n  03 (    48): mapped:    256K allocs:     128 frees:       0 inuse:    128 num_freed_chunks    5333 avail:   5461 rss:      4K releases:      0 last released:      0K region: 0x720c00000000\n  04 (    64): mapped:    256K allocs:     128 frees:       0 inuse:    128 num_freed_chunks    3968 avail:   4096 rss:      4K releases:      0 last released:      0K region: 0x721000000000\n  05 (    80): mapped:    256K allocs:     128 frees:       0 inuse:    128 num_freed_chunks    3148 avail:   3276 rss:      4K releases:      0 last released:      0K region: 0x721400000000\nStats: LargeMmapAllocator: allocated 0 times, remains 0 (0 K) max 0 M; by size logs: \n",
+  "probe_count": 1,
+  "thread_fixture_executions": 0
+}

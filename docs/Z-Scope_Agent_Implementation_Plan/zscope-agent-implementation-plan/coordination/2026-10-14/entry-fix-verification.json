@@ -1,0 +1,20 @@
+{
+  "fresh_process_dsh_resolution": "C:\\Users\\10273\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+  "non_secret_commands_copied_from_persisted_config": {
+    "dsh": [
+      "C:\\Windows\\System32\\cmd.exe",
+      "/d",
+      "/c",
+      "call",
+      "C:\\Users\\10273\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+      "--profile",
+      "acp"
+    ],
+    "zcode": [
+      "C:\\Users\\10273\\.agent-bridge\\adapters\\zcode-acp-0.67.0\\node_modules\\.bin\\zcode-acp-server.cmd"
+    ]
+  },
+  "readonly_preflight_pid": 98792,
+  "no_development_task_created": true,
+  "current_kimi_bridge_restarted": false
+}

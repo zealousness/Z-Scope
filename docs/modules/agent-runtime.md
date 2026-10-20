@@ -18,6 +18,8 @@ sources:
   - zscope/tools/contracts.py
   - zscope/tools/symbols.py
   - zscope/tools/flow_query.py
+  - zscope/tools/source_access.py
+  - zscope/tools/semantic_context.py
 tests:
   - tests/test_spec_registry.py
   - tests/test_json_output_agents.py
@@ -26,6 +28,9 @@ tests:
   - tests/test_evidence_tools.py
   - tests/test_tool_use_eval.py
   - tests/test_tool_schema_strict.py
+  - tests/test_source_search.py
+  - tests/test_semantic_cache_only.py
+  - tests/test_build_context.py
   - tests/test_llm_client_tokens.py
   - tests/test_validator_v3_protocol.py
 ---
@@ -45,6 +50,8 @@ tests:
 - `zscope/skills/*/SKILL.md` 提供按风险领域激活的审计知识和检查策略。
 - Tool registry 只暴露 `search_code`、`read_code`、`get_semantic_context`、`query_code_graph`、`trace_data_flow`、`query_static_findings`。六者共享 `ToolContract`，Agent function schema 与 MCP schema 都由同一个 input/output contract 生成，runtime 再执行本地递归校验和 ToolPolicy。工具结果按条数或完整源码行截断，统一通过 `page.next_offset` 或 `source.next_start_line` 续取，不得产生无效 JSON。
 - Agent 输出回到分析/验证流水线，不能绕过统一 schema 和 issue identity 直接持久化最终报告。
+- `search_code` 的 text/files scope 与 `read_code` 共用 `ProjectSourceAccess`；符号搜索默认不变。字面检索独立于索引，以有界固定视图分页，文件版本变化要求重启；扫描覆盖与结果分页分开报告。源码读取缓存需重新核验文件身份、摘要及当前许可。
+- `get_semantic_context(refresh_policy=cache_only)` 独立读已提交状态，不经过建模 helper 或 resolver。服务端 read_only/candidate_blind profile 强制此路径；后者还隔离 findings、结论资源和语义 payload，类型化投影保留程序身份。完整输入身份不足时不能声明 current。参数、限制及消费方式见 [只读 MCP](../mcp-read-only.md)。
 - Validator v3 的 V1/V2 使用无状态、严格 schema 的直接 chat completion；V1 不进入通用工具循环，V2 只携带原候选摘要和新增证据。V3 才能按档位使用有界只读工具轨迹。
 - 流式响应未携带任何内容、工具调用与 finish_reason 块时按被截断的流处理并进入传输重试；通用工具循环任何退出路径都返回全部 assistant 文本的拼接内容，不得把循环内追加的用户提示词当作模型输出。
 - 每个真实 HTTP attempt 在发出前原子预留估算 prompt 与最大 completion，返回后按 provider usage 结算。usage event 只保存计量和归因，不保存 prompt、源码正文或模型思维正文。
@@ -101,6 +108,10 @@ python -m pytest -q tests/test_validator_v3_protocol.py
 单次结构化结果硬限制约 60,000 字符。列表裁剪只删除完整 item，源码裁剪只删除完整行；高成本 snapshot 正文可以省略，但 provenance、状态和恢复提示必须保留。结果在离开 runtime 前按 output schema 再校验，工具实现违反契约时转为可观测的 `internal_error`，不能把畸形 payload 交给模型。
 
 `tests/fixtures/tool_use_eval_v1.json` 固定至少 40 个跨 C、C++、Java 的工具选择场景；`scripts/evaluate_tool_use.py` 既可对已有 JSONL 调用轨迹评分，也可通过 `--run-llm` 使用生产 `LLMClient` 和 Registry 当前六工具 schema，独立发起每个场景的首次 tool call。真实运行从标准 LLM 环境变量取连接参数，强制每个场景只产生一个首调用，并同时保存原始场景 prompt、实际注入上下文后的 `presented_prompt`、模型、finish reason、usage、规范化参数或执行错误，便于复算并识别不可由当前 schema 表达的用例；`--first-tool-only` 只门禁首次选择、首次参数合法性和旧工具调用率。完整轨迹评分继续覆盖错误后恢复、coverage/may 语义和两调用发现-读取上限，并保留证据引用。schema token 门槛使用同一稳定估算器和冻结的旧 14 工具基线，防止六工具描述随迭代重新膨胀。
+
+## 编译实例事实查询
+
+`get_semantic_context` 另支持 `kind=build_contexts` 和 `kind=program_facts`。先枚举实例，再携带其 `build_context_id` 和精确函数名 `query` 读取 native 程序事件；沿用分页和结果体积限制。两种查询不调用语义 resolver，不生成模型快照。读取旧输入、缺实例存储或未初始化后端时返回缺口；只读缓存前端尚不支持的查询保持 unavailable。实例内函数事实完整不等于跨 TU 链接路径完整。
 
 ## LLM 客户端生命周期
 

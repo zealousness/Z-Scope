@@ -1,0 +1,58 @@
+{
+  "at": "2026-10-15T02:42:10.746694+08:00",
+  "task_id": "task_a3a56d31b4",
+  "bridge_status": "completed",
+  "bridge_finished_at": "2026-10-15T02:38:01.543167+08:00",
+  "public_result": "route-check/bridge-response-r6-public-2f02fab73f.json",
+  "result_ends_mid_implementation": true,
+  "delivery_exists": false,
+  "observed_post_bridge_writes": [
+    {
+      "path": "zscope/reporting/job_result_projection.py",
+      "sha256": "be8e16762ee3671700eab47f7fae60bdf73c7c7105636490a57daf82af35ce0b",
+      "mtime": "2026-10-15T02:38:04.144417+08:00"
+    },
+    {
+      "path": "zscope/mcp/jobs_adapter.py",
+      "sha256": "b83184c86c5ffb30f3142d655e7bf6a99834d66acd1de476155a1a14e4a20903",
+      "mtime": "2026-10-15T02:38:14.593651+08:00"
+    },
+    {
+      "path": "tests/test_job_result_projection.py",
+      "sha256": "907005964ea135c6d23bef3ecea0a3e0d3001c91660a5ff6be9afdc2211b2e8d",
+      "mtime": "2026-10-15T02:40:22.315783+08:00"
+    }
+  ],
+  "native_process_inventory_at": "2026-10-15T02:41:13+08:00",
+  "observed_native_processes": [
+    {
+      "pid": 94668,
+      "parent": 36260,
+      "name": "bash.exe"
+    },
+    {
+      "pid": 41612,
+      "parent": 94668,
+      "name": "bash.exe"
+    },
+    {
+      "pid": 96596,
+      "parent": 41612,
+      "name": "bash.exe"
+    },
+    {
+      "pid": 98288,
+      "parent": 96596,
+      "name": "wsl.exe"
+    },
+    {
+      "pid": 92384,
+      "parent": 98288,
+      "name": "wsl.exe"
+    }
+  ],
+  "action": "Do not duplicate/resume while native tool processes are still active. Await stable final delivery, then independent verification.",
+  "independent_acceptance": false,
+  "integrated": false,
+  "whole_package_complete": false
+}

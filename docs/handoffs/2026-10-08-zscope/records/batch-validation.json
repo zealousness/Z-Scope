@@ -1,0 +1,238 @@
+{
+  "head": "010f40210b54ba0f79a088312ce5d8be3a82ace0",
+  "branch": "v1.3.1_feat/llm-wiki",
+  "environment": "WSL Ubuntu; /home/zeal/venv313/bin/python; Python 3.13.15",
+  "cwd": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "--junitxml=/tmp/zscope-b00-t03.xml",
+    "tests/test_source_search.py",
+    "tests/test_semantic_cache_only.py",
+    "tests/test_mcp_read_only.py",
+    "tests/test_tool_registry.py",
+    "tests/test_evidence_tools.py",
+    "tests/test_tool_schema_strict.py",
+    "tests/test_tool_policy.py",
+    "tests/test_tool_use_eval.py",
+    "tests/test_analyzer_tool_policy.py",
+    "tests/test_mcp_policy.py",
+    "tests/test_mcp_http_server.py",
+    "tests/test_mcp_security.py",
+    "tests/test_config_v2.py",
+    "tests/test_cli_config_v2.py",
+    "tests/test_candidate_ledger.py",
+    "tests/test_active_discovery.py",
+    "tests/test_single_entry_active_discovery.py",
+    "tests/test_balanced_rollout.py",
+    "tests/test_balanced_rollout_operator.py",
+    "tests/test_json_output_agents.py",
+    "tests/test_java_source_backend.py",
+    "tests/test_java_joern_backend.py",
+    "tests/test_java_analyzer_candidates.py",
+    "tests/test_java_semantic_modeler_schema.py",
+    "tests/test_java_evidence_merge.py",
+    "tests/test_reference_configs.py",
+    "tests/test_agent_docs.py"
+  ],
+  "exit_code": 0,
+  "status": "passed",
+  "summary": {
+    "passed": 356,
+    "failed": 0,
+    "skipped": 0
+  },
+  "junit_timestamp": "2026-10-08T14:53:12.512727+08:00",
+  "junit_seconds": 82.618,
+  "suites": {
+    "tests.test_source_search": {
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_semantic_cache_only": {
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_mcp_read_only": {
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_tool_registry": {
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_evidence_tools": {
+      "passed": 24,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_tool_schema_strict": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_tool_policy": {
+      "passed": 11,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_tool_use_eval": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_analyzer_tool_policy": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_mcp_policy": {
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_mcp_http_server": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_mcp_security": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_config_v2": {
+      "passed": 42,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_cli_config_v2": {
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_candidate_ledger": {
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_active_discovery": {
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_single_entry_active_discovery": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_balanced_rollout": {
+      "passed": 17,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_balanced_rollout_operator": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_json_output_agents": {
+      "passed": 24,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_java_source_backend": {
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_java_joern_backend": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_java_analyzer_candidates": {
+      "passed": 18,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_java_semantic_modeler_schema": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_java_evidence_merge": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_reference_configs": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests.test_agent_docs": {
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "input_sha256": {
+    "tests/test_source_search.py": "b1d89d236ec1ebcc2fae2285ed45428d83048b74043b19d117ca4ac95606471a",
+    "tests/test_semantic_cache_only.py": "1d8787dce9b48b04af3b5737dc5488fede8e4e1a5c0214a20221436d7adb6d73",
+    "tests/test_mcp_read_only.py": "fa9098be0057e3b49961387d4330d0c5ce5f6e0a0b6978fd75169e51a2caca98",
+    "tests/test_tool_registry.py": "7be4475074f763e6476e4012c880a481baf01dd8ebfec9f4e0c165dbf537e38f",
+    "tests/test_evidence_tools.py": "404fdc6c81d21a841277bdc8845a19505eefabe48725b3919daaacd647ff3a89",
+    "tests/test_tool_schema_strict.py": "467427af5740bac19a95f0e40e5e81cad8d23d79ff1eff0aec64bd357dc1f273",
+    "tests/test_tool_policy.py": "b8b6f2f4998b1eca8f4588d09ef6a69e9d62ca2f2694050b55864b0b050d7541",
+    "tests/test_tool_use_eval.py": "666b3638870da536eedc63cb82e818c07cb64497e59a67a3d77089606208ef45",
+    "tests/test_analyzer_tool_policy.py": "a341bc52eb7da9fe1ebadd3872cd072a0e887c2c88042749b8ab2f18c96b1522",
+    "tests/test_mcp_policy.py": "409c3200a30339e2981a4ca11bf807e76e08a1d8ea7bb77e3613eec13d98ec78",
+    "tests/test_mcp_http_server.py": "6b381f09fcbd2e3cffbe38fb7b0c37873798ed0910db997f703be980eb4a4e68",
+    "tests/test_mcp_security.py": "0949f5af4dbdecaa82a96799da60ab51c1e0de1c0a51581e4b712463cd1d3fdd",
+    "tests/test_config_v2.py": "efdfdbaa574d1d448e3cfb615bba34df85654daf3a6eb46fe03691a169b3b299",
+    "tests/test_cli_config_v2.py": "5e59fa899f77ad8fab11bdebaddd9efa8ab142acd7c7e9748345217c356fad73",
+    "tests/test_candidate_ledger.py": "da166f0930f103b073dad681620ead2517034cb0d4dd32bb15d093c209eb0a15",
+    "tests/test_active_discovery.py": "2e3448432f40299ae8db6df1d35dcb130226f52b23b64aa1d0d53750b941d817",
+    "tests/test_single_entry_active_discovery.py": "675ee3bb469b8a617ace39a3f79c946b49906dd46e1f8eb589fdcd9b3f9e9be3",
+    "tests/test_balanced_rollout.py": "d4faa26c7561f0dd9d5f15ec831f98ef30797a114e28f96311b5a747ff0c549d",
+    "tests/test_balanced_rollout_operator.py": "6091a273f9b05d75e3609cecd302832d6acdae60e7a06ec4a2ebba015fce0c81",
+    "tests/test_json_output_agents.py": "e7b960069ba3aff36926b942503d12d5d065abf593ec2a1232c169b8bc9a91e5",
+    "tests/test_java_source_backend.py": "8c6abd85f893ab71c54a82cb81d46082c783efa1cd7580607558d45fd83b01ee",
+    "tests/test_java_joern_backend.py": "75d7bc105dcd06e0f45256a6f0686326e985bf94c76e963b53c84af67dabebc7",
+    "tests/test_java_analyzer_candidates.py": "c00b438443042c44a5c4d30590eae7b154a0d122f9a8efbe6d68e069ef8721de",
+    "tests/test_java_semantic_modeler_schema.py": "96be7d627e5fae0346e69a7c09d8b4a4d504933a2e939677d64962ab0c2eced4",
+    "tests/test_java_evidence_merge.py": "e3716222d11427e2baff95e585aeb7817001483fb9aa502b4b6003d804c9870d",
+    "tests/test_reference_configs.py": "237498d52dc598a7d6fb508e1192a306bbbbfe913aa5b3923c70029c8201980d",
+    "tests/test_agent_docs.py": "67a63c23ac7c1b0b5b96ce02f5811dab9e0b4da4ee6ac671df5aed245a14099a",
+    "zscope/common/readonly.py": "e4381e7884d22c561e148cae51fd1ee141f3d642ecb0bed4faa14a45c43720e4",
+    "zscope/retrieval/cached_index.py": "8800da9b8bd5c2f6ec4a75355b16e5013d2bbd82ebad32c35802dcf8452a185a",
+    "zscope/snapshots/readonly.py": "571469b77dba493f535ccbed717e3f725704d2842167688bcd7065bc8d191229",
+    "zscope/tools/source_access.py": "8325cfc6263d1a20a5806110e20861798ca86f57a6f638722e66aebf356af8f8",
+    "zscope/tools/search_code.py": "cb2545717ec63bb3ac2c4dcf92848323c48042272e5a31c8a728bbf98d0c2d79",
+    "zscope/tools/read_code.py": "d55db22e93c7798dbeeb1f00cd1e495fe7b149255b321da4cfd79073a89c9484",
+    "zscope/tools/semantic_context.py": "2999c0cfa47a1cbceda9cad4635417f9d7cc243953424f8f7701619173083502",
+    "zscope/tools/registry.py": "71d38d9744b9ffabe73738c67ad41ff744f08ac12c42189fb4eea16358392db5",
+    "zscope/tools/runtime.py": "ca2367a6231c003f18bc1aae756000a535d049dde4c6666183dea8bc8516e537",
+    "zscope/tools/symbols.py": "077574489bbbc7a4f67bcc586e8968e3aad44483ace36a0dfce58c624dd5765a",
+    "zscope/mcp/provider.py": "0b46d32e8e2faffeff2388f9b282be2f684910398e9c8c3e838485b18555f6b1",
+    "zscope/mcp/server.py": "5e9a772a67672f7c39e999ab03e094a0161c1090c4efddc0934e468835fd83ac",
+    "zscope/mcp/http_server.py": "e7ca8a35a253e7ad0db9a39da9e2ac09c254e5815d0276957481df5971d451dc",
+    "zscope/config/config.py": "67b7dcebbea069868055bd2bf4146a63b82c69a147bbe53a9324e160e7ace184",
+    "zscope/cli/cli.py": "0e64e70f8316b0c790dfbab6ae9062aa2642d98388e3863c8fc5bea2f6a5ef3f",
+    "tests/fixtures/tool_use_eval_v1.json": "27152f136c92b3e8b0f8bd51d3eff59e7cd09b19a3932efb34bf0a7b3b2df3b5"
+  },
+  "not_run": [
+    "real_model",
+    "formal_unified_benchmark",
+    "product_performance",
+    "portable_release_smoke",
+    "full_input_freshness_receipt"
+  ]
+}

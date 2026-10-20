@@ -221,6 +221,10 @@
     }
   },
   "first_party": {
+    "index.html": {
+      "sha256": "c01d9ffab38ee5a8b52ae040b8c2c5ee8fa078d3b10e296a1126d7d620f9eda9",
+      "license": "MIT"
+    },
     "report_view.js": {
       "sha256": "ad0b93ea04440cfe7d6e2e1e73b12c51a9a1d49b101027451fd15a9d8bbe225a",
       "license": "MIT"
@@ -234,7 +238,19 @@
       "license": "MIT"
     },
     "dashboard_reports.js": {
-      "sha256": "8c0cbb3b2f2f105d160bf31009474db1817844aee2ca62e0d7451894a2a6eb0e",
+      "sha256": "554009551f76265cd3f096cded04e8fa5d06254f33d83883a604f1cb96320637",
+      "license": "MIT"
+    },
+    "dashboard_workbench.js": {
+      "sha256": "5e74f8fc1ae35bc8a661cffc0446893a250391fd4e6e23d70e81895e1754dbdc",
+      "license": "MIT"
+    },
+    "dashboard_workbench.css": {
+      "sha256": "88f6a8eddf8b89bf89a2ce27b281e8385ff509d15553e2ff98be066663822384",
+      "license": "MIT"
+    },
+    "dashboard_config.js": {
+      "sha256": "dd9dbc8e20d614048af3b5aa8e218166930e4ad726efd235aa2aaed276dd0f12",
       "license": "MIT"
     }
   }

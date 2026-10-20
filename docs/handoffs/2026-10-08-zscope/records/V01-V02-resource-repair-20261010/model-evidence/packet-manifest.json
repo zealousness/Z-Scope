@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-10T05:19:18.147Z",
+  "scope": "Same two defensive resource defects; independent review feedback and three necessary bounded controls only",
+  "sourceDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "promptDigest": "2522e048dcdac6235daacb38eeba0e69ee3efee05f94693ef7f26194e5f8ac97",
+  "promptBytes": 54628,
+  "sameEndpointModelAndCredentialResolver": true,
+  "modelToolsDisabled": true,
+  "no_credentials": true,
+  "no_unrelated_files": true,
+  "priorSessionId": "session-c195ca4e-c8fd-4c3f-a91d-eaeeb65f05ec",
+  "priorCandidateApplied": false,
+  "boundedTests": {
+    "passed": 7,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  "testControlsDigest": "a3c711194ef4f44b4ea7f528a675fdcb47b657d2f6283d5a079d7876faa148ee"
+}

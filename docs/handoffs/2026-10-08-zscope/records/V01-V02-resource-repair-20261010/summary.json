@@ -1,0 +1,30 @@
+{
+  "at": "2026-10-10T07:37:10.916587+00:00",
+  "user_authorized_exact_payload": true,
+  "payload_bytes": 54628,
+  "payload_sha256": "2522e048dcdac6235daacb38eeba0e69ee3efee05f94693ef7f26194e5f8ac97",
+  "external_calls_this_round": 1,
+  "model_session": "session-5017afd3-5c7c-4562-82bc-b15b6a3f5c2f",
+  "model_tools_disabled": true,
+  "credential_values_read_or_recorded": false,
+  "source_sha256": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7",
+  "ordinary_checks": {
+    "passed": 1736,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "original_test_function_asts_unchanged": 110,
+  "new_resource_test_cases": 13,
+  "tracked_inputs": 403,
+  "input_windows_stable": true,
+  "V01": "in_progress",
+  "V02": "blocked",
+  "current_revision_real_ASAN": "not_run; prior passed record remains historical",
+  "real_TSAN": "not_run; existing fixed runtime unexpected memory mapping remains blocked",
+  "formal_benchmark": "not_run",
+  "install_download_permission_changes": false,
+  "git_commit_push": false,
+  "final_format_affected_tests_passed": 143,
+  "formatting_ast_equivalent": true
+}

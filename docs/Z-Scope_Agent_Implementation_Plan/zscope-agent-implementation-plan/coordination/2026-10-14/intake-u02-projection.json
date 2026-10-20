@@ -1,0 +1,17 @@
+{
+  "at": "2026-10-14T03:55:25.789832+00:00",
+  "branch": "u02-projection",
+  "source_baseline": "41d9c25a0e259457164b68191ed6d797b5d7e1e5a8b748b501fd79df37deabd1",
+  "files": [
+    {
+      "path": "zscope/reporting/acceptance.py",
+      "sha256": "e13651dae3420a3c0b9a2c2c613a23390dea813edde5e396a9232cfeedb72b65"
+    },
+    {
+      "path": "tests/test_acceptance_projection.py",
+      "sha256": "91d78f580a5d4a0189f15b8d2cc3d2a8cb18ffc3fbbb08280a067abaf8924763"
+    }
+  ],
+  "existing_source_changes": [],
+  "state": "immutable_intake_snapshot_pending_independent_integration_tests_and_final_worker_receipt"
+}

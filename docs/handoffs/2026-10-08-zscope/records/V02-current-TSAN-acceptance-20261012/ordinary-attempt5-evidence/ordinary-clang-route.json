@@ -1,0 +1,11 @@
+{
+  "path": "/tmp/zscope-ordinary-clang/clang",
+  "sha256": "b0d78dac90afb76090a28acbd2749e7e54f0c8c64201acd2c882a1452cd831e3",
+  "wrapper": "#!/bin/sh\nexec /opt/zscope-test/bin/clang18 \"$@\"\n",
+  "underlying_tool_sha256": {
+    "/opt/zscope-test/bin/clang18": "421998f342ddaa8595790e45b14a0902e0d55fb7e7ab7440d4bb1094cd8a031b",
+    "/opt/zscope-test/llvm18/bin/clang": "8ef402d453d1ba4902e4ee0f0f847f6cfa01400c95aa43c24e97818b9c0e3f45"
+  },
+  "version": "Ubuntu clang version 18.1.3 (1ubuntu1)\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /opt/zscope-test/llvm18/bin\n",
+  "scope": "Only these three original compiler integration nodes; no global tool replacement or TSAN exception"
+}

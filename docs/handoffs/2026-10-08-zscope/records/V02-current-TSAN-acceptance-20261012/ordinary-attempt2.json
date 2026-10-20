@@ -1,0 +1,498 @@
+{
+  "role": "same-image original 1736 ordinary executions plus compileall/mypy",
+  "image_id": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "started_utc": "2026-10-11T20:59:30.221686+00:00",
+  "work": "/tmp/zscope-common-ordinary-20261012-1oofs_h6",
+  "status": "failed_or_blocked",
+  "deadline_seconds": 900,
+  "max_output_bytes": 8388608,
+  "seccomp_profile": "default",
+  "TSAN": "not_run_in_this_container",
+  "ASAN": "not_run_in_this_container",
+  "reused_prior_successful_checks": [
+    {
+      "label": "resource-bounds-first",
+      "command": [
+        "/usr/local/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/resource-bounds-first",
+        "--junitxml=/work/resource-bounds-first.xml",
+        "/review-tests/test_v01_v02_resource_bounds.py",
+        "/review-tests/test_v01_v02_resource_controls.py"
+      ],
+      "exit_code": 0,
+      "counts": {
+        "passed": 8,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "expected_passed": 8
+    },
+    {
+      "label": "new-file-drift-first",
+      "command": [
+        "/usr/local/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/new-file-drift-first",
+        "--junitxml=/work/new-file-drift-first.xml",
+        "/review-tests/test_v01_v02_independent_drift.py"
+      ],
+      "exit_code": 0,
+      "counts": {
+        "passed": 4,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "expected_passed": 4
+    },
+    {
+      "label": "unit-final",
+      "command": [
+        "/usr/local/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/unit-final",
+        "--junitxml=/work/unit-final.xml",
+        "tests/test_dynamic_reproduction.py"
+      ],
+      "exit_code": 0,
+      "counts": {
+        "passed": 139,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "expected_passed": 139
+    },
+    {
+      "label": "original-negative",
+      "command": [
+        "/usr/local/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/original-negative",
+        "--junitxml=/work/original-negative.xml",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-regressions.py"
+      ],
+      "exit_code": 0,
+      "counts": {
+        "passed": 25,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "expected_passed": 25
+    },
+    {
+      "label": "r01-r09-negative",
+      "command": [
+        "/usr/local/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/r01-r09-negative",
+        "--junitxml=/work/r01-r09-negative.xml",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-regressions.py"
+      ],
+      "exit_code": 0,
+      "counts": {
+        "passed": 16,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "expected_passed": 16
+    },
+    {
+      "label": "integration-safe",
+      "command": [
+        "/usr/local/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/integration-safe",
+        "--junitxml=/work/integration-safe.xml",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-integration.py::test_missing_optional_candidate_identity_does_not_abort_scan_without_provider"
+      ],
+      "exit_code": 0,
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "expected_passed": 1
+    }
+  ],
+  "prior_successful_evidence_sha256": "30fa7cc12bf176b32b1eeb017947ced82a2161387b840ee424ebdfe92c69e623",
+  "driver_sha256": "a109b1ea68bd16ea0e78ba5c9053ecda0e466cd8a562c29052c661c7a86a2820",
+  "inside_driver_sha256": "c810ff7eada13ccc1325276bb54c11f5d97ca24d625b856218c410e7a95b64cc",
+  "staged_file_count": 966,
+  "external_tests": {
+    "test_v01_v02_resource_bounds.py": {
+      "sha256": "73afe4850d485a2b8ddeca3f53be31972ab4dcbdfed1e1f7edd14c4543f834db",
+      "bytes": 4310
+    },
+    "test_v01_v02_resource_controls.py": {
+      "sha256": "a3c711194ef4f44b4ea7f528a675fdcb47b657d2f6283d5a079d7876faa148ee",
+      "bytes": 2570
+    },
+    "test_v01_v02_independent_drift.py": {
+      "sha256": "ec88778c128976ba07a4844af98ff97a144f871d3d733d86f7b110558f7c6118",
+      "bytes": 2994
+    }
+  },
+  "command": [
+    "podman",
+    "run",
+    "--rm",
+    "--name",
+    "zscope-common-ordinary-1oofs_h6",
+    "--pull=never",
+    "--network=none",
+    "--read-only",
+    "--userns=keep-id",
+    "--user",
+    "1000:1000",
+    "--cap-drop=all",
+    "--security-opt=no-new-privileges",
+    "--pids-limit=256",
+    "--memory=2g",
+    "--cpus=2",
+    "--tmpfs",
+    "/tmp:rw,size=512m,exec",
+    "-v",
+    "/tmp/zscope-common-ordinary-20261012-1oofs_h6/inputs:/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope:ro",
+    "-v",
+    "/tmp/zscope-common-ordinary-20261012-1oofs_h6/review-tests:/review-tests:ro",
+    "-v",
+    "/home/zeal/venv313/lib/python3.13/site-packages:/venv/lib/python3.13/site-packages:ro",
+    "-v",
+    "/tmp/zscope-common-ordinary-20261012-1oofs_h6/evidence:/work:rw",
+    "-e",
+    "PYTHONPATH=/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope:/venv/lib/python3.13/site-packages",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+    "-e",
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "-e",
+    "TMPDIR=/tmp",
+    "-e",
+    "TZ=UTC",
+    "-w",
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+    "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+    "/usr/local/bin/python",
+    "/work/ordinary-inside.py"
+  ],
+  "exit_code": 1,
+  "ordinary": {
+    "status": "failed_or_blocked",
+    "checks": [
+      {
+        "label": "compatibility",
+        "command": [
+          "/usr/local/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "-x",
+          "-p",
+          "no:cacheprovider",
+          "--tb=short",
+          "--basetemp=/tmp/compatibility",
+          "--junitxml=/work/compatibility.xml",
+          "tests/test_source_search.py",
+          "tests/test_semantic_cache_only.py",
+          "tests/test_mcp_read_only.py",
+          "tests/test_tool_registry.py",
+          "tests/test_evidence_tools.py",
+          "tests/test_tool_schema_strict.py",
+          "tests/test_tool_policy.py",
+          "tests/test_tool_use_eval.py",
+          "tests/test_analyzer_tool_policy.py",
+          "tests/test_mcp_policy.py",
+          "tests/test_mcp_http_server.py",
+          "tests/test_mcp_security.py",
+          "tests/test_config_v2.py",
+          "tests/test_cli_config_v2.py",
+          "tests/test_candidate_ledger.py",
+          "tests/test_active_discovery.py",
+          "tests/test_single_entry_active_discovery.py",
+          "tests/test_balanced_rollout.py",
+          "tests/test_balanced_rollout_operator.py",
+          "tests/test_json_output_agents.py",
+          "tests/test_java_source_backend.py",
+          "tests/test_java_joern_backend.py",
+          "tests/test_java_analyzer_candidates.py",
+          "tests/test_java_semantic_modeler_schema.py",
+          "tests/test_java_evidence_merge.py",
+          "tests/test_reference_configs.py",
+          "tests/test_agent_docs.py",
+          "tests/test_investigation_evidence.py",
+          "tests/test_bounded_investigation.py",
+          "tests/test_investigation_runtime.py",
+          "tests/test_audit_coverage.py",
+          "tests/test_external_investigation.py",
+          "tests/test_external_findings_import.py",
+          "tests/test_security_semantics_tool.py",
+          "tests/test_semantic_contract_chain.py",
+          "tests/test_candidate_decision_context.py",
+          "tests/test_finding_attribution_contract.py",
+          "tests/test_incremental_replay.py",
+          "tests/test_indexing_pipeline.py",
+          "tests/test_clang_identity_validation.py",
+          "tests/test_clang_incremental_extraction.py",
+          "tests/test_svf_cache.py",
+          "tests/test_conditional_ownership_contracts.py",
+          "tests/test_wrapper_contract_compiler.py",
+          "tests/test_wrapper_failure_guards.py",
+          "tests/test_contract_only_publication.py",
+          "tests/test_pool_protocol_modeling.py",
+          "tests/test_semantic_contract_schema.py",
+          "tests/test_incremental_semantic_modeling.py",
+          "tests/test_source_contract_boundaries.py",
+          "tests/test_pair_evidence_authority.py",
+          "tests/test_snapshot_observation_shadow.py",
+          "tests/test_semantic_demand.py",
+          "tests/test_global_modeler.py",
+          "tests/test_semantic_modeling_usage.py",
+          "tests/test_semantic_model_retry.py",
+          "tests/test_validation_pipeline.py",
+          "tests/test_validation_runner.py",
+          "tests/test_parallel_shared_semantics.py",
+          "tests/test_scan_session_resume_svf.py",
+          "tests/test_report_schema_v2.py",
+          "tests/test_review_runtime.py",
+          "tests/test_portable_release.py",
+          "tests/test_portable_runtime.py",
+          "tests/test_release_contract.py",
+          "tests/test_range_release_aggregate.py",
+          "tests/test_history_reconciler.py",
+          "tests/test_snapshot_store.py",
+          "tests/test_semantic_coordinator_effects.py",
+          "tests/test_modeling_provider_usage.py",
+          "tests/test_decision_facts.py",
+          "tests/test_evidence_completion.py",
+          "tests/test_fp_suppression_guards.py",
+          "tests/test_review_fact_checks.py",
+          "tests/test_review_regressions.py",
+          "tests/test_shared_read_cache.py",
+          "tests/test_source_lifecycle_provider.py",
+          "-k",
+          "not test_real_mutation_replay and not test_real_direct_bitcode_dependency_cache_and_svf and not test_native_code_to_real_terminal_tool_workbook_and_pool_consumers"
+        ],
+        "exit_code": 1,
+        "counts": {
+          "passed": 1257,
+          "failed": 1,
+          "errors": 0,
+          "skipped": 5
+        },
+        "expected_passed": 1543
+      }
+    ],
+    "image_scope": "same common image; default seccomp and original ASLR",
+    "TSAN": "not_run_in_this_container",
+    "ASAN": "not_run_in_this_container",
+    "python": "3.13.15 (main, Aug 25 2026, 03:39:59) [GCC 14.2.0]",
+    "error": "AssertionError: compatibility failed; stop",
+    "elapsed_seconds": 66.21
+  },
+  "isolation": {
+    "checked_utc": "2026-10-11T21:00:08.419358+00:00",
+    "uid": 1000,
+    "gid": 1000,
+    "mounts": {
+      "/": {
+        "options": [
+          "ro",
+          "relatime"
+        ],
+        "type": "overlay",
+        "super_options": [
+          "rw",
+          "lowerdir=/home/zeal/.local/share/containers/storage/overlay/l/L7VIUI5Z6DF3R3J2YC3CPADR2O:/home/zeal/.local/share/containers/storage/overlay/l/L7VIUI5Z6DF3R3J2YC3CPADR2O/../diff1:/home/zeal/.local/share/containers/storage/overlay/l/VYDUKROMZNZORVKVACXDV6YNMA:/home/zeal/.local/share/containers/storage/overlay/l/GUOH3YU6EZ424CGVYPSHFTSV3G:/home/zeal/.local/share/containers/storage/overlay/l/6MGTPPOMNRBPRJXUEQSILFZ765:/home/zeal/.local/share/containers/storage/overlay/l/YT3KNF2QEIPE7Q77HBJJZJR4QN:/home/zeal/.local/share/containers/storage/overlay/l/Y6OEU7LA2NPYOWE6YCGQZ5KKNF:/home/zeal/.local/share/containers/storage/overlay/l/MYN4XNJ6DEA67EVZ7U2F2ZBOEP:/home/zeal/.local/share/containers/storage/overlay/l/RIDFKJK6LYU363NLCTI5R7UNI5:/home/zeal/.local/share/containers/storage/overlay/l/ZQDGZTFOFWNTTNXJILSIYJICX4",
+          "upperdir=/home/zeal/.local/share/containers/storage/overlay/e571ab1ca3762c5f1b20aaf741207498785090fa10752cf03b5344fd5ca123d3/diff",
+          "workdir=/home/zeal/.local/share/containers/storage/overlay/e571ab1ca3762c5f1b20aaf741207498785090fa10752cf03b5344fd5ca123d3/work",
+          "redirect_dir=nofollow",
+          "uuid=on",
+          "volatile",
+          "userxattr"
+        ]
+      },
+      "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope": {
+        "options": [
+          "ro",
+          "relatime"
+        ],
+        "type": "ext4",
+        "super_options": [
+          "rw",
+          "discard",
+          "errors=remount-ro",
+          "data=ordered"
+        ]
+      },
+      "/venv/lib/python3.13/site-packages": {
+        "options": [
+          "ro",
+          "relatime"
+        ],
+        "type": "ext4",
+        "super_options": [
+          "rw",
+          "discard",
+          "errors=remount-ro",
+          "data=ordered"
+        ]
+      },
+      "/work": {
+        "options": [
+          "rw",
+          "relatime"
+        ],
+        "type": "ext4",
+        "super_options": [
+          "rw",
+          "discard",
+          "errors=remount-ro",
+          "data=ordered"
+        ]
+      },
+      "/tmp": {
+        "options": [
+          "rw",
+          "nosuid",
+          "nodev",
+          "relatime"
+        ],
+        "type": "tmpfs",
+        "super_options": [
+          "rw",
+          "size=524288k",
+          "uid=100000",
+          "gid=100000"
+        ]
+      }
+    },
+    "limits": {
+      "memory.max": "2147483648",
+      "pids.max": "256",
+      "cpu.max": "200000 100000"
+    },
+    "tmpfs_bytes": 536870912,
+    "network_interfaces": [
+      "lo"
+    ],
+    "ipv4_routes": [],
+    "no_new_privileges": "1",
+    "capabilities": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "CapBnd": "0000000000000000"
+    },
+    "seccomp": "2",
+    "uid_map": "0          1       1000\n      1000          0          1\n      1001       1001      64536",
+    "checks": {
+      "nonroot": true,
+      "readonly_root": true,
+      "readonly_inputs": true,
+      "owned_evidence_writable": true,
+      "tmpfs_512MiB": true,
+      "tmpfs_executable": true,
+      "network_none": true,
+      "no_new_privileges": true,
+      "all_capabilities_dropped": true,
+      "seccomp_filter": true,
+      "memory_2GiB": true,
+      "pids_256": true,
+      "cpu_2": true
+    },
+    "verified": true
+  },
+  "owned_container_cleanup": {
+    "exit_code": 0,
+    "stderr": ""
+  },
+  "changed_inputs": [],
+  "host_aslr_after": "2",
+  "elapsed_seconds": 113.352,
+  "output_bytes": 359142,
+  "evidence_files": {
+    "compatibility.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "compatibility.stdout.log": {
+      "sha256": "f99f3f1997388e66f665ea5174295d8631684bebd20d7b088af5a339f85f9349",
+      "bytes": 2849
+    },
+    "compatibility.xml": {
+      "sha256": "34f372746c05594b652386a3d772cf0fa1b1be116adda2aabf13ffbe4af7f19f",
+      "bytes": 181806
+    },
+    "container.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "container.stdout.log": {
+      "sha256": "4148e0b33dc46980cd21e23124b180639519ba991a538a8d285545a834774dea",
+      "bytes": 3770
+    },
+    "isolation-verification.json": {
+      "sha256": "8bccd328a352f32ce1bb0ddc1df3ba062e4bb95b01e3562bf052ffa59057af6a",
+      "bytes": 3324
+    },
+    "ordinary-inside-result.json": {
+      "sha256": "1c5a26d7eaef96dfe1ed40aa2782fd5f5e56dba12094138ae0a5bf06455ba593",
+      "bytes": 4523
+    },
+    "ordinary-inside.py": {
+      "sha256": "c810ff7eada13ccc1325276bb54c11f5d97ca24d625b856218c410e7a95b64cc",
+      "bytes": 6006
+    },
+    "ordinary-plan.json": {
+      "sha256": "af4b2a3512ae7df0e6c5d045d7718dbed4c9fe8fcbd35e60a5bdcbd50d16d259",
+      "bytes": 4126
+    },
+    "staging-manifest.json": {
+      "sha256": "b6555cd66a264dfee00d3cbfa2774341545947cbb7bd747fd732051e3d057481",
+      "bytes": 152738
+    }
+  }
+}

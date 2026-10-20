@@ -17,10 +17,11 @@ import json
 import logging
 import re
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from ..agents.base import JsonOutputSpec, JsonToolAgent
+from ..common.cancellation import CancellationError, current_cancellation_token
 from ..framework.base import AgentResponse
 from ..framework.llm_client import LLMClient
 from ..orchestration.candidates import (
@@ -32,6 +33,11 @@ from ..semantics.security_map import (
     DISCOVERY_REPORT_JSON_SCHEMA,
     SEMANTIC_CLAIM_DELTA_JSON_SCHEMA,
     AuditUnit,
+    AuditOccurrence,
+    CoverageKey,
+    FINE_COVERAGE_FAMILIES,
+    AUDIT_UNIT_SCHEMA_VERSION,
+    event_coverage_key,
     DiscoveryHypothesis,
     DiscoveryReport,
     FunctionSecurityRecord,
@@ -39,6 +45,7 @@ from ..semantics.security_map import (
     SecuritySemanticMap,
     SemanticClaimDelta,
 )
+from .investigation import InvestigationResult, InvestigationSession
 
 logger = logging.getLogger(__name__)
 
@@ -224,15 +231,15 @@ def resolve_discovery_profile(config_or_analysis: Any) -> DiscoveryProfile:
     return DISCOVERY_PROFILES.get(normalized, DISCOVERY_PROFILES["fast"])
 
 
-def candidate_coverage_keys(ledger: CandidateLedger) -> Set[str]:
-    """Project the ledger to event-family presence for planning only.
+def candidate_coverage_keys(
+    ledger: CandidateLedger, *, semantic_map: Optional[SecuritySemanticMap] = None
+) -> Set[str]:
+    """Project candidate presence to program identities for scheduling only.
 
-    The planner is intentionally not allowed to inspect candidate identities,
-    sources, sinks, locations, or rule conclusions.  Those values are neither
-    prompt material nor trigger inputs; the only information that crosses
-    this boundary is family-level presence plus a coarse family+file site
-    bit (no line, object, or conclusion) used for site-level desert
-    detection.
+    Coarse families retain compatibility. The two refined families require a
+    unique program object/site match; a candidate cannot supply its own key or
+    build identity. These bits only rank work, never establish checked coverage
+    or enter the candidate-blind prompt with candidate identities/conclusions.
     """
 
     keys: Set[str] = set()
@@ -255,6 +262,40 @@ def candidate_coverage_keys(ledger: CandidateLedger) -> Set[str]:
                 site = loc.split(":")[0] if loc else ""
             if site:
                 keys.add(_normalize_key(f"family:{family}:{site}"))
+            if semantic_map is not None and family in FINE_COVERAGE_FAMILIES:
+                # Resolve a location back to program sites. Candidate-authored
+                # coverage keys/build claims never become authority themselves.
+                location = str(payload.get("location") or "")
+                match = re.fullmatch(r"(.+?):(\d+)(?::\d+)?", location)
+                line = int(match.group(2)) if match else payload.get("line")
+                if type(line) is not int or line < 1:
+                    continue
+                path = match.group(1) if match else site
+                resource = str(payload.get("resource") or "")
+                function = str(payload.get("function") or "")
+                matches = []
+                for function_record in semantic_map.functions:
+                    if function and function not in {
+                        function_record.function_uid,
+                        function_record.index_name,
+                        function_record.function_name,
+                    }:
+                        continue
+                    for event in function_record.events:
+                        if (
+                            event.family != family
+                            or event.file.replace("\\", "/") != path.replace("\\", "/")
+                            or event.line != line
+                        ):
+                            continue
+                        if event.build_context is not None:
+                            # Current ledger projection has no trusted TU mapping.
+                            continue
+                        if resource and event.object_ref != resource:
+                            continue
+                        matches.append(event_coverage_key(semantic_map, function_record, event))
+                if len(matches) == 1:
+                    keys.add("coverage:" + matches[0].identity().lower())
     return keys
 
 
@@ -347,6 +388,7 @@ class CoverageGapPlanner:
     def __init__(self, profile: DiscoveryProfile, *, merge_overlap: float = 0.60):
         self.profile = profile
         self.merge_overlap = max(0.0, min(1.0, float(merge_overlap)))
+        self.last_plan: Dict[str, Any] = {}
 
     def plan(
         self,
@@ -388,28 +430,62 @@ class CoverageGapPlanner:
         for record in semantic_map.functions:
             if self._record_is_default_excluded(record):
                 continue
-            by_family: Dict[str, List[Any]] = {}
+            by_family: Dict[Tuple[str, str, str], List[Any]] = {}
             for event in record.events:
-                by_family.setdefault(event.family, []).append(event)
-            for family, events in by_family.items():
+                key = event_coverage_key(semantic_map, record, event)
+                group = (
+                    (
+                        event.family,
+                        event.object_ref or key.operation_site,
+                        event.build_context or key.scope_discriminator,
+                    )
+                    if event.family in FINE_COVERAGE_FAMILIES
+                    else (event.family, "", "")
+                )
+                by_family.setdefault(group, []).append(event)
+            for (family, _object, _build), events in sorted(by_family.items()):
                 policy = _FAMILY_POLICY.get(family)
                 if policy is None:
                     continue
                 unit_kind, skill_families = policy
                 members = tuple(
                     uid
-                    for uid in self._member_uids(record, by_name)
+                    for uid in (
+                        (record.function_uid,)
+                        if family in FINE_COVERAGE_FAMILIES
+                        else self._member_uids(record, by_name)
+                    )
                     if uid in functions and not self._record_is_default_excluded(functions[uid])
                 )
                 member_records = [functions[uid] for uid in members if uid in functions]
-                desert = not self._same_family_is_covered(
-                    family,
-                    member_records,
-                    covered,
+                coverage_keys = (
+                    tuple(
+                        sorted(
+                            (event_coverage_key(semantic_map, record, event) for event in events),
+                            key=lambda item: item.identity(),
+                        )
+                    )
+                    if family in FINE_COVERAGE_FAMILIES
+                    else ()
+                )
+                desert = (
+                    not all(
+                        "coverage:" + key.identity().lower() in covered for key in coverage_keys
+                    )
+                    if coverage_keys
+                    else not self._same_family_is_covered(family, member_records, covered)
                 )
                 subject_claims = [
                     claim for uid in members for claim in claims_by_subject.get(uid, ())
                 ]
+                if coverage_keys:
+                    selected_evidence = {event.evidence_ref for event in events}
+                    subject_claims = [
+                        claim
+                        for claim in subject_claims
+                        if not any(ref.startswith("source:") for ref in claim.evidence_refs)
+                        or bool(set(claim.evidence_refs) & selected_evidence)
+                    ]
                 subject_unknowns = [
                     unknown for uid in members for unknown in unknowns_by_subject.get(uid, ())
                 ]
@@ -433,20 +509,8 @@ class CoverageGapPlanner:
                         )
                     ),
                 )
-                if score < self.profile.risk_threshold:
-                    continue
                 event_refs = tuple(sorted(event.event_id for event in events))
-                claim_refs = tuple(
-                    sorted(
-                        {
-                            claim_id
-                            for uid in members
-                            for claim_id in (
-                                claim.claim_id for claim in claims_by_subject.get(uid, ())
-                            )
-                        }
-                    )
-                )
+                claim_refs = tuple(sorted(claim.claim_id for claim in subject_claims))
                 unknown_refs = tuple(
                     sorted(
                         {
@@ -464,6 +528,8 @@ class CoverageGapPlanner:
                     event_refs=event_refs,
                     claim_refs=claim_refs,
                     unknown_refs=unknown_refs,
+                    coverage_keys=coverage_keys,
+                    migration_status=semantic_map.migration_status,
                 )
                 seeds.append(
                     AuditUnit(
@@ -472,7 +538,14 @@ class CoverageGapPlanner:
                         fingerprint=fingerprint,
                         risk_score=score,
                         risk_reasons=tuple(reasons),
-                        root_entries=tuple(sorted(record.entry_identities)),
+                        root_entries=tuple(
+                            sorted(
+                                {
+                                    item.entry_identity
+                                    for item in self._occurrences(record, event_refs)
+                                }
+                            )
+                        ),
                         member_functions=tuple(members),
                         event_refs=event_refs,
                         claim_refs=claim_refs,
@@ -480,6 +553,9 @@ class CoverageGapPlanner:
                         skill_families=tuple(skill_families),
                         backend_coverage=self._aggregate_backend_coverage(member_records),
                         candidate_desert=desert,
+                        coverage_keys=coverage_keys,
+                        occurrences=self._occurrences(record, event_refs),
+                        migration_status=semantic_map.migration_status,
                     )
                 )
 
@@ -511,8 +587,6 @@ class CoverageGapPlanner:
                     cross_module_path=False,
                     semantic_unknown_conflict=True,
                 )
-                if score < self.profile.risk_threshold:
-                    continue
                 fingerprint = self._unit_fingerprint(
                     unit_kind="known_variant",
                     records=[record],
@@ -524,6 +598,7 @@ class CoverageGapPlanner:
                         )
                     ),
                     unknown_refs=unknown_refs,
+                    migration_status=semantic_map.migration_status,
                 )
                 seeds.append(
                     AuditUnit(
@@ -535,19 +610,99 @@ class CoverageGapPlanner:
                         root_entries=tuple(sorted(record.entry_identities)),
                         member_functions=(record.function_uid,),
                         event_refs=(),
-                        claim_refs=tuple(sorted(claims_by_subject.get(record.function_uid, ()))),
+                        claim_refs=tuple(
+                            sorted(
+                                claim.claim_id
+                                for claim in claims_by_subject.get(record.function_uid, ())
+                            )
+                        ),
                         unknown_refs=unknown_refs,
                         skill_families=("security_review",),
                         backend_coverage=self._aggregate_backend_coverage([record]),
                         candidate_desert=desert,
+                        migration_status=semantic_map.migration_status,
+                        occurrences=self._occurrences(record, ()),
                     )
                 )
 
         merged = self._merge_units(seeds)
         merged.sort(key=lambda item: (-item.risk_score, item.fingerprint))
-        if self.profile.max_units is None:
-            return tuple(merged)
-        return tuple(merged[: self.profile.max_units])
+        admitted = [item for item in merged if item.risk_score >= self.profile.risk_threshold]
+        below_risk = [item for item in merged if item.risk_score < self.profile.risk_threshold]
+        selected = (
+            admitted if self.profile.max_units is None else admitted[: self.profile.max_units]
+        )
+        deferred = admitted[len(selected) :]
+        self.last_plan = {
+            "planned_unit_count": len(merged),
+            "eligible_unit_count": len(admitted),
+            "not_selected": [
+                {
+                    "unit_id": item.unit_id,
+                    "reason": "risk_threshold",
+                    "occurrences": [occurrence.to_dict() for occurrence in item.occurrences],
+                }
+                for item in below_risk
+            ],
+            "selected_unit_count": len(selected),
+            "deferred_unit_ids": [item.unit_id for item in deferred],
+            "deferred": [
+                {
+                    "unit_id": item.unit_id,
+                    "reason": "unit_budget_deferred",
+                    "occurrences": [occurrence.to_dict() for occurrence in item.occurrences],
+                }
+                for item in deferred
+            ],
+            "enhanced_families": sorted(FINE_COVERAGE_FAMILIES),
+            "enhanced_unit_count": sum(bool(item.coverage_keys) for item in selected),
+            "selected_occurrence_count": sum(len(item.occurrences) for item in selected),
+            "extra_units_from_granularity": max(
+                0,
+                sum(bool(item.coverage_keys) for item in selected)
+                - len(
+                    {
+                        (key.function_uid, key.family)
+                        for item in selected
+                        for key in item.coverage_keys
+                    }
+                ),
+            ),
+        }
+        return tuple(selected)
+
+    @staticmethod
+    def _occurrences(
+        record: FunctionSecurityRecord, event_refs: Tuple[str, ...]
+    ) -> Tuple[AuditOccurrence, ...]:
+        if record.entry_occurrences:
+            values = [
+                replace(item, event_refs=tuple(sorted(set(item.event_refs) & set(event_refs))))
+                for item in record.entry_occurrences
+                if not event_refs or bool(set(item.event_refs) & set(event_refs))
+            ]
+        elif len(record.entry_identities) == 1:
+            values = [
+                AuditOccurrence(record.entry_identities[0], path, event_refs)
+                for path in record.entry_paths or ((record.function_name,),)
+            ]
+        else:
+            # Old separate arrays cannot be cross-joined into invented paths.
+            values = [
+                AuditOccurrence(entry, (entry,), event_refs, "legacy_unknown")
+                for entry in record.entry_identities
+            ]
+        return tuple(
+            sorted(
+                set(values),
+                key=lambda item: (
+                    item.entry_identity,
+                    item.entry_path,
+                    item.reachability,
+                    item.event_refs,
+                ),
+            )
+        )
 
     def _member_uids(
         self,
@@ -739,8 +894,13 @@ class CoverageGapPlanner:
         event_refs: Sequence[str],
         claim_refs: Sequence[str],
         unknown_refs: Sequence[str],
+        coverage_keys: Sequence[CoverageKey] = (),
+        migration_status: str = "current",
     ) -> str:
         payload = {
+            "schema_version": AUDIT_UNIT_SCHEMA_VERSION,
+            "migration_status": migration_status,
+            "coverage_keys": sorted(key.identity() for key in coverage_keys),
             "unit_kind": unit_kind,
             "functions": sorted((item.function_uid, item.code_hash) for item in records),
             "dependency_fingerprints": sorted(
@@ -761,6 +921,32 @@ class CoverageGapPlanner:
         for unit in sorted(units, key=lambda item: (-item.risk_score, item.fingerprint)):
             merged = False
             for index, existing in enumerate(result):
+                if existing.coverage_keys or unit.coverage_keys:
+                    if existing.fingerprint != unit.fingerprint:
+                        continue
+                    if {key.identity() for key in existing.coverage_keys} != {
+                        key.identity() for key in unit.coverage_keys
+                    }:
+                        continue
+                    result[index] = replace(
+                        existing,
+                        root_entries=tuple(
+                            sorted(set(existing.root_entries) | set(unit.root_entries))
+                        ),
+                        occurrences=tuple(
+                            sorted(
+                                set(existing.occurrences) | set(unit.occurrences),
+                                key=lambda value: (
+                                    value.entry_identity,
+                                    value.entry_path,
+                                    value.event_refs,
+                                    value.reachability,
+                                ),
+                            )
+                        ),
+                    )
+                    merged = True
+                    break
                 if existing.unit_kind != unit.unit_kind:
                     continue
                 if set(existing.skill_families) != set(unit.skill_families):
@@ -774,6 +960,13 @@ class CoverageGapPlanner:
                 if len(combined_members) > self.profile.max_functions_per_unit:
                     continue
                 payload = {
+                    "schema_version": AUDIT_UNIT_SCHEMA_VERSION,
+                    "migration_status": (
+                        "legacy_unverifiable"
+                        if "legacy_unverifiable"
+                        in {existing.migration_status, unit.migration_status}
+                        else "current"
+                    ),
                     "unit_kind": unit.unit_kind,
                     "source_fingerprints": sorted({existing.fingerprint, unit.fingerprint}),
                     "members": combined_members,
@@ -801,6 +994,23 @@ class CoverageGapPlanner:
                         "parts": [existing.backend_coverage, unit.backend_coverage],
                     },
                     candidate_desert=existing.candidate_desert or unit.candidate_desert,
+                    occurrences=tuple(
+                        sorted(
+                            set(existing.occurrences) | set(unit.occurrences),
+                            key=lambda value: (
+                                value.entry_identity,
+                                value.entry_path,
+                                value.event_refs,
+                                value.reachability,
+                            ),
+                        )
+                    ),
+                    migration_status=(
+                        "legacy_unverifiable"
+                        if "legacy_unverifiable"
+                        in {existing.migration_status, unit.migration_status}
+                        else "current"
+                    ),
                 )
                 merged = True
                 break
@@ -866,7 +1076,7 @@ def candidate_blind_prompt_projection(
         allowed_evidence_refs.update(unknown.evidence_refs)
 
     projection = {
-        "schema_version": "zscope.discovery_prompt_projection.v1",
+        "schema_version": "zscope.discovery_prompt_projection.v2",
         "project_id": semantic_map.project_id,
         "revision": semantic_map.revision,
         "audit_unit": {
@@ -881,6 +1091,9 @@ def candidate_blind_prompt_projection(
             "unknown_refs": list(unit.unknown_refs),
             "skill_families": list(unit.skill_families),
             "backend_coverage": _strip_forbidden_prompt_keys(unit.backend_coverage),
+            "coverage_keys": [key.to_dict() for key in unit.coverage_keys],
+            "occurrences": [occurrence.to_dict() for occurrence in unit.occurrences],
+            "migration_status": unit.migration_status,
         },
         "functions": functions,
         "semantic_claims": claims,
@@ -1232,7 +1445,7 @@ class SemanticMapEnricher:
         result_map = (
             semantic_map.with_semantic_deltas(deltas) if self.mode == "active" else semantic_map
         )
-        state = {
+        state: Dict[str, Any] = {
             "mode": self.mode,
             "selected_unit_count": len(units),
             "attempted_unit_count": attempted,
@@ -1384,6 +1597,7 @@ class ActiveDiscoveryCoordinator:
         store: SecurityMapStore,
         registrar: CandidateRegistrar,
         report_runner: Optional[ReportRunner] = None,
+        investigation_runner: Optional[Callable[..., Any]] = None,
         semantic_enricher: Optional[SemanticMapEnricher] = None,
         discovery_enabled: bool = True,
         visibility_mode: str = "active",
@@ -1393,6 +1607,7 @@ class ActiveDiscoveryCoordinator:
         self.store = store
         self.registrar = registrar
         self.report_runner = report_runner
+        self.investigation_runner = investigation_runner
         self.semantic_enricher = semantic_enricher
         self.discovery_enabled = bool(discovery_enabled)
         normalized_visibility = str(visibility_mode or "active").strip().lower()
@@ -1455,6 +1670,7 @@ class ActiveDiscoveryCoordinator:
 
         discovery_units = units if self.discovery_enabled else []
         for unit_index, unit in enumerate(discovery_units):
+            investigation: Optional[InvestigationSession] = None
             report = self._load_cached(unit)
             if report is not None:
                 cache_hits += 1
@@ -1468,15 +1684,24 @@ class ActiveDiscoveryCoordinator:
                 )
                 try:
                     raw = self.report_runner(projection, self.profile)
+                    if isinstance(raw, InvestigationResult):
+                        investigation = raw.session
+                        raw = raw.report
                     usage = self._response_usage(raw)
                     prompt_tokens += usage["prompt_tokens"]
                     completion_tokens += usage["completion_tokens"]
                     total_tokens += usage["total_tokens"]
                     context_tokens += usage["context_tokens"]
                     report = self._coerce_report(raw)
-                    self._validate_report(report, unit, projection)
-                    self.store.save_discovery_report(report)
+                    self._validate_report(report, unit, projection, investigation)
+                    # A persisted reference is not a live registration. Keep
+                    # dynamic manifests in candidate evidence; never populate
+                    # the legacy cache under the unchanged AuditUnit identity.
+                    if investigation is None:
+                        self.store.save_discovery_report(report)
                 except Exception as exc:
+                    if investigation is not None:
+                        investigation.close()
                     failed.append(
                         {
                             "unit_id": unit.unit_id,
@@ -1496,8 +1721,10 @@ class ActiveDiscoveryCoordinator:
                 max_tokens=self.profile.max_initial_context_tokens,
             )
             try:
-                self._validate_report(report, unit, projection)
+                self._validate_report(report, unit, projection, investigation)
             except Exception as exc:
+                if investigation is not None:
+                    investigation.close()
                 failed.append(
                     {
                         "unit_id": unit.unit_id,
@@ -1506,14 +1733,18 @@ class ActiveDiscoveryCoordinator:
                 )
                 continue
             reports.append(report)
-            result = self.registrar.register_issues(
-                self._hypothesis_issues(report, unit, planned_map),
-                source="active_discovery",
-                default_entry_identity=(
-                    unit.root_entries[0] if unit.root_entries else "__project__"
-                ),
-                force_unconfirmed=True,
-            )
+            try:
+                result = self.registrar.register_issues(
+                    self._hypothesis_issues(report, unit, planned_map, investigation),
+                    source="active_discovery",
+                    default_entry_identity=(
+                        unit.root_entries[0] if unit.root_entries else "__project__"
+                    ),
+                    force_unconfirmed=True,
+                )
+            finally:
+                if investigation is not None:
+                    investigation.close()
             registration = CandidateRegistrationResult(
                 registration.submitted_issue_count + result.submitted_issue_count,
                 registration.registered_occurrence_count + result.registered_occurrence_count,
@@ -1521,9 +1752,10 @@ class ActiveDiscoveryCoordinator:
                 tuple(dict.fromkeys((*registration.candidate_ids, *result.candidate_ids))),
             )
 
+        investigation_state = self._run_investigations(planned_map, discovery_units, reports)
         if export_path is not None:
             self.store.export_json(planned_map, export_path, reports)
-        state = {
+        state: Dict[str, Any] = {
             "enabled": self.profile.name != "fast",
             "profile": self.profile.name,
             "visibility_mode": self.visibility_mode,
@@ -1573,10 +1805,171 @@ class ActiveDiscoveryCoordinator:
             "cumulative_completion_tokens": completion_tokens,
             "cumulative_total_tokens": total_tokens,
             "context_tokens": context_tokens,
+            "investigation": investigation_state,
+            "coverage_plan": dict(planner.last_plan),
         }
+        complete = {
+            report.unit_id
+            for report in reports
+            if report.coverage_status == "complete" and not report.unresolved_facts
+        }
+        uncovered = [
+            unit.unit_id
+            for unit in units
+            if unit.unit_id not in complete
+            or unit.unknown_refs
+            or unit.migration_status != "current"
+            or any(item.reachability == "legacy_unknown" for item in unit.occurrences)
+            or any(key.build_context is None for key in unit.coverage_keys)
+        ]
+        state["uncovered_unit_ids"] = sorted(
+            set(state["uncovered_unit_ids"])
+            | set(uncovered)
+            | set(planner.last_plan.get("deferred_unit_ids", []))
+            | {item["unit_id"] for item in planner.last_plan.get("not_selected", [])}
+        )
+        state["coverage_completed_unit_count"] = len(units) - len(uncovered)
+        state["deferred_unit_count"] = len(planner.last_plan.get("deferred_unit_ids", []))
+        if state["uncovered_unit_ids"] and state["status"] == "complete":
+            state["status"] = "partial"
         return planned_map, state
 
+    def _run_investigations(
+        self,
+        semantic_map: SecuritySemanticMap,
+        units: Sequence[AuditUnit],
+        reports: Sequence[DiscoveryReport],
+    ) -> Dict[str, Any]:
+        from .bounded_investigation import BoundedInvestigationOutcome
+
+        state: Dict[str, Any] = {
+            "mode": "shadow" if self.investigation_runner is not None else "off",
+            "status": "partial" if self.investigation_runner is not None else "disabled",
+            "eligible_unit_count": 0,
+            "attempted_unit_count": 0,
+            "deferred_unit_count": 0,
+            "completed_report_count": 0,
+            "hypothesis_count": 0,
+            "registered_occurrence_count": 0,
+            "new_validation_group_count": 0,
+            "uncovered_unit_ids": [],
+            "outcomes": [],
+        }
+        if self.investigation_runner is None:
+            return state
+        by_unit = {report.unit_id: report for report in reports}
+        functions = {item.function_uid: item for item in semantic_map.functions}
+        interrupted = False
+        for unit in units:
+            initial = by_unit.get(unit.unit_id)
+            # Prior report content is never projected; only a program decision
+            # that an unresolved fact exists can make this unit eligible.
+            has_gap = (
+                bool(unit.unknown_refs)
+                or bool(initial and initial.unresolved_facts)
+                or any(
+                    functions[uid].unresolved_callees
+                    for uid in unit.member_functions
+                    if uid in functions
+                )
+            )
+            queryable = any(
+                functions[uid].file_path
+                and 1 <= functions[uid].start_line <= functions[uid].end_line
+                for uid in unit.member_functions
+                if uid in functions
+            )
+            if not has_gap or not queryable or unit.risk_score < self.profile.risk_threshold:
+                continue
+            state["eligible_unit_count"] += 1
+            owner_token = current_cancellation_token()
+            if interrupted or (owner_token is not None and owner_token.is_cancelled()):
+                interrupted = True
+                state["status"] = "interrupted"
+                state["deferred_unit_count"] += 1
+                state["uncovered_unit_ids"].append(unit.unit_id)
+                state["outcomes"].append(
+                    {"unit_id": unit.unit_id, "stop_reason": "cancelled_deferred"}
+                )
+                continue
+            if state["attempted_unit_count"] >= int(
+                getattr(self.investigation_runner, "max_units", 4)
+            ):
+                state["deferred_unit_count"] += 1
+                state["uncovered_unit_ids"].append(unit.unit_id)
+                state["outcomes"].append(
+                    {"unit_id": unit.unit_id, "stop_reason": "unit_budget_deferred"}
+                )
+                continue
+            state["attempted_unit_count"] += 1
+            projection = fit_candidate_blind_prompt_projection(
+                candidate_blind_prompt_projection(semantic_map, unit),
+                max_tokens=self.profile.max_initial_context_tokens,
+            )
+            outcome: Optional[BoundedInvestigationOutcome] = None
+            summary: Dict[str, Any] = {"unit_id": unit.unit_id, "stop_reason": "worker_error"}
+            try:
+                outcome = self.investigation_runner(projection, self.profile, unit)
+                if not isinstance(outcome, BoundedInvestigationOutcome):
+                    raise ValueError("invalid investigation outcome")
+                summary.update(outcome.summary())
+                if outcome.owner_cancelled or outcome.stop_reason == "cancelled":
+                    interrupted = True
+                    state["status"] = "interrupted"
+                if outcome.report is not None and outcome.session is not None:
+                    self._validate_report(outcome.report, unit, projection, outcome.session)
+                    issues = self._hypothesis_issues(
+                        outcome.report, unit, semantic_map, outcome.session
+                    )
+                    for issue in issues:
+                        issue.update(
+                            candidate_kind="llm_active_investigation_hypothesis",
+                            candidate_source="active_investigation",
+                            rollout_visibility="shadow",
+                            candidate_promotion_eligible=False,
+                            candidate_promotion_reason="bounded_investigation_shadow",
+                            candidate_promotion_terminal_status="shadow_observation",
+                            validator_contract={
+                                "visibility": "shadow",
+                                "producer": "active_investigation",
+                                "proof_authority": False,
+                            },
+                        )
+                        issue["security_obligation"]["kind"] = "active_investigation_hypothesis"
+                        issue["evidence_pack"]["producer"] = "active_investigation"
+                        issue["attribution"]["discovered_by"] = ["llm_active_discovery"]
+                        for detail in issue["attribution"]["discovery_details"]:
+                            detail["method"] = "bounded_investigation"
+                            detail["visibility"] = "shadow"
+                    registration = self.registrar.register_issues(
+                        issues,
+                        source="active_investigation",
+                        default_entry_identity=(
+                            unit.root_entries[0] if unit.root_entries else "__project__"
+                        ),
+                        force_unconfirmed=True,
+                    )
+                    state["completed_report_count"] += int(outcome.stop_reason == "report_ready")
+                    state["hypothesis_count"] += len(outcome.report.hypotheses)
+                    state["registered_occurrence_count"] += registration.registered_occurrence_count
+                    state["new_validation_group_count"] += registration.new_validation_group_count
+            except CancellationError:
+                interrupted = True
+                state["status"] = "interrupted"
+                summary["stop_reason"] = "cancelled"
+            except Exception:
+                summary["stop_reason"] = "invalid_or_failed_investigation"
+            finally:
+                if isinstance(outcome, BoundedInvestigationOutcome) and outcome.session is not None:
+                    outcome.session.close()
+            # A shadow report never discharges the original obligation.
+            state["uncovered_unit_ids"].append(unit.unit_id)
+            state["outcomes"].append(summary)
+        return state
+
     def _load_cached(self, unit: AuditUnit) -> Optional[DiscoveryReport]:
+        if unit.migration_status != "current":
+            return None
         loader = getattr(self.store, "load_discovery_report", None)
         if not callable(loader):
             return None
@@ -1637,15 +2030,32 @@ class ActiveDiscoveryCoordinator:
         report: DiscoveryReport,
         unit: AuditUnit,
         projection: Mapping[str, Any],
+        investigation: Optional[InvestigationSession] = None,
     ) -> None:
         if report.unit_id != unit.unit_id or report.unit_fingerprint != unit.fingerprint:
             raise ValueError("discovery report unit identity mismatch")
+        if unit.migration_status != "current" and report.coverage_status == "complete":
+            raise ValueError("unverifiable legacy unit cannot claim complete coverage")
         member_ids = set(unit.member_functions)
+        if investigation is not None:
+            investigation.validate_report_binding(unit, projection)
+            member_ids.update(investigation.member_functions)
         if not set(report.reviewed_function_uids).issubset(member_ids):
             raise ValueError("discovery report references a function outside its audit unit")
         if not set(report.reviewed_claim_ids).issubset(set(unit.claim_refs)):
             raise ValueError("discovery report references a claim outside its audit unit")
         allowed = set(projection.get("allowed_evidence_refs") or [])
+        if investigation is not None:
+            allowed.update(investigation.evidence_refs)
+            manifest = investigation.manifest()
+            if report.coverage_status == "complete" and any(
+                item["coverage"] != "complete"
+                or item["kind"]
+                in {"text_location", "semantic_advisory", "static_flow", "compiler_structure"}
+                or item["identity"]["build_context"] is None
+                for item in manifest["entries"]
+            ):
+                raise ValueError("partial investigation cannot claim complete coverage")
         if not set(report.tool_evidence_refs).issubset(allowed):
             raise ValueError("discovery report contains evidence outside the prompt projection")
         if len(report.hypotheses) > self.profile.max_hypotheses_per_unit:
@@ -1653,6 +2063,8 @@ class ActiveDiscoveryCoordinator:
         for hypothesis in report.hypotheses:
             if hypothesis.function not in member_ids:
                 raise ValueError("discovery hypothesis references a function outside its unit")
+            if investigation is not None:
+                investigation.validate_hypothesis_location(hypothesis.function, hypothesis.location)
             source = str(hypothesis.source or "").strip()
             sink = str(hypothesis.sink or "").strip()
             resource = str(hypothesis.resource or "").strip()
@@ -1668,6 +2080,7 @@ class ActiveDiscoveryCoordinator:
         report: DiscoveryReport,
         unit: AuditUnit,
         semantic_map: SecuritySemanticMap,
+        investigation: Optional[InvestigationSession] = None,
     ) -> List[Dict[str, Any]]:
         records = {item.function_uid: item for item in semantic_map.functions}
         issues: List[Dict[str, Any]] = []
@@ -1762,7 +2175,22 @@ class ActiveDiscoveryCoordinator:
                     },
                 }
             )
-        return issues
+            if investigation is not None:
+                issues[-1]["evidence_pack"]["investigation"] = investigation.manifest()
+            issues[-1]["evidence_pack"]["audit_coverage_keys"] = [
+                key.to_dict() for key in unit.coverage_keys
+            ]
+        if not unit.occurrences:
+            return issues
+        expanded = []
+        for issue in issues:
+            for occurrence in unit.occurrences:
+                value = deepcopy(issue)
+                value["entry_identity"] = occurrence.entry_identity
+                value["entry_paths"] = value["call_paths"] = [list(occurrence.entry_path)]
+                value["evidence_pack"]["audit_occurrence"] = occurrence.to_dict()
+                expanded.append(value)
+        return expanded
 
 
 def make_agent_report_runner(agent: ActiveDiscoveryAgent) -> ReportRunner:

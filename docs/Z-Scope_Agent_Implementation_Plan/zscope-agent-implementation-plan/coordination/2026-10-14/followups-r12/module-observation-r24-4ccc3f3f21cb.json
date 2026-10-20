@@ -1,0 +1,47 @@
+{
+  "at": "2026-10-16T13:02:41.217188+08:00",
+  "tasks": {
+    "S01-INSTANCE-SEMANTICS-MIN-R23": {
+      "task_id": "task_f702313db8",
+      "session_id": "sess_6ecde27723",
+      "status": "running",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": null,
+      "started_at": "2026-10-16T05:02:00.337254+00:00",
+      "finished_at": null,
+      "recent_tool_activity_count": 0,
+      "delivery_present": true,
+      "review_present": true,
+      "owned_source_present": [
+        "zscope/semantics/instance_semantics.py",
+        "tests/test_instance_semantics.py"
+      ],
+      "receipt": "route-check/bridge-response-r24-module-status-s01-instance-semantics-min-r23-4ccc3f3f21cb.json",
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false
+    },
+    "S08-INSTANCE-RECOVERY-MIN-R23": {
+      "task_id": "task_0d7256802a",
+      "session_id": "sess_d9cfbf4113",
+      "status": "running",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": null,
+      "started_at": "2026-10-16T05:01:28.288514+00:00",
+      "finished_at": null,
+      "recent_tool_activity_count": 0,
+      "delivery_present": true,
+      "review_present": true,
+      "owned_source_present": [
+        "zscope/orchestration/jobs/instance_results.py",
+        "tests/test_instance_result_recovery.py"
+      ],
+      "receipt": "route-check/bridge-response-r24-module-status-s08-instance-recovery-min-r23-4ccc3f3f21cb.json",
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false
+    }
+  },
+  "archived_session_requested": false,
+  "service_started": false
+}

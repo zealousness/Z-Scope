@@ -1,0 +1,1 @@
+{"id": "r18-late-stop-last-tools", "tool": "get_transcript", "arguments": {"session_id": "sess_b91680bb39", "kinds": "tool_call", "offset": 97, "limit": 20}}

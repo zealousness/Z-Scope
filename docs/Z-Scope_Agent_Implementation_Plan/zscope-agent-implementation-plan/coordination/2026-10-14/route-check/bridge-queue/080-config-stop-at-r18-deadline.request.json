@@ -1,0 +1,15 @@
+{
+  "id": "config-stop-at-r18-deadline",
+  "branch": "config-stop-at-r18",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "U01-STOP-AT-R18-DEADLINE",
+    "session_id": "sess_b91680bb39",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "request_id": "23a32604-735b-4112-8522-84df5139ac61",
+    "user_requested": true,
+    "message": "ZCode glm-5.3：U01-STOP-AT-R18 实证返修，继续同一 config-stop-at-r18 副本 / sess_b91680bb39。task_5b722e514f 18:57:45 已交付，但协调者新增独立真实 token/HTTP 探针2/2失败，未独验/未集成；不可将22项自测等同工作切片完成。\n\n证据 artifacts/coordinator-stop-deadline-r18-probes-20261015/{review.json,command-0.log,results.xml,test_config_stop_deadline_boundary.py}；原探针 docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/followups-r12/test_config_stop_deadline_boundary.py 只读。真实ScanSessionRunner/共享CancellationToken/LLMClient/本地慢HTTP，只控制响应头延迟与0.3s预算。19:13:44结果：共享token.remaining_seconds()仍None，子token也未获配置预算；0.3s窗口实际HTTP等2.039s才观察到取消，超过既定1.5s上限。\n\n根因是SessionDeadlineGuard只给独立deadline_token设置预算，真实_shared_token仅被watcher调用cancel；LLMClient及进程消费者读取真实token.remaining_seconds，因此其请求超时没被配置窗口约束。须给真实共享token及现有/以后子token实际、单调、不可延长的预算。不得只取消旁路token/写flag，也不得替换runner token导致executor/analyzer/scheduler仍持旧引用。原既有更短预算、父取消与理由、release/异常/timeout/clock变化语义须保留。\n\n原六文件所有权不变，prospective允许新增写 zscope/common/cancellation.py 一文件，见 config-stop-at-r18-ownership-extension-deadline.json（可提供只收紧deadline的安全API，维护并发/parent/child及已取消状态）。不要改ScanSession/共享store/owner/queue/Root/其它副本/旧tests/独立探针；确需其它文件先交协调者具体方案。不得放宽超时、只测mock runner、吞异常/用tail管道退出码掩盖失败。\n\n先原样复现两失败留独立新收据，再修；保留22新用例与全部旧配置/CLI/HTTP/MCP/owner回归。新增真实共享token与已建/新建子token预算、早期限不被晚窗口延长、实际模型HTTP阻塞在窗口内终止、取消/异常/release恢复和monotonic行为。原1.5s边界不扩大，不改探针。CLI已修改，按选定Black完整核验，不把已存在的一个格式块漂移写成六文件全绿；必要仅格式化这个已修改文件，避免别处格式改动。\n\n已知旧能力断言 test_config_v3_preparation.py::test_declared_only_fields_are_disclosed_as_not_enabled 两处期望由协调者待最终接口稳定后只读迁移，旧测试仍不要动。native replay 的失败另由协调者核实当前基线，不能skip或改预期来通过，也不要在本返修扩到retrieval/native。所有实际失败/skip与对照记录保留，勿宣称完整U01/S08或真实项目/模型效果。\n\nWSL Ubuntu zeal bash -lc/venv313，经根test_slot.py两槽/default fd/ext4，不嵌套取槽。native需要时只读 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，不改tool/完成标记。compileall zscope scripts test tests / mypy zscope / 修改Python必要Black。每轮不同JUnit/log保留失败；最终DELIVERY/SHA/时间/未测，清空后台稳定停写。无新服务、旧S06、provider/凭据/权限变化或commit/push/reset/clean。实证返修，不规避审核/额度。\n"
+  }
+}

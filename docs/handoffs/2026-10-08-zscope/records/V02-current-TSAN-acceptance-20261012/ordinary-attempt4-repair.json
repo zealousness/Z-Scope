@@ -1,0 +1,10 @@
+{
+  "reason": "release manifest tests require real HEAD/tree metadata absent from source-only snapshot",
+  "change": "freeze exact two actual Git objects and detached snapshot HEAD; minimal local config contains no remote or credentials",
+  "quality_not_repeated": true,
+  "earlier_attempts_preserved": true,
+  "known_skips_remain_blocking": 5,
+  "product_test_toolchain_security_changes": false,
+  "driver_sha256": "e652a1f834914227edce3cb0836ba9e553e80120f60c82ce09b2e6b44c3748f1",
+  "inside_sha256": "dd41ed9eb3418a9681aaac9fa8aff9a8af896bf3de51e59f210003aa23433f82"
+}

@@ -1,0 +1,170 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T05:08:48.001203+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Read"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.009076+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "-only"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.009591+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " response"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.010119+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " confirmed"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.028918+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " —"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.028918+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.030480+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " workspace"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.042565+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " is"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.043101+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " live"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.057841+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "."
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.057841+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " Now"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.058904+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " reading"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.059427+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.061001+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " workspace"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.073077+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "-specific"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.073596+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " guidance"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.109527+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " before"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.109527+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " touching"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.121741+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " anything"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:08:48.122822+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "."
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 20,
+  "next_offset": 20,
+  "has_more": false,
+  "total_matching": 20
+}

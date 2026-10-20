@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "role": "Independent local static verification; runtime acceptance blocked, not a passing verdict",
+  "verified_at_utc": "2026-10-10T02:07:00.713Z",
+  "computer": "CINDALA",
+  "project_root": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+  "original_codex_thread_id": "01a119b6-40a8-71b0-a6a7-cf0644a14119",
+  "source_thread_id": "01a11e1c-b0bf-731c-a0a7-551a6447700f",
+  "independent_runtime_checks": {
+    "executed": 0,
+    "passed": 0,
+    "failed": 0,
+    "skipped": 0,
+    "status": "not_run",
+    "reason": "WSL preflight returned Wsl/E_ACCESSDENIED; AGENTS.md requires Linux/WSL for testing. Git also returned Permission denied. No bypass or Windows substitution."
+  },
+  "access_diagnostics": [
+    {
+      "operation": "WSL preflight",
+      "exit_code": 1,
+      "error": "Wsl/E_ACCESSDENIED",
+      "exact_argv_preserved": false
+    },
+    {
+      "operation": "git -C <project_root> branch --show-current and rev-parse",
+      "exit_code": null,
+      "error": "Permission denied while changing to project directory",
+      "exact_exit_code_verified": false
+    }
+  ],
+  "hashes": {
+    "before": {
+      "checked_at": "2026-10-10T02:03:26.203Z",
+      "file_count": 18,
+      "files": {
+        "tests/fixtures/dynamic_reproduction/README.md": "0e7061a5ae90b5c580a43edc82f3750862e7ed133d3384a4ef3fc6162adae84f",
+        "tests/fixtures/dynamic_reproduction/allocation_oversize.c": "bf489e01279b1297f922a1326603c83cb8e11119768b23c4c3fcfda4a5fffb3d",
+        "tests/fixtures/dynamic_reproduction/broken_build.c": "800c7ec64cc272fce99737f340e5b4d6f4c749d48746b808c6c142b3479af944",
+        "tests/fixtures/dynamic_reproduction/data_race_flaky.c": "db4fb375995e08b9c1415f024f4e97193473033275c6100daadf0f34cad8b137",
+        "tests/fixtures/dynamic_reproduction/data_race_negative.c": "f391d00de333904e60cb99f3c0d97939568db190530f3614b940ac8cae80b133",
+        "tests/fixtures/dynamic_reproduction/data_race_positive.c": "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865",
+        "tests/fixtures/dynamic_reproduction/heap_overflow_negative.c": "e1099d8ac99f49975294a4b7345f016593e7b483c8fdf0126e69fbb696dc16f6",
+        "tests/fixtures/dynamic_reproduction/heap_overflow_positive.c": "85685a7ac23bb653a51ae0333bae9687f0afac998d57e110f7b2ccbd21ab26fc",
+        "tests/fixtures/dynamic_reproduction/unrelated_crash.c": "89772514029c32e42538f5ae881503b3624ec9063d8ecfcf565bfe935e59ff1b",
+        "tests/test_dynamic_reproduction.py": "b45a387a72203dae46a6951b7a2e1af940cbd1c7bfcedfbb7372acf9ba32bdd4",
+        "tests/test_dynamic_reproduction_execution.py": "3205acd925075b04dff129f8876b30da3509d6e717856df4f352f3eb7327fa3b",
+        "tests/test_investigation_runtime.py": "559b82eb1aedb7772680d1144729a11f01c95ae4f8cba7c8c615cc01e8010ed0",
+        "zscope/config/config.py": "9208d08f4f978c3d99dcb93901b06dab5e66466c8cc3825650a8e73f3608f6cf",
+        "zscope/config/runtime_defaults.yaml": "03fcfea4dbf006f2407a4055120ad10957305f70d49f0369a02163af1a88ae16",
+        "zscope/config/v2.py": "5cc3ca30b9ec22e085b1871d7bdb4ccf01f67f609c600c91cadc9868ff910253",
+        "zscope/core/validation/dynamic_reproduction.py": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+        "zscope/core/validation/proofs.py": "3c1cdef9476f91feb99cb1d95983cc271bd2512b4ad486157dd1a8e190b7c119",
+        "zscope/core/validation/runner.py": "3d0f4c71e1b688242eff26de5fc69e6eb4f80b0da5ed364062a2678764d202f8"
+      },
+      "combined_sha256": "0db2783c4509e7bf7a97b1e759cf69158e3cb5cad7457aabecce6a0e24f989d6",
+      "manifest_expected": "470e2722d7d4abf4fe1c3e02398cf219507feb5e1282fc905781901b00fcd867",
+      "changed_since_author_manifest": [
+        "tests/test_dynamic_reproduction.py",
+        "tests/test_dynamic_reproduction_execution.py",
+        "tests/test_investigation_runtime.py",
+        "zscope/config/config.py",
+        "zscope/config/runtime_defaults.yaml",
+        "zscope/config/v2.py",
+        "zscope/core/validation/dynamic_reproduction.py",
+        "zscope/core/validation/runner.py"
+      ]
+    },
+    "after": {
+      "checked_at": "2026-10-10T02:05:10.063Z",
+      "file_count": 18,
+      "files": {
+        "tests/fixtures/dynamic_reproduction/README.md": "0e7061a5ae90b5c580a43edc82f3750862e7ed133d3384a4ef3fc6162adae84f",
+        "tests/fixtures/dynamic_reproduction/allocation_oversize.c": "bf489e01279b1297f922a1326603c83cb8e11119768b23c4c3fcfda4a5fffb3d",
+        "tests/fixtures/dynamic_reproduction/broken_build.c": "800c7ec64cc272fce99737f340e5b4d6f4c749d48746b808c6c142b3479af944",
+        "tests/fixtures/dynamic_reproduction/data_race_flaky.c": "db4fb375995e08b9c1415f024f4e97193473033275c6100daadf0f34cad8b137",
+        "tests/fixtures/dynamic_reproduction/data_race_negative.c": "f391d00de333904e60cb99f3c0d97939568db190530f3614b940ac8cae80b133",
+        "tests/fixtures/dynamic_reproduction/data_race_positive.c": "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865",
+        "tests/fixtures/dynamic_reproduction/heap_overflow_negative.c": "e1099d8ac99f49975294a4b7345f016593e7b483c8fdf0126e69fbb696dc16f6",
+        "tests/fixtures/dynamic_reproduction/heap_overflow_positive.c": "85685a7ac23bb653a51ae0333bae9687f0afac998d57e110f7b2ccbd21ab26fc",
+        "tests/fixtures/dynamic_reproduction/unrelated_crash.c": "89772514029c32e42538f5ae881503b3624ec9063d8ecfcf565bfe935e59ff1b",
+        "tests/test_dynamic_reproduction.py": "b45a387a72203dae46a6951b7a2e1af940cbd1c7bfcedfbb7372acf9ba32bdd4",
+        "tests/test_dynamic_reproduction_execution.py": "3205acd925075b04dff129f8876b30da3509d6e717856df4f352f3eb7327fa3b",
+        "tests/test_investigation_runtime.py": "559b82eb1aedb7772680d1144729a11f01c95ae4f8cba7c8c615cc01e8010ed0",
+        "zscope/config/config.py": "9208d08f4f978c3d99dcb93901b06dab5e66466c8cc3825650a8e73f3608f6cf",
+        "zscope/config/runtime_defaults.yaml": "03fcfea4dbf006f2407a4055120ad10957305f70d49f0369a02163af1a88ae16",
+        "zscope/config/v2.py": "5cc3ca30b9ec22e085b1871d7bdb4ccf01f67f609c600c91cadc9868ff910253",
+        "zscope/core/validation/dynamic_reproduction.py": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+        "zscope/core/validation/proofs.py": "3c1cdef9476f91feb99cb1d95983cc271bd2512b4ad486157dd1a8e190b7c119",
+        "zscope/core/validation/runner.py": "3d0f4c71e1b688242eff26de5fc69e6eb4f80b0da5ed364062a2678764d202f8"
+      },
+      "combined_sha256": "0db2783c4509e7bf7a97b1e759cf69158e3cb5cad7457aabecce6a0e24f989d6",
+      "manifest_expected": "470e2722d7d4abf4fe1c3e02398cf219507feb5e1282fc905781901b00fcd867",
+      "changed_since_author_manifest": [
+        "tests/test_dynamic_reproduction.py",
+        "tests/test_dynamic_reproduction_execution.py",
+        "tests/test_investigation_runtime.py",
+        "zscope/config/config.py",
+        "zscope/config/runtime_defaults.yaml",
+        "zscope/config/v2.py",
+        "zscope/core/validation/dynamic_reproduction.py",
+        "zscope/core/validation/runner.py"
+      ]
+    },
+    "changed_during_static_window": [],
+    "latest_author_baseline_match": true,
+    "latest_author_combined_sha256": "0db2783c4509e7bf7a97b1e759cf69158e3cb5cad7457aabecce6a0e24f989d6",
+    "note": "Old final-workspace-round2.json predates R01-R09 and differs in 8 files; latest r2 author baseline has no differences. Only the 18-file acceptance set is independently rehashed."
+  },
+  "current_task_state": {
+    "V01": "in_progress; no independent post-R01-R09 pass",
+    "V02": "blocked; TSAN prerequisite unavailable in documented isolated execution",
+    "CBMC": "not implemented"
+  },
+  "author_evidence": {
+    "role": "author self-check only",
+    "host": {
+      "unit": 126,
+      "original_negatives": 25,
+      "new_boundaries": 16,
+      "integration": {
+        "passed": 1,
+        "skipped": 1
+      },
+      "integration_flagged_isolated": {
+        "passed": 2,
+        "skipped": 0
+      },
+      "sanitizer_execution": {
+        "passed": 16,
+        "skipped": 0
+      },
+      "compatibility": 1543,
+      "docs": 6
+    },
+    "container": {
+      "unit": 126,
+      "original_negatives": 25,
+      "new_boundaries": 16,
+      "integration": {
+        "passed": 1,
+        "skipped": 1
+      },
+      "sanitizer_execution": {
+        "passed": 12,
+        "skipped": 4
+      },
+      "TSAN_skip_reason": "sanitizer_probe_failed",
+      "clang": false,
+      "GCC_ASAN_available_in_author_record": true
+    },
+    "caution": "PROGRESS blanket statement about no container compiler/real execution does not match the container JSON: clang absent, GCC ASAN tests recorded. ZSCOPE_REVIEW_ISOLATED is an admission flag, not independently established isolation."
+  },
+  "static_findings": [
+    {
+      "id": "S01",
+      "status": "static concern; not runtime reproduced",
+      "path": "zscope/core/validation/dynamic_reproduction.py",
+      "lines": [
+        1434,
+        1453,
+        3560,
+        1497
+      ],
+      "description": "Proof registration rehashes source files at registration rather than comparing them with execution-time accepted hashes. Missing/unreadable files are omitted, and an empty final source_digests list skips recheck. Mutation/deletion after the last execution and before registration requires an independent regression."
+    },
+    {
+      "id": "S02",
+      "status": "static concern; not runtime reproduced",
+      "path": "zscope/core/validation/dynamic_reproduction.py",
+      "lines": [
+        1434,
+        1446,
+        1473,
+        1508
+      ],
+      "description": "Final liveness rehashes candidate source/harness/inputs only. binary_path is absent from the frozen set; binary changes after receipt issuance need an independent invalidation regression."
+    },
+    {
+      "id": "D01",
+      "status": "documentation inconsistency",
+      "path": "docs/architecture.md",
+      "lines": [
+        531,
+        666
+      ],
+      "description": "Architecture still describes V4 dynamic execution as reserved/not scheduled, while current analysis-pipeline docs and runtime implementation include ASAN/TSAN execution."
+    }
+  ],
+  "deepseek": {
+    "session_id": "bc51fb3a-c9e7-445e-b6e3-855461b3179c",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "preset": "standard",
+    "last_completed_utc": "2026-10-09T12:07:21.592Z",
+    "file_mtime_utc": "2026-10-09T12:07:21.596Z",
+    "file_size": 4511948,
+    "latest_metadata_unchanged": true,
+    "matching_windows_processes_observed": 0,
+    "WSL_process_state": "unknown; access denied",
+    "started_or_messaged": false
+  },
+  "harness": {
+    "desktop_executable_version": "0.2.0.0",
+    "bundled_cli_version": "0.2.0-rc.2",
+    "PATH_cli_version": "0.1.2-rc.1",
+    "existing_session_desktop_resume_supported_by_source": true,
+    "resume_reference": "@deepseek-ai/dsh-api-session-controller/lib/index.js:399-410; ctx.agents.resume({resumeSessionId: sessionId, setup: composition.setup})",
+    "headless_adoption": "rejects sessions with any agentPreset, including standard",
+    "readonly_caution": "Do not run profile-scoped help/init/config commands; prepareProfile writes cordis.yml. Session log upload defaults enabled and is separate from general telemetry. No model request was sent."
+  },
+  "original_security_intercept": {
+    "earliest_known_failed_turn": "01a11a92-7004-7481-9f09-a928e4fb55ef",
+    "diagnostic": "This content was flagged for possible cybersecurity risk.",
+    "details": null,
+    "command_or_operation": "not recorded; failed turn had no messages, commands or changes",
+    "interpretation": "Cannot infer that ASAN/TSAN are prohibited. This historical policy flag is distinct from cloud routing failure unsupported placement region 4, Git filesystem denial, and current WSL access denial."
+  },
+  "prohibited_or_unperformed": [
+    "No product code changes",
+    "No test/range execution or truth consumption",
+    "No sanitizer/defect fixture execution",
+    "No dependency install",
+    "No privilege/ACL change",
+    "No retry or workaround of denied Git/WSL paths",
+    "No DeepSeek startup, resume or messaging",
+    "No secrets read or output"
+  ],
+  "next_independent_checks": [
+    "Unit/fake/identity/object-match/replay-trust/budget/cancellation regressions in an authorized supported Linux environment",
+    "Regression for source/input deletion or mutation between final replay and registration",
+    "Regression for binary mutation/removal after receipt and before final adjudication",
+    "Real fixture tests only after presenting the exact isolated scope and obtaining required confirmation",
+    "Keep TSAN real checks not_run/blocked until the documented runtime and isolation prerequisites are available"
+  ]
+}

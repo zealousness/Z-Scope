@@ -1,0 +1,2332 @@
+{
+  "role": "PROPOSAL: one harmless TSAN compatibility probe in the common candidate image; zero fixtures",
+  "started_utc": "2026-10-11T20:48:49.567027+00:00",
+  "work": "/tmp/zscope-v02-personality-proposal-20261012-cq38zka2",
+  "container_name": "zscope-v02-common-cq38zka2",
+  "image": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "uid": 1000,
+  "gid": 1000,
+  "deadline_seconds": 900,
+  "max_output_bytes": 8388608,
+  "status": "compatibility_probe_passed_only",
+  "product_changes": false,
+  "TSAN": "probe_only; thread_fixtures_not_run",
+  "external_models": "not_started_or_messaged",
+  "security_exception": "proposed narrowly allowed personality(0x40000); process ASLR may be disabled",
+  "policy_sha256": "a56f617057f60b6b569678d7f8cf569a771aab7b721ca5e980199078e0a1a46b",
+  "host_aslr_before": "2",
+  "inputs_before": {
+    "AGENTS.md": "9ca0964b471d691ecb0bc76285e83e819f06243baadada051cf59406112d8ca5",
+    "docs/handoffs/2026-10-08-zscope/ACCEPTANCE.md": "b542a9599192456c5311459325a6311abf8df7a889eb468096c1c107a811de84",
+    "docs/handoffs/2026-10-08-zscope/WORK_PACKAGES.md": "86a7c5923f03666fcacf8c4385e4c480747d37cb66cb99d4819adca384dd7b10",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-regressions.py": "ac66899b7686be9bc61fd31af37ed0b9e4c2ae283eb7503424ad283c6ad413c5",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-integration.py": "7f4d0af4812ac5cee9df5ad6f6ff060789fc8a652d3e58a04a8eebabfdc4f392",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-regressions.py": "8d05c9deb3b674c0906ae71f8136c2e8d1e3d2a53d775434dde680c876c794a6",
+    "pyproject.toml": "967b654c93cb0e065cc91c4f06413214b5b1658ea86e6d95119a1e9b3b2088b0",
+    "tests/fixtures/dynamic_reproduction/README.md": "0e7061a5ae90b5c580a43edc82f3750862e7ed133d3384a4ef3fc6162adae84f",
+    "tests/fixtures/dynamic_reproduction/allocation_oversize.c": "bf489e01279b1297f922a1326603c83cb8e11119768b23c4c3fcfda4a5fffb3d",
+    "tests/fixtures/dynamic_reproduction/broken_build.c": "800c7ec64cc272fce99737f340e5b4d6f4c749d48746b808c6c142b3479af944",
+    "tests/fixtures/dynamic_reproduction/data_race_flaky.c": "db4fb375995e08b9c1415f024f4e97193473033275c6100daadf0f34cad8b137",
+    "tests/fixtures/dynamic_reproduction/data_race_negative.c": "f391d00de333904e60cb99f3c0d97939568db190530f3614b940ac8cae80b133",
+    "tests/fixtures/dynamic_reproduction/data_race_positive.c": "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865",
+    "tests/fixtures/dynamic_reproduction/heap_overflow_negative.c": "e1099d8ac99f49975294a4b7345f016593e7b483c8fdf0126e69fbb696dc16f6",
+    "tests/fixtures/dynamic_reproduction/heap_overflow_positive.c": "85685a7ac23bb653a51ae0333bae9687f0afac998d57e110f7b2ccbd21ab26fc",
+    "tests/fixtures/dynamic_reproduction/unrelated_crash.c": "89772514029c32e42538f5ae881503b3624ec9063d8ecfcf565bfe935e59ff1b",
+    "tests/test_active_discovery.py": "411581f114d9d825c89a6342b7325300c5d2bdcc6ecff6ab48615fa01a4e6e8c",
+    "tests/test_agent_docs.py": "67a63c23ac7c1b0b5b96ce02f5811dab9e0b4da4ee6ac671df5aed245a14099a",
+    "tests/test_analyzer_tool_policy.py": "a341bc52eb7da9fe1ebadd3872cd072a0e887c2c88042749b8ab2f18c96b1522",
+    "tests/test_audit_coverage.py": "353a2c609d3b490e3eeb9e6a8421d1f28eca4666d3981503fa7422705cb405dd",
+    "tests/test_balanced_rollout.py": "d4faa26c7561f0dd9d5f15ec831f98ef30797a114e28f96311b5a747ff0c549d",
+    "tests/test_balanced_rollout_operator.py": "6091a273f9b05d75e3609cecd302832d6acdae60e7a06ec4a2ebba015fce0c81",
+    "tests/test_bounded_investigation.py": "f784af5f94b4ffb9a6cad6e32054599efc5484221a3f8d826ba5f17df56589d9",
+    "tests/test_candidate_decision_context.py": "f1e8546fd9292dbb777cbebe7a9eab731ad8b9856edb3cb69cb8b7ded756f142",
+    "tests/test_candidate_ledger.py": "da166f0930f103b073dad681620ead2517034cb0d4dd32bb15d093c209eb0a15",
+    "tests/test_clang_identity_validation.py": "6c469a06f1678546881be7a89803b343f1c916a236335bb0322ba88634b19081",
+    "tests/test_clang_incremental_extraction.py": "0356db7b2ed95dbf45a1646746013ad793448a315aa7a8f463acf5bbd2705574",
+    "tests/test_cli_config_v2.py": "5e59fa899f77ad8fab11bdebaddd9efa8ab142acd7c7e9748345217c356fad73",
+    "tests/test_conditional_ownership_contracts.py": "ef1bd95ea78443a84bd035729aa5d11a88fd4cdd32fb16b8dbd690314096ef09",
+    "tests/test_config_v2.py": "efdfdbaa574d1d448e3cfb615bba34df85654daf3a6eb46fe03691a169b3b299",
+    "tests/test_contract_only_publication.py": "9271081b6053fec810210ae6a976493bb4bd6e4df96ddbcc6dc31986160a4f70",
+    "tests/test_decision_facts.py": "c4e28c2d5791a7b35e6d88cb6242441357e732fc9033159f7c22d6a426967daf",
+    "tests/test_dynamic_reproduction.py": "651127df8aab8a93e4556cad23b82a9702e88cdb019953a40dd8f28a5ddc9d13",
+    "tests/test_dynamic_reproduction_execution.py": "3205acd925075b04dff129f8876b30da3509d6e717856df4f352f3eb7327fa3b",
+    "tests/test_evidence_completion.py": "3e439d39785865f86b32bc295aa168c61469d27aa954f98d03b1c4e8d14f992d",
+    "tests/test_evidence_tools.py": "404fdc6c81d21a841277bdc8845a19505eefabe48725b3919daaacd647ff3a89",
+    "tests/test_external_findings_import.py": "a03abfa23c8135882f9095a24aa32183d818df3ccee9940ddd0fb7992c7a57f2",
+    "tests/test_external_investigation.py": "6c11625fa91c75927299b94afde392fc98e5cd5899d9f5e2ebedba70f3d42ead",
+    "tests/test_finding_attribution_contract.py": "f000b2f07197f444d0ffb58396d5230c7ae240d4e54b1e52f70ac312e060b985",
+    "tests/test_fp_suppression_guards.py": "f7f974862db914019d0f08c9b946b262adde0ac516797f1fcd5db7879a45dd34",
+    "tests/test_global_modeler.py": "06711b8dec5181843f59dd5f8a719aa102f8e426028ab688ea7da4fff7ba402f",
+    "tests/test_history_reconciler.py": "302b275ce81663780ed084fa26128de326bbfdcb8228d617fc70ad4722bd871a",
+    "tests/test_incremental_replay.py": "6b403abf8da175f7b166f6097f0992a5fdfdc02bf28eb9cfda9033a45aca4b3c",
+    "tests/test_incremental_semantic_modeling.py": "a3c4690a08eea0dad308b4bc5ff7b80b18da857598c26333d44a6ff90cd44b80",
+    "tests/test_indexing_pipeline.py": "d54103eae72b99c3f4910d2ff8b97a7c2654edc5e779937d685a1cadd4255b8b",
+    "tests/test_investigation_evidence.py": "c105008d6ee7c9a8863cfcb70f63f3e1b2e071ba1503265da16c1cc37912c285",
+    "tests/test_investigation_runtime.py": "559b82eb1aedb7772680d1144729a11f01c95ae4f8cba7c8c615cc01e8010ed0",
+    "tests/test_java_analyzer_candidates.py": "c00b438443042c44a5c4d30590eae7b154a0d122f9a8efbe6d68e069ef8721de",
+    "tests/test_java_evidence_merge.py": "e3716222d11427e2baff95e585aeb7817001483fb9aa502b4b6003d804c9870d",
+    "tests/test_java_joern_backend.py": "75d7bc105dcd06e0f45256a6f0686326e985bf94c76e963b53c84af67dabebc7",
+    "tests/test_java_semantic_modeler_schema.py": "96be7d627e5fae0346e69a7c09d8b4a4d504933a2e939677d64962ab0c2eced4",
+    "tests/test_java_source_backend.py": "8c6abd85f893ab71c54a82cb81d46082c783efa1cd7580607558d45fd83b01ee",
+    "tests/test_json_output_agents.py": "e7b960069ba3aff36926b942503d12d5d065abf593ec2a1232c169b8bc9a91e5",
+    "tests/test_mcp_http_server.py": "6b381f09fcbd2e3cffbe38fb7b0c37873798ed0910db997f703be980eb4a4e68",
+    "tests/test_mcp_policy.py": "409c3200a30339e2981a4ca11bf807e76e08a1d8ea7bb77e3613eec13d98ec78",
+    "tests/test_mcp_read_only.py": "fa9098be0057e3b49961387d4330d0c5ce5f6e0a0b6978fd75169e51a2caca98",
+    "tests/test_mcp_security.py": "0949f5af4dbdecaa82a96799da60ab51c1e0de1c0a51581e4b712463cd1d3fdd",
+    "tests/test_modeling_provider_usage.py": "fd03d3229f918388d657f15fe8d28b3087257988686a2191df51907a21bc207d",
+    "tests/test_pair_evidence_authority.py": "39a40f79a2cb2dea9233d7fb5001b48ec0dbf1fe66b6d8dda5c3bd9b295b5e6c",
+    "tests/test_parallel_shared_semantics.py": "42099298cfad9fa7b7026da141169496680fd7a3e45815bafae5080bd971c9ca",
+    "tests/test_pool_protocol_modeling.py": "98616f2870f454baec8a7256fba1038f9ed42397a66f267ce2788f6d94bdc8fc",
+    "tests/test_portable_release.py": "5d7ff3e441f525322a9791c7e23b27dd05851a8c1aeb333feef08a129aa7bacf",
+    "tests/test_portable_runtime.py": "256ad05ff3cc42279acbf124bfc1833f5181f503411c3ee0be47ae6889886b19",
+    "tests/test_range_release_aggregate.py": "21f1088d39417c871dadafabd527117f4e42fa49a33b2c8bb98bd279c3874977",
+    "tests/test_reference_configs.py": "237498d52dc598a7d6fb508e1192a306bbbbfe913aa5b3923c70029c8201980d",
+    "tests/test_release_contract.py": "fb247b545f00ace990e65410c7380701e85613d152b4aa32519d7bac4f107aad",
+    "tests/test_report_schema_v2.py": "93b3a7d3bc7f59847acb97af7c1ee6991062ad6b93f9490a02b3a846bf182f5e",
+    "tests/test_review_fact_checks.py": "adce761ca9d605ed367bd90c9d4df105d02fbd4e80baca29a15ddb34c196d2a8",
+    "tests/test_review_regressions.py": "97b861b1afaf357c2af3975fd67faab11851e79659942194a992130e2f7d3095",
+    "tests/test_review_runtime.py": "3e2fca586b015432f085136dce7be5efa2e1e0a60abbac36bad7d7eab786c662",
+    "tests/test_scan_session_resume_svf.py": "0bd2b73b64d15843618dfe31fdfc1c20a936e7ab51764fe6be286d9c5cf50716",
+    "tests/test_security_semantics_tool.py": "6cfc155db376235683609f17c6761b0947316f310e4b1f483692dc3679574e88",
+    "tests/test_semantic_cache_only.py": "1d8787dce9b48b04af3b5737dc5488fede8e4e1a5c0214a20221436d7adb6d73",
+    "tests/test_semantic_contract_chain.py": "4ccd41a9294c5fef94ed3ee4319f51938416ba754ee2d8e67e08d47b9e5a1758",
+    "tests/test_semantic_contract_schema.py": "d4969b546c032b668bc11ccf027f514fe5d0dccb796ddb9e7607a3d634acbbc8",
+    "tests/test_semantic_coordinator_effects.py": "9fbc675ccc70c8930feff657c8267144a4475277c7499a11589e8788fea362da",
+    "tests/test_semantic_demand.py": "d5fb04e814fca2ca9d3525049f30d0526b84dfb3d75f297f6f9ce2ab1da05591",
+    "tests/test_semantic_model_retry.py": "238a1c7140a4e2f530b9afd96f355510e77e8990b1e852932a55cb2716292a34",
+    "tests/test_semantic_modeling_usage.py": "6b4cbb30d3345f48df46b4f4f72860528cab7b7b4f52269396978a748e5d32ff",
+    "tests/test_shared_read_cache.py": "0458378f1febfa85eb67cc60187d9ac996aaea1dc59ce5fa852391009b16f69d",
+    "tests/test_single_entry_active_discovery.py": "ad4e54370c4b6f498adf502b7d418ebaec0893a0ab962f3661d3fec2f1f6da34",
+    "tests/test_snapshot_observation_shadow.py": "3fb35294f89558e3eede5bd9ea445a33aaedab7bd1b36a3120020b7d6be384ef",
+    "tests/test_snapshot_store.py": "c866d56ec9b1e8abaf90bcb63a6a9741b0e71a664a36cccb0908690988041167",
+    "tests/test_source_contract_boundaries.py": "07beb4ffc73473bed28fac9e56b8c4680aa2b4ef687dea846bee3bf18ef92af9",
+    "tests/test_source_lifecycle_provider.py": "e73cc830c4d9c4de14b36bd372e448b1d7c4a9630ad6c893f874f67f3b3c6b81",
+    "tests/test_source_search.py": "b1d89d236ec1ebcc2fae2285ed45428d83048b74043b19d117ca4ac95606471a",
+    "tests/test_svf_cache.py": "d1939db953f6f23f9c391ddc4beeac6d8538fe4e6584d732a30e5aeb7b01b53b",
+    "tests/test_tool_policy.py": "b8b6f2f4998b1eca8f4588d09ef6a69e9d62ca2f2694050b55864b0b050d7541",
+    "tests/test_tool_registry.py": "7be4475074f763e6476e4012c880a481baf01dd8ebfec9f4e0c165dbf537e38f",
+    "tests/test_tool_schema_strict.py": "467427af5740bac19a95f0e40e5e81cad8d23d79ff1eff0aec64bd357dc1f273",
+    "tests/test_tool_use_eval.py": "666b3638870da536eedc63cb82e818c07cb64497e59a67a3d77089606208ef45",
+    "tests/test_validation_pipeline.py": "0069af8b6fe248713756470d7dc4adbb995668b017d4e6732d33d07785cdc676",
+    "tests/test_validation_runner.py": "8cc1c2fa35a6e1d874e7c6876fd1f1dd4c7b5bb63c433e75c44efbe9ea89e264",
+    "tests/test_wrapper_contract_compiler.py": "cd65690457fde2cb5bbd1b535833a02205cce6aaa06f7647da890877c5cdde5a",
+    "tests/test_wrapper_failure_guards.py": "c80ffa870ecbb7b26277a7c7238ecc8f7916cce2712bfe8ad00bf72097f6a1b9",
+    "zscope/__init__.py": "a615d8258d93e86e0a90420ab016cfb07b8353b0155301ea7fec81dbf538cda2",
+    "zscope/_version.py": "c8dfc96911dce4822e3a66a109bdfe3ea0f0f2307207c9838a27448005009462",
+    "zscope/agents/base.py": "bcf8e013816aaee62b161fe9bb33bf3d58f04e1462268a0b66a077bf69b39677",
+    "zscope/agents/deep_worker/agent.py": "a0f2aa255d17634c8e96418d90200635c83dc9100adacd21f0dc58ed074daae5",
+    "zscope/agents/issue_reconciler/agent.py": "3f821d2ab4bb41c20ac21b697d101c5ab25124a606986f7172bca6c1f7aedd74",
+    "zscope/agents/review_memory/__init__.py": "0a913962928a33fa8e0f5dcc92395ec78233257bfe71ce8849bccffd0e2236e8",
+    "zscope/agents/review_memory/agent.py": "c71e4773b37f53f8cab84106125f7ab7899fe201bdb7ff873f6fb0d861b1dd01",
+    "zscope/agents/semantic_modeler/agent.py": "4cdee773b2f2945ebabb59802dcadc1b1e70c82ea836e8b3c5da44918d63c903",
+    "zscope/agents/semantic_modeler/retry.py": "3895223f0f63cf41a38c0f4657efc6fb1f8135182d128ed21ccb3f194fde93e6",
+    "zscope/agents/semantic_modeler/schema.py": "3f310eca9f49b0c23d492e1b54c66e56236c84a314179b9f505f08ccccdf0794",
+    "zscope/agents/semantic_modeler/validation.py": "dd1733d9415c070409434cd5f2a1a916a57ab38ab8fd94e39737fd3751d5a528",
+    "zscope/agents/validator_agent/agent.py": "99911d10c0e3f74549aaea614034e8b2126adf8b7fb7cbd1d3ffa1afadb23e7d",
+    "zscope/alerts/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/alerts/adapter.py": "3bf6ad3b714034c5cf160e16b9b4633ffb5573ff02e62b04bd30749e2e44052f",
+    "zscope/alerts/sarif_adapter.py": "e0cb2067395eedb36c5b42f091dd6c7129aaf2023d20a29ceba09b1714aca9be",
+    "zscope/alerts/verifier.py": "7b37da785e239a89de2ea3414d7b4c6fb50f57876737a331d7db31f18ccca195",
+    "zscope/benchmarking/__init__.py": "5dd90c05ee46e8f42e38e65ec51e07f6ebbbdc1bb06a36e68822eb922403c1a2",
+    "zscope/benchmarking/attestation.py": "29caa7222c563d03fe488e53a6e79bfe71fe80b0d09d6f5c3e35dbc649f56e33",
+    "zscope/benchmarking/discovery_ablation.py": "2f5e952734749d98a69abc9173e300760896b90e4c406db92e3f26d0e7fda544",
+    "zscope/benchmarking/discovery_ablation_experiment.py": "09a65a4146c9a6b704793181d74031d63fdf10cf91d89f7365b4b5fc7203a38e",
+    "zscope/benchmarking/isolation.py": "31d7cd9ac0c8345a90ebe12a94cf70186ef8c850a0f7057d3785ea0018080127",
+    "zscope/benchmarking/policy.py": "349d196be28b8c4893d9d09abdc6e040c376f9e5a48187c7d2da4137fe7d1e29",
+    "zscope/benchmarking/protocol.py": "37f4930a8873f5d9b55daa587ccf7387576243975e58e61ca72d2a24c9e9c8f8",
+    "zscope/benchmarking/replay_bundle.py": "1c968abc6e3b529914b73dcf310a8884a4d15b5249f40e2ab8688e1d8c796121",
+    "zscope/benchmarking/replay_pack_rebuild.py": "b14b65fc57bc35ad4f5d2f760a495e0041963782f31f72b3cdcd530864e1133f",
+    "zscope/benchmarking/replay_provider.py": "901d0e9e61adfc574496c17501cb1862fa95651bd128a79ebd706b808ce9db06",
+    "zscope/benchmarking/review_experiment.py": "5aa8dba53d57197f8a0f6b250701bb133e73bc4254772fe6fc08cd83174982a7",
+    "zscope/benchmarking/runner.py": "d7327ff9b7bf69c9b9a8762aa94cf17f71fd9f3e0fbdf7aac1d9268b261ba0d7",
+    "zscope/benchmarking/truth_contract.py": "e7d5aa6bde13081566a2dd8ddf648a8dc9c0dd76f6a648766d8394c9b8d1c50e",
+    "zscope/benchmarking/validator_experiment.py": "6c9116dc34560da53b6f9ae5c78522521bc4a16f902e30a4c34147752b8fb0a2",
+    "zscope/benchmarking/validator_replay.py": "e6f50e3c3b8414cffc96424d5a33d2cf7949f16e6134cc0cf031d82009e803ea",
+    "zscope/cli/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/cli/benchmark.py": "aa27a2018112cec6b1c6c162b24d3e8006bd30d2c0e3bebd8794e49ac015cfb5",
+    "zscope/cli/cli.py": "0e64e70f8316b0c790dfbab6ae9062aa2642d98388e3863c8fc5bea2f6a5ef3f",
+    "zscope/cli/config_cli.py": "2272125ceace97ba5c62906e7df23251aee0906ebbe3faf8cec9b4a977738ffb",
+    "zscope/cli/doctor.py": "d5a6722894f8f738bc5522e50a8b4c4c35ca30476d3c6fe213b9f0d8a9f29f97",
+    "zscope/cli/index_audit.py": "a82040bc26d0fba8d66004c70058b3f557fef63228afc5cc5d8920873e8ba563",
+    "zscope/cli/init.py": "78f970a502347fd0fdefabfd1ee3d2015184f39c2d0270d01ad6f5bab75f9cae",
+    "zscope/cli/maven_cache.py": "68929bf0adcde35dcf774ee00c9eb3a3a5833e15785ec91b73959c484e62cc87",
+    "zscope/cli/report_export.py": "b4fb1d5b737cf6796b0649e43a9a20b5c771470f9c75c1d2b9273dedbded9615",
+    "zscope/cli/review_memory.py": "c6e4438ccdbcc1c2f2f33f9f448c09b7d325771b45a1fa436283a7bd37bec49a",
+    "zscope/cli/rules.py": "be86f6083fda469a88049a28726578a1d347c6aaf73bc78237c478f9306e09cb",
+    "zscope/cli/wiki.py": "767bc728ff7af4f0cede693b99a19b769fa20424b3a87c10f8db72f9ac7c9bcc",
+    "zscope/common/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/common/cancellation.py": "57c7af7502f6ef09d6b66c4794999d263968f24eacd7477226b7427936be978a",
+    "zscope/common/defect_cwe_map.py": "ffa0711bd05e0df2c31bb4b0688703d562a589b72d79da20a28892997da1297e",
+    "zscope/common/issue_identity.py": "797c6461c826e507c72c0849c15d93d60722fc5c95c011af53d1fb2ddb494cc7",
+    "zscope/common/joern_client.py": "b7b2c24e70f768d3cc96fff2ff9f26d29daa23212bab46eaaffcc7c9180831fa",
+    "zscope/common/portable.py": "d88d9d5103754191f4b02a4aa295549decf7abc4ed6fc4600ff3e76be9317882",
+    "zscope/common/readonly.py": "e4381e7884d22c561e148cae51fd1ee141f3d642ecb0bed4faa14a45c43720e4",
+    "zscope/common/runtime_limits.py": "1d620b1a5e70da544bd56421525dcf8b707a00eaf9cb0eb6e9e1e838a798e489",
+    "zscope/common/utils.py": "17eb04f056fe15fd5db92d3c7a06c685a5285a4c8f97a018e2502538557020e8",
+    "zscope/common/validator_protocol.py": "dee2194e29bf281133aad1fb648f941b1deb357652e6906b5bc9c314302dec2d",
+    "zscope/config/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/config/config.py": "9208d08f4f978c3d99dcb93901b06dab5e66466c8cc3825650a8e73f3608f6cf",
+    "zscope/config/function_entry.py": "84204b284e74448a252e465670908c6cd5350ab34d2c32e63fca5830c8dcc93a",
+    "zscope/config/runtime_defaults.yaml": "03fcfea4dbf006f2407a4055120ad10957305f70d49f0369a02163af1a88ae16",
+    "zscope/config/user_config_store.py": "95633676b6cdf432301bd5a5ea3070e92581c28011067d497d592f15bd96313c",
+    "zscope/config/user_config_workbook.py": "7bad92deacb7d36fce9dc5ddd51b9172085a616b96fec5551e9a4571655c3524",
+    "zscope/config/v2.py": "5cc3ca30b9ec22e085b1871d7bdb4ccf01f67f609c600c91cadc9868ff910253",
+    "zscope/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/core/analysis/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/core/analysis/analyzer.py": "5445007339e187b09caa99c435add085f8e8817d9fdf681d31d992a32509ada9",
+    "zscope/core/candidates/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/core/candidates/adapters.py": "210bc573344f49c6b286ca87926e84d8a3dc14d8346dc56c8bcf750dd45f8068",
+    "zscope/core/candidates/backend_signals.py": "d07f6b1fafdfc98eebafdea27ad5395e5dd38658cb706534b201074b84f5fefd",
+    "zscope/core/candidates/clang_ast_cfg.py": "b2c0955e7205057a720c33a4bdac7745129d355148944e1e90c091efca26d3c0",
+    "zscope/core/candidates/cpp_domains/__init__.py": "4b7ede8244c72470f45e30bf1ab3eb1c4fd7a0fefce4944db1e1c696eebb6e94",
+    "zscope/core/candidates/cpp_domains/concurrency_shared_state.py": "9703b9efff11611b6218e93fc4c7f47e06f780aad4ec7030fd063fcac3f50845",
+    "zscope/core/candidates/cpp_domains/memory_bounds_integer.py": "b5ed5b33b8d71fe1f30f786c3126132ae08a05459c75759119f3bd1cb46b9b22",
+    "zscope/core/candidates/cpp_domains/models.py": "b99579b3c1df0a48651b5dded8d49e9374bb0cc2f08e4f5ed1a187d186f8590e",
+    "zscope/core/candidates/cpp_domains/policy.py": "2a71e6528e8cde2441b424f35db5ff14125cded566d2ce2c4c37d09659eda782",
+    "zscope/core/candidates/cpp_domains/protocol_ownership_logic.py": "86b21bb9b0bacc97c8ed9215e41c061065753922af7207f062d91c409437186e",
+    "zscope/core/candidates/cpp_domains/registry.py": "cd1b4915e6d665d5ef328c81e8bcd0446cef7dd0e16ed460a84724aa95899422",
+    "zscope/core/candidates/cpp_domains/resource_lifecycle.py": "a7bc466faee27471db82747f0e1abb79f30acf05105a2a6b1528dcdfbf188664",
+    "zscope/core/candidates/cpp_domains/shared_access.py": "95880cbf2c69794a9af1bf512c2dd1193c1528a7b05d429c0e8af9c3ab6dc569",
+    "zscope/core/candidates/cpp_domains/source_events.py": "0ce0e67ef09380773ac3a921204622c946c7673ab1102039732a18f881f35b54",
+    "zscope/core/candidates/cpp_domains/typed_resources.py": "c4b2e1b61deaa8319fb184ea47f69cfb86613ff5a6966a80039bcbce54c437df",
+    "zscope/core/candidates/decision_facts.py": "e5fc52777d22516ad50c87d10e32e8d8a7c8c9b80060d391862e8260144e5ad9",
+    "zscope/core/candidates/evidence.py": "066d6e763c98c3c70a23db3398b9f753ecb8f0527f2ac772788597127452881a",
+    "zscope/core/candidates/evidence_models.py": "a0bc898e1dae1c80fc6758205427aaae24f08c01a4011e28e2c85c3d00cc0d6b",
+    "zscope/core/candidates/graph.py": "cd08b211d3762a270437b5248c636dfc1e433c32a414bbaa4a2e9bb08bea53f4",
+    "zscope/core/candidates/java_active_audit.py": "79e9c77581f5ea8a83439f7f3c0b8810eaa4052f0a03e37653d3f606f8f5de80",
+    "zscope/core/candidates/java_evidence.py": "c1b1ab8e3cf0856fe2932f434330b7c99bbd62fea99a5d50a2e826ae90c68b91",
+    "zscope/core/candidates/java_rules.py": "4fb6e16689ee5214df2e62c4bd43a465666e1c53245fe376f14f3a32957a1383",
+    "zscope/core/candidates/pipeline.py": "ae912efc0f274c612838cc3ac0872bbeaa54be5a6b04c871567260f9fb093b2f",
+    "zscope/core/candidates/regex.py": "d57b54e2eb40f6a7c03ead70129664abadc7603e95cdd891f31242669bb95873",
+    "zscope/core/candidates/svf_value_flow.py": "4059171d5da71ed0258cbe246e9131b4ad8f1df446fea2677e5e8ebaca551ef5",
+    "zscope/core/validation/__init__.py": "8f2eb5d12743af14fc819b7d6d0d16461e03807fb9465be9dc31124a375eb267",
+    "zscope/core/validation/context_budget.py": "d6e8e561544fc1c55e729abd07c12a0a32acb3b4428d71b39fc12acaa6599c37",
+    "zscope/core/validation/dynamic_reproduction.py": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7",
+    "zscope/core/validation/evidence.py": "a3228595b71cb0e0e1b0883b430669e5a6771013b8c39fdd112ce9529f8e07e0",
+    "zscope/core/validation/evidence_completion.py": "ca8953e3ba1ce468b12e4e693758d143b3a06a21e9e3b98b4cd8a9514411b119",
+    "zscope/core/validation/explanation.py": "efe6582c0d5483c13bec7685f3b9db9c47dd72515712ada24d873e898e542063",
+    "zscope/core/validation/function_index.py": "3d987eef396a84a01f03e1a0341af9d638d7350011f557d20804490f1ef1e705",
+    "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+    "zscope/core/validation/proofs.py": "3c1cdef9476f91feb99cb1d95983cc271bd2512b4ad486157dd1a8e190b7c119",
+    "zscope/core/validation/review_checkpoint.py": "b01f0193e8b78b87ee3750a0962a508a4c241741806075aceb1825f82b044419",
+    "zscope/core/validation/review_checks.py": "6665afd912f980ee83f320d01476c0c7741cf6eba4352cf7a4a2a08c819a89ec",
+    "zscope/core/validation/review_protocol.py": "2556d2818523a4e494f3f97999b31aa7adb8503e58d110902b7d48ec17f575d5",
+    "zscope/core/validation/review_session.py": "ecd55cc6c2bed5cb5350b604ddbdb4a49cccf341e081f982a700c735c85ed3aa",
+    "zscope/core/validation/runner.py": "3d0f4c71e1b688242eff26de5fc69e6eb4f80b0da5ed364062a2678764d202f8",
+    "zscope/framework/base.py": "9674fbf29624704949754272df3d2c812d87cb6e551152635d19e6d53e73f67b",
+    "zscope/framework/conversation_recorder.py": "ea2cb198dfb5eac9c79347bb88e0117ce8659c1204c8897ba83378d860ce757a",
+    "zscope/framework/llm_client.py": "568ee1e2181072ef46455c6e7a04ef83d0d0e67e4b4d5b22e513b80dec58974f",
+    "zscope/framework/llm_usage.py": "bdc6aba3f374c9ab69a175813212b07135239eabf4aa09f2c654bfc19ff73d62",
+    "zscope/mcp/__init__.py": "2557a9da12b29cfa770ec4458c4e93e211a22879e7a330fe724c21ad17305612",
+    "zscope/mcp/client.py": "d60f5233cccc7a4b5afa95c5e4947d43e6690b6f81ce66283e2bd1abff8319f5",
+    "zscope/mcp/http_server.py": "e7ca8a35a253e7ad0db9a39da9e2ac09c254e5815d0276957481df5971d451dc",
+    "zscope/mcp/provider.py": "0b46d32e8e2faffeff2388f9b282be2f684910398e9c8c3e838485b18555f6b1",
+    "zscope/mcp/security.py": "35aafb6e251c4bfa59d974b379b03696b9e03e8461d00a6b100a1d70c40bf841",
+    "zscope/mcp/server.py": "5e9a772a67672f7c39e999ab03e094a0161c1090c4efddc0934e468835fd83ac",
+    "zscope/memory/__init__.py": "6f0aa20c9541c09204a6ed585c807b72010ec0960f3d45a4b41d6d817755a4f0",
+    "zscope/memory/review_memory.py": "1a13b713c45e3d4b838d060b915412ce8ec64bf9bc31a9330b46e848eab1311d",
+    "zscope/orchestration/__init__.py": "490436ad4a9988d3814fef61103a0495f5d243e5e710f8ed544be131f49a0cff",
+    "zscope/orchestration/active_discovery.py": "0c118d146b076e3ab40be55c7f8b14c1a0f6626e1fd70af2f9f30758e2f0b408",
+    "zscope/orchestration/agent_policy.py": "eba1e82cf4bafeb58df86b2b36b836771a21648ed06f96e10d8ef1df8b92b41c",
+    "zscope/orchestration/bounded_investigation.py": "c43bc3932ac20671fb0e08ed8f0137edb53237a894cf281887df463961a1b4e6",
+    "zscope/orchestration/budget.py": "ccac815eaaace322ff1cf2cf5f430d69c8d4520ccdd9b58ff6464c0bceb16983",
+    "zscope/orchestration/callback_discovery.py": "80ed94757c5aaa796440f31e1b756c93b1aaf1fa6a8a918600c00a7d2ecfd92e",
+    "zscope/orchestration/candidate_envelope.py": "bd300ae20897ef0e2170e7fe95d59d83e3a3d795beadc74cb4c7af9026b621a9",
+    "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+    "zscope/orchestration/diff_impact.py": "172748462e83e31d3d7f75a729f8dea116e5a096e4b97f4d1c6a250f17dd4379",
+    "zscope/orchestration/entry_discovery.py": "01c65c93302f765c3eb230d45242011aabbb7dbffbfb4007ae13b20c74882128",
+    "zscope/orchestration/external_findings.py": "c4b9083aed15fc1a1bcb807eeecd7ed7ffcb9b680d98933417f8b157f28fafac",
+    "zscope/orchestration/external_investigation.py": "db86b4578777654dd5352bccf755fcfcf55937d5190205a8fa86d0770fea6708",
+    "zscope/orchestration/global_modeler.py": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+    "zscope/orchestration/history_reconciler.py": "37cd712c83c113e00d0eeab9dbc1d136e4476607561d5cbb3fad5fb8e9156189",
+    "zscope/orchestration/investigation.py": "ceb0834f9ae85837f3fb38ba586c3c61f5bec3c33374783d43913902386724b9",
+    "zscope/orchestration/java_entry_discovery.py": "e0b9fcc0c6b43bb7cae167bd2e97ae985ec0e4c0e6c97f480f5b6595578cde73",
+    "zscope/orchestration/modeling_coordinator.py": "f197a5cf4ceedd3c1e0c8addaade96819e01ae90308a566cce7e30ecc1df8f98",
+    "zscope/orchestration/parallel_analyzer.py": "b133f89158580ee7a5136e08604805fd187167b929d6d5c918e8317ef7cce3aa",
+    "zscope/orchestration/rollout.py": "fb1fd92d16253ca40e9a19a4618b697bf94e7a076a76baf02a513c7574b20256",
+    "zscope/orchestration/scan_request.py": "490cffedb885852aa3f9293d3c700018dccff6b591a3a1e4c8590a2d35142335",
+    "zscope/orchestration/scan_session.py": "fe168c7ccefce9105b535201317b3ea11385eedd8435efd8ff05b5f76f7e929b",
+    "zscope/orchestration/scheduler.py": "695c06435de5ab3819f69a31bc888d0fe7b6c77f9ab37ec917610b6ab9639f24",
+    "zscope/orchestration/semantic_demand.py": "dab3f43eedb96c2458d2e0765ccb4b3c4e28401784bafcb81ffe18c0ead057b5",
+    "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+    "zscope/orchestration/skill_selection.py": "163ec78d5def20423c3ac3ae383888d45bd9ab4943c8f0f7b370053369d86da0",
+    "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+    "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+    "zscope/orchestration/specs.py": "2a80aa038480be92f7fbeffa45bec9cf3ca655e3a96e43db724717b627d85e61",
+    "zscope/orchestration/subagents.py": "447beb4d919e9bf89189f6093d6037682afe72da4f81eb1158e33c267d48c1ab",
+    "zscope/orchestration/user_config_inference.py": "4efbd3fe98fa3fee31622f7402b52b427387ba3de39f12269a98c3a524f73b0f",
+    "zscope/orchestration/workflow_executor.py": "764be3387084533860621e3ea4e63a81c1c48684ed0e737eabda2dd0b67d37de",
+    "zscope/orchestration/workflow_runner.py": "b41d56d0868c8db18fe3bb9acf3b8ac8eb087f5cc39561fb25c11889c7d16b8a",
+    "zscope/reporting/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/reporting/assembler.py": "bad792ede56dd4f3570d41bcbb27796ff7ca64a148da6d7aa4378eba261359d2",
+    "zscope/reporting/attribution.py": "56ced8ebe557f4ce45559c0b692afac306e88188f8cb2bb6cb86d8c9251b1a94",
+    "zscope/reporting/evidence_objects.py": "7e7a61775efe4ddd1a3bfc4d2b5747ac85e6dcba575e1521464b82fce48ec069",
+    "zscope/reporting/finding_roots.py": "217b5aa6b3ea1c9fff8ef1c5b4d5e5ddc9f0ccd1d13bfb5a5b2f75e6ae17464e",
+    "zscope/reporting/frozen_objects.py": "14a9fdadf3972053e235066ba0fae74d8eacb5c363bdb63596358f097e672610",
+    "zscope/reporting/immutable_evidence.py": "6b2d0d32b129c58d8413cd9535e0ec8f3115884627ab56348b43bec8f201ceb1",
+    "zscope/reporting/issue_aggregation.py": "ca84ac9844c173905b150f2c1310cee9c9afb070f59ffaeea54747e010f9ac75",
+    "zscope/reporting/issue_markdown.py": "fd8f0941bac9014a14e5cd7b03caa0941b15c70661789ae413cc9760fab8a03d",
+    "zscope/reporting/json_io.py": "7d83e51a8685a80986ef7f0291f2cf56dd5af7d19199f46270bf58e35aba2875",
+    "zscope/reporting/report.py": "1cc1cceb745b7efad8c0bf1817920a793e5e74baccd9c6c7c2d34869ea3b4f6f",
+    "zscope/reporting/sarif_exporter.py": "c3a6a72bb04c9691060e4c4deb21f557f77ed2850038f5f6bed1513ca45bd191",
+    "zscope/reporting/schema.py": "5a12c7df98e12b32f516301042c57baf73806dec11f11216643b4a84ee53ae56",
+    "zscope/reporting/shared_objects.py": "2881fa446c2ef8688bbb889c45ae0eca3b42fba8c58b51a737e110a4076df56d",
+    "zscope/reporting/views.py": "246398f606ff280b9a1c8829a3e607d360bfe8c87ba03bc021a1bb8a96f53e14",
+    "zscope/retrieval/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/retrieval/analysis_facts.py": "8f5fc5fd116a4a1a5cbbf4cbd2f14fee76ec549612bc2cca80eba72711301a24",
+    "zscope/retrieval/backend_base.py": "5e18990788b30868c4501ae31e2e89c831dcf3e3b9611dd09eac6faff968afba",
+    "zscope/retrieval/bitcode_compile.py": "12fa537538e4c03599f80a54e50e382206053318fcb445dc1a6e31375f8469b7",
+    "zscope/retrieval/bitcode_scope.py": "99644f169118b1626c2e8a5bd477343fe45b191651e3372f09445744fc198c38",
+    "zscope/retrieval/build_llvm.py": "f07556ea82e3251d5c29b050743caa841ba82e0804c2e8a440b7c2e3a2845899",
+    "zscope/retrieval/cached_index.py": "8800da9b8bd5c2f6ec4a75355b16e5013d2bbd82ebad32c35802dcf8452a185a",
+    "zscope/retrieval/claim_paths.py": "346a8745a9e79b50dd265966613688598d5f960d4111df715fa1a1795dac4a78",
+    "zscope/retrieval/clang_backend.py": "46bb3fbafa5e85bd0521709276e7d76758bbf11db4d6f9aad81e90942ee44cc9",
+    "zscope/retrieval/clang_batch.py": "9913bc668152d17f8d564bdd1b17c2d6c367cd449f2fcfd60a7da66d0d779244",
+    "zscope/retrieval/clang_derived_cache.py": "220b78386bd8d44aa264d7a19703e3d8b7502f9e952a6b06751ed3a60864e2ed",
+    "zscope/retrieval/clang_extractor.py": "1d82e9d263cb16f2f7077d1329c1e6e77c31f09750c450725c61b995805d56ea",
+    "zscope/retrieval/clang_extractor_pool.py": "4aa876eb1e6993d0d616472bf9e70e6bb9a9144d63176681083e58d4b7bcf0fb",
+    "zscope/retrieval/clang_input_watch.py": "7cb30eed29337bea4dbf04f938b269eec121d37c8f8d5fb3b4561fd51ca21582",
+    "zscope/retrieval/clang_resolution.py": "e2548ea04e0545dcd51328cae094cf3f516f8c368183ac9b4ae33ed2b1b612a9",
+    "zscope/retrieval/clang_source_snapshot.py": "80f8bc287a50d6c12dc53ff6a058d59c31bc64fdb58a35349bc8d5a3934a2e51",
+    "zscope/retrieval/clang_tooling_evidence.py": "3b45740c1bf01446671860efd197a897ac5386b5202561c4a6a7970bb97dc7aa",
+    "zscope/retrieval/clang_type_scheduler.py": "532c7cdac061104f262eb2c68f711057ca9cc981b3da236b8ef088e2d22720c2",
+    "zscope/retrieval/clang_type_state.py": "8031a5fffc1634a641a7292a9f8669742498a6f4e3707446750dae2815f13be2",
+    "zscope/retrieval/clang_type_worker.py": "5f786ccec22dd875a587c61231bdf62bdbeebea1275156cfe67cb673084c3ca9",
+    "zscope/retrieval/code_index.py": "bb1493e6171cd36dae48a1fd0efa0e6af6da65d97fcdb5826853850b39aa17bb",
+    "zscope/retrieval/compile_commands_prepare.py": "1a6ffcf98279b476173990cea1e762a956e477a4e742e65426160b516ebf6cf4",
+    "zscope/retrieval/compile_preflight.py": "9ac8f729989769f423f5d3a83c491d4c84128db0106c4b239fd3bbc965801719",
+    "zscope/retrieval/compiler_compat.py": "371576c60deb059a19dd6a47e69bb9bf96696df2760b3df45ba2f02b3d5b7da6",
+    "zscope/retrieval/compiler_diagnostics.py": "a98eafc3905f67201522f9275928249bd630d8ae1767efb0bd6781553c2a165a",
+    "zscope/retrieval/incremental_replay.py": "5e5d93e8b8d839c74d52e0bccc06ab83afeed7fc9cd740acf8d5fb48877a6874",
+    "zscope/retrieval/indexing_identity.py": "b82d51c1559e0a06a3b62b28884c05a505a1e2c5590f970ad69c2b604e0a14c2",
+    "zscope/retrieval/indexing_inventory.py": "dcca9edd5bd910f6098f564e61c19b39ba7e65040dc41e5c1af3e4c719a1e85f",
+    "zscope/retrieval/indexing_runtime.py": "a39b7d0e084ea77ad5485775c7ca484210afecc63ef8ca9ea94e867b720f7226",
+    "zscope/retrieval/java_joern_backend.py": "911a3dbb66fab8f8a7133b3d397bdc45176993763f5a0a4cbbf4e007b698c86b",
+    "zscope/retrieval/java_models.py": "a0f1abe221a11fffcbfb9d862f70c9e25577ed4df399c65e23761f0a8f1c491a",
+    "zscope/retrieval/java_signal_providers.py": "f5e2f446bfb9daf768da00db02fb2afebed15abf7c74b66b0b4f360aa214f632",
+    "zscope/retrieval/java_source_backend.py": "efb908a731ee67d279e293f2d8b6874c800e1bfc46d87d29fdd22d46e5e68f93",
+    "zscope/retrieval/java_source_extractor.py": "abd11c35b02f9a48d90d5daa02126cdf840322e984d8a1dc9de329f2627f4a6b",
+    "zscope/retrieval/java_structure_db.py": "63a9c920a8f3d1bac2579a0b4c7024e4be18097c16ee144072287c26d5f2dba4",
+    "zscope/retrieval/java_unified_backend.py": "8de31cb4de3702843e4016a637547ff565d3180885d4a4b455b79c80eed51336",
+    "zscope/retrieval/joern_backend.py": "fbbe76ed3af317d7e556f79e0f56e449a00b1a68c825ebdeab9864d100b029e1",
+    "zscope/retrieval/knowledge_db.py": "560e48a882311e2fb84eed15c5f21c2242bda88afb41ed4e0e58cdcdf9271504",
+    "zscope/retrieval/lifecycle_analysis.py": "fe2848934a0161708d38dd5cd365753dae8d5ba3e65fda024b4879798e47c6be",
+    "zscope/retrieval/llvm_toolchain.py": "7cc3e0284692f1587e01042c620010c847772de726a2b9115116916b64188293",
+    "zscope/retrieval/svf_analyzer.py": "6e0b24543211f3e2808f5af5b98463049163981401d728a6953e39b4a0064338",
+    "zscope/retrieval/svf_parser.py": "df0351897eff59da00de848f7dac064ce15fd3497931b66adbba5ea9f9695d85",
+    "zscope/retrieval/svf_runner.py": "cdb928620bbbf1d9844b227ad83b00772ad912086a4c7194733780063c8101c0",
+    "zscope/retrieval/unified_backend.py": "5d84e08b2d81375d52a012c78ba7b61624eff775b8133d3c9ffc6afafcf44f41",
+    "zscope/retrieval/validation_facts.py": "caf409dcee28608984080cd11bdd7fe76b333333f0949e16f88fdaf06f02fa51",
+    "zscope/review_memory/__init__.py": "cff3b50b854a2df456dc2e86b9df89ef827cbdb9108541f0ad119c8aae20acf0",
+    "zscope/review_memory/audit.py": "9e424ed9486caf671c24c7e5e1d33409488a5966c7aea26fdba8ff05e769edc2",
+    "zscope/review_memory/extractor.py": "274b112c1b9e561ae3dcb16f5c18a42287278d8b88b6544379945596c4f8e1df",
+    "zscope/review_memory/identity.py": "378a6ab533ec67e0e99df887340822ac27ca516a7d4483ac5e324c8fd58db329",
+    "zscope/review_memory/lifecycle.py": "598b3b1f3be01a5689d02adf6bad8899f65f0fa91d4d1549d0c996d0bca3eda8",
+    "zscope/review_memory/matcher.py": "65ee2601036f0e6fb428e763d833d71238caf41ec8cba0799bf2809f4b57c169",
+    "zscope/review_memory/models.py": "853b3731210261db76e0bb2d0d1fb393e92d175d5d5726da2e68598b8a406338",
+    "zscope/review_memory/projector.py": "1826a834dea1a9f0fdd5422def12262a6f831c8242b3f5dab6897b93035641b8",
+    "zscope/review_memory/replay.py": "69ac8e648b87852fc633b89cada01d2c605fe5ab86bc62653c1533ac62dca5bf",
+    "zscope/review_memory/schema.py": "b293854e21963123bd63617a82297f96c918590fce664d986dd96dc89007e69d",
+    "zscope/review_memory/store.py": "caaf1efb300b128673ef8407313ba3e0eba49a17efc50c30be478464ce10cf0e",
+    "zscope/review_memory/worker.py": "b2870d298ea77768e4a56fa1d817c19a4ec40743d7ed038bda2c2b2d9b981799",
+    "zscope/rules/__init__.py": "4df30d212932b5cfb7535b5f33b807957c20a925229040b58db6e8e472bfd2aa",
+    "zscope/rules/analyzer.py": "600b3563c29444ba47f67c8ab00c04215c3a30c2ada73b92e641b1dbb4d2e653",
+    "zscope/rules/catalog.py": "2db53b888f390a657246811e7613a775e1de5082b86e003a79c546cd18bb86c2",
+    "zscope/rules/engine.py": "813e49f285dacfb81d8985f37de9cc85aeb4e4eb84ec6127966c6bdf42897057",
+    "zscope/rules/extensions.py": "4d12f52fb5af654f3040da6f02c8e35211b23c40d14e7c1c8e02083c37e49801",
+    "zscope/rules/implementation.py": "5bfec88cb7a05b8c39375f4dd2211d9dc82cdcf00bb591176eb379f0c18cd789",
+    "zscope/rules/qualification.py": "9ad7df39e58cb2517f568de8c86c42f0c3c1e592ff28f7c7e122c48d0aa616d8",
+    "zscope/rules/qualification_evidence.py": "93c926c59a6ed71a45fc95d4dfcc8b50f1a1e36e094d1e45401bb82b428c30ca",
+    "zscope/rules/query.py": "ae6a26e0ab4f45ecb6b50f34347735ce9957617abdb7b237d685199a9d5e4bb6",
+    "zscope/semantics/__init__.py": "64e9ed6a9ce05a485d521c6ae3729bf3a2f24a6b7830c9f584da93a41e698d53",
+    "zscope/semantics/call_context.py": "52f0df700312434bc9ad60206158c1f8635f4b3204994aa94fd352fff132fa7c",
+    "zscope/semantics/call_operands.py": "6410b71d76925f9f978de6139c54aa2e9eac204d34accbbf9d5d25f5a88f01b9",
+    "zscope/semantics/compiler_fingerprint.py": "d773c88fdb233e2e60aa335035a161feb6f53a6383d746c12d5f12e72ec383fe",
+    "zscope/semantics/contract_compiler.py": "cb8335f24f22a917442e8f205c8dcbb7c3620f9e8da07ac08a44f3f5f61bbcdb",
+    "zscope/semantics/contract_conditions.py": "cc0a4656b822f76c3bb38377e46c29fb00f36e0c64b2fdba980f0653c9d38965",
+    "zscope/semantics/contract_review.py": "662ffc9de10b8633c8991c6e90380c8abcda72c1476f6f691f11329bef7adc03",
+    "zscope/semantics/contracts.py": "f4b881979887e5b23a5dea8a00295bfa3868c9858a514d8e2a298e24b0913101",
+    "zscope/semantics/defaults.py": "5d245eb3ae6e4fa37db81a009323fe57b2cd189de5352f5147587fd1fd729bb8",
+    "zscope/semantics/inference.py": "f647640a80f4982d2c4fd84de53c0242669aa90c36d1a1ab13686fe159c8fdbf",
+    "zscope/semantics/java_frameworks.py": "d3f28d9ce2f4098ad4a1b42e96e5063988ae982918d250a8bdf14ffa6f2ca97c",
+    "zscope/semantics/models.py": "4288f319e52289d93f26e45997f6d52fc4152684a786d67b36a5382803060003",
+    "zscope/semantics/object_flow.py": "ef70b4f2fc4cdff93277921a4d329a8b2af7c0aaa8e56ec16bef4297274bad9a",
+    "zscope/semantics/pool_protocols.py": "32a140bac843af17b3776fb1f9ff87e1146c837e7becbf2a0d0ae1c43c0ef5c8",
+    "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+    "zscope/semantics/standard_api.py": "e61ebaaf92b5cd7ebee98a1bd98ab9a2ceafd8a1b23b7af262fceab5aa77668b",
+    "zscope/semantics/user_config_context.py": "144291a7ae6b4b4dc3bfaada1f7852684381264830f1d57ba345ab921dfa494c",
+    "zscope/snapshots/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/snapshots/modeling_input.py": "1464c2789b3bbda3f6ab163d372149fd177ade4d0b19f40e1c90c51e1cd0a509",
+    "zscope/snapshots/policy.py": "d3575ed5a75389052a4c0eda7379512091b6298cde8c5bcd3af3b5d74fe99f94",
+    "zscope/snapshots/readonly.py": "571469b77dba493f535ccbed717e3f725704d2842167688bcd7065bc8d191229",
+    "zscope/snapshots/store.py": "878ae7dccc921a2c95a88dbbe8f7b185489d83192e519df6a68306bdfcd234ca",
+    "zscope/tools/call_graph.py": "842672cbdea5423b040915efd642784d6c568c851da8466888f0380fdf220298",
+    "zscope/tools/callers.py": "d2599d879af09bfcd0aa38fd58c7cc078e7b08dd27e68b53bdfc3e074817d322",
+    "zscope/tools/code_graph_query.py": "46da2cb28a6fd5f9a25c633a48a966d181cd61d23831c6c010ddab17f015072f",
+    "zscope/tools/code_retrieval.py": "f161854af8e4aa0e42274f22f9c45365e815d1430922dc94fdc2351b6f23b468",
+    "zscope/tools/contracts.py": "0ffa61d3b60ad9bf0b0e1bf8e500b9960cfd243932cd115bd88115bef9134bf1",
+    "zscope/tools/data_flow.py": "97b718ac883a41737c3dc30d1b6aa6a0b62a689dbf2f555abbfdb9cc2154264e",
+    "zscope/tools/data_flow_trace.py": "d52ac21ef6a088b5f8bb491b732989c697b1bb4c15f88730683a5652293f9f67",
+    "zscope/tools/deep_call_context.py": "d452c790de0cf7c70b6915b61dd7668b16d7c6c5dab4c53a27459f1f64ef5879",
+    "zscope/tools/file_snippet.py": "45f12ddd8506fb288df61c6d5a21f2a60d17611fc211a520605fd8695c8f052d",
+    "zscope/tools/flow_query.py": "41965c3ea94f3d03e29f81c8b375c700285b1b43b71aea05af51a2b21a5e16f9",
+    "zscope/tools/function_info.py": "bc54df5188fcaf43470c07d75aaa74efc666b4febeb9ea59b2dc66782b7cf0ac",
+    "zscope/tools/function_pointers.py": "9e222b5664980a6ac91d6f64dcd59fab4746b3fd579f79be78d3cfc7e7728738",
+    "zscope/tools/list_functions.py": "e0247d427a758b9dc5c8bf32c2a814698e0e1a13e0d2904ebedb07949f7029cc",
+    "zscope/tools/pointer_alias.py": "97ad928f33eae775537474dc74065977e57c23f477c61759a2633ae124ba1a78",
+    "zscope/tools/policy.py": "fe4dbce22408995a3cc001fd9438c40d1b0035d2533d233e8034e4103a6a93fc",
+    "zscope/tools/read_code.py": "d55db22e93c7798dbeeb1f00cd1e495fe7b149255b321da4cfd79073a89c9484",
+    "zscope/tools/registry.py": "71d38d9744b9ffabe73738c67ad41ff744f08ac12c42189fb4eea16358392db5",
+    "zscope/tools/runtime.py": "ca2367a6231c003f18bc1aae756000a535d049dde4c6666183dea8bc8516e537",
+    "zscope/tools/search_code.py": "cb2545717ec63bb3ac2c4dcf92848323c48042272e5a31c8a728bbf98d0c2d79",
+    "zscope/tools/security_semantics.py": "7c9ddb4c13fc1509d9473620d55a61341416ba0a54a11dbf1b7958ad718f7674",
+    "zscope/tools/semantic_context.py": "2999c0cfa47a1cbceda9cad4635417f9d7cc243953424f8f7701619173083502",
+    "zscope/tools/snapshot_tool.py": "7193e8c6a64cc90eb0627af432a3ce46414bd60ef458a9ead5aa745618b2ea9f",
+    "zscope/tools/source_access.py": "8325cfc6263d1a20a5806110e20861798ca86f57a6f638722e66aebf356af8f8",
+    "zscope/tools/static_findings.py": "8dbb5d286f75feef40b3a43a270a86516f4a3675ba501650fd95f2ce37be5472",
+    "zscope/tools/symbols.py": "077574489bbbc7a4f67bcc586e8968e3aad44483ace36a0dfce58c624dd5765a",
+    "zscope/tools/taint_reachability.py": "a8b0e593b920ade688ad9ff052af836aa398175a2acc021165abeb144138f3d1",
+    "zscope/tools/taint_tool.py": "1bc33f33a16485c8fd469b3db3d5a760f1fda5ace011e07afa7162a585a4a6ff",
+    "zscope/tools/type_info.py": "f9c83ad5295cc0aa4223f07870c4c78da1013b4870b4ea2812c5dba1d5701a8f",
+    "zscope/tools/utils.py": "ea06d2f56bce9ce102d33dd5e246b0cf8205aa86ea9106582382e23e156ed173",
+    "zscope/web/dashboard_server.py": "3fb82132a68334c2e296df93eb901398d1755da4476f338a0444237590c9e084",
+    "zscope/web/review_reports.py": "315bfc024247e9d7814ff38e7adee8817421e927007ab329a6e00aa043d354f3",
+    "zscope/web/server.py": "e815a38a651704df2898a0e84e2e10654cf424de3e38ee19eeae4f7b46fe0c12",
+    "zscope/web/services.py": "66ce537dcf05f975eb0540d2cfac6e3744b33e4c04ddd87edfe8d1639f8df95e",
+    "zscope/wiki/__init__.py": "736feb1a2dbc12d3cc843d6d818495ba1a7f72b26dd3e404eacd74bfb2ce26aa",
+    "zscope/wiki/classification.py": "e8f3b184137c7a7cade1d42135805e47b772bd9eba65bdf2c307686dbc8fbedc",
+    "zscope/wiki/compiler/__init__.py": "040ec36ae52cb7d249b2c4420bee0a0d13422de5f614ba0fcbace62dbf787966",
+    "zscope/wiki/compiler/changeset.py": "2a2ba1442b5a59ab70e354b46031554e723c3c41a58225c79d6f95d81ed34af1",
+    "zscope/wiki/compiler/chunker.py": "a732a3de7db46548d9e3e7f0a4ba78db975405d942d3ddb0ea2edd21d030e0cc",
+    "zscope/wiki/compiler/compiler.py": "332d3b62d332689ee9b11fb2fe4503326d234c3e5e0581d34dc3759a3da5a537",
+    "zscope/wiki/compiler/llm_compiler.py": "2b46c9665c229888b55196798c7423c0fe713438456e94104159c5e8ce3cfde4",
+    "zscope/wiki/compiler/workset.py": "d7ffc244fd055603942cc53fdbc2950dda3295acf7b5ecabc6ddb5bc573acd03",
+    "zscope/wiki/context/__init__.py": "ed6c50d21e051143eff8ca1bafccac57576ceea7ed7c4c352610b93cb7c0693c",
+    "zscope/wiki/context/direct_documents.py": "fb917afa0a34c89dc442b9a2dc12f5e53ee1fb6c0169176b32d2809c85410651",
+    "zscope/wiki/context/obligation.py": "07031e7c8dbc39c06b9390297c199f7d71f00c95400aadefa2740fbca2b2eda7",
+    "zscope/wiki/control.py": "483ef3957c1c8eced8462c8000973e1c4970881eb86968d6684040b6bbd8dbfa",
+    "zscope/wiki/discovery.py": "81f49485ad67f1c4347a103ffe6c75e67768b8db7649240683c18288488a8276",
+    "zscope/wiki/events.py": "6d4e8d8315ed5ba8197766e9aab91875fa053a61ce864129c10a490b9816e7d1",
+    "zscope/wiki/identity.py": "222f439f07ae8df6eb6cdfab91b543bf93c20c0c3f6d190718220d5dc423d181",
+    "zscope/wiki/lint.py": "9a12500cdf28c9fb890ff66c7585a04aa9eb993395a452e6e7ab54eabf81ba33",
+    "zscope/wiki/maintenance.py": "d03b29ff43e024407d187dee4fe55cd58f407bfc1e294de267779b9137437386",
+    "zscope/wiki/markdown_parser.py": "8888befb1d57ef839394117d71b4ca96220660970cadc6d8c12f40347089ea62",
+    "zscope/wiki/models.py": "b368c831603171544140840db407a2e85034cd3662959f54f2bc1f3fec91c0e9",
+    "zscope/wiki/page_format.py": "285d09134c1efcd77430407e8d6b642dc9da6573e08b4cc5abc0a4f620c73749",
+    "zscope/wiki/schema.py": "303adce6b40df0989a96bf07cd177eeec624a1521327b1d1e248656e05c89f55",
+    "zscope/wiki/service.py": "14a5c5b9bde6e71565299d9e815a547e11354d780dbd2ffe6d99919c0ac89a74",
+    "zscope/wiki/source_index.py": "f6944fb9e828a9004e7ccc6c37b6933587396fca826ecbce60536882ec341db3",
+    "zscope/wiki/source_manifest.py": "2f3050ae8394db995b0aa404a7f23e53b2118f3f1d680f2e652859018e9ff5b3",
+    "zscope/wiki/store/__init__.py": "142136a10c355a43447d00324a857ba9223ea931a2feb85825f2655392429d7c",
+    "zscope/wiki/store/revision_store.py": "0614287bb92dd61564698312b2d3d9c3359b8266a40ca57858da66463d0c2699"
+  },
+  "source_sha256": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7",
+  "image_inspect_exit": 0,
+  "image_id": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "staged_inputs": {
+    "files": {
+      "tests/fixtures/dynamic_reproduction/broken_build.c": {
+        "sha256": "800c7ec64cc272fce99737f340e5b4d6f4c749d48746b808c6c142b3479af944",
+        "bytes": 325
+      },
+      "tests/fixtures/dynamic_reproduction/heap_overflow_negative.c": {
+        "sha256": "e1099d8ac99f49975294a4b7345f016593e7b483c8fdf0126e69fbb696dc16f6",
+        "bytes": 813
+      },
+      "tests/fixtures/dynamic_reproduction/heap_overflow_positive.c": {
+        "sha256": "85685a7ac23bb653a51ae0333bae9687f0afac998d57e110f7b2ccbd21ab26fc",
+        "bytes": 765
+      },
+      "tests/fixtures/dynamic_reproduction/unrelated_crash.c": {
+        "sha256": "89772514029c32e42538f5ae881503b3624ec9063d8ecfcf565bfe935e59ff1b",
+        "bytes": 1228
+      },
+      "tests/test_dynamic_reproduction_execution.py": {
+        "sha256": "3205acd925075b04dff129f8876b30da3509d6e717856df4f352f3eb7327fa3b",
+        "bytes": 33411
+      },
+      "zscope/__init__.py": {
+        "sha256": "a615d8258d93e86e0a90420ab016cfb07b8353b0155301ea7fec81dbf538cda2",
+        "bytes": 921
+      },
+      "zscope/_version.py": {
+        "sha256": "c8dfc96911dce4822e3a66a109bdfe3ea0f0f2307207c9838a27448005009462",
+        "bytes": 85
+      },
+      "zscope/agents/base.py": {
+        "sha256": "bcf8e013816aaee62b161fe9bb33bf3d58f04e1462268a0b66a077bf69b39677",
+        "bytes": 51866
+      },
+      "zscope/agents/deep_worker/agent.py": {
+        "sha256": "a0f2aa255d17634c8e96418d90200635c83dc9100adacd21f0dc58ed074daae5",
+        "bytes": 7190
+      },
+      "zscope/agents/issue_reconciler/agent.py": {
+        "sha256": "3f821d2ab4bb41c20ac21b697d101c5ab25124a606986f7172bca6c1f7aedd74",
+        "bytes": 14239
+      },
+      "zscope/agents/review_memory/__init__.py": {
+        "sha256": "0a913962928a33fa8e0f5dcc92395ec78233257bfe71ce8849bccffd0e2236e8",
+        "bytes": 109
+      },
+      "zscope/agents/review_memory/agent.py": {
+        "sha256": "c71e4773b37f53f8cab84106125f7ab7899fe201bdb7ff873f6fb0d861b1dd01",
+        "bytes": 5955
+      },
+      "zscope/agents/semantic_modeler/agent.py": {
+        "sha256": "4cdee773b2f2945ebabb59802dcadc1b1e70c82ea836e8b3c5da44918d63c903",
+        "bytes": 11663
+      },
+      "zscope/agents/semantic_modeler/retry.py": {
+        "sha256": "3895223f0f63cf41a38c0f4657efc6fb1f8135182d128ed21ccb3f194fde93e6",
+        "bytes": 11562
+      },
+      "zscope/agents/semantic_modeler/schema.py": {
+        "sha256": "3f310eca9f49b0c23d492e1b54c66e56236c84a314179b9f505f08ccccdf0794",
+        "bytes": 36221
+      },
+      "zscope/agents/semantic_modeler/validation.py": {
+        "sha256": "dd1733d9415c070409434cd5f2a1a916a57ab38ab8fd94e39737fd3751d5a528",
+        "bytes": 3732
+      },
+      "zscope/agents/validator_agent/agent.py": {
+        "sha256": "99911d10c0e3f74549aaea614034e8b2126adf8b7fb7cbd1d3ffa1afadb23e7d",
+        "bytes": 73395
+      },
+      "zscope/alerts/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/alerts/adapter.py": {
+        "sha256": "3bf6ad3b714034c5cf160e16b9b4633ffb5573ff02e62b04bd30749e2e44052f",
+        "bytes": 1661
+      },
+      "zscope/alerts/sarif_adapter.py": {
+        "sha256": "e0cb2067395eedb36c5b42f091dd6c7129aaf2023d20a29ceba09b1714aca9be",
+        "bytes": 5564
+      },
+      "zscope/alerts/verifier.py": {
+        "sha256": "7b37da785e239a89de2ea3414d7b4c6fb50f57876737a331d7db31f18ccca195",
+        "bytes": 19039
+      },
+      "zscope/benchmarking/__init__.py": {
+        "sha256": "5dd90c05ee46e8f42e38e65ec51e07f6ebbbdc1bb06a36e68822eb922403c1a2",
+        "bytes": 3777
+      },
+      "zscope/benchmarking/attestation.py": {
+        "sha256": "29caa7222c563d03fe488e53a6e79bfe71fe80b0d09d6f5c3e35dbc649f56e33",
+        "bytes": 9122
+      },
+      "zscope/benchmarking/discovery_ablation.py": {
+        "sha256": "2f5e952734749d98a69abc9173e300760896b90e4c406db92e3f26d0e7fda544",
+        "bytes": 73053
+      },
+      "zscope/benchmarking/discovery_ablation_experiment.py": {
+        "sha256": "09a65a4146c9a6b704793181d74031d63fdf10cf91d89f7365b4b5fc7203a38e",
+        "bytes": 61804
+      },
+      "zscope/benchmarking/isolation.py": {
+        "sha256": "31d7cd9ac0c8345a90ebe12a94cf70186ef8c850a0f7057d3785ea0018080127",
+        "bytes": 42597
+      },
+      "zscope/benchmarking/policy.py": {
+        "sha256": "349d196be28b8c4893d9d09abdc6e040c376f9e5a48187c7d2da4137fe7d1e29",
+        "bytes": 12026
+      },
+      "zscope/benchmarking/protocol.py": {
+        "sha256": "37f4930a8873f5d9b55daa587ccf7387576243975e58e61ca72d2a24c9e9c8f8",
+        "bytes": 176675
+      },
+      "zscope/benchmarking/replay_bundle.py": {
+        "sha256": "1c968abc6e3b529914b73dcf310a8884a4d15b5249f40e2ab8688e1d8c796121",
+        "bytes": 32908
+      },
+      "zscope/benchmarking/replay_pack_rebuild.py": {
+        "sha256": "b14b65fc57bc35ad4f5d2f760a495e0041963782f31f72b3cdcd530864e1133f",
+        "bytes": 5045
+      },
+      "zscope/benchmarking/replay_provider.py": {
+        "sha256": "901d0e9e61adfc574496c17501cb1862fa95651bd128a79ebd706b808ce9db06",
+        "bytes": 27230
+      },
+      "zscope/benchmarking/review_experiment.py": {
+        "sha256": "5aa8dba53d57197f8a0f6b250701bb133e73bc4254772fe6fc08cd83174982a7",
+        "bytes": 10718
+      },
+      "zscope/benchmarking/runner.py": {
+        "sha256": "d7327ff9b7bf69c9b9a8762aa94cf17f71fd9f3e0fbdf7aac1d9268b261ba0d7",
+        "bytes": 95737
+      },
+      "zscope/benchmarking/truth_contract.py": {
+        "sha256": "e7d5aa6bde13081566a2dd8ddf648a8dc9c0dd76f6a648766d8394c9b8d1c50e",
+        "bytes": 19027
+      },
+      "zscope/benchmarking/validator_experiment.py": {
+        "sha256": "6c9116dc34560da53b6f9ae5c78522521bc4a16f902e30a4c34147752b8fb0a2",
+        "bytes": 47873
+      },
+      "zscope/benchmarking/validator_replay.py": {
+        "sha256": "e6f50e3c3b8414cffc96424d5a33d2cf7949f16e6134cc0cf031d82009e803ea",
+        "bytes": 68666
+      },
+      "zscope/cli/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/cli/benchmark.py": {
+        "sha256": "aa27a2018112cec6b1c6c162b24d3e8006bd30d2c0e3bebd8794e49ac015cfb5",
+        "bytes": 5512
+      },
+      "zscope/cli/cli.py": {
+        "sha256": "0e64e70f8316b0c790dfbab6ae9062aa2642d98388e3863c8fc5bea2f6a5ef3f",
+        "bytes": 37634
+      },
+      "zscope/cli/config_cli.py": {
+        "sha256": "2272125ceace97ba5c62906e7df23251aee0906ebbe3faf8cec9b4a977738ffb",
+        "bytes": 23054
+      },
+      "zscope/cli/doctor.py": {
+        "sha256": "d5a6722894f8f738bc5522e50a8b4c4c35ca30476d3c6fe213b9f0d8a9f29f97",
+        "bytes": 16590
+      },
+      "zscope/cli/index_audit.py": {
+        "sha256": "a82040bc26d0fba8d66004c70058b3f557fef63228afc5cc5d8920873e8ba563",
+        "bytes": 8439
+      },
+      "zscope/cli/init.py": {
+        "sha256": "78f970a502347fd0fdefabfd1ee3d2015184f39c2d0270d01ad6f5bab75f9cae",
+        "bytes": 9759
+      },
+      "zscope/cli/maven_cache.py": {
+        "sha256": "68929bf0adcde35dcf774ee00c9eb3a3a5833e15785ec91b73959c484e62cc87",
+        "bytes": 3456
+      },
+      "zscope/cli/report_export.py": {
+        "sha256": "b4fb1d5b737cf6796b0649e43a9a20b5c771470f9c75c1d2b9273dedbded9615",
+        "bytes": 886
+      },
+      "zscope/cli/review_memory.py": {
+        "sha256": "c6e4438ccdbcc1c2f2f33f9f448c09b7d325771b45a1fa436283a7bd37bec49a",
+        "bytes": 12491
+      },
+      "zscope/cli/rules.py": {
+        "sha256": "be86f6083fda469a88049a28726578a1d347c6aaf73bc78237c478f9306e09cb",
+        "bytes": 6713
+      },
+      "zscope/cli/wiki.py": {
+        "sha256": "767bc728ff7af4f0cede693b99a19b769fa20424b3a87c10f8db72f9ac7c9bcc",
+        "bytes": 8153
+      },
+      "zscope/common/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/common/cancellation.py": {
+        "sha256": "57c7af7502f6ef09d6b66c4794999d263968f24eacd7477226b7427936be978a",
+        "bytes": 4507
+      },
+      "zscope/common/defect_cwe_map.py": {
+        "sha256": "ffa0711bd05e0df2c31bb4b0688703d562a589b72d79da20a28892997da1297e",
+        "bytes": 12109
+      },
+      "zscope/common/issue_identity.py": {
+        "sha256": "797c6461c826e507c72c0849c15d93d60722fc5c95c011af53d1fb2ddb494cc7",
+        "bytes": 105278
+      },
+      "zscope/common/joern_client.py": {
+        "sha256": "b7b2c24e70f768d3cc96fff2ff9f26d29daa23212bab46eaaffcc7c9180831fa",
+        "bytes": 35678
+      },
+      "zscope/common/portable.py": {
+        "sha256": "d88d9d5103754191f4b02a4aa295549decf7abc4ed6fc4600ff3e76be9317882",
+        "bytes": 3203
+      },
+      "zscope/common/readonly.py": {
+        "sha256": "e4381e7884d22c561e148cae51fd1ee141f3d642ecb0bed4faa14a45c43720e4",
+        "bytes": 3678
+      },
+      "zscope/common/runtime_limits.py": {
+        "sha256": "1d620b1a5e70da544bd56421525dcf8b707a00eaf9cb0eb6e9e1e838a798e489",
+        "bytes": 2360
+      },
+      "zscope/common/utils.py": {
+        "sha256": "17eb04f056fe15fd5db92d3c7a06c685a5285a4c8f97a018e2502538557020e8",
+        "bytes": 12263
+      },
+      "zscope/common/validator_protocol.py": {
+        "sha256": "dee2194e29bf281133aad1fb648f941b1deb357652e6906b5bc9c314302dec2d",
+        "bytes": 17260
+      },
+      "zscope/config/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/config/config.py": {
+        "sha256": "9208d08f4f978c3d99dcb93901b06dab5e66466c8cc3825650a8e73f3608f6cf",
+        "bytes": 39364
+      },
+      "zscope/config/function_entry.py": {
+        "sha256": "84204b284e74448a252e465670908c6cd5350ab34d2c32e63fca5830c8dcc93a",
+        "bytes": 10997
+      },
+      "zscope/config/runtime_defaults.yaml": {
+        "sha256": "03fcfea4dbf006f2407a4055120ad10957305f70d49f0369a02163af1a88ae16",
+        "bytes": 3559
+      },
+      "zscope/config/user_config_store.py": {
+        "sha256": "95633676b6cdf432301bd5a5ea3070e92581c28011067d497d592f15bd96313c",
+        "bytes": 19251
+      },
+      "zscope/config/user_config_workbook.py": {
+        "sha256": "7bad92deacb7d36fce9dc5ddd51b9172085a616b96fec5551e9a4571655c3524",
+        "bytes": 45994
+      },
+      "zscope/config/v2.py": {
+        "sha256": "5cc3ca30b9ec22e085b1871d7bdb4ccf01f67f609c600c91cadc9868ff910253",
+        "bytes": 52891
+      },
+      "zscope/core/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/core/analysis/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/core/analysis/analyzer.py": {
+        "sha256": "5445007339e187b09caa99c435add085f8e8817d9fdf681d31d992a32509ada9",
+        "bytes": 372548
+      },
+      "zscope/core/candidates/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/core/candidates/adapters.py": {
+        "sha256": "210bc573344f49c6b286ca87926e84d8a3dc14d8346dc56c8bcf750dd45f8068",
+        "bytes": 20525
+      },
+      "zscope/core/candidates/backend_signals.py": {
+        "sha256": "d07f6b1fafdfc98eebafdea27ad5395e5dd38658cb706534b201074b84f5fefd",
+        "bytes": 15668
+      },
+      "zscope/core/candidates/clang_ast_cfg.py": {
+        "sha256": "b2c0955e7205057a720c33a4bdac7745129d355148944e1e90c091efca26d3c0",
+        "bytes": 48084
+      },
+      "zscope/core/candidates/cpp_domains/__init__.py": {
+        "sha256": "4b7ede8244c72470f45e30bf1ab3eb1c4fd7a0fefce4944db1e1c696eebb6e94",
+        "bytes": 824
+      },
+      "zscope/core/candidates/cpp_domains/concurrency_shared_state.py": {
+        "sha256": "9703b9efff11611b6218e93fc4c7f47e06f780aad4ec7030fd063fcac3f50845",
+        "bytes": 126837
+      },
+      "zscope/core/candidates/cpp_domains/memory_bounds_integer.py": {
+        "sha256": "b5ed5b33b8d71fe1f30f786c3126132ae08a05459c75759119f3bd1cb46b9b22",
+        "bytes": 131942
+      },
+      "zscope/core/candidates/cpp_domains/models.py": {
+        "sha256": "b99579b3c1df0a48651b5dded8d49e9374bb0cc2f08e4f5ed1a187d186f8590e",
+        "bytes": 3399
+      },
+      "zscope/core/candidates/cpp_domains/policy.py": {
+        "sha256": "2a71e6528e8cde2441b424f35db5ff14125cded566d2ce2c4c37d09659eda782",
+        "bytes": 5755
+      },
+      "zscope/core/candidates/cpp_domains/protocol_ownership_logic.py": {
+        "sha256": "86b21bb9b0bacc97c8ed9215e41c061065753922af7207f062d91c409437186e",
+        "bytes": 136389
+      },
+      "zscope/core/candidates/cpp_domains/registry.py": {
+        "sha256": "cd1b4915e6d665d5ef328c81e8bcd0446cef7dd0e16ed460a84724aa95899422",
+        "bytes": 1508
+      },
+      "zscope/core/candidates/cpp_domains/resource_lifecycle.py": {
+        "sha256": "a7bc466faee27471db82747f0e1abb79f30acf05105a2a6b1528dcdfbf188664",
+        "bytes": 124631
+      },
+      "zscope/core/candidates/cpp_domains/shared_access.py": {
+        "sha256": "95880cbf2c69794a9af1bf512c2dd1193c1528a7b05d429c0e8af9c3ab6dc569",
+        "bytes": 5169
+      },
+      "zscope/core/candidates/cpp_domains/source_events.py": {
+        "sha256": "0ce0e67ef09380773ac3a921204622c946c7673ab1102039732a18f881f35b54",
+        "bytes": 6006
+      },
+      "zscope/core/candidates/cpp_domains/typed_resources.py": {
+        "sha256": "c4b2e1b61deaa8319fb184ea47f69cfb86613ff5a6966a80039bcbce54c437df",
+        "bytes": 13570
+      },
+      "zscope/core/candidates/decision_facts.py": {
+        "sha256": "e5fc52777d22516ad50c87d10e32e8d8a7c8c9b80060d391862e8260144e5ad9",
+        "bytes": 45256
+      },
+      "zscope/core/candidates/evidence.py": {
+        "sha256": "066d6e763c98c3c70a23db3398b9f753ecb8f0527f2ac772788597127452881a",
+        "bytes": 21666
+      },
+      "zscope/core/candidates/evidence_models.py": {
+        "sha256": "a0bc898e1dae1c80fc6758205427aaae24f08c01a4011e28e2c85c3d00cc0d6b",
+        "bytes": 3930
+      },
+      "zscope/core/candidates/graph.py": {
+        "sha256": "cd08b211d3762a270437b5248c636dfc1e433c32a414bbaa4a2e9bb08bea53f4",
+        "bytes": 31527
+      },
+      "zscope/core/candidates/java_active_audit.py": {
+        "sha256": "79e9c77581f5ea8a83439f7f3c0b8810eaa4052f0a03e37653d3f606f8f5de80",
+        "bytes": 26724
+      },
+      "zscope/core/candidates/java_evidence.py": {
+        "sha256": "c1b1ab8e3cf0856fe2932f434330b7c99bbd62fea99a5d50a2e826ae90c68b91",
+        "bytes": 23758
+      },
+      "zscope/core/candidates/java_rules.py": {
+        "sha256": "4fb6e16689ee5214df2e62c4bd43a465666e1c53245fe376f14f3a32957a1383",
+        "bytes": 82625
+      },
+      "zscope/core/candidates/pipeline.py": {
+        "sha256": "ae912efc0f274c612838cc3ac0872bbeaa54be5a6b04c871567260f9fb093b2f",
+        "bytes": 4912
+      },
+      "zscope/core/candidates/regex.py": {
+        "sha256": "d57b54e2eb40f6a7c03ead70129664abadc7603e95cdd891f31242669bb95873",
+        "bytes": 24730
+      },
+      "zscope/core/candidates/svf_value_flow.py": {
+        "sha256": "4059171d5da71ed0258cbe246e9131b4ad8f1df446fea2677e5e8ebaca551ef5",
+        "bytes": 16397
+      },
+      "zscope/core/validation/__init__.py": {
+        "sha256": "8f2eb5d12743af14fc819b7d6d0d16461e03807fb9465be9dc31124a375eb267",
+        "bytes": 239
+      },
+      "zscope/core/validation/context_budget.py": {
+        "sha256": "d6e8e561544fc1c55e729abd07c12a0a32acb3b4428d71b39fc12acaa6599c37",
+        "bytes": 6560
+      },
+      "zscope/core/validation/dynamic_reproduction.py": {
+        "sha256": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7",
+        "bytes": 172218
+      },
+      "zscope/core/validation/evidence.py": {
+        "sha256": "a3228595b71cb0e0e1b0883b430669e5a6771013b8c39fdd112ce9529f8e07e0",
+        "bytes": 62600
+      },
+      "zscope/core/validation/evidence_completion.py": {
+        "sha256": "ca8953e3ba1ce468b12e4e693758d143b3a06a21e9e3b98b4cd8a9514411b119",
+        "bytes": 186471
+      },
+      "zscope/core/validation/explanation.py": {
+        "sha256": "efe6582c0d5483c13bec7685f3b9db9c47dd72515712ada24d873e898e542063",
+        "bytes": 8550
+      },
+      "zscope/core/validation/function_index.py": {
+        "sha256": "3d987eef396a84a01f03e1a0341af9d638d7350011f557d20804490f1ef1e705",
+        "bytes": 1863
+      },
+      "zscope/core/validation/pipeline.py": {
+        "sha256": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "bytes": 81361
+      },
+      "zscope/core/validation/proofs.py": {
+        "sha256": "3c1cdef9476f91feb99cb1d95983cc271bd2512b4ad486157dd1a8e190b7c119",
+        "bytes": 17633
+      },
+      "zscope/core/validation/review_checkpoint.py": {
+        "sha256": "b01f0193e8b78b87ee3750a0962a508a4c241741806075aceb1825f82b044419",
+        "bytes": 7472
+      },
+      "zscope/core/validation/review_checks.py": {
+        "sha256": "6665afd912f980ee83f320d01476c0c7741cf6eba4352cf7a4a2a08c819a89ec",
+        "bytes": 64706
+      },
+      "zscope/core/validation/review_protocol.py": {
+        "sha256": "2556d2818523a4e494f3f97999b31aa7adb8503e58d110902b7d48ec17f575d5",
+        "bytes": 5825
+      },
+      "zscope/core/validation/review_session.py": {
+        "sha256": "ecd55cc6c2bed5cb5350b604ddbdb4a49cccf341e081f982a700c735c85ed3aa",
+        "bytes": 7852
+      },
+      "zscope/core/validation/runner.py": {
+        "sha256": "3d0f4c71e1b688242eff26de5fc69e6eb4f80b0da5ed364062a2678764d202f8",
+        "bytes": 140574
+      },
+      "zscope/framework/base.py": {
+        "sha256": "9674fbf29624704949754272df3d2c812d87cb6e551152635d19e6d53e73f67b",
+        "bytes": 9107
+      },
+      "zscope/framework/conversation_recorder.py": {
+        "sha256": "ea2cb198dfb5eac9c79347bb88e0117ce8659c1204c8897ba83378d860ce757a",
+        "bytes": 46146
+      },
+      "zscope/framework/llm_client.py": {
+        "sha256": "568ee1e2181072ef46455c6e7a04ef83d0d0e67e4b4d5b22e513b80dec58974f",
+        "bytes": 170032
+      },
+      "zscope/framework/llm_usage.py": {
+        "sha256": "bdc6aba3f374c9ab69a175813212b07135239eabf4aa09f2c654bfc19ff73d62",
+        "bytes": 27705
+      },
+      "zscope/mcp/__init__.py": {
+        "sha256": "2557a9da12b29cfa770ec4458c4e93e211a22879e7a330fe724c21ad17305612",
+        "bytes": 145
+      },
+      "zscope/mcp/client.py": {
+        "sha256": "d60f5233cccc7a4b5afa95c5e4947d43e6690b6f81ce66283e2bd1abff8319f5",
+        "bytes": 2842
+      },
+      "zscope/mcp/http_server.py": {
+        "sha256": "e7ca8a35a253e7ad0db9a39da9e2ac09c254e5815d0276957481df5971d451dc",
+        "bytes": 9968
+      },
+      "zscope/mcp/provider.py": {
+        "sha256": "0b46d32e8e2faffeff2388f9b282be2f684910398e9c8c3e838485b18555f6b1",
+        "bytes": 37979
+      },
+      "zscope/mcp/security.py": {
+        "sha256": "35aafb6e251c4bfa59d974b379b03696b9e03e8461d00a6b100a1d70c40bf841",
+        "bytes": 3651
+      },
+      "zscope/mcp/server.py": {
+        "sha256": "5e9a772a67672f7c39e999ab03e094a0161c1090c4efddc0934e468835fd83ac",
+        "bytes": 11051
+      },
+      "zscope/memory/__init__.py": {
+        "sha256": "6f0aa20c9541c09204a6ed585c807b72010ec0960f3d45a4b41d6d817755a4f0",
+        "bytes": 121
+      },
+      "zscope/memory/review_memory.py": {
+        "sha256": "1a13b713c45e3d4b838d060b915412ce8ec64bf9bc31a9330b46e848eab1311d",
+        "bytes": 1849
+      },
+      "zscope/orchestration/__init__.py": {
+        "sha256": "490436ad4a9988d3814fef61103a0495f5d243e5e710f8ed544be131f49a0cff",
+        "bytes": 453
+      },
+      "zscope/orchestration/active_discovery.py": {
+        "sha256": "0c118d146b076e3ab40be55c7f8b14c1a0f6626e1fd70af2f9f30758e2f0b408",
+        "bytes": 101516
+      },
+      "zscope/orchestration/agent_policy.py": {
+        "sha256": "eba1e82cf4bafeb58df86b2b36b836771a21648ed06f96e10d8ef1df8b92b41c",
+        "bytes": 10211
+      },
+      "zscope/orchestration/bounded_investigation.py": {
+        "sha256": "c43bc3932ac20671fb0e08ed8f0137edb53237a894cf281887df463961a1b4e6",
+        "bytes": 26087
+      },
+      "zscope/orchestration/budget.py": {
+        "sha256": "ccac815eaaace322ff1cf2cf5f430d69c8d4520ccdd9b58ff6464c0bceb16983",
+        "bytes": 18270
+      },
+      "zscope/orchestration/callback_discovery.py": {
+        "sha256": "80ed94757c5aaa796440f31e1b756c93b1aaf1fa6a8a918600c00a7d2ecfd92e",
+        "bytes": 12524
+      },
+      "zscope/orchestration/candidate_envelope.py": {
+        "sha256": "bd300ae20897ef0e2170e7fe95d59d83e3a3d795beadc74cb4c7af9026b621a9",
+        "bytes": 35313
+      },
+      "zscope/orchestration/candidates.py": {
+        "sha256": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "bytes": 62940
+      },
+      "zscope/orchestration/diff_impact.py": {
+        "sha256": "172748462e83e31d3d7f75a729f8dea116e5a096e4b97f4d1c6a250f17dd4379",
+        "bytes": 87080
+      },
+      "zscope/orchestration/entry_discovery.py": {
+        "sha256": "01c65c93302f765c3eb230d45242011aabbb7dbffbfb4007ae13b20c74882128",
+        "bytes": 41949
+      },
+      "zscope/orchestration/external_findings.py": {
+        "sha256": "c4b9083aed15fc1a1bcb807eeecd7ed7ffcb9b680d98933417f8b157f28fafac",
+        "bytes": 22469
+      },
+      "zscope/orchestration/external_investigation.py": {
+        "sha256": "db86b4578777654dd5352bccf755fcfcf55937d5190205a8fa86d0770fea6708",
+        "bytes": 17557
+      },
+      "zscope/orchestration/global_modeler.py": {
+        "sha256": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+        "bytes": 35967
+      },
+      "zscope/orchestration/history_reconciler.py": {
+        "sha256": "37cd712c83c113e00d0eeab9dbc1d136e4476607561d5cbb3fad5fb8e9156189",
+        "bytes": 4546
+      },
+      "zscope/orchestration/investigation.py": {
+        "sha256": "ceb0834f9ae85837f3fb38ba586c3c61f5bec3c33374783d43913902386724b9",
+        "bytes": 22603
+      },
+      "zscope/orchestration/java_entry_discovery.py": {
+        "sha256": "e0b9fcc0c6b43bb7cae167bd2e97ae985ec0e4c0e6c97f480f5b6595578cde73",
+        "bytes": 21112
+      },
+      "zscope/orchestration/modeling_coordinator.py": {
+        "sha256": "f197a5cf4ceedd3c1e0c8addaade96819e01ae90308a566cce7e30ecc1df8f98",
+        "bytes": 9835
+      },
+      "zscope/orchestration/parallel_analyzer.py": {
+        "sha256": "b133f89158580ee7a5136e08604805fd187167b929d6d5c918e8317ef7cce3aa",
+        "bytes": 187469
+      },
+      "zscope/orchestration/rollout.py": {
+        "sha256": "fb1fd92d16253ca40e9a19a4618b697bf94e7a076a76baf02a513c7574b20256",
+        "bytes": 64555
+      },
+      "zscope/orchestration/scan_request.py": {
+        "sha256": "490cffedb885852aa3f9293d3c700018dccff6b591a3a1e4c8590a2d35142335",
+        "bytes": 8846
+      },
+      "zscope/orchestration/scan_session.py": {
+        "sha256": "fe168c7ccefce9105b535201317b3ea11385eedd8435efd8ff05b5f76f7e929b",
+        "bytes": 42211
+      },
+      "zscope/orchestration/scheduler.py": {
+        "sha256": "695c06435de5ab3819f69a31bc888d0fe7b6c77f9ab37ec917610b6ab9639f24",
+        "bytes": 5044
+      },
+      "zscope/orchestration/semantic_demand.py": {
+        "sha256": "dab3f43eedb96c2458d2e0765ccb4b3c4e28401784bafcb81ffe18c0ead057b5",
+        "bytes": 10283
+      },
+      "zscope/orchestration/semantic_modeling.py": {
+        "sha256": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "bytes": 67996
+      },
+      "zscope/orchestration/skill_selection.py": {
+        "sha256": "163ec78d5def20423c3ac3ae383888d45bd9ab4943c8f0f7b370053369d86da0",
+        "bytes": 18143
+      },
+      "zscope/orchestration/snapshot_candidates.py": {
+        "sha256": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "bytes": 20918
+      },
+      "zscope/orchestration/snapshot_observations.py": {
+        "sha256": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "bytes": 16034
+      },
+      "zscope/orchestration/specs.py": {
+        "sha256": "2a80aa038480be92f7fbeffa45bec9cf3ca655e3a96e43db724717b627d85e61",
+        "bytes": 15034
+      },
+      "zscope/orchestration/subagents.py": {
+        "sha256": "447beb4d919e9bf89189f6093d6037682afe72da4f81eb1158e33c267d48c1ab",
+        "bytes": 43037
+      },
+      "zscope/orchestration/user_config_inference.py": {
+        "sha256": "4efbd3fe98fa3fee31622f7402b52b427387ba3de39f12269a98c3a524f73b0f",
+        "bytes": 82683
+      },
+      "zscope/orchestration/workflow_executor.py": {
+        "sha256": "764be3387084533860621e3ea4e63a81c1c48684ed0e737eabda2dd0b67d37de",
+        "bytes": 5845
+      },
+      "zscope/orchestration/workflow_runner.py": {
+        "sha256": "b41d56d0868c8db18fe3bb9acf3b8ac8eb087f5cc39561fb25c11889c7d16b8a",
+        "bytes": 4340
+      },
+      "zscope/reporting/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/reporting/assembler.py": {
+        "sha256": "bad792ede56dd4f3570d41bcbb27796ff7ca64a148da6d7aa4378eba261359d2",
+        "bytes": 40796
+      },
+      "zscope/reporting/attribution.py": {
+        "sha256": "56ced8ebe557f4ce45559c0b692afac306e88188f8cb2bb6cb86d8c9251b1a94",
+        "bytes": 6778
+      },
+      "zscope/reporting/evidence_objects.py": {
+        "sha256": "7e7a61775efe4ddd1a3bfc4d2b5747ac85e6dcba575e1521464b82fce48ec069",
+        "bytes": 4295
+      },
+      "zscope/reporting/finding_roots.py": {
+        "sha256": "217b5aa6b3ea1c9fff8ef1c5b4d5e5ddc9f0ccd1d13bfb5a5b2f75e6ae17464e",
+        "bytes": 23631
+      },
+      "zscope/reporting/frozen_objects.py": {
+        "sha256": "14a9fdadf3972053e235066ba0fae74d8eacb5c363bdb63596358f097e672610",
+        "bytes": 2410
+      },
+      "zscope/reporting/immutable_evidence.py": {
+        "sha256": "6b2d0d32b129c58d8413cd9535e0ec8f3115884627ab56348b43bec8f201ceb1",
+        "bytes": 2168
+      },
+      "zscope/reporting/issue_aggregation.py": {
+        "sha256": "ca84ac9844c173905b150f2c1310cee9c9afb070f59ffaeea54747e010f9ac75",
+        "bytes": 11357
+      },
+      "zscope/reporting/issue_markdown.py": {
+        "sha256": "fd8f0941bac9014a14e5cd7b03caa0941b15c70661789ae413cc9760fab8a03d",
+        "bytes": 19631
+      },
+      "zscope/reporting/json_io.py": {
+        "sha256": "7d83e51a8685a80986ef7f0291f2cf56dd5af7d19199f46270bf58e35aba2875",
+        "bytes": 6756
+      },
+      "zscope/reporting/report.py": {
+        "sha256": "1cc1cceb745b7efad8c0bf1817920a793e5e74baccd9c6c7c2d34869ea3b4f6f",
+        "bytes": 23833
+      },
+      "zscope/reporting/sarif_exporter.py": {
+        "sha256": "c3a6a72bb04c9691060e4c4deb21f557f77ed2850038f5f6bed1513ca45bd191",
+        "bytes": 11645
+      },
+      "zscope/reporting/schema.py": {
+        "sha256": "5a12c7df98e12b32f516301042c57baf73806dec11f11216643b4a84ee53ae56",
+        "bytes": 31719
+      },
+      "zscope/reporting/shared_objects.py": {
+        "sha256": "2881fa446c2ef8688bbb889c45ae0eca3b42fba8c58b51a737e110a4076df56d",
+        "bytes": 15566
+      },
+      "zscope/reporting/views.py": {
+        "sha256": "246398f606ff280b9a1c8829a3e607d360bfe8c87ba03bc021a1bb8a96f53e14",
+        "bytes": 33652
+      },
+      "zscope/retrieval/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/retrieval/analysis_facts.py": {
+        "sha256": "8f5fc5fd116a4a1a5cbbf4cbd2f14fee76ec549612bc2cca80eba72711301a24",
+        "bytes": 3622
+      },
+      "zscope/retrieval/backend_base.py": {
+        "sha256": "5e18990788b30868c4501ae31e2e89c831dcf3e3b9611dd09eac6faff968afba",
+        "bytes": 5893
+      },
+      "zscope/retrieval/bitcode_compile.py": {
+        "sha256": "12fa537538e4c03599f80a54e50e382206053318fcb445dc1a6e31375f8469b7",
+        "bytes": 13035
+      },
+      "zscope/retrieval/bitcode_scope.py": {
+        "sha256": "99644f169118b1626c2e8a5bd477343fe45b191651e3372f09445744fc198c38",
+        "bytes": 67347
+      },
+      "zscope/retrieval/build_llvm.py": {
+        "sha256": "f07556ea82e3251d5c29b050743caa841ba82e0804c2e8a440b7c2e3a2845899",
+        "bytes": 72791
+      },
+      "zscope/retrieval/cached_index.py": {
+        "sha256": "8800da9b8bd5c2f6ec4a75355b16e5013d2bbd82ebad32c35802dcf8452a185a",
+        "bytes": 3028
+      },
+      "zscope/retrieval/claim_paths.py": {
+        "sha256": "346a8745a9e79b50dd265966613688598d5f960d4111df715fa1a1795dac4a78",
+        "bytes": 4584
+      },
+      "zscope/retrieval/clang_backend.py": {
+        "sha256": "46bb3fbafa5e85bd0521709276e7d76758bbf11db4d6f9aad81e90942ee44cc9",
+        "bytes": 54152
+      },
+      "zscope/retrieval/clang_batch.py": {
+        "sha256": "9913bc668152d17f8d564bdd1b17c2d6c367cd449f2fcfd60a7da66d0d779244",
+        "bytes": 52808
+      },
+      "zscope/retrieval/clang_derived_cache.py": {
+        "sha256": "220b78386bd8d44aa264d7a19703e3d8b7502f9e952a6b06751ed3a60864e2ed",
+        "bytes": 15120
+      },
+      "zscope/retrieval/clang_extractor.py": {
+        "sha256": "1d82e9d263cb16f2f7077d1329c1e6e77c31f09750c450725c61b995805d56ea",
+        "bytes": 249455
+      },
+      "zscope/retrieval/clang_extractor_pool.py": {
+        "sha256": "4aa876eb1e6993d0d616472bf9e70e6bb9a9144d63176681083e58d4b7bcf0fb",
+        "bytes": 22177
+      },
+      "zscope/retrieval/clang_input_watch.py": {
+        "sha256": "7cb30eed29337bea4dbf04f938b269eec121d37c8f8d5fb3b4561fd51ca21582",
+        "bytes": 5092
+      },
+      "zscope/retrieval/clang_resolution.py": {
+        "sha256": "e2548ea04e0545dcd51328cae094cf3f516f8c368183ac9b4ae33ed2b1b612a9",
+        "bytes": 66592
+      },
+      "zscope/retrieval/clang_source_snapshot.py": {
+        "sha256": "80f8bc287a50d6c12dc53ff6a058d59c31bc64fdb58a35349bc8d5a3934a2e51",
+        "bytes": 12848
+      },
+      "zscope/retrieval/clang_tooling_evidence.py": {
+        "sha256": "3b45740c1bf01446671860efd197a897ac5386b5202561c4a6a7970bb97dc7aa",
+        "bytes": 21613
+      },
+      "zscope/retrieval/clang_type_scheduler.py": {
+        "sha256": "532c7cdac061104f262eb2c68f711057ca9cc981b3da236b8ef088e2d22720c2",
+        "bytes": 30449
+      },
+      "zscope/retrieval/clang_type_state.py": {
+        "sha256": "8031a5fffc1634a641a7292a9f8669742498a6f4e3707446750dae2815f13be2",
+        "bytes": 9764
+      },
+      "zscope/retrieval/clang_type_worker.py": {
+        "sha256": "5f786ccec22dd875a587c61231bdf62bdbeebea1275156cfe67cb673084c3ca9",
+        "bytes": 17842
+      },
+      "zscope/retrieval/code_index.py": {
+        "sha256": "bb1493e6171cd36dae48a1fd0efa0e6af6da65d97fcdb5826853850b39aa17bb",
+        "bytes": 204727
+      },
+      "zscope/retrieval/compile_commands_prepare.py": {
+        "sha256": "1a6ffcf98279b476173990cea1e762a956e477a4e742e65426160b516ebf6cf4",
+        "bytes": 18666
+      },
+      "zscope/retrieval/compile_preflight.py": {
+        "sha256": "9ac8f729989769f423f5d3a83c491d4c84128db0106c4b239fd3bbc965801719",
+        "bytes": 14433
+      },
+      "zscope/retrieval/compiler_compat.py": {
+        "sha256": "371576c60deb059a19dd6a47e69bb9bf96696df2760b3df45ba2f02b3d5b7da6",
+        "bytes": 8480
+      },
+      "zscope/retrieval/compiler_diagnostics.py": {
+        "sha256": "a98eafc3905f67201522f9275928249bd630d8ae1767efb0bd6781553c2a165a",
+        "bytes": 1636
+      },
+      "zscope/retrieval/incremental_replay.py": {
+        "sha256": "5e5d93e8b8d839c74d52e0bccc06ab83afeed7fc9cd740acf8d5fb48877a6874",
+        "bytes": 22346
+      },
+      "zscope/retrieval/indexing_identity.py": {
+        "sha256": "b82d51c1559e0a06a3b62b28884c05a505a1e2c5590f970ad69c2b604e0a14c2",
+        "bytes": 16141
+      },
+      "zscope/retrieval/indexing_inventory.py": {
+        "sha256": "dcca9edd5bd910f6098f564e61c19b39ba7e65040dc41e5c1af3e4c719a1e85f",
+        "bytes": 11259
+      },
+      "zscope/retrieval/indexing_runtime.py": {
+        "sha256": "a39b7d0e084ea77ad5485775c7ca484210afecc63ef8ca9ea94e867b720f7226",
+        "bytes": 12719
+      },
+      "zscope/retrieval/java_joern_backend.py": {
+        "sha256": "911a3dbb66fab8f8a7133b3d397bdc45176993763f5a0a4cbbf4e007b698c86b",
+        "bytes": 9626
+      },
+      "zscope/retrieval/java_models.py": {
+        "sha256": "a0f1abe221a11fffcbfb9d862f70c9e25577ed4df399c65e23761f0a8f1c491a",
+        "bytes": 7352
+      },
+      "zscope/retrieval/java_signal_providers.py": {
+        "sha256": "f5e2f446bfb9daf768da00db02fb2afebed15abf7c74b66b0b4f360aa214f632",
+        "bytes": 15750
+      },
+      "zscope/retrieval/java_source_backend.py": {
+        "sha256": "efb908a731ee67d279e293f2d8b6874c800e1bfc46d87d29fdd22d46e5e68f93",
+        "bytes": 21577
+      },
+      "zscope/retrieval/java_source_extractor.py": {
+        "sha256": "abd11c35b02f9a48d90d5daa02126cdf840322e984d8a1dc9de329f2627f4a6b",
+        "bytes": 23082
+      },
+      "zscope/retrieval/java_structure_db.py": {
+        "sha256": "63a9c920a8f3d1bac2579a0b4c7024e4be18097c16ee144072287c26d5f2dba4",
+        "bytes": 11395
+      },
+      "zscope/retrieval/java_unified_backend.py": {
+        "sha256": "8de31cb4de3702843e4016a637547ff565d3180885d4a4b455b79c80eed51336",
+        "bytes": 10386
+      },
+      "zscope/retrieval/joern_backend.py": {
+        "sha256": "fbbe76ed3af317d7e556f79e0f56e449a00b1a68c825ebdeab9864d100b029e1",
+        "bytes": 12689
+      },
+      "zscope/retrieval/knowledge_db.py": {
+        "sha256": "560e48a882311e2fb84eed15c5f21c2242bda88afb41ed4e0e58cdcdf9271504",
+        "bytes": 158190
+      },
+      "zscope/retrieval/lifecycle_analysis.py": {
+        "sha256": "fe2848934a0161708d38dd5cd365753dae8d5ba3e65fda024b4879798e47c6be",
+        "bytes": 29323
+      },
+      "zscope/retrieval/llvm_toolchain.py": {
+        "sha256": "7cc3e0284692f1587e01042c620010c847772de726a2b9115116916b64188293",
+        "bytes": 5832
+      },
+      "zscope/retrieval/svf_analyzer.py": {
+        "sha256": "6e0b24543211f3e2808f5af5b98463049163981401d728a6953e39b4a0064338",
+        "bytes": 44399
+      },
+      "zscope/retrieval/svf_parser.py": {
+        "sha256": "df0351897eff59da00de848f7dac064ce15fd3497931b66adbba5ea9f9695d85",
+        "bytes": 13314
+      },
+      "zscope/retrieval/svf_runner.py": {
+        "sha256": "cdb928620bbbf1d9844b227ad83b00772ad912086a4c7194733780063c8101c0",
+        "bytes": 8118
+      },
+      "zscope/retrieval/unified_backend.py": {
+        "sha256": "5d84e08b2d81375d52a012c78ba7b61624eff775b8133d3c9ffc6afafcf44f41",
+        "bytes": 14624
+      },
+      "zscope/retrieval/validation_facts.py": {
+        "sha256": "caf409dcee28608984080cd11bdd7fe76b333333f0949e16f88fdaf06f02fa51",
+        "bytes": 25497
+      },
+      "zscope/review_memory/__init__.py": {
+        "sha256": "cff3b50b854a2df456dc2e86b9df89ef827cbdb9108541f0ad119c8aae20acf0",
+        "bytes": 257
+      },
+      "zscope/review_memory/audit.py": {
+        "sha256": "9e424ed9486caf671c24c7e5e1d33409488a5966c7aea26fdba8ff05e769edc2",
+        "bytes": 71
+      },
+      "zscope/review_memory/extractor.py": {
+        "sha256": "274b112c1b9e561ae3dcb16f5c18a42287278d8b88b6544379945596c4f8e1df",
+        "bytes": 7811
+      },
+      "zscope/review_memory/identity.py": {
+        "sha256": "378a6ab533ec67e0e99df887340822ac27ca516a7d4483ac5e324c8fd58db329",
+        "bytes": 3935
+      },
+      "zscope/review_memory/lifecycle.py": {
+        "sha256": "598b3b1f3be01a5689d02adf6bad8899f65f0fa91d4d1549d0c996d0bca3eda8",
+        "bytes": 1260
+      },
+      "zscope/review_memory/matcher.py": {
+        "sha256": "65ee2601036f0e6fb428e763d833d71238caf41ec8cba0799bf2809f4b57c169",
+        "bytes": 4410
+      },
+      "zscope/review_memory/models.py": {
+        "sha256": "853b3731210261db76e0bb2d0d1fb393e92d175d5d5726da2e68598b8a406338",
+        "bytes": 2397
+      },
+      "zscope/review_memory/projector.py": {
+        "sha256": "1826a834dea1a9f0fdd5422def12262a6f831c8242b3f5dab6897b93035641b8",
+        "bytes": 815
+      },
+      "zscope/review_memory/replay.py": {
+        "sha256": "69ac8e648b87852fc633b89cada01d2c605fe5ab86bc62653c1533ac62dca5bf",
+        "bytes": 3422
+      },
+      "zscope/review_memory/schema.py": {
+        "sha256": "b293854e21963123bd63617a82297f96c918590fce664d986dd96dc89007e69d",
+        "bytes": 4873
+      },
+      "zscope/review_memory/store.py": {
+        "sha256": "caaf1efb300b128673ef8407313ba3e0eba49a17efc50c30be478464ce10cf0e",
+        "bytes": 20859
+      },
+      "zscope/review_memory/worker.py": {
+        "sha256": "b2870d298ea77768e4a56fa1d817c19a4ec40743d7ed038bda2c2b2d9b981799",
+        "bytes": 2656
+      },
+      "zscope/rules/__init__.py": {
+        "sha256": "4df30d212932b5cfb7535b5f33b807957c20a925229040b58db6e8e472bfd2aa",
+        "bytes": 1073
+      },
+      "zscope/rules/analyzer.py": {
+        "sha256": "600b3563c29444ba47f67c8ab00c04215c3a30c2ada73b92e641b1dbb4d2e653",
+        "bytes": 37117
+      },
+      "zscope/rules/catalog.py": {
+        "sha256": "2db53b888f390a657246811e7613a775e1de5082b86e003a79c546cd18bb86c2",
+        "bytes": 41865
+      },
+      "zscope/rules/engine.py": {
+        "sha256": "813e49f285dacfb81d8985f37de9cc85aeb4e4eb84ec6127966c6bdf42897057",
+        "bytes": 44853
+      },
+      "zscope/rules/extensions.py": {
+        "sha256": "4d12f52fb5af654f3040da6f02c8e35211b23c40d14e7c1c8e02083c37e49801",
+        "bytes": 36602
+      },
+      "zscope/rules/implementation.py": {
+        "sha256": "5bfec88cb7a05b8c39375f4dd2211d9dc82cdcf00bb591176eb379f0c18cd789",
+        "bytes": 17187
+      },
+      "zscope/rules/qualification.py": {
+        "sha256": "9ad7df39e58cb2517f568de8c86c42f0c3c1e592ff28f7c7e122c48d0aa616d8",
+        "bytes": 16247
+      },
+      "zscope/rules/qualification_evidence.py": {
+        "sha256": "93c926c59a6ed71a45fc95d4dfcc8b50f1a1e36e094d1e45401bb82b428c30ca",
+        "bytes": 18782
+      },
+      "zscope/rules/query.py": {
+        "sha256": "ae6a26e0ab4f45ecb6b50f34347735ce9957617abdb7b237d685199a9d5e4bb6",
+        "bytes": 4056
+      },
+      "zscope/semantics/__init__.py": {
+        "sha256": "64e9ed6a9ce05a485d521c6ae3729bf3a2f24a6b7830c9f584da93a41e698d53",
+        "bytes": 57
+      },
+      "zscope/semantics/call_context.py": {
+        "sha256": "52f0df700312434bc9ad60206158c1f8635f4b3204994aa94fd352fff132fa7c",
+        "bytes": 5010
+      },
+      "zscope/semantics/call_operands.py": {
+        "sha256": "6410b71d76925f9f978de6139c54aa2e9eac204d34accbbf9d5d25f5a88f01b9",
+        "bytes": 2566
+      },
+      "zscope/semantics/compiler_fingerprint.py": {
+        "sha256": "d773c88fdb233e2e60aa335035a161feb6f53a6383d746c12d5f12e72ec383fe",
+        "bytes": 2271
+      },
+      "zscope/semantics/contract_compiler.py": {
+        "sha256": "cb8335f24f22a917442e8f205c8dcbb7c3620f9e8da07ac08a44f3f5f61bbcdb",
+        "bytes": 65859
+      },
+      "zscope/semantics/contract_conditions.py": {
+        "sha256": "cc0a4656b822f76c3bb38377e46c29fb00f36e0c64b2fdba980f0653c9d38965",
+        "bytes": 12804
+      },
+      "zscope/semantics/contract_review.py": {
+        "sha256": "662ffc9de10b8633c8991c6e90380c8abcda72c1476f6f691f11329bef7adc03",
+        "bytes": 6738
+      },
+      "zscope/semantics/contracts.py": {
+        "sha256": "f4b881979887e5b23a5dea8a00295bfa3868c9858a514d8e2a298e24b0913101",
+        "bytes": 36807
+      },
+      "zscope/semantics/defaults.py": {
+        "sha256": "5d245eb3ae6e4fa37db81a009323fe57b2cd189de5352f5147587fd1fd729bb8",
+        "bytes": 6340
+      },
+      "zscope/semantics/inference.py": {
+        "sha256": "f647640a80f4982d2c4fd84de53c0242669aa90c36d1a1ab13686fe159c8fdbf",
+        "bytes": 20367
+      },
+      "zscope/semantics/java_frameworks.py": {
+        "sha256": "d3f28d9ce2f4098ad4a1b42e96e5063988ae982918d250a8bdf14ffa6f2ca97c",
+        "bytes": 46262
+      },
+      "zscope/semantics/models.py": {
+        "sha256": "4288f319e52289d93f26e45997f6d52fc4152684a786d67b36a5382803060003",
+        "bytes": 9818
+      },
+      "zscope/semantics/object_flow.py": {
+        "sha256": "ef70b4f2fc4cdff93277921a4d329a8b2af7c0aaa8e56ec16bef4297274bad9a",
+        "bytes": 2278
+      },
+      "zscope/semantics/pool_protocols.py": {
+        "sha256": "32a140bac843af17b3776fb1f9ff87e1146c837e7becbf2a0d0ae1c43c0ef5c8",
+        "bytes": 7454
+      },
+      "zscope/semantics/security_map.py": {
+        "sha256": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "bytes": 111242
+      },
+      "zscope/semantics/standard_api.py": {
+        "sha256": "e61ebaaf92b5cd7ebee98a1bd98ab9a2ceafd8a1b23b7af262fceab5aa77668b",
+        "bytes": 13236
+      },
+      "zscope/semantics/user_config_context.py": {
+        "sha256": "144291a7ae6b4b4dc3bfaada1f7852684381264830f1d57ba345ab921dfa494c",
+        "bytes": 5796
+      },
+      "zscope/snapshots/__init__.py": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "zscope/snapshots/modeling_input.py": {
+        "sha256": "1464c2789b3bbda3f6ab163d372149fd177ade4d0b19f40e1c90c51e1cd0a509",
+        "bytes": 17888
+      },
+      "zscope/snapshots/policy.py": {
+        "sha256": "d3575ed5a75389052a4c0eda7379512091b6298cde8c5bcd3af3b5d74fe99f94",
+        "bytes": 25532
+      },
+      "zscope/snapshots/readonly.py": {
+        "sha256": "571469b77dba493f535ccbed717e3f725704d2842167688bcd7065bc8d191229",
+        "bytes": 3797
+      },
+      "zscope/snapshots/store.py": {
+        "sha256": "878ae7dccc921a2c95a88dbbe8f7b185489d83192e519df6a68306bdfcd234ca",
+        "bytes": 68054
+      },
+      "zscope/tools/call_graph.py": {
+        "sha256": "842672cbdea5423b040915efd642784d6c568c851da8466888f0380fdf220298",
+        "bytes": 3707
+      },
+      "zscope/tools/callers.py": {
+        "sha256": "d2599d879af09bfcd0aa38fd58c7cc078e7b08dd27e68b53bdfc3e074817d322",
+        "bytes": 4619
+      },
+      "zscope/tools/code_graph_query.py": {
+        "sha256": "46da2cb28a6fd5f9a25c633a48a966d181cd61d23831c6c010ddab17f015072f",
+        "bytes": 26818
+      },
+      "zscope/tools/code_retrieval.py": {
+        "sha256": "f161854af8e4aa0e42274f22f9c45365e815d1430922dc94fdc2351b6f23b468",
+        "bytes": 3766
+      },
+      "zscope/tools/contracts.py": {
+        "sha256": "0ffa61d3b60ad9bf0b0e1bf8e500b9960cfd243932cd115bd88115bef9134bf1",
+        "bytes": 7502
+      },
+      "zscope/tools/data_flow.py": {
+        "sha256": "97b718ac883a41737c3dc30d1b6aa6a0b62a689dbf2f555abbfdb9cc2154264e",
+        "bytes": 1782
+      },
+      "zscope/tools/data_flow_trace.py": {
+        "sha256": "d52ac21ef6a088b5f8bb491b732989c697b1bb4c15f88730683a5652293f9f67",
+        "bytes": 13197
+      },
+      "zscope/tools/deep_call_context.py": {
+        "sha256": "d452c790de0cf7c70b6915b61dd7668b16d7c6c5dab4c53a27459f1f64ef5879",
+        "bytes": 3691
+      },
+      "zscope/tools/file_snippet.py": {
+        "sha256": "45f12ddd8506fb288df61c6d5a21f2a60d17611fc211a520605fd8695c8f052d",
+        "bytes": 4397
+      },
+      "zscope/tools/flow_query.py": {
+        "sha256": "41965c3ea94f3d03e29f81c8b375c700285b1b43b71aea05af51a2b21a5e16f9",
+        "bytes": 41393
+      },
+      "zscope/tools/function_info.py": {
+        "sha256": "bc54df5188fcaf43470c07d75aaa74efc666b4febeb9ea59b2dc66782b7cf0ac",
+        "bytes": 6269
+      },
+      "zscope/tools/function_pointers.py": {
+        "sha256": "9e222b5664980a6ac91d6f64dcd59fab4746b3fd579f79be78d3cfc7e7728738",
+        "bytes": 1437
+      },
+      "zscope/tools/list_functions.py": {
+        "sha256": "e0247d427a758b9dc5c8bf32c2a814698e0e1a13e0d2904ebedb07949f7029cc",
+        "bytes": 3138
+      },
+      "zscope/tools/pointer_alias.py": {
+        "sha256": "97ad928f33eae775537474dc74065977e57c23f477c61759a2633ae124ba1a78",
+        "bytes": 2305
+      },
+      "zscope/tools/policy.py": {
+        "sha256": "fe4dbce22408995a3cc001fd9438c40d1b0035d2533d233e8034e4103a6a93fc",
+        "bytes": 17014
+      },
+      "zscope/tools/read_code.py": {
+        "sha256": "d55db22e93c7798dbeeb1f00cd1e495fe7b149255b321da4cfd79073a89c9484",
+        "bytes": 16794
+      },
+      "zscope/tools/registry.py": {
+        "sha256": "71d38d9744b9ffabe73738c67ad41ff744f08ac12c42189fb4eea16358392db5",
+        "bytes": 2582
+      },
+      "zscope/tools/runtime.py": {
+        "sha256": "ca2367a6231c003f18bc1aae756000a535d049dde4c6666183dea8bc8516e537",
+        "bytes": 18388
+      },
+      "zscope/tools/search_code.py": {
+        "sha256": "cb2545717ec63bb3ac2c4dcf92848323c48042272e5a31c8a728bbf98d0c2d79",
+        "bytes": 8364
+      },
+      "zscope/tools/security_semantics.py": {
+        "sha256": "7c9ddb4c13fc1509d9473620d55a61341416ba0a54a11dbf1b7958ad718f7674",
+        "bytes": 6247
+      },
+      "zscope/tools/semantic_context.py": {
+        "sha256": "2999c0cfa47a1cbceda9cad4635417f9d7cc243953424f8f7701619173083502",
+        "bytes": 22333
+      },
+      "zscope/tools/snapshot_tool.py": {
+        "sha256": "7193e8c6a64cc90eb0627af432a3ce46414bd60ef458a9ead5aa745618b2ea9f",
+        "bytes": 4963
+      },
+      "zscope/tools/source_access.py": {
+        "sha256": "8325cfc6263d1a20a5806110e20861798ca86f57a6f638722e66aebf356af8f8",
+        "bytes": 18272
+      },
+      "zscope/tools/static_findings.py": {
+        "sha256": "8dbb5d286f75feef40b3a43a270a86516f4a3675ba501650fd95f2ce37be5472",
+        "bytes": 20789
+      },
+      "zscope/tools/symbols.py": {
+        "sha256": "077574489bbbc7a4f67bcc586e8968e3aad44483ace36a0dfce58c624dd5765a",
+        "bytes": 24472
+      },
+      "zscope/tools/taint_reachability.py": {
+        "sha256": "a8b0e593b920ade688ad9ff052af836aa398175a2acc021165abeb144138f3d1",
+        "bytes": 2190
+      },
+      "zscope/tools/taint_tool.py": {
+        "sha256": "1bc33f33a16485c8fd469b3db3d5a760f1fda5ace011e07afa7162a585a4a6ff",
+        "bytes": 2970
+      },
+      "zscope/tools/type_info.py": {
+        "sha256": "f9c83ad5295cc0aa4223f07870c4c78da1013b4870b4ea2812c5dba1d5701a8f",
+        "bytes": 3923
+      },
+      "zscope/tools/utils.py": {
+        "sha256": "ea06d2f56bce9ce102d33dd5e246b0cf8205aa86ea9106582382e23e156ed173",
+        "bytes": 899
+      },
+      "zscope/web/dashboard_server.py": {
+        "sha256": "3fb82132a68334c2e296df93eb901398d1755da4476f338a0444237590c9e084",
+        "bytes": 2311
+      },
+      "zscope/web/review_reports.py": {
+        "sha256": "315bfc024247e9d7814ff38e7adee8817421e927007ab329a6e00aa043d354f3",
+        "bytes": 11520
+      },
+      "zscope/web/server.py": {
+        "sha256": "e815a38a651704df2898a0e84e2e10654cf424de3e38ee19eeae4f7b46fe0c12",
+        "bytes": 18274
+      },
+      "zscope/web/services.py": {
+        "sha256": "66ce537dcf05f975eb0540d2cfac6e3744b33e4c04ddd87edfe8d1639f8df95e",
+        "bytes": 51984
+      },
+      "zscope/wiki/__init__.py": {
+        "sha256": "736feb1a2dbc12d3cc843d6d818495ba1a7f72b26dd3e404eacd74bfb2ce26aa",
+        "bytes": 755
+      },
+      "zscope/wiki/classification.py": {
+        "sha256": "e8f3b184137c7a7cade1d42135805e47b772bd9eba65bdf2c307686dbc8fbedc",
+        "bytes": 10485
+      },
+      "zscope/wiki/compiler/__init__.py": {
+        "sha256": "040ec36ae52cb7d249b2c4420bee0a0d13422de5f614ba0fcbace62dbf787966",
+        "bytes": 1069
+      },
+      "zscope/wiki/compiler/changeset.py": {
+        "sha256": "2a2ba1442b5a59ab70e354b46031554e723c3c41a58225c79d6f95d81ed34af1",
+        "bytes": 6855
+      },
+      "zscope/wiki/compiler/chunker.py": {
+        "sha256": "a732a3de7db46548d9e3e7f0a4ba78db975405d942d3ddb0ea2edd21d030e0cc",
+        "bytes": 5531
+      },
+      "zscope/wiki/compiler/compiler.py": {
+        "sha256": "332d3b62d332689ee9b11fb2fe4503326d234c3e5e0581d34dc3759a3da5a537",
+        "bytes": 18913
+      },
+      "zscope/wiki/compiler/llm_compiler.py": {
+        "sha256": "2b46c9665c229888b55196798c7423c0fe713438456e94104159c5e8ce3cfde4",
+        "bytes": 10080
+      },
+      "zscope/wiki/compiler/workset.py": {
+        "sha256": "d7ffc244fd055603942cc53fdbc2950dda3295acf7b5ecabc6ddb5bc573acd03",
+        "bytes": 18662
+      },
+      "zscope/wiki/context/__init__.py": {
+        "sha256": "ed6c50d21e051143eff8ca1bafccac57576ceea7ed7c4c352610b93cb7c0693c",
+        "bytes": 211
+      },
+      "zscope/wiki/context/direct_documents.py": {
+        "sha256": "fb917afa0a34c89dc442b9a2dc12f5e53ee1fb6c0169176b32d2809c85410651",
+        "bytes": 1685
+      },
+      "zscope/wiki/context/obligation.py": {
+        "sha256": "07031e7c8dbc39c06b9390297c199f7d71f00c95400aadefa2740fbca2b2eda7",
+        "bytes": 6357
+      },
+      "zscope/wiki/control.py": {
+        "sha256": "483ef3957c1c8eced8462c8000973e1c4970881eb86968d6684040b6bbd8dbfa",
+        "bytes": 9656
+      },
+      "zscope/wiki/discovery.py": {
+        "sha256": "81f49485ad67f1c4347a103ffe6c75e67768b8db7649240683c18288488a8276",
+        "bytes": 10254
+      },
+      "zscope/wiki/events.py": {
+        "sha256": "6d4e8d8315ed5ba8197766e9aab91875fa053a61ce864129c10a490b9816e7d1",
+        "bytes": 6523
+      },
+      "zscope/wiki/identity.py": {
+        "sha256": "222f439f07ae8df6eb6cdfab91b543bf93c20c0c3f6d190718220d5dc423d181",
+        "bytes": 867
+      },
+      "zscope/wiki/lint.py": {
+        "sha256": "9a12500cdf28c9fb890ff66c7585a04aa9eb993395a452e6e7ab54eabf81ba33",
+        "bytes": 13884
+      },
+      "zscope/wiki/maintenance.py": {
+        "sha256": "d03b29ff43e024407d187dee4fe55cd58f407bfc1e294de267779b9137437386",
+        "bytes": 12905
+      },
+      "zscope/wiki/markdown_parser.py": {
+        "sha256": "8888befb1d57ef839394117d71b4ca96220660970cadc6d8c12f40347089ea62",
+        "bytes": 9565
+      },
+      "zscope/wiki/models.py": {
+        "sha256": "b368c831603171544140840db407a2e85034cd3662959f54f2bc1f3fec91c0e9",
+        "bytes": 5173
+      },
+      "zscope/wiki/page_format.py": {
+        "sha256": "285d09134c1efcd77430407e8d6b642dc9da6573e08b4cc5abc0a4f620c73749",
+        "bytes": 3186
+      },
+      "zscope/wiki/schema.py": {
+        "sha256": "303adce6b40df0989a96bf07cd177eeec624a1521327b1d1e248656e05c89f55",
+        "bytes": 8633
+      },
+      "zscope/wiki/service.py": {
+        "sha256": "14a5c5b9bde6e71565299d9e815a547e11354d780dbd2ffe6d99919c0ac89a74",
+        "bytes": 23181
+      },
+      "zscope/wiki/source_index.py": {
+        "sha256": "f6944fb9e828a9004e7ccc6c37b6933587396fca826ecbce60536882ec341db3",
+        "bytes": 30005
+      },
+      "zscope/wiki/source_manifest.py": {
+        "sha256": "2f3050ae8394db995b0aa404a7f23e53b2118f3f1d680f2e652859018e9ff5b3",
+        "bytes": 8825
+      },
+      "zscope/wiki/store/__init__.py": {
+        "sha256": "142136a10c355a43447d00324a857ba9223ea931a2feb85825f2655392429d7c",
+        "bytes": 190
+      },
+      "zscope/wiki/store/revision_store.py": {
+        "sha256": "0614287bb92dd61564698312b2d3d9c3359b8266a40ca57858da66463d0c2699",
+        "bytes": 59907
+      }
+    },
+    "combined_sha256": "152e38b90023b7ba9a96bf8ff7ec587793c20dee6de46747cd455a35d434f47e"
+  },
+  "inside_driver_sha256": "6dc5b4f2ea3dfaecce25846306b758f7eafd5710cd67b6693d0f2f34dbe4db6c",
+  "outer_driver_sha256": "a77cfd2d74df78ae0293d29d2e83ce0efbb8f7460731c9d3430a72951a7330ea",
+  "command": [
+    "podman",
+    "run",
+    "--rm",
+    "--name",
+    "zscope-v02-common-cq38zka2",
+    "--pull=never",
+    "--network=none",
+    "--read-only",
+    "--userns=keep-id",
+    "--user",
+    "1000:1000",
+    "--cap-drop=all",
+    "--security-opt=no-new-privileges",
+    "--security-opt=seccomp=/mnt/c/Users/10273/Documents/Codex/2026-10-12/task-3/v01-v02-kimi-resume-20261012/tsan-personality-seccomp.proposed.json",
+    "--pids-limit=256",
+    "--memory=2g",
+    "--cpus=2",
+    "--tmpfs",
+    "/tmp:rw,size=512m,exec",
+    "-v",
+    "/tmp/zscope-v02-personality-proposal-20261012-cq38zka2/inputs:/repo:ro",
+    "-v",
+    "/home/zeal/venv313/lib/python3.13/site-packages:/venv/lib/python3.13/site-packages:ro",
+    "-v",
+    "/tmp/zscope-v02-personality-proposal-20261012-cq38zka2/evidence:/work:rw",
+    "-e",
+    "PYTHONPATH=/repo:/venv/lib/python3.13/site-packages",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+    "-e",
+    "PATH=/opt/zscope-test/bin:/usr/bin:/bin",
+    "-e",
+    "TMPDIR=/tmp",
+    "-e",
+    "TZ=UTC",
+    "-w",
+    "/repo",
+    "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+    "/usr/local/bin/python",
+    "/work/common-probe.py"
+  ],
+  "cwd": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+  "exit_code": 0,
+  "stopped": null,
+  "isolation": {
+    "checked_utc": "2026-10-11T20:48:58.386184+00:00",
+    "uid": 1000,
+    "gid": 1000,
+    "mounts": {
+      "/": {
+        "options": [
+          "ro",
+          "relatime"
+        ],
+        "type": "overlay",
+        "super_options": [
+          "rw",
+          "lowerdir=/home/zeal/.local/share/containers/storage/overlay/l/L7VIUI5Z6DF3R3J2YC3CPADR2O:/home/zeal/.local/share/containers/storage/overlay/l/L7VIUI5Z6DF3R3J2YC3CPADR2O/../diff1:/home/zeal/.local/share/containers/storage/overlay/l/VYDUKROMZNZORVKVACXDV6YNMA:/home/zeal/.local/share/containers/storage/overlay/l/GUOH3YU6EZ424CGVYPSHFTSV3G:/home/zeal/.local/share/containers/storage/overlay/l/6MGTPPOMNRBPRJXUEQSILFZ765:/home/zeal/.local/share/containers/storage/overlay/l/YT3KNF2QEIPE7Q77HBJJZJR4QN:/home/zeal/.local/share/containers/storage/overlay/l/Y6OEU7LA2NPYOWE6YCGQZ5KKNF:/home/zeal/.local/share/containers/storage/overlay/l/MYN4XNJ6DEA67EVZ7U2F2ZBOEP:/home/zeal/.local/share/containers/storage/overlay/l/RIDFKJK6LYU363NLCTI5R7UNI5:/home/zeal/.local/share/containers/storage/overlay/l/ZQDGZTFOFWNTTNXJILSIYJICX4",
+          "upperdir=/home/zeal/.local/share/containers/storage/overlay/8746b02cdd1f1bdef810d253909d68eb089be48c21b8df974656e39029c3cbe6/diff",
+          "workdir=/home/zeal/.local/share/containers/storage/overlay/8746b02cdd1f1bdef810d253909d68eb089be48c21b8df974656e39029c3cbe6/work",
+          "redirect_dir=nofollow",
+          "uuid=on",
+          "volatile",
+          "userxattr"
+        ]
+      },
+      "/repo": {
+        "options": [
+          "ro",
+          "relatime"
+        ],
+        "type": "ext4",
+        "super_options": [
+          "rw",
+          "discard",
+          "errors=remount-ro",
+          "data=ordered"
+        ]
+      },
+      "/venv/lib/python3.13/site-packages": {
+        "options": [
+          "ro",
+          "relatime"
+        ],
+        "type": "ext4",
+        "super_options": [
+          "rw",
+          "discard",
+          "errors=remount-ro",
+          "data=ordered"
+        ]
+      },
+      "/work": {
+        "options": [
+          "rw",
+          "relatime"
+        ],
+        "type": "ext4",
+        "super_options": [
+          "rw",
+          "discard",
+          "errors=remount-ro",
+          "data=ordered"
+        ]
+      },
+      "/tmp": {
+        "options": [
+          "rw",
+          "nosuid",
+          "nodev",
+          "relatime"
+        ],
+        "type": "tmpfs",
+        "super_options": [
+          "rw",
+          "size=524288k",
+          "uid=100000",
+          "gid=100000"
+        ]
+      }
+    },
+    "limits": {
+      "memory.max": "2147483648",
+      "pids.max": "256",
+      "cpu.max": "200000 100000"
+    },
+    "tmpfs_bytes": 536870912,
+    "network_interfaces": [
+      "lo"
+    ],
+    "ipv4_routes": [],
+    "no_new_privileges": "1",
+    "capabilities": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "CapBnd": "0000000000000000"
+    },
+    "seccomp": "2",
+    "uid_map": "0          1       1000\n      1000          0          1\n      1001       1001      64536",
+    "checks": {
+      "nonroot": true,
+      "readonly_root": true,
+      "readonly_inputs": true,
+      "owned_evidence_writable": true,
+      "tmpfs_512MiB": true,
+      "tmpfs_executable": true,
+      "network_none": true,
+      "no_new_privileges": true,
+      "all_capabilities_dropped": true,
+      "seccomp_filter": true,
+      "memory_2GiB": true,
+      "pids_256": true,
+      "cpu_2": true
+    },
+    "verified": true
+  },
+  "counts": null,
+  "probe": {
+    "argv": [
+      "/tmp/v02-compat-main"
+    ],
+    "binary_sha256": "8a09017ad7937cfd9a69b0404c469f5e7c8214f0a6faea8f8e997ef880834242",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "==21==WARNING: ThreadSanitizer: memory layout is incompatible, possibly due to high-entropy ASLR.\nRe-execing with fixed virtual address space.\nN.B. reducing ASLR entropy is preferable.\n==21==Installed the sigaction for signal 11\n==21==Installed the sigaction for signal 7\n==21==Installed the sigaction for signal 8\n***** Running under ThreadSanitizer v3 (pid 21) *****\nStats: SizeClassAllocator64: 1M mapped (0M rss) in 512 allocations; remains 512\n  02 (    32): mapped:    256K allocs:     128 frees:       0 inuse:    128 num_freed_chunks    8064 avail:   8192 rss:      4K releases:      0 last released:      0K region: 0x720800000000\n  03 (    48): mapped:    256K allocs:     128 frees:       0 inuse:    128 num_freed_chunks    5333 avail:   5461 rss:      4K releases:      0 last released:      0K region: 0x720c00000000\n  04 (    64): mapped:    256K allocs:     128 frees:       0 inuse:    128 num_freed_chunks    3968 avail:   4096 rss:      4K releases:      0 last released:      0K region: 0x721000000000\n  05 (    80): mapped:    256K allocs:     128 frees:       0 inuse:    128 num_freed_chunks    3148 avail:   3276 rss:      4K releases:      0 last released:      0K region: 0x721400000000\nStats: LargeMmapAllocator: allocated 0 times, remains 0 (0 K) max 0 M; by size logs: \n",
+    "probe_count": 1,
+    "thread_fixture_executions": 0
+  },
+  "fixture_executions": 0,
+  "owned_container_cleanup": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "host_aslr_after": "2",
+  "host_aslr_unchanged": true,
+  "inputs_after": {
+    "AGENTS.md": "9ca0964b471d691ecb0bc76285e83e819f06243baadada051cf59406112d8ca5",
+    "docs/handoffs/2026-10-08-zscope/ACCEPTANCE.md": "b542a9599192456c5311459325a6311abf8df7a889eb468096c1c107a811de84",
+    "docs/handoffs/2026-10-08-zscope/WORK_PACKAGES.md": "86a7c5923f03666fcacf8c4385e4c480747d37cb66cb99d4819adca384dd7b10",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-regressions.py": "ac66899b7686be9bc61fd31af37ed0b9e4c2ae283eb7503424ad283c6ad413c5",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-integration.py": "7f4d0af4812ac5cee9df5ad6f6ff060789fc8a652d3e58a04a8eebabfdc4f392",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-regressions.py": "8d05c9deb3b674c0906ae71f8136c2e8d1e3d2a53d775434dde680c876c794a6",
+    "pyproject.toml": "967b654c93cb0e065cc91c4f06413214b5b1658ea86e6d95119a1e9b3b2088b0",
+    "tests/fixtures/dynamic_reproduction/README.md": "0e7061a5ae90b5c580a43edc82f3750862e7ed133d3384a4ef3fc6162adae84f",
+    "tests/fixtures/dynamic_reproduction/allocation_oversize.c": "bf489e01279b1297f922a1326603c83cb8e11119768b23c4c3fcfda4a5fffb3d",
+    "tests/fixtures/dynamic_reproduction/broken_build.c": "800c7ec64cc272fce99737f340e5b4d6f4c749d48746b808c6c142b3479af944",
+    "tests/fixtures/dynamic_reproduction/data_race_flaky.c": "db4fb375995e08b9c1415f024f4e97193473033275c6100daadf0f34cad8b137",
+    "tests/fixtures/dynamic_reproduction/data_race_negative.c": "f391d00de333904e60cb99f3c0d97939568db190530f3614b940ac8cae80b133",
+    "tests/fixtures/dynamic_reproduction/data_race_positive.c": "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865",
+    "tests/fixtures/dynamic_reproduction/heap_overflow_negative.c": "e1099d8ac99f49975294a4b7345f016593e7b483c8fdf0126e69fbb696dc16f6",
+    "tests/fixtures/dynamic_reproduction/heap_overflow_positive.c": "85685a7ac23bb653a51ae0333bae9687f0afac998d57e110f7b2ccbd21ab26fc",
+    "tests/fixtures/dynamic_reproduction/unrelated_crash.c": "89772514029c32e42538f5ae881503b3624ec9063d8ecfcf565bfe935e59ff1b",
+    "tests/test_active_discovery.py": "411581f114d9d825c89a6342b7325300c5d2bdcc6ecff6ab48615fa01a4e6e8c",
+    "tests/test_agent_docs.py": "67a63c23ac7c1b0b5b96ce02f5811dab9e0b4da4ee6ac671df5aed245a14099a",
+    "tests/test_analyzer_tool_policy.py": "a341bc52eb7da9fe1ebadd3872cd072a0e887c2c88042749b8ab2f18c96b1522",
+    "tests/test_audit_coverage.py": "353a2c609d3b490e3eeb9e6a8421d1f28eca4666d3981503fa7422705cb405dd",
+    "tests/test_balanced_rollout.py": "d4faa26c7561f0dd9d5f15ec831f98ef30797a114e28f96311b5a747ff0c549d",
+    "tests/test_balanced_rollout_operator.py": "6091a273f9b05d75e3609cecd302832d6acdae60e7a06ec4a2ebba015fce0c81",
+    "tests/test_bounded_investigation.py": "f784af5f94b4ffb9a6cad6e32054599efc5484221a3f8d826ba5f17df56589d9",
+    "tests/test_candidate_decision_context.py": "f1e8546fd9292dbb777cbebe7a9eab731ad8b9856edb3cb69cb8b7ded756f142",
+    "tests/test_candidate_ledger.py": "da166f0930f103b073dad681620ead2517034cb0d4dd32bb15d093c209eb0a15",
+    "tests/test_clang_identity_validation.py": "6c469a06f1678546881be7a89803b343f1c916a236335bb0322ba88634b19081",
+    "tests/test_clang_incremental_extraction.py": "0356db7b2ed95dbf45a1646746013ad793448a315aa7a8f463acf5bbd2705574",
+    "tests/test_cli_config_v2.py": "5e59fa899f77ad8fab11bdebaddd9efa8ab142acd7c7e9748345217c356fad73",
+    "tests/test_conditional_ownership_contracts.py": "ef1bd95ea78443a84bd035729aa5d11a88fd4cdd32fb16b8dbd690314096ef09",
+    "tests/test_config_v2.py": "efdfdbaa574d1d448e3cfb615bba34df85654daf3a6eb46fe03691a169b3b299",
+    "tests/test_contract_only_publication.py": "9271081b6053fec810210ae6a976493bb4bd6e4df96ddbcc6dc31986160a4f70",
+    "tests/test_decision_facts.py": "c4e28c2d5791a7b35e6d88cb6242441357e732fc9033159f7c22d6a426967daf",
+    "tests/test_dynamic_reproduction.py": "651127df8aab8a93e4556cad23b82a9702e88cdb019953a40dd8f28a5ddc9d13",
+    "tests/test_dynamic_reproduction_execution.py": "3205acd925075b04dff129f8876b30da3509d6e717856df4f352f3eb7327fa3b",
+    "tests/test_evidence_completion.py": "3e439d39785865f86b32bc295aa168c61469d27aa954f98d03b1c4e8d14f992d",
+    "tests/test_evidence_tools.py": "404fdc6c81d21a841277bdc8845a19505eefabe48725b3919daaacd647ff3a89",
+    "tests/test_external_findings_import.py": "a03abfa23c8135882f9095a24aa32183d818df3ccee9940ddd0fb7992c7a57f2",
+    "tests/test_external_investigation.py": "6c11625fa91c75927299b94afde392fc98e5cd5899d9f5e2ebedba70f3d42ead",
+    "tests/test_finding_attribution_contract.py": "f000b2f07197f444d0ffb58396d5230c7ae240d4e54b1e52f70ac312e060b985",
+    "tests/test_fp_suppression_guards.py": "f7f974862db914019d0f08c9b946b262adde0ac516797f1fcd5db7879a45dd34",
+    "tests/test_global_modeler.py": "06711b8dec5181843f59dd5f8a719aa102f8e426028ab688ea7da4fff7ba402f",
+    "tests/test_history_reconciler.py": "302b275ce81663780ed084fa26128de326bbfdcb8228d617fc70ad4722bd871a",
+    "tests/test_incremental_replay.py": "6b403abf8da175f7b166f6097f0992a5fdfdc02bf28eb9cfda9033a45aca4b3c",
+    "tests/test_incremental_semantic_modeling.py": "a3c4690a08eea0dad308b4bc5ff7b80b18da857598c26333d44a6ff90cd44b80",
+    "tests/test_indexing_pipeline.py": "d54103eae72b99c3f4910d2ff8b97a7c2654edc5e779937d685a1cadd4255b8b",
+    "tests/test_investigation_evidence.py": "c105008d6ee7c9a8863cfcb70f63f3e1b2e071ba1503265da16c1cc37912c285",
+    "tests/test_investigation_runtime.py": "559b82eb1aedb7772680d1144729a11f01c95ae4f8cba7c8c615cc01e8010ed0",
+    "tests/test_java_analyzer_candidates.py": "c00b438443042c44a5c4d30590eae7b154a0d122f9a8efbe6d68e069ef8721de",
+    "tests/test_java_evidence_merge.py": "e3716222d11427e2baff95e585aeb7817001483fb9aa502b4b6003d804c9870d",
+    "tests/test_java_joern_backend.py": "75d7bc105dcd06e0f45256a6f0686326e985bf94c76e963b53c84af67dabebc7",
+    "tests/test_java_semantic_modeler_schema.py": "96be7d627e5fae0346e69a7c09d8b4a4d504933a2e939677d64962ab0c2eced4",
+    "tests/test_java_source_backend.py": "8c6abd85f893ab71c54a82cb81d46082c783efa1cd7580607558d45fd83b01ee",
+    "tests/test_json_output_agents.py": "e7b960069ba3aff36926b942503d12d5d065abf593ec2a1232c169b8bc9a91e5",
+    "tests/test_mcp_http_server.py": "6b381f09fcbd2e3cffbe38fb7b0c37873798ed0910db997f703be980eb4a4e68",
+    "tests/test_mcp_policy.py": "409c3200a30339e2981a4ca11bf807e76e08a1d8ea7bb77e3613eec13d98ec78",
+    "tests/test_mcp_read_only.py": "fa9098be0057e3b49961387d4330d0c5ce5f6e0a0b6978fd75169e51a2caca98",
+    "tests/test_mcp_security.py": "0949f5af4dbdecaa82a96799da60ab51c1e0de1c0a51581e4b712463cd1d3fdd",
+    "tests/test_modeling_provider_usage.py": "fd03d3229f918388d657f15fe8d28b3087257988686a2191df51907a21bc207d",
+    "tests/test_pair_evidence_authority.py": "39a40f79a2cb2dea9233d7fb5001b48ec0dbf1fe66b6d8dda5c3bd9b295b5e6c",
+    "tests/test_parallel_shared_semantics.py": "42099298cfad9fa7b7026da141169496680fd7a3e45815bafae5080bd971c9ca",
+    "tests/test_pool_protocol_modeling.py": "98616f2870f454baec8a7256fba1038f9ed42397a66f267ce2788f6d94bdc8fc",
+    "tests/test_portable_release.py": "5d7ff3e441f525322a9791c7e23b27dd05851a8c1aeb333feef08a129aa7bacf",
+    "tests/test_portable_runtime.py": "256ad05ff3cc42279acbf124bfc1833f5181f503411c3ee0be47ae6889886b19",
+    "tests/test_range_release_aggregate.py": "21f1088d39417c871dadafabd527117f4e42fa49a33b2c8bb98bd279c3874977",
+    "tests/test_reference_configs.py": "237498d52dc598a7d6fb508e1192a306bbbbfe913aa5b3923c70029c8201980d",
+    "tests/test_release_contract.py": "fb247b545f00ace990e65410c7380701e85613d152b4aa32519d7bac4f107aad",
+    "tests/test_report_schema_v2.py": "93b3a7d3bc7f59847acb97af7c1ee6991062ad6b93f9490a02b3a846bf182f5e",
+    "tests/test_review_fact_checks.py": "adce761ca9d605ed367bd90c9d4df105d02fbd4e80baca29a15ddb34c196d2a8",
+    "tests/test_review_regressions.py": "97b861b1afaf357c2af3975fd67faab11851e79659942194a992130e2f7d3095",
+    "tests/test_review_runtime.py": "3e2fca586b015432f085136dce7be5efa2e1e0a60abbac36bad7d7eab786c662",
+    "tests/test_scan_session_resume_svf.py": "0bd2b73b64d15843618dfe31fdfc1c20a936e7ab51764fe6be286d9c5cf50716",
+    "tests/test_security_semantics_tool.py": "6cfc155db376235683609f17c6761b0947316f310e4b1f483692dc3679574e88",
+    "tests/test_semantic_cache_only.py": "1d8787dce9b48b04af3b5737dc5488fede8e4e1a5c0214a20221436d7adb6d73",
+    "tests/test_semantic_contract_chain.py": "4ccd41a9294c5fef94ed3ee4319f51938416ba754ee2d8e67e08d47b9e5a1758",
+    "tests/test_semantic_contract_schema.py": "d4969b546c032b668bc11ccf027f514fe5d0dccb796ddb9e7607a3d634acbbc8",
+    "tests/test_semantic_coordinator_effects.py": "9fbc675ccc70c8930feff657c8267144a4475277c7499a11589e8788fea362da",
+    "tests/test_semantic_demand.py": "d5fb04e814fca2ca9d3525049f30d0526b84dfb3d75f297f6f9ce2ab1da05591",
+    "tests/test_semantic_model_retry.py": "238a1c7140a4e2f530b9afd96f355510e77e8990b1e852932a55cb2716292a34",
+    "tests/test_semantic_modeling_usage.py": "6b4cbb30d3345f48df46b4f4f72860528cab7b7b4f52269396978a748e5d32ff",
+    "tests/test_shared_read_cache.py": "0458378f1febfa85eb67cc60187d9ac996aaea1dc59ce5fa852391009b16f69d",
+    "tests/test_single_entry_active_discovery.py": "ad4e54370c4b6f498adf502b7d418ebaec0893a0ab962f3661d3fec2f1f6da34",
+    "tests/test_snapshot_observation_shadow.py": "3fb35294f89558e3eede5bd9ea445a33aaedab7bd1b36a3120020b7d6be384ef",
+    "tests/test_snapshot_store.py": "c866d56ec9b1e8abaf90bcb63a6a9741b0e71a664a36cccb0908690988041167",
+    "tests/test_source_contract_boundaries.py": "07beb4ffc73473bed28fac9e56b8c4680aa2b4ef687dea846bee3bf18ef92af9",
+    "tests/test_source_lifecycle_provider.py": "e73cc830c4d9c4de14b36bd372e448b1d7c4a9630ad6c893f874f67f3b3c6b81",
+    "tests/test_source_search.py": "b1d89d236ec1ebcc2fae2285ed45428d83048b74043b19d117ca4ac95606471a",
+    "tests/test_svf_cache.py": "d1939db953f6f23f9c391ddc4beeac6d8538fe4e6584d732a30e5aeb7b01b53b",
+    "tests/test_tool_policy.py": "b8b6f2f4998b1eca8f4588d09ef6a69e9d62ca2f2694050b55864b0b050d7541",
+    "tests/test_tool_registry.py": "7be4475074f763e6476e4012c880a481baf01dd8ebfec9f4e0c165dbf537e38f",
+    "tests/test_tool_schema_strict.py": "467427af5740bac19a95f0e40e5e81cad8d23d79ff1eff0aec64bd357dc1f273",
+    "tests/test_tool_use_eval.py": "666b3638870da536eedc63cb82e818c07cb64497e59a67a3d77089606208ef45",
+    "tests/test_validation_pipeline.py": "0069af8b6fe248713756470d7dc4adbb995668b017d4e6732d33d07785cdc676",
+    "tests/test_validation_runner.py": "8cc1c2fa35a6e1d874e7c6876fd1f1dd4c7b5bb63c433e75c44efbe9ea89e264",
+    "tests/test_wrapper_contract_compiler.py": "cd65690457fde2cb5bbd1b535833a02205cce6aaa06f7647da890877c5cdde5a",
+    "tests/test_wrapper_failure_guards.py": "c80ffa870ecbb7b26277a7c7238ecc8f7916cce2712bfe8ad00bf72097f6a1b9",
+    "zscope/__init__.py": "a615d8258d93e86e0a90420ab016cfb07b8353b0155301ea7fec81dbf538cda2",
+    "zscope/_version.py": "c8dfc96911dce4822e3a66a109bdfe3ea0f0f2307207c9838a27448005009462",
+    "zscope/agents/base.py": "bcf8e013816aaee62b161fe9bb33bf3d58f04e1462268a0b66a077bf69b39677",
+    "zscope/agents/deep_worker/agent.py": "a0f2aa255d17634c8e96418d90200635c83dc9100adacd21f0dc58ed074daae5",
+    "zscope/agents/issue_reconciler/agent.py": "3f821d2ab4bb41c20ac21b697d101c5ab25124a606986f7172bca6c1f7aedd74",
+    "zscope/agents/review_memory/__init__.py": "0a913962928a33fa8e0f5dcc92395ec78233257bfe71ce8849bccffd0e2236e8",
+    "zscope/agents/review_memory/agent.py": "c71e4773b37f53f8cab84106125f7ab7899fe201bdb7ff873f6fb0d861b1dd01",
+    "zscope/agents/semantic_modeler/agent.py": "4cdee773b2f2945ebabb59802dcadc1b1e70c82ea836e8b3c5da44918d63c903",
+    "zscope/agents/semantic_modeler/retry.py": "3895223f0f63cf41a38c0f4657efc6fb1f8135182d128ed21ccb3f194fde93e6",
+    "zscope/agents/semantic_modeler/schema.py": "3f310eca9f49b0c23d492e1b54c66e56236c84a314179b9f505f08ccccdf0794",
+    "zscope/agents/semantic_modeler/validation.py": "dd1733d9415c070409434cd5f2a1a916a57ab38ab8fd94e39737fd3751d5a528",
+    "zscope/agents/validator_agent/agent.py": "99911d10c0e3f74549aaea614034e8b2126adf8b7fb7cbd1d3ffa1afadb23e7d",
+    "zscope/alerts/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/alerts/adapter.py": "3bf6ad3b714034c5cf160e16b9b4633ffb5573ff02e62b04bd30749e2e44052f",
+    "zscope/alerts/sarif_adapter.py": "e0cb2067395eedb36c5b42f091dd6c7129aaf2023d20a29ceba09b1714aca9be",
+    "zscope/alerts/verifier.py": "7b37da785e239a89de2ea3414d7b4c6fb50f57876737a331d7db31f18ccca195",
+    "zscope/benchmarking/__init__.py": "5dd90c05ee46e8f42e38e65ec51e07f6ebbbdc1bb06a36e68822eb922403c1a2",
+    "zscope/benchmarking/attestation.py": "29caa7222c563d03fe488e53a6e79bfe71fe80b0d09d6f5c3e35dbc649f56e33",
+    "zscope/benchmarking/discovery_ablation.py": "2f5e952734749d98a69abc9173e300760896b90e4c406db92e3f26d0e7fda544",
+    "zscope/benchmarking/discovery_ablation_experiment.py": "09a65a4146c9a6b704793181d74031d63fdf10cf91d89f7365b4b5fc7203a38e",
+    "zscope/benchmarking/isolation.py": "31d7cd9ac0c8345a90ebe12a94cf70186ef8c850a0f7057d3785ea0018080127",
+    "zscope/benchmarking/policy.py": "349d196be28b8c4893d9d09abdc6e040c376f9e5a48187c7d2da4137fe7d1e29",
+    "zscope/benchmarking/protocol.py": "37f4930a8873f5d9b55daa587ccf7387576243975e58e61ca72d2a24c9e9c8f8",
+    "zscope/benchmarking/replay_bundle.py": "1c968abc6e3b529914b73dcf310a8884a4d15b5249f40e2ab8688e1d8c796121",
+    "zscope/benchmarking/replay_pack_rebuild.py": "b14b65fc57bc35ad4f5d2f760a495e0041963782f31f72b3cdcd530864e1133f",
+    "zscope/benchmarking/replay_provider.py": "901d0e9e61adfc574496c17501cb1862fa95651bd128a79ebd706b808ce9db06",
+    "zscope/benchmarking/review_experiment.py": "5aa8dba53d57197f8a0f6b250701bb133e73bc4254772fe6fc08cd83174982a7",
+    "zscope/benchmarking/runner.py": "d7327ff9b7bf69c9b9a8762aa94cf17f71fd9f3e0fbdf7aac1d9268b261ba0d7",
+    "zscope/benchmarking/truth_contract.py": "e7d5aa6bde13081566a2dd8ddf648a8dc9c0dd76f6a648766d8394c9b8d1c50e",
+    "zscope/benchmarking/validator_experiment.py": "6c9116dc34560da53b6f9ae5c78522521bc4a16f902e30a4c34147752b8fb0a2",
+    "zscope/benchmarking/validator_replay.py": "e6f50e3c3b8414cffc96424d5a33d2cf7949f16e6134cc0cf031d82009e803ea",
+    "zscope/cli/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/cli/benchmark.py": "aa27a2018112cec6b1c6c162b24d3e8006bd30d2c0e3bebd8794e49ac015cfb5",
+    "zscope/cli/cli.py": "0e64e70f8316b0c790dfbab6ae9062aa2642d98388e3863c8fc5bea2f6a5ef3f",
+    "zscope/cli/config_cli.py": "2272125ceace97ba5c62906e7df23251aee0906ebbe3faf8cec9b4a977738ffb",
+    "zscope/cli/doctor.py": "d5a6722894f8f738bc5522e50a8b4c4c35ca30476d3c6fe213b9f0d8a9f29f97",
+    "zscope/cli/index_audit.py": "a82040bc26d0fba8d66004c70058b3f557fef63228afc5cc5d8920873e8ba563",
+    "zscope/cli/init.py": "78f970a502347fd0fdefabfd1ee3d2015184f39c2d0270d01ad6f5bab75f9cae",
+    "zscope/cli/maven_cache.py": "68929bf0adcde35dcf774ee00c9eb3a3a5833e15785ec91b73959c484e62cc87",
+    "zscope/cli/report_export.py": "b4fb1d5b737cf6796b0649e43a9a20b5c771470f9c75c1d2b9273dedbded9615",
+    "zscope/cli/review_memory.py": "c6e4438ccdbcc1c2f2f33f9f448c09b7d325771b45a1fa436283a7bd37bec49a",
+    "zscope/cli/rules.py": "be86f6083fda469a88049a28726578a1d347c6aaf73bc78237c478f9306e09cb",
+    "zscope/cli/wiki.py": "767bc728ff7af4f0cede693b99a19b769fa20424b3a87c10f8db72f9ac7c9bcc",
+    "zscope/common/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/common/cancellation.py": "57c7af7502f6ef09d6b66c4794999d263968f24eacd7477226b7427936be978a",
+    "zscope/common/defect_cwe_map.py": "ffa0711bd05e0df2c31bb4b0688703d562a589b72d79da20a28892997da1297e",
+    "zscope/common/issue_identity.py": "797c6461c826e507c72c0849c15d93d60722fc5c95c011af53d1fb2ddb494cc7",
+    "zscope/common/joern_client.py": "b7b2c24e70f768d3cc96fff2ff9f26d29daa23212bab46eaaffcc7c9180831fa",
+    "zscope/common/portable.py": "d88d9d5103754191f4b02a4aa295549decf7abc4ed6fc4600ff3e76be9317882",
+    "zscope/common/readonly.py": "e4381e7884d22c561e148cae51fd1ee141f3d642ecb0bed4faa14a45c43720e4",
+    "zscope/common/runtime_limits.py": "1d620b1a5e70da544bd56421525dcf8b707a00eaf9cb0eb6e9e1e838a798e489",
+    "zscope/common/utils.py": "17eb04f056fe15fd5db92d3c7a06c685a5285a4c8f97a018e2502538557020e8",
+    "zscope/common/validator_protocol.py": "dee2194e29bf281133aad1fb648f941b1deb357652e6906b5bc9c314302dec2d",
+    "zscope/config/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/config/config.py": "9208d08f4f978c3d99dcb93901b06dab5e66466c8cc3825650a8e73f3608f6cf",
+    "zscope/config/function_entry.py": "84204b284e74448a252e465670908c6cd5350ab34d2c32e63fca5830c8dcc93a",
+    "zscope/config/runtime_defaults.yaml": "03fcfea4dbf006f2407a4055120ad10957305f70d49f0369a02163af1a88ae16",
+    "zscope/config/user_config_store.py": "95633676b6cdf432301bd5a5ea3070e92581c28011067d497d592f15bd96313c",
+    "zscope/config/user_config_workbook.py": "7bad92deacb7d36fce9dc5ddd51b9172085a616b96fec5551e9a4571655c3524",
+    "zscope/config/v2.py": "5cc3ca30b9ec22e085b1871d7bdb4ccf01f67f609c600c91cadc9868ff910253",
+    "zscope/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/core/analysis/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/core/analysis/analyzer.py": "5445007339e187b09caa99c435add085f8e8817d9fdf681d31d992a32509ada9",
+    "zscope/core/candidates/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/core/candidates/adapters.py": "210bc573344f49c6b286ca87926e84d8a3dc14d8346dc56c8bcf750dd45f8068",
+    "zscope/core/candidates/backend_signals.py": "d07f6b1fafdfc98eebafdea27ad5395e5dd38658cb706534b201074b84f5fefd",
+    "zscope/core/candidates/clang_ast_cfg.py": "b2c0955e7205057a720c33a4bdac7745129d355148944e1e90c091efca26d3c0",
+    "zscope/core/candidates/cpp_domains/__init__.py": "4b7ede8244c72470f45e30bf1ab3eb1c4fd7a0fefce4944db1e1c696eebb6e94",
+    "zscope/core/candidates/cpp_domains/concurrency_shared_state.py": "9703b9efff11611b6218e93fc4c7f47e06f780aad4ec7030fd063fcac3f50845",
+    "zscope/core/candidates/cpp_domains/memory_bounds_integer.py": "b5ed5b33b8d71fe1f30f786c3126132ae08a05459c75759119f3bd1cb46b9b22",
+    "zscope/core/candidates/cpp_domains/models.py": "b99579b3c1df0a48651b5dded8d49e9374bb0cc2f08e4f5ed1a187d186f8590e",
+    "zscope/core/candidates/cpp_domains/policy.py": "2a71e6528e8cde2441b424f35db5ff14125cded566d2ce2c4c37d09659eda782",
+    "zscope/core/candidates/cpp_domains/protocol_ownership_logic.py": "86b21bb9b0bacc97c8ed9215e41c061065753922af7207f062d91c409437186e",
+    "zscope/core/candidates/cpp_domains/registry.py": "cd1b4915e6d665d5ef328c81e8bcd0446cef7dd0e16ed460a84724aa95899422",
+    "zscope/core/candidates/cpp_domains/resource_lifecycle.py": "a7bc466faee27471db82747f0e1abb79f30acf05105a2a6b1528dcdfbf188664",
+    "zscope/core/candidates/cpp_domains/shared_access.py": "95880cbf2c69794a9af1bf512c2dd1193c1528a7b05d429c0e8af9c3ab6dc569",
+    "zscope/core/candidates/cpp_domains/source_events.py": "0ce0e67ef09380773ac3a921204622c946c7673ab1102039732a18f881f35b54",
+    "zscope/core/candidates/cpp_domains/typed_resources.py": "c4b2e1b61deaa8319fb184ea47f69cfb86613ff5a6966a80039bcbce54c437df",
+    "zscope/core/candidates/decision_facts.py": "e5fc52777d22516ad50c87d10e32e8d8a7c8c9b80060d391862e8260144e5ad9",
+    "zscope/core/candidates/evidence.py": "066d6e763c98c3c70a23db3398b9f753ecb8f0527f2ac772788597127452881a",
+    "zscope/core/candidates/evidence_models.py": "a0bc898e1dae1c80fc6758205427aaae24f08c01a4011e28e2c85c3d00cc0d6b",
+    "zscope/core/candidates/graph.py": "cd08b211d3762a270437b5248c636dfc1e433c32a414bbaa4a2e9bb08bea53f4",
+    "zscope/core/candidates/java_active_audit.py": "79e9c77581f5ea8a83439f7f3c0b8810eaa4052f0a03e37653d3f606f8f5de80",
+    "zscope/core/candidates/java_evidence.py": "c1b1ab8e3cf0856fe2932f434330b7c99bbd62fea99a5d50a2e826ae90c68b91",
+    "zscope/core/candidates/java_rules.py": "4fb6e16689ee5214df2e62c4bd43a465666e1c53245fe376f14f3a32957a1383",
+    "zscope/core/candidates/pipeline.py": "ae912efc0f274c612838cc3ac0872bbeaa54be5a6b04c871567260f9fb093b2f",
+    "zscope/core/candidates/regex.py": "d57b54e2eb40f6a7c03ead70129664abadc7603e95cdd891f31242669bb95873",
+    "zscope/core/candidates/svf_value_flow.py": "4059171d5da71ed0258cbe246e9131b4ad8f1df446fea2677e5e8ebaca551ef5",
+    "zscope/core/validation/__init__.py": "8f2eb5d12743af14fc819b7d6d0d16461e03807fb9465be9dc31124a375eb267",
+    "zscope/core/validation/context_budget.py": "d6e8e561544fc1c55e729abd07c12a0a32acb3b4428d71b39fc12acaa6599c37",
+    "zscope/core/validation/dynamic_reproduction.py": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7",
+    "zscope/core/validation/evidence.py": "a3228595b71cb0e0e1b0883b430669e5a6771013b8c39fdd112ce9529f8e07e0",
+    "zscope/core/validation/evidence_completion.py": "ca8953e3ba1ce468b12e4e693758d143b3a06a21e9e3b98b4cd8a9514411b119",
+    "zscope/core/validation/explanation.py": "efe6582c0d5483c13bec7685f3b9db9c47dd72515712ada24d873e898e542063",
+    "zscope/core/validation/function_index.py": "3d987eef396a84a01f03e1a0341af9d638d7350011f557d20804490f1ef1e705",
+    "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+    "zscope/core/validation/proofs.py": "3c1cdef9476f91feb99cb1d95983cc271bd2512b4ad486157dd1a8e190b7c119",
+    "zscope/core/validation/review_checkpoint.py": "b01f0193e8b78b87ee3750a0962a508a4c241741806075aceb1825f82b044419",
+    "zscope/core/validation/review_checks.py": "6665afd912f980ee83f320d01476c0c7741cf6eba4352cf7a4a2a08c819a89ec",
+    "zscope/core/validation/review_protocol.py": "2556d2818523a4e494f3f97999b31aa7adb8503e58d110902b7d48ec17f575d5",
+    "zscope/core/validation/review_session.py": "ecd55cc6c2bed5cb5350b604ddbdb4a49cccf341e081f982a700c735c85ed3aa",
+    "zscope/core/validation/runner.py": "3d0f4c71e1b688242eff26de5fc69e6eb4f80b0da5ed364062a2678764d202f8",
+    "zscope/framework/base.py": "9674fbf29624704949754272df3d2c812d87cb6e551152635d19e6d53e73f67b",
+    "zscope/framework/conversation_recorder.py": "ea2cb198dfb5eac9c79347bb88e0117ce8659c1204c8897ba83378d860ce757a",
+    "zscope/framework/llm_client.py": "568ee1e2181072ef46455c6e7a04ef83d0d0e67e4b4d5b22e513b80dec58974f",
+    "zscope/framework/llm_usage.py": "bdc6aba3f374c9ab69a175813212b07135239eabf4aa09f2c654bfc19ff73d62",
+    "zscope/mcp/__init__.py": "2557a9da12b29cfa770ec4458c4e93e211a22879e7a330fe724c21ad17305612",
+    "zscope/mcp/client.py": "d60f5233cccc7a4b5afa95c5e4947d43e6690b6f81ce66283e2bd1abff8319f5",
+    "zscope/mcp/http_server.py": "e7ca8a35a253e7ad0db9a39da9e2ac09c254e5815d0276957481df5971d451dc",
+    "zscope/mcp/provider.py": "0b46d32e8e2faffeff2388f9b282be2f684910398e9c8c3e838485b18555f6b1",
+    "zscope/mcp/security.py": "35aafb6e251c4bfa59d974b379b03696b9e03e8461d00a6b100a1d70c40bf841",
+    "zscope/mcp/server.py": "5e9a772a67672f7c39e999ab03e094a0161c1090c4efddc0934e468835fd83ac",
+    "zscope/memory/__init__.py": "6f0aa20c9541c09204a6ed585c807b72010ec0960f3d45a4b41d6d817755a4f0",
+    "zscope/memory/review_memory.py": "1a13b713c45e3d4b838d060b915412ce8ec64bf9bc31a9330b46e848eab1311d",
+    "zscope/orchestration/__init__.py": "490436ad4a9988d3814fef61103a0495f5d243e5e710f8ed544be131f49a0cff",
+    "zscope/orchestration/active_discovery.py": "0c118d146b076e3ab40be55c7f8b14c1a0f6626e1fd70af2f9f30758e2f0b408",
+    "zscope/orchestration/agent_policy.py": "eba1e82cf4bafeb58df86b2b36b836771a21648ed06f96e10d8ef1df8b92b41c",
+    "zscope/orchestration/bounded_investigation.py": "c43bc3932ac20671fb0e08ed8f0137edb53237a894cf281887df463961a1b4e6",
+    "zscope/orchestration/budget.py": "ccac815eaaace322ff1cf2cf5f430d69c8d4520ccdd9b58ff6464c0bceb16983",
+    "zscope/orchestration/callback_discovery.py": "80ed94757c5aaa796440f31e1b756c93b1aaf1fa6a8a918600c00a7d2ecfd92e",
+    "zscope/orchestration/candidate_envelope.py": "bd300ae20897ef0e2170e7fe95d59d83e3a3d795beadc74cb4c7af9026b621a9",
+    "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+    "zscope/orchestration/diff_impact.py": "172748462e83e31d3d7f75a729f8dea116e5a096e4b97f4d1c6a250f17dd4379",
+    "zscope/orchestration/entry_discovery.py": "01c65c93302f765c3eb230d45242011aabbb7dbffbfb4007ae13b20c74882128",
+    "zscope/orchestration/external_findings.py": "c4b9083aed15fc1a1bcb807eeecd7ed7ffcb9b680d98933417f8b157f28fafac",
+    "zscope/orchestration/external_investigation.py": "db86b4578777654dd5352bccf755fcfcf55937d5190205a8fa86d0770fea6708",
+    "zscope/orchestration/global_modeler.py": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+    "zscope/orchestration/history_reconciler.py": "37cd712c83c113e00d0eeab9dbc1d136e4476607561d5cbb3fad5fb8e9156189",
+    "zscope/orchestration/investigation.py": "ceb0834f9ae85837f3fb38ba586c3c61f5bec3c33374783d43913902386724b9",
+    "zscope/orchestration/java_entry_discovery.py": "e0b9fcc0c6b43bb7cae167bd2e97ae985ec0e4c0e6c97f480f5b6595578cde73",
+    "zscope/orchestration/modeling_coordinator.py": "f197a5cf4ceedd3c1e0c8addaade96819e01ae90308a566cce7e30ecc1df8f98",
+    "zscope/orchestration/parallel_analyzer.py": "b133f89158580ee7a5136e08604805fd187167b929d6d5c918e8317ef7cce3aa",
+    "zscope/orchestration/rollout.py": "fb1fd92d16253ca40e9a19a4618b697bf94e7a076a76baf02a513c7574b20256",
+    "zscope/orchestration/scan_request.py": "490cffedb885852aa3f9293d3c700018dccff6b591a3a1e4c8590a2d35142335",
+    "zscope/orchestration/scan_session.py": "fe168c7ccefce9105b535201317b3ea11385eedd8435efd8ff05b5f76f7e929b",
+    "zscope/orchestration/scheduler.py": "695c06435de5ab3819f69a31bc888d0fe7b6c77f9ab37ec917610b6ab9639f24",
+    "zscope/orchestration/semantic_demand.py": "dab3f43eedb96c2458d2e0765ccb4b3c4e28401784bafcb81ffe18c0ead057b5",
+    "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+    "zscope/orchestration/skill_selection.py": "163ec78d5def20423c3ac3ae383888d45bd9ab4943c8f0f7b370053369d86da0",
+    "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+    "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+    "zscope/orchestration/specs.py": "2a80aa038480be92f7fbeffa45bec9cf3ca655e3a96e43db724717b627d85e61",
+    "zscope/orchestration/subagents.py": "447beb4d919e9bf89189f6093d6037682afe72da4f81eb1158e33c267d48c1ab",
+    "zscope/orchestration/user_config_inference.py": "4efbd3fe98fa3fee31622f7402b52b427387ba3de39f12269a98c3a524f73b0f",
+    "zscope/orchestration/workflow_executor.py": "764be3387084533860621e3ea4e63a81c1c48684ed0e737eabda2dd0b67d37de",
+    "zscope/orchestration/workflow_runner.py": "b41d56d0868c8db18fe3bb9acf3b8ac8eb087f5cc39561fb25c11889c7d16b8a",
+    "zscope/reporting/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/reporting/assembler.py": "bad792ede56dd4f3570d41bcbb27796ff7ca64a148da6d7aa4378eba261359d2",
+    "zscope/reporting/attribution.py": "56ced8ebe557f4ce45559c0b692afac306e88188f8cb2bb6cb86d8c9251b1a94",
+    "zscope/reporting/evidence_objects.py": "7e7a61775efe4ddd1a3bfc4d2b5747ac85e6dcba575e1521464b82fce48ec069",
+    "zscope/reporting/finding_roots.py": "217b5aa6b3ea1c9fff8ef1c5b4d5e5ddc9f0ccd1d13bfb5a5b2f75e6ae17464e",
+    "zscope/reporting/frozen_objects.py": "14a9fdadf3972053e235066ba0fae74d8eacb5c363bdb63596358f097e672610",
+    "zscope/reporting/immutable_evidence.py": "6b2d0d32b129c58d8413cd9535e0ec8f3115884627ab56348b43bec8f201ceb1",
+    "zscope/reporting/issue_aggregation.py": "ca84ac9844c173905b150f2c1310cee9c9afb070f59ffaeea54747e010f9ac75",
+    "zscope/reporting/issue_markdown.py": "fd8f0941bac9014a14e5cd7b03caa0941b15c70661789ae413cc9760fab8a03d",
+    "zscope/reporting/json_io.py": "7d83e51a8685a80986ef7f0291f2cf56dd5af7d19199f46270bf58e35aba2875",
+    "zscope/reporting/report.py": "1cc1cceb745b7efad8c0bf1817920a793e5e74baccd9c6c7c2d34869ea3b4f6f",
+    "zscope/reporting/sarif_exporter.py": "c3a6a72bb04c9691060e4c4deb21f557f77ed2850038f5f6bed1513ca45bd191",
+    "zscope/reporting/schema.py": "5a12c7df98e12b32f516301042c57baf73806dec11f11216643b4a84ee53ae56",
+    "zscope/reporting/shared_objects.py": "2881fa446c2ef8688bbb889c45ae0eca3b42fba8c58b51a737e110a4076df56d",
+    "zscope/reporting/views.py": "246398f606ff280b9a1c8829a3e607d360bfe8c87ba03bc021a1bb8a96f53e14",
+    "zscope/retrieval/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/retrieval/analysis_facts.py": "8f5fc5fd116a4a1a5cbbf4cbd2f14fee76ec549612bc2cca80eba72711301a24",
+    "zscope/retrieval/backend_base.py": "5e18990788b30868c4501ae31e2e89c831dcf3e3b9611dd09eac6faff968afba",
+    "zscope/retrieval/bitcode_compile.py": "12fa537538e4c03599f80a54e50e382206053318fcb445dc1a6e31375f8469b7",
+    "zscope/retrieval/bitcode_scope.py": "99644f169118b1626c2e8a5bd477343fe45b191651e3372f09445744fc198c38",
+    "zscope/retrieval/build_llvm.py": "f07556ea82e3251d5c29b050743caa841ba82e0804c2e8a440b7c2e3a2845899",
+    "zscope/retrieval/cached_index.py": "8800da9b8bd5c2f6ec4a75355b16e5013d2bbd82ebad32c35802dcf8452a185a",
+    "zscope/retrieval/claim_paths.py": "346a8745a9e79b50dd265966613688598d5f960d4111df715fa1a1795dac4a78",
+    "zscope/retrieval/clang_backend.py": "46bb3fbafa5e85bd0521709276e7d76758bbf11db4d6f9aad81e90942ee44cc9",
+    "zscope/retrieval/clang_batch.py": "9913bc668152d17f8d564bdd1b17c2d6c367cd449f2fcfd60a7da66d0d779244",
+    "zscope/retrieval/clang_derived_cache.py": "220b78386bd8d44aa264d7a19703e3d8b7502f9e952a6b06751ed3a60864e2ed",
+    "zscope/retrieval/clang_extractor.py": "1d82e9d263cb16f2f7077d1329c1e6e77c31f09750c450725c61b995805d56ea",
+    "zscope/retrieval/clang_extractor_pool.py": "4aa876eb1e6993d0d616472bf9e70e6bb9a9144d63176681083e58d4b7bcf0fb",
+    "zscope/retrieval/clang_input_watch.py": "7cb30eed29337bea4dbf04f938b269eec121d37c8f8d5fb3b4561fd51ca21582",
+    "zscope/retrieval/clang_resolution.py": "e2548ea04e0545dcd51328cae094cf3f516f8c368183ac9b4ae33ed2b1b612a9",
+    "zscope/retrieval/clang_source_snapshot.py": "80f8bc287a50d6c12dc53ff6a058d59c31bc64fdb58a35349bc8d5a3934a2e51",
+    "zscope/retrieval/clang_tooling_evidence.py": "3b45740c1bf01446671860efd197a897ac5386b5202561c4a6a7970bb97dc7aa",
+    "zscope/retrieval/clang_type_scheduler.py": "532c7cdac061104f262eb2c68f711057ca9cc981b3da236b8ef088e2d22720c2",
+    "zscope/retrieval/clang_type_state.py": "8031a5fffc1634a641a7292a9f8669742498a6f4e3707446750dae2815f13be2",
+    "zscope/retrieval/clang_type_worker.py": "5f786ccec22dd875a587c61231bdf62bdbeebea1275156cfe67cb673084c3ca9",
+    "zscope/retrieval/code_index.py": "bb1493e6171cd36dae48a1fd0efa0e6af6da65d97fcdb5826853850b39aa17bb",
+    "zscope/retrieval/compile_commands_prepare.py": "1a6ffcf98279b476173990cea1e762a956e477a4e742e65426160b516ebf6cf4",
+    "zscope/retrieval/compile_preflight.py": "9ac8f729989769f423f5d3a83c491d4c84128db0106c4b239fd3bbc965801719",
+    "zscope/retrieval/compiler_compat.py": "371576c60deb059a19dd6a47e69bb9bf96696df2760b3df45ba2f02b3d5b7da6",
+    "zscope/retrieval/compiler_diagnostics.py": "a98eafc3905f67201522f9275928249bd630d8ae1767efb0bd6781553c2a165a",
+    "zscope/retrieval/incremental_replay.py": "5e5d93e8b8d839c74d52e0bccc06ab83afeed7fc9cd740acf8d5fb48877a6874",
+    "zscope/retrieval/indexing_identity.py": "b82d51c1559e0a06a3b62b28884c05a505a1e2c5590f970ad69c2b604e0a14c2",
+    "zscope/retrieval/indexing_inventory.py": "dcca9edd5bd910f6098f564e61c19b39ba7e65040dc41e5c1af3e4c719a1e85f",
+    "zscope/retrieval/indexing_runtime.py": "a39b7d0e084ea77ad5485775c7ca484210afecc63ef8ca9ea94e867b720f7226",
+    "zscope/retrieval/java_joern_backend.py": "911a3dbb66fab8f8a7133b3d397bdc45176993763f5a0a4cbbf4e007b698c86b",
+    "zscope/retrieval/java_models.py": "a0f1abe221a11fffcbfb9d862f70c9e25577ed4df399c65e23761f0a8f1c491a",
+    "zscope/retrieval/java_signal_providers.py": "f5e2f446bfb9daf768da00db02fb2afebed15abf7c74b66b0b4f360aa214f632",
+    "zscope/retrieval/java_source_backend.py": "efb908a731ee67d279e293f2d8b6874c800e1bfc46d87d29fdd22d46e5e68f93",
+    "zscope/retrieval/java_source_extractor.py": "abd11c35b02f9a48d90d5daa02126cdf840322e984d8a1dc9de329f2627f4a6b",
+    "zscope/retrieval/java_structure_db.py": "63a9c920a8f3d1bac2579a0b4c7024e4be18097c16ee144072287c26d5f2dba4",
+    "zscope/retrieval/java_unified_backend.py": "8de31cb4de3702843e4016a637547ff565d3180885d4a4b455b79c80eed51336",
+    "zscope/retrieval/joern_backend.py": "fbbe76ed3af317d7e556f79e0f56e449a00b1a68c825ebdeab9864d100b029e1",
+    "zscope/retrieval/knowledge_db.py": "560e48a882311e2fb84eed15c5f21c2242bda88afb41ed4e0e58cdcdf9271504",
+    "zscope/retrieval/lifecycle_analysis.py": "fe2848934a0161708d38dd5cd365753dae8d5ba3e65fda024b4879798e47c6be",
+    "zscope/retrieval/llvm_toolchain.py": "7cc3e0284692f1587e01042c620010c847772de726a2b9115116916b64188293",
+    "zscope/retrieval/svf_analyzer.py": "6e0b24543211f3e2808f5af5b98463049163981401d728a6953e39b4a0064338",
+    "zscope/retrieval/svf_parser.py": "df0351897eff59da00de848f7dac064ce15fd3497931b66adbba5ea9f9695d85",
+    "zscope/retrieval/svf_runner.py": "cdb928620bbbf1d9844b227ad83b00772ad912086a4c7194733780063c8101c0",
+    "zscope/retrieval/unified_backend.py": "5d84e08b2d81375d52a012c78ba7b61624eff775b8133d3c9ffc6afafcf44f41",
+    "zscope/retrieval/validation_facts.py": "caf409dcee28608984080cd11bdd7fe76b333333f0949e16f88fdaf06f02fa51",
+    "zscope/review_memory/__init__.py": "cff3b50b854a2df456dc2e86b9df89ef827cbdb9108541f0ad119c8aae20acf0",
+    "zscope/review_memory/audit.py": "9e424ed9486caf671c24c7e5e1d33409488a5966c7aea26fdba8ff05e769edc2",
+    "zscope/review_memory/extractor.py": "274b112c1b9e561ae3dcb16f5c18a42287278d8b88b6544379945596c4f8e1df",
+    "zscope/review_memory/identity.py": "378a6ab533ec67e0e99df887340822ac27ca516a7d4483ac5e324c8fd58db329",
+    "zscope/review_memory/lifecycle.py": "598b3b1f3be01a5689d02adf6bad8899f65f0fa91d4d1549d0c996d0bca3eda8",
+    "zscope/review_memory/matcher.py": "65ee2601036f0e6fb428e763d833d71238caf41ec8cba0799bf2809f4b57c169",
+    "zscope/review_memory/models.py": "853b3731210261db76e0bb2d0d1fb393e92d175d5d5726da2e68598b8a406338",
+    "zscope/review_memory/projector.py": "1826a834dea1a9f0fdd5422def12262a6f831c8242b3f5dab6897b93035641b8",
+    "zscope/review_memory/replay.py": "69ac8e648b87852fc633b89cada01d2c605fe5ab86bc62653c1533ac62dca5bf",
+    "zscope/review_memory/schema.py": "b293854e21963123bd63617a82297f96c918590fce664d986dd96dc89007e69d",
+    "zscope/review_memory/store.py": "caaf1efb300b128673ef8407313ba3e0eba49a17efc50c30be478464ce10cf0e",
+    "zscope/review_memory/worker.py": "b2870d298ea77768e4a56fa1d817c19a4ec40743d7ed038bda2c2b2d9b981799",
+    "zscope/rules/__init__.py": "4df30d212932b5cfb7535b5f33b807957c20a925229040b58db6e8e472bfd2aa",
+    "zscope/rules/analyzer.py": "600b3563c29444ba47f67c8ab00c04215c3a30c2ada73b92e641b1dbb4d2e653",
+    "zscope/rules/catalog.py": "2db53b888f390a657246811e7613a775e1de5082b86e003a79c546cd18bb86c2",
+    "zscope/rules/engine.py": "813e49f285dacfb81d8985f37de9cc85aeb4e4eb84ec6127966c6bdf42897057",
+    "zscope/rules/extensions.py": "4d12f52fb5af654f3040da6f02c8e35211b23c40d14e7c1c8e02083c37e49801",
+    "zscope/rules/implementation.py": "5bfec88cb7a05b8c39375f4dd2211d9dc82cdcf00bb591176eb379f0c18cd789",
+    "zscope/rules/qualification.py": "9ad7df39e58cb2517f568de8c86c42f0c3c1e592ff28f7c7e122c48d0aa616d8",
+    "zscope/rules/qualification_evidence.py": "93c926c59a6ed71a45fc95d4dfcc8b50f1a1e36e094d1e45401bb82b428c30ca",
+    "zscope/rules/query.py": "ae6a26e0ab4f45ecb6b50f34347735ce9957617abdb7b237d685199a9d5e4bb6",
+    "zscope/semantics/__init__.py": "64e9ed6a9ce05a485d521c6ae3729bf3a2f24a6b7830c9f584da93a41e698d53",
+    "zscope/semantics/call_context.py": "52f0df700312434bc9ad60206158c1f8635f4b3204994aa94fd352fff132fa7c",
+    "zscope/semantics/call_operands.py": "6410b71d76925f9f978de6139c54aa2e9eac204d34accbbf9d5d25f5a88f01b9",
+    "zscope/semantics/compiler_fingerprint.py": "d773c88fdb233e2e60aa335035a161feb6f53a6383d746c12d5f12e72ec383fe",
+    "zscope/semantics/contract_compiler.py": "cb8335f24f22a917442e8f205c8dcbb7c3620f9e8da07ac08a44f3f5f61bbcdb",
+    "zscope/semantics/contract_conditions.py": "cc0a4656b822f76c3bb38377e46c29fb00f36e0c64b2fdba980f0653c9d38965",
+    "zscope/semantics/contract_review.py": "662ffc9de10b8633c8991c6e90380c8abcda72c1476f6f691f11329bef7adc03",
+    "zscope/semantics/contracts.py": "f4b881979887e5b23a5dea8a00295bfa3868c9858a514d8e2a298e24b0913101",
+    "zscope/semantics/defaults.py": "5d245eb3ae6e4fa37db81a009323fe57b2cd189de5352f5147587fd1fd729bb8",
+    "zscope/semantics/inference.py": "f647640a80f4982d2c4fd84de53c0242669aa90c36d1a1ab13686fe159c8fdbf",
+    "zscope/semantics/java_frameworks.py": "d3f28d9ce2f4098ad4a1b42e96e5063988ae982918d250a8bdf14ffa6f2ca97c",
+    "zscope/semantics/models.py": "4288f319e52289d93f26e45997f6d52fc4152684a786d67b36a5382803060003",
+    "zscope/semantics/object_flow.py": "ef70b4f2fc4cdff93277921a4d329a8b2af7c0aaa8e56ec16bef4297274bad9a",
+    "zscope/semantics/pool_protocols.py": "32a140bac843af17b3776fb1f9ff87e1146c837e7becbf2a0d0ae1c43c0ef5c8",
+    "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+    "zscope/semantics/standard_api.py": "e61ebaaf92b5cd7ebee98a1bd98ab9a2ceafd8a1b23b7af262fceab5aa77668b",
+    "zscope/semantics/user_config_context.py": "144291a7ae6b4b4dc3bfaada1f7852684381264830f1d57ba345ab921dfa494c",
+    "zscope/snapshots/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "zscope/snapshots/modeling_input.py": "1464c2789b3bbda3f6ab163d372149fd177ade4d0b19f40e1c90c51e1cd0a509",
+    "zscope/snapshots/policy.py": "d3575ed5a75389052a4c0eda7379512091b6298cde8c5bcd3af3b5d74fe99f94",
+    "zscope/snapshots/readonly.py": "571469b77dba493f535ccbed717e3f725704d2842167688bcd7065bc8d191229",
+    "zscope/snapshots/store.py": "878ae7dccc921a2c95a88dbbe8f7b185489d83192e519df6a68306bdfcd234ca",
+    "zscope/tools/call_graph.py": "842672cbdea5423b040915efd642784d6c568c851da8466888f0380fdf220298",
+    "zscope/tools/callers.py": "d2599d879af09bfcd0aa38fd58c7cc078e7b08dd27e68b53bdfc3e074817d322",
+    "zscope/tools/code_graph_query.py": "46da2cb28a6fd5f9a25c633a48a966d181cd61d23831c6c010ddab17f015072f",
+    "zscope/tools/code_retrieval.py": "f161854af8e4aa0e42274f22f9c45365e815d1430922dc94fdc2351b6f23b468",
+    "zscope/tools/contracts.py": "0ffa61d3b60ad9bf0b0e1bf8e500b9960cfd243932cd115bd88115bef9134bf1",
+    "zscope/tools/data_flow.py": "97b718ac883a41737c3dc30d1b6aa6a0b62a689dbf2f555abbfdb9cc2154264e",
+    "zscope/tools/data_flow_trace.py": "d52ac21ef6a088b5f8bb491b732989c697b1bb4c15f88730683a5652293f9f67",
+    "zscope/tools/deep_call_context.py": "d452c790de0cf7c70b6915b61dd7668b16d7c6c5dab4c53a27459f1f64ef5879",
+    "zscope/tools/file_snippet.py": "45f12ddd8506fb288df61c6d5a21f2a60d17611fc211a520605fd8695c8f052d",
+    "zscope/tools/flow_query.py": "41965c3ea94f3d03e29f81c8b375c700285b1b43b71aea05af51a2b21a5e16f9",
+    "zscope/tools/function_info.py": "bc54df5188fcaf43470c07d75aaa74efc666b4febeb9ea59b2dc66782b7cf0ac",
+    "zscope/tools/function_pointers.py": "9e222b5664980a6ac91d6f64dcd59fab4746b3fd579f79be78d3cfc7e7728738",
+    "zscope/tools/list_functions.py": "e0247d427a758b9dc5c8bf32c2a814698e0e1a13e0d2904ebedb07949f7029cc",
+    "zscope/tools/pointer_alias.py": "97ad928f33eae775537474dc74065977e57c23f477c61759a2633ae124ba1a78",
+    "zscope/tools/policy.py": "fe4dbce22408995a3cc001fd9438c40d1b0035d2533d233e8034e4103a6a93fc",
+    "zscope/tools/read_code.py": "d55db22e93c7798dbeeb1f00cd1e495fe7b149255b321da4cfd79073a89c9484",
+    "zscope/tools/registry.py": "71d38d9744b9ffabe73738c67ad41ff744f08ac12c42189fb4eea16358392db5",
+    "zscope/tools/runtime.py": "ca2367a6231c003f18bc1aae756000a535d049dde4c6666183dea8bc8516e537",
+    "zscope/tools/search_code.py": "cb2545717ec63bb3ac2c4dcf92848323c48042272e5a31c8a728bbf98d0c2d79",
+    "zscope/tools/security_semantics.py": "7c9ddb4c13fc1509d9473620d55a61341416ba0a54a11dbf1b7958ad718f7674",
+    "zscope/tools/semantic_context.py": "2999c0cfa47a1cbceda9cad4635417f9d7cc243953424f8f7701619173083502",
+    "zscope/tools/snapshot_tool.py": "7193e8c6a64cc90eb0627af432a3ce46414bd60ef458a9ead5aa745618b2ea9f",
+    "zscope/tools/source_access.py": "8325cfc6263d1a20a5806110e20861798ca86f57a6f638722e66aebf356af8f8",
+    "zscope/tools/static_findings.py": "8dbb5d286f75feef40b3a43a270a86516f4a3675ba501650fd95f2ce37be5472",
+    "zscope/tools/symbols.py": "077574489bbbc7a4f67bcc586e8968e3aad44483ace36a0dfce58c624dd5765a",
+    "zscope/tools/taint_reachability.py": "a8b0e593b920ade688ad9ff052af836aa398175a2acc021165abeb144138f3d1",
+    "zscope/tools/taint_tool.py": "1bc33f33a16485c8fd469b3db3d5a760f1fda5ace011e07afa7162a585a4a6ff",
+    "zscope/tools/type_info.py": "f9c83ad5295cc0aa4223f07870c4c78da1013b4870b4ea2812c5dba1d5701a8f",
+    "zscope/tools/utils.py": "ea06d2f56bce9ce102d33dd5e246b0cf8205aa86ea9106582382e23e156ed173",
+    "zscope/web/dashboard_server.py": "3fb82132a68334c2e296df93eb901398d1755da4476f338a0444237590c9e084",
+    "zscope/web/review_reports.py": "315bfc024247e9d7814ff38e7adee8817421e927007ab329a6e00aa043d354f3",
+    "zscope/web/server.py": "e815a38a651704df2898a0e84e2e10654cf424de3e38ee19eeae4f7b46fe0c12",
+    "zscope/web/services.py": "66ce537dcf05f975eb0540d2cfac6e3744b33e4c04ddd87edfe8d1639f8df95e",
+    "zscope/wiki/__init__.py": "736feb1a2dbc12d3cc843d6d818495ba1a7f72b26dd3e404eacd74bfb2ce26aa",
+    "zscope/wiki/classification.py": "e8f3b184137c7a7cade1d42135805e47b772bd9eba65bdf2c307686dbc8fbedc",
+    "zscope/wiki/compiler/__init__.py": "040ec36ae52cb7d249b2c4420bee0a0d13422de5f614ba0fcbace62dbf787966",
+    "zscope/wiki/compiler/changeset.py": "2a2ba1442b5a59ab70e354b46031554e723c3c41a58225c79d6f95d81ed34af1",
+    "zscope/wiki/compiler/chunker.py": "a732a3de7db46548d9e3e7f0a4ba78db975405d942d3ddb0ea2edd21d030e0cc",
+    "zscope/wiki/compiler/compiler.py": "332d3b62d332689ee9b11fb2fe4503326d234c3e5e0581d34dc3759a3da5a537",
+    "zscope/wiki/compiler/llm_compiler.py": "2b46c9665c229888b55196798c7423c0fe713438456e94104159c5e8ce3cfde4",
+    "zscope/wiki/compiler/workset.py": "d7ffc244fd055603942cc53fdbc2950dda3295acf7b5ecabc6ddb5bc573acd03",
+    "zscope/wiki/context/__init__.py": "ed6c50d21e051143eff8ca1bafccac57576ceea7ed7c4c352610b93cb7c0693c",
+    "zscope/wiki/context/direct_documents.py": "fb917afa0a34c89dc442b9a2dc12f5e53ee1fb6c0169176b32d2809c85410651",
+    "zscope/wiki/context/obligation.py": "07031e7c8dbc39c06b9390297c199f7d71f00c95400aadefa2740fbca2b2eda7",
+    "zscope/wiki/control.py": "483ef3957c1c8eced8462c8000973e1c4970881eb86968d6684040b6bbd8dbfa",
+    "zscope/wiki/discovery.py": "81f49485ad67f1c4347a103ffe6c75e67768b8db7649240683c18288488a8276",
+    "zscope/wiki/events.py": "6d4e8d8315ed5ba8197766e9aab91875fa053a61ce864129c10a490b9816e7d1",
+    "zscope/wiki/identity.py": "222f439f07ae8df6eb6cdfab91b543bf93c20c0c3f6d190718220d5dc423d181",
+    "zscope/wiki/lint.py": "9a12500cdf28c9fb890ff66c7585a04aa9eb993395a452e6e7ab54eabf81ba33",
+    "zscope/wiki/maintenance.py": "d03b29ff43e024407d187dee4fe55cd58f407bfc1e294de267779b9137437386",
+    "zscope/wiki/markdown_parser.py": "8888befb1d57ef839394117d71b4ca96220660970cadc6d8c12f40347089ea62",
+    "zscope/wiki/models.py": "b368c831603171544140840db407a2e85034cd3662959f54f2bc1f3fec91c0e9",
+    "zscope/wiki/page_format.py": "285d09134c1efcd77430407e8d6b642dc9da6573e08b4cc5abc0a4f620c73749",
+    "zscope/wiki/schema.py": "303adce6b40df0989a96bf07cd177eeec624a1521327b1d1e248656e05c89f55",
+    "zscope/wiki/service.py": "14a5c5b9bde6e71565299d9e815a547e11354d780dbd2ffe6d99919c0ac89a74",
+    "zscope/wiki/source_index.py": "f6944fb9e828a9004e7ccc6c37b6933587396fca826ecbce60536882ec341db3",
+    "zscope/wiki/source_manifest.py": "2f3050ae8394db995b0aa404a7f23e53b2118f3f1d680f2e652859018e9ff5b3",
+    "zscope/wiki/store/__init__.py": "142136a10c355a43447d00324a857ba9223ea931a2feb85825f2655392429d7c",
+    "zscope/wiki/store/revision_store.py": "0614287bb92dd61564698312b2d3d9c3359b8266a40ca57858da66463d0c2699"
+  },
+  "changed_inputs": [],
+  "output_bytes": 1666860,
+  "elapsed_seconds": 14.129,
+  "finished_utc": "2026-10-11T20:49:02.422380+00:00",
+  "evidence_files": {
+    "compat-probe.json": {
+      "bytes": 1550,
+      "sha256": "d1eb50cb70a298a84693d2ea2ad203449549b32e8e7fb909a4b772fcaaafe4be"
+    },
+    "aslr-after.json": {
+      "bytes": 95,
+      "sha256": "e98402367d448ebc0e0cd5af6d69baac92583cfa7b324fde0393bcfeeb896e6f"
+    },
+    "common-probe.py": {
+      "bytes": 8603,
+      "sha256": "6dc5b4f2ea3dfaecce25846306b758f7eafd5710cd67b6693d0f2f34dbe4db6c"
+    },
+    "container.stdout.log": {
+      "bytes": 368,
+      "sha256": "8be1917702b206ac0e6ff7b83611ea615d0a8a52e316ee5374eddb5b676e5cf2"
+    },
+    "compat-linkmap.txt": {
+      "bytes": 1656460,
+      "sha256": "e143a43df23ce25f929c41c22c9e542c6cc06d7272cd9cdfe13ac39488d9c02c"
+    },
+    "container.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "staging-manifest.json": {
+      "bytes": 48476,
+      "sha256": "060073ab1bc6269ce0f06992ad0bf42077f5572ecfef582a4b6ffd5bef3d2c14"
+    },
+    "compat-build.json": {
+      "bytes": 280,
+      "sha256": "c739928d36fa312e61749ee006e839e2514f6cba6f49c89e63e453199892cf0f"
+    },
+    "ldd-clang.json": {
+      "bytes": 1647,
+      "sha256": "adca15a6deb05b8d5835584a069ea9a102980158764f59fbeeb2a7a2a760f36a"
+    },
+    "compat-linked-libraries.json": {
+      "bytes": 2163,
+      "sha256": "5ee80d627ad9712dce5aae06dc505c2aae73e3e4973e5b4396b45bcdbe49ce82"
+    },
+    "toolchain-preflight.json": {
+      "bytes": 494,
+      "sha256": "b47528a5976f20f499680bf09744523db34d7016985ca017c49bdf990d3d85ff"
+    },
+    "ldd-libclang_rt.tsan-x86_64.so.json": {
+      "bytes": 467,
+      "sha256": "ac75df312206d1d828588677fc5e777cf771de02d3f4b77caf83c82215065b24"
+    },
+    "aslr-before.json": {
+      "bytes": 56,
+      "sha256": "e47b2efdce43fde699ebd4e7b74efbb6c8b4b5cdccbadc67cb920f69487ff7b2"
+    },
+    "isolation-verification.json": {
+      "bytes": 3280,
+      "sha256": "4134f435ad155e3018acc29f669171ea79d4292748c0b174c2d49f1b652a7009"
+    }
+  },
+  "archived_evidence": "/mnt/c/Users/10273/Documents/Codex/2026-10-12/task-3/v01-v02-kimi-resume-20261012/zscope-v02-personality-proposal-20261012-cq38zka2"
+}

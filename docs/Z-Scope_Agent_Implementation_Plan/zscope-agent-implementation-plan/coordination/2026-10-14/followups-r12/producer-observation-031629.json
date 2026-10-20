@@ -1,0 +1,73 @@
+[
+  {
+    "at": "2026-10-15T03:16:28.759661+08:00",
+    "id": "SCAN-SESSION-R12",
+    "task_id": "task_658717aaa6",
+    "public_evidence": "route-check/bridge-response-r12-current-kimi-3dc3a4438d.json",
+    "processes": {
+      "workspace": "scan-session-r12",
+      "processes": []
+    },
+    "delivery_hashes": {
+      "DELIVERY.md": "9c27b1788a97d123281355163d8eebd8a168a855a458d5755ccc377af4219c16"
+    },
+    "status": "repair_executing"
+  },
+  {
+    "at": "2026-10-15T03:16:28.759661+08:00",
+    "id": "CONTRACT-VALIDATION-R12",
+    "task_id": "task_6b0ca95206",
+    "public_evidence": "route-check/bridge-response-r12-current-zcode-e3f0a03f24.json",
+    "processes": {
+      "workspace": "contract-validation-r12",
+      "processes": [
+        {
+          "pid": 2154816,
+          "parent_pid": 2154815,
+          "executable": "python",
+          "kind": "pytest",
+          "origin": "producer_or_unclassified",
+          "state": "S (sleeping)",
+          "wait_channel": "do_wait"
+        },
+        {
+          "pid": 2154826,
+          "parent_pid": 2154816,
+          "executable": "python",
+          "kind": "pytest",
+          "origin": "producer_or_unclassified",
+          "state": "R (running)",
+          "wait_channel": "0"
+        }
+      ]
+    },
+    "delivery_hashes": {
+      "DELIVERY.md": "17500146a78a1a0481cdeb745ec080e4d98291bcadb80945be818e13f1b4c39e"
+    },
+    "status": "native_verification_observed_after_bridge_end"
+  },
+  {
+    "at": "2026-10-15T03:16:28.759661+08:00",
+    "id": "MCP-FINDINGS-R12",
+    "task_id": "task_e4ab0da557",
+    "public_evidence": "route-check/bridge-response-r12-current-mcp-73bd03275b.json",
+    "processes": {
+      "workspace": "mcp-findings-r12",
+      "processes": [
+        {
+          "pid": 2161776,
+          "parent_pid": 2160806,
+          "executable": "python",
+          "kind": "pytest",
+          "origin": "coordinator_verification",
+          "state": "S (sleeping)",
+          "wait_channel": "hrtimer_nanosleep"
+        }
+      ]
+    },
+    "delivery_hashes": {
+      "DELIVERY\\DELIVERY.md": "e96f8c0d88eaea5dc614e53f6ae9848ecd5b506c33e1ca35868a806e3226beb1"
+    },
+    "status": "producer_delivery_available_independent_verification_pending"
+  }
+]

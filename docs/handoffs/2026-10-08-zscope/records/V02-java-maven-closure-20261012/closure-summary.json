@@ -1,0 +1,47 @@
+{
+  "V01": "done",
+  "V02": "done",
+  "image_id": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "TSAN": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ASAN": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ordinary": {
+    "passed": 1736,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "compileall_mypy": {
+    "compileall-final": 0,
+    "mypy": 0
+  },
+  "prior_sealed_record": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V02-current-TSAN-acceptance-20261012",
+  "new_java_counts": {
+    "passed": 2,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "product_or_test_changes": false,
+  "old_tests_reexecuted": false,
+  "source_frozen_count": 403,
+  "common_candidate_accepted": true,
+  "final_documentation": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "new_java_test_attempts": 1,
+  "owned_containers_remaining": [],
+  "old_1734_and_sanitizers_reexecuted": 0
+}

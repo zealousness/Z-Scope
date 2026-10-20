@@ -1,0 +1,49 @@
+{
+  "checked_utc": "2026-10-11T21:28:24.198860+00:00",
+  "passed": true,
+  "two_original_nodes": [
+    "tests/test_java_source_backend.py::test_spoon_structure_frontend_lombok_processor_real_cli_contract",
+    "tests/test_java_source_backend.py::test_javaparser_structure_frontend_real_cli_contract"
+  ],
+  "java_test_counts": {
+    "passed": 2,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ordinary_compatibility_counts": {
+    "passed": 1543,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ordinary_total_counts": {
+    "passed": 1736,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "composition": "193 original accepted group executions + disjoint compatibility nodes 1259 + 248 + 34 + 2",
+  "old_1734_tests_reexecuted": 0,
+  "TSAN_ASAN_probes_or_models_reexecuted": 0,
+  "raw_java_process_exit_codes": [
+    0,
+    0,
+    2,
+    0,
+    0
+  ],
+  "negative_control": "Lombok off exits 2 with the original expected error; this is an asserted negative case, not a pytest failure.",
+  "source_frozen_count": 403,
+  "source_drift": [],
+  "product_or_test_changes": false,
+  "image_id": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "new_mounts_runtime_verified": true,
+  "source_and_tool_identities_verified": true,
+  "same_image_offline_execution_observed": true,
+  "default_seccomp_unchanged": true,
+  "old_sealed_evidence_unchanged": true,
+  "owned_container_remaining": false,
+  "V01": "done",
+  "V02": "done_pending_handoff_validation"
+}

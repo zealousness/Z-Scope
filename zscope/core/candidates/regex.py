@@ -8,6 +8,8 @@ candidate is verified, rejected, or only an audit observation.
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
+from functools import lru_cache
 import re
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
@@ -35,6 +37,219 @@ def default_local_semantics() -> LocalPatternSemantics:
     from ...semantics.defaults import default_local_pattern_semantics
 
     return default_local_pattern_semantics()
+
+
+# This policy narrows an already verified instance materialization. It is not
+# a factory receipt and does not verify native origins, scope or currentness.
+INSTANCE_CONSUMER_POLICY = "zscope.instance-builtin-consumers.v1"
+
+
+def _restricted_semantics(semantics: Optional[LocalPatternSemantics]) -> LocalPatternSemantics:
+    """Own a filtered copy; never fill missing instance roles from defaults."""
+    from ...semantics.models import CATEGORY_BY_ATTR
+
+    if semantics is None:
+        raise ValueError("restrict_to_semantics requires explicit instance semantics")
+    result = deepcopy(semantics)
+    registry = result.contracts
+    eligible = [
+        contract
+        for contract in registry.contracts
+        if contract.effects_trusted and contract in registry.find(contract.symbol.name)
+    ]
+    registry.contracts = eligible
+    for attr, role in CATEGORY_BY_ATTR.items():
+        bucket = getattr(result, attr)
+        for name in list(bucket):
+            if not any(c.role == role for c in registry.find(name)):
+                del bucket[name]
+    names = {contract.symbol.name for contract in eligible}
+    registry.pairs = [
+        pair for pair in registry.pairs if pair.acquire.name in names and pair.release.name in names
+    ]
+    return result
+
+
+def _semantic_call_allowed(
+    semantics: LocalPatternSemantics, restricted: bool, name: str, *roles: str
+) -> bool:
+    """Restriction only: missing or shadowed contracts never authorize a call."""
+    return not restricted or any(
+        contract.effects_trusted and (not roles or contract.role in roles)
+        for contract in semantics.contracts.find(name)
+    )
+
+
+@lru_cache(maxsize=1)
+def _builtin_pattern_roles() -> Dict[str, frozenset[str]]:
+    """Spelling identifies a slot to restrict, never an allowed operation."""
+    from ...semantics.defaults import default_checker_api_names
+
+    roles: Dict[str, set[str]] = {}
+    for contract in default_local_semantics().contracts.contracts:
+        roles.setdefault(contract.symbol.name, set()).add(contract.role)
+    for checker, role in {
+        "extended_allocators": "allocator",
+        "string_copy_sinks": "copy",
+        "extended_lock_apis": "lock",
+        "extended_unlock_apis": "unlock",
+        "graph_release_apis": "deallocator",
+        "extended_send_sinks": "send_sink",
+        "extended_recv_sources": "recv_source",
+        "extended_format_sinks": "format_sink",
+        "extended_io_acquirers": "io_acquire",
+        "extended_io_releasers": "io_release",
+        "extended_callback_registrars": "callback_register",
+    }.items():
+        for name in default_checker_api_names(checker):
+            roles.setdefault(name, set()).add(role)
+    # Historical lexical alternatives without a packaged contract must also
+    # fail closed. These entries confer no role on the instance registry.
+    for name, role in {
+        "kfree": "deallocator",
+        "kmalloc": "allocator",
+        "kzalloc": "allocator",
+        "refcount_dec_and_test": "standard_operation",
+        "atomic_dec_and_test": "standard_operation",
+    }.items():
+        roles.setdefault(name, set()).add(role)
+    for name in (
+        "strncmp",
+        "memcmp",
+        "fstat",
+        "sleep",
+        "usleep",
+        "nanosleep",
+        "poll",
+        "select",
+        "va_start",
+        "__builtin_add_overflow",
+        "__builtin_mul_overflow",
+        "__builtin_ctz",
+        "__builtin_ctzll",
+        "__sync_bool_compare_and_swap",
+        "__atomic_fetch_add",
+        "__atomic_fetch_sub",
+        "be16toh",
+        "be32toh",
+        "be64toh",
+        "bswap",
+        "__builtin_bswap",
+        "__builtin_bswap16",
+        "__builtin_bswap32",
+        "__builtin_bswap64",
+        "min",
+        "MIN",
+        "ARRAY_SIZE",
+        "FAILED",
+        "IS_ERR",
+        "SUCCEEDED",
+        "OK",
+        "access",
+        "stat",
+        "lstat",
+        "faccessat",
+        "fstatat",
+        "ftok",
+        "getenv",
+        "system",
+        "strlen",
+        "strchr",
+        "strcmp",
+        "chmod",
+        "fchmod",
+        "fcntl",
+        "ioctl",
+        "__atomic_store_n",
+        "eventfd_write",
+        "notify",
+        "trigger",
+        "wakeup",
+        "file_exists",
+    ):
+        roles.setdefault(name, set()).add("standard_operation")
+    for name, role in {
+        "memset": "copy",
+        "strlcpy": "copy",
+        "snprintf": "format_sink",
+        "mmap": "io_acquire",
+        "shm_open": "io_acquire",
+        "accept4": "io_acquire",
+        "munmap": "io_release",
+        "UnmapViewOfFile": "io_release",
+        "pthread_create": "thread_create",
+        "pthread_cond_signal": "condition_signal",
+        "pthread_cond_broadcast": "condition_signal",
+        "pthread_cond_init": "condition_init",
+        "pthread_rwlock_init": "lock_init",
+    }.items():
+        roles.setdefault(name, set()).add(role)
+    return {name: frozenset(values) for name, values in roles.items()}
+
+
+def _consumer_api_pattern(
+    pattern: str, semantics: LocalPatternSemantics, restricted: bool, *, expand_slots: bool = True
+) -> str:
+    from ...semantics.contracts import expand_api_pattern, return_acquisition_names
+
+    if not restricted:
+        return expand_api_pattern(pattern, semantics) if expand_slots else pattern
+    if r"\s*\(" not in pattern:
+        return pattern
+    slots = {
+        "malloc": ("allocators", "allocator"),
+        "calloc": ("calloc_allocators", "calloc"),
+        "realloc": ("reallocators", "reallocator"),
+        "free": ("deallocators", "deallocator"),
+        "recv": ("recv_sources", "recv_source"),
+        "send": ("send_sinks", "send_sink"),
+        "pthread_mutex_lock": ("lock_apis", "lock"),
+        "pthread_mutex_unlock": ("unlock_apis", "unlock"),
+    }
+    roots = _builtin_pattern_roles()
+    denied = semantics.contracts.shadowed_symbols
+
+    def replace(match: re.Match[str]) -> str:
+        name = match[0]
+        if expand_slots and name in slots:
+            attr, role = slots[name]
+            names = {
+                candidate
+                for candidate in getattr(semantics, attr)
+                if _semantic_call_allowed(semantics, True, candidate, role)
+            }
+            if role in {"allocator", "calloc", "reallocator"}:
+                names = return_acquisition_names(semantics, names, role)
+            return (
+                "(?-i:" + "|".join(re.escape(n) for n in sorted(names)) + ")" if names else "(?!)"
+            )
+        if name in roots:
+            return (
+                "(?-i:" + re.escape(name) + ")"
+                if _semantic_call_allowed(semantics, True, name, *roots[name])
+                else "(?!)"
+            )
+        return "(?!)" if name in denied else name
+
+    # Normalize the historical grouped spellings before checking each exact root.
+    pattern = pattern.replace(
+        "pthread_cond_(?:timed)?wait", "(?:pthread_cond_wait|pthread_cond_timedwait)"
+    )
+    pattern = pattern.replace(
+        "pthread_(?:mutex|cond|rwlock)_init",
+        "(?:pthread_mutex_init|pthread_cond_init|pthread_rwlock_init)",
+    )
+    pattern = pattern.replace("mem(?:cpy|move)", "(?:memcpy|memmove)")
+    pattern = pattern.replace("__builtin_ctz(?:ll)?", "(?:__builtin_ctz|__builtin_ctzll)")
+    pattern = pattern.replace("v(?:f)?printf", "(?:vprintf|vfprintf)")
+    names = set(roots) | set(denied)
+    return re.sub(
+        r"(?:(?<=\\b)|(?<![A-Za-z0-9_]))(?:"
+        + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+        + r")(?![A-Za-z0-9_])",
+        replace,
+        pattern,
+    )
 
 
 class RegexCandidateGenerator(
@@ -68,9 +283,14 @@ class RegexCandidateGenerator(
         semantics: Optional[LocalPatternSemantics] = None,
         rule_policy: Optional[Any] = None,
         program_facts_provider: Optional[Any] = None,
+        *,
+        restrict_to_semantics: bool = False,
     ):
-        self.semantics = default_local_semantics()
-        if semantics is not None:
+        self.restrict_to_semantics = restrict_to_semantics
+        self.semantics = (
+            _restricted_semantics(semantics) if restrict_to_semantics else default_local_semantics()
+        )
+        if semantics is not None and not restrict_to_semantics:
             self.semantics.merge(semantics)
         self.rule_policy = rule_policy
         self.program_facts_provider = program_facts_provider
@@ -119,7 +339,10 @@ class RegexCandidateGenerator(
         )
         self._copy_sink_re = self._call_re(self._copy_sink_names)
         self._lock_re = self._call_re(
-            self._lock_names, extra_patterns=[r"pthread_rwlock_(?:rdlock|wrlock)"]
+            self._lock_names,
+            extra_patterns=(
+                [] if self.restrict_to_semantics else [r"pthread_rwlock_(?:rdlock|wrlock)"]
+            ),
         )
         self._unlock_re = self._call_re(self._unlock_names)
         self._size_type_pattern = self._type_pattern(self._size_type_names)
@@ -128,9 +351,15 @@ class RegexCandidateGenerator(
         )
 
     def _semantic_api_pattern(self, pattern: str) -> str:
-        from ...semantics.contracts import expand_api_pattern
+        return _consumer_api_pattern(pattern, self.semantics, self.restrict_to_semantics)
 
-        return expand_api_pattern(pattern, self.semantics)
+    def _literal_api_pattern(self, pattern: str) -> str:
+        return _consumer_api_pattern(
+            pattern, self.semantics, self.restrict_to_semantics, expand_slots=False
+        )
+
+    def _semantic_call_allowed(self, name: str, *roles: str) -> bool:
+        return _semantic_call_allowed(self.semantics, self.restrict_to_semantics, name, *roles)
 
     def _bound_api_calls(self, text: str, roles: set[str]) -> List[Tuple[str, str]]:
         names = {c.symbol.name for c in self.semantics.contracts.contracts if c.role in roles}
@@ -216,9 +445,16 @@ class RegexCandidateGenerator(
         *,
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
-        self.last_semantic_events = self.semantics.contracts.trace_calls({
-            "func_name": func_name, "file_path": file_path, "code": code})
-        self.program_facts = self.program_facts_provider(func_name, file_path) if self.program_facts_provider else {}
+        self.program_facts = (
+            self.program_facts_provider(func_name, file_path) if self.program_facts_provider else {}
+        )
+        semantic_context = {
+            "func_name": func_name,
+            "file_path": file_path,
+            "code": code,
+            "program_facts": self.program_facts,
+        }
+        self.last_semantic_events = self.semantics.contracts.trace_calls(semantic_context)
         lines = self._parse_lines(code)
         if not lines:
             return []
@@ -226,14 +462,17 @@ class RegexCandidateGenerator(
         issues: List[Dict[str, Any]] = []
         emit = self._make_emit(issues, func_name, file_path, lines, allowed)
         from ...semantics.call_context import bind_call_context
-        with bind_call_context({"func_name": func_name, "file_path": file_path, "code": code,
-                                "program_facts": self.program_facts}, self.semantics.contracts):
+
+        with bind_call_context(semantic_context, self.semantics.contracts):
             run_detector_plan(
                 "regex",
                 "function",
                 RegexRuleContext(generator=self, lines=lines, emit=emit),
             )
 
+        from ...semantics.build_scope import bind_candidate_build_scope
+
+        bind_candidate_build_scope(issues, semantic_context)
         deduped: Dict[str, Dict[str, Any]] = {}
         for issue in issues:
             key = str(issue.get("dedup_key") or issue["id"])

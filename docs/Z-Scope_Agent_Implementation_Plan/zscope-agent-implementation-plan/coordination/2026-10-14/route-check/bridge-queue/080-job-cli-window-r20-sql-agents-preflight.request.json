@@ -1,0 +1,5 @@
+{
+  "id": "job-cli-window-r20-sql-agents-preflight",
+  "tool": "list_agents",
+  "arguments": {}
+}

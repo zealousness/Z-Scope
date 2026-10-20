@@ -1,0 +1,378 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:24:58.561986+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 实现的调用）。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:25:20.220158+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "m"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:25:20.435493+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "ypy 通过。按要求对两个新文件应用 Black 格式化。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:25:54.141524+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "最终"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:25:54.414741+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "收据前，先看协调目录里"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:25:54.540740+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "已有的交付命名约定。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:25.093255+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "交付"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:25.434759+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "约定明确（DELIVERY.md + artifacts/JUnit + SHA）。先"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:25.664895+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "按仓库标准跑全量 mypy 和 compileall 作为完整收据。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:19.113043+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "全"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:19.363155+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "量 mypy（348 文件）与 compileall 通过。现在做最终单次 pytest 收据运行（带 JUnit"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:19.380423+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " XML）。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:39.012304+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "17"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:39.267704+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "/17 通过、0 skip。计算交付"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:39.522841+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "文件 SHA 并确认工作区无其他源码改动。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:48.758701+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "最后"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:49.005462+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "通读一遍交付模块的最终字节，确认 Black 后的完整状态。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:05.173170+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "模块"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:05.384891+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "终态确认无误。现在写 DELIVERY.md 交付说明。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:53.730416+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "最后"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:53.858988+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "确认交付文件集完整性与工作区状态。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:00.854139+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "`."
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:01.157968+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "mypy_cache` 是 mypy 的常规缓存。再排除缓存目录"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:01.236135+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "确认无其他源码被改动。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:13.616141+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "这些"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:13.977344+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " docs 的 mtime 需要甄别是快照拷贝"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:14.065569+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "顺序还是本会话改动。检查时间分布。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:22.534089+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "确认"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:22.793637+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "：会话窗口内仅改动了四个授权"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:23.086080+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "交付文件（其余\"newer\"只是快照拷贝的毫秒"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:23.209206+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "级时序差）。收尾更新任务状态。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:30.946592+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "S"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:31.234013+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "01-CDB-COVERAGE 独立后端切片已完成交付，全部验证通过"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:31.487966+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "：**17/17 测试通过（0 skip，含 3 个"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:31.747519+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "真实 native 双宏对照）**、全量 mypy 348 文"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:31.998175+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "件无问题、全量 compileall 通过、Black clean。\n\n## 交付"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:32.294257+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "内容（均在隔离目录 `s01-coverage` 内）\n\n| 文件 | SHA-256"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:32.564440+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "（前 16 位） |\n|---|---|\n| `zscope/orchestration/entry_instance_coverage.py` | `e4b1faf"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:32.860275+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "ecbdc1904` |\n| `tests/test_entry_instance_coverage.py` | `871492b8"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:33.118185+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "66085da` |\n| `artifacts/entry-instance-coverage-tests.xml`（JUnit） | `ad962aa926d21eb"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:33.429959+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "` |\n| `DELIVERY.md`（完整交付说明） | — |\n\n会话窗口内仅改动了以上"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:33.678897+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "授权文件（已用 mtime 核实，其余\"newer"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:33.973512+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "\"只是快照拷贝毫秒级时序差；另有 `__py"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:34.295055+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "cache__`/`.mypy_cache` 工具残留，gitignore 覆盖）"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:34.556304+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "。\n\n## 实现要点\n\n- **`reconcile_entry_instance_coverage(code_index, *, compile_commands_path, source_root, include"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:34.833127+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "_paths, exclude_paths)`**，返回 `zscope.entry-instance-coverage.v1`：`"
+      }
+    }
+  ],
+  "offset": 80,
+  "count": 46,
+  "next_offset": 126,
+  "has_more": true,
+  "total_matching": 150
+}

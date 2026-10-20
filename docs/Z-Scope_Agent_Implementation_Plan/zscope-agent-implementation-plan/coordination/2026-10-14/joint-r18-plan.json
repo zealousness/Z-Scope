@@ -1,0 +1,13 @@
+{
+  "launcher_sha256": "4dfeef5f320d4237b26e0f5a6dacad60089ce288cb314b9f509b34f6dc329d74",
+  "inherits_entire_r17_collection": true,
+  "additional_test_files": [
+    "tests/test_instance_coverage_ui.py",
+    "tests/test_lightweight_instance_metadata.py",
+    "tests/test_user_config_workbook_readme.py"
+  ],
+  "quality_commands": 6,
+  "pytest_capture": "default fd/ext4",
+  "root_product_changed": false,
+  "requires": "R17 repaired current joint passed and accepted R18 batch intaken"
+}

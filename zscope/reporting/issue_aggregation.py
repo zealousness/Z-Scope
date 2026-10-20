@@ -22,7 +22,7 @@ from pathlib import PurePosixPath
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from ..common.defect_cwe_map import merge_cwes
-from ..common.issue_identity import semantic_category_family
+from ..common.issue_identity import issue_build_context_id, semantic_category_family
 from .finding_roots import _occurrence_uids, _structured_sink_anchor, _unique_strings
 
 ISSUE_AGGREGATION_VERSION = "zscope.issue-aggregation.v1"
@@ -51,7 +51,7 @@ def project_issue_aggregation(
     ]
     copied = [item for item in copied if item.get("analysis_scope") != "conditional_source_branch"]
 
-    buckets: Dict[Tuple[str, str, str, str, str], List[Dict[str, Any]]] = {}
+    buckets: Dict[Tuple[str, str, str, str, str, str], List[Dict[str, Any]]] = {}
     passthrough: List[Dict[str, Any]] = []
     for item in copied:
         if str(item.get("candidate_disposition") or "").lower() not in _AGGREGATION_DISPOSITIONS:
@@ -80,6 +80,7 @@ def project_issue_aggregation(
                     "function": key[2],
                     "sink_file": key[3],
                     "operation": key[4],
+                    "build_context_id": key[5],
                     "sink_line": _sink_anchor(ordered[0])["line"],
                 },
                 ensure_ascii=False,
@@ -131,7 +132,7 @@ def _sink_anchor(item: Mapping[str, Any]) -> Dict[str, Any]:
     return _structured_sink_anchor(sink)
 
 
-def _site_bucket_key(item: Mapping[str, Any]) -> Tuple[str, str, str, str, str] | None:
+def _site_bucket_key(item: Mapping[str, Any]) -> Tuple[str, str, str, str, str, str] | None:
     """Bucket by family, file, function, sink file, and sink operation.
 
     The sink line joins later through tolerance clustering, so drift of a few
@@ -157,6 +158,7 @@ def _site_bucket_key(item: Mapping[str, Any]) -> Tuple[str, str, str, str, str] 
         function,
         sink_anchor["file"],
         sink_anchor["operation"],
+        issue_build_context_id(item),
     )
 
 

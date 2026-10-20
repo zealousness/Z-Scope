@@ -1,0 +1,15 @@
+{
+  "id": "s08-session-r6-review3",
+  "branch": "s08-session-r6-review3",
+  "tool": "dispatch_task",
+  "arguments": {
+    "session_id": "sess_3b6b9a19b2",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "agent": "zcode",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "title": "S08-SESSION-SCHEDULER-R3",
+    "message": "S08 协调R3返修，继续原sess_3b6b9a19b2、s08-session-r6和R2扩展7文件所有权。task_c1fb932358已21:51:54 completed、observed精确glm-5.3，get_result完整且无failure/warnings；当前7源码稳定，未导入根，无活跃同会话任务。R2结果正文结束于修测试heredoc阶段，DELIVERY/DELIVERY.md仍R1旧SHA，不能当R2完成收据；本轮务必把真实回归/质量/最终交付收口。\n原5协调探针已独立重跑全过：stale claim/input/owner拒绝、batch上限首轮保留pending、父子事务提交后真实进程退出恢复有child。这些修复保留。\n新2fail：\n1 queue.settle同一discoveries里两个相同child都先归入new_items，第二次INSERT触发UNIQUE，整次合法去重结果被queue_unavailable503拒绝。要求同结果内(kind,scope,build)去重并正确计duplicates，不能只处理数据库已有项。仍保持父verdict+全部新child同事务、失败全回滚、精确input/token/bound_attempt锁。\n2 max_attempts=1,max_batches=1，父项首次因discovery_batch_limit被defer保留；同输入重开scheduler后claim_batch把该deferred按attempt耗尽转failed，run drained/remaining0。你的settle文档宣称结构上限deferral不受attempt-bound，但claim路径未落实。必须让这种未接纳发现可持久保持真实remaining且停止该轮；同输入resume不能清空，不能无限忙循环/无界重复handler。输入变化后的recover要撤销该前提并重新核验。可明确持久blocked原因并在claim/scheduler恢复消费处尊重，避免把它误报普通执行失败；普通handler错误/延期的max_attempts仍有界。\n新只读协调探针followups-r6/test_scheduler_settlement_edges.py，合原两文件是5pass2fail；artifacts/coordinator-s08-r2-acceptance-20261014/{review.json,results.xml,initial-delivery}。源码7文件、旧R1交付和当前R2JUnit已归档。\n副本还已有DELIVERY/junit-r2-full.xml：159 tests/158pass1fail0skip，test_resume_changed_input_recovers_and_reruns_all首次窗口4项全done，断言done_first非空且<4失败。该工件时间晚于Bridge终态，来源未被协调者确认为最终worker轮，不能拿来宣称通过。把真实owner恢复测试改成有确定同步/控制的“先完成一部分、保留另一部分”，保持非空真remaining、input_revoked/queue_recovered、第二次真实全量重验等原断言，不放宽为允许首轮全完成，不靠延长/放大时间碰运气。首轮partial status但queue全done也须检查owner/scanner有限收尾的语义是否真一致。\nDELIVERY必须更新R2/R3真实SHA/命令时间与剩余，不覆盖历史JUnit；纠正原task_28...“API故障取消”的错误说法（实际协调者提交代码反例正常cancel），时钟跳变可能提前也可能延后，不能宣称只延后。收据可顶层DELIVERY.md或原DELIVERY目录说明/JUnit；artifacts亦可。所有新增测试/质量在WSL /home/zeal/venv313/bin/python经根test_slot.py --workspace本副本 --，ext4TMPDIR两槽。完整相关pytest、compileall zscope scripts test tests、mypy zscope、局部Black；保留原3/24/119、R2失败159和新5/2失败证据，最终新文件名。源7文件之外只读，root/其他副本/ScanSession/ParallelAnalyzer/provider权限/旧S06不操作，不commit/push/reset/clean，不绕审核。完整scanner接线仍协调者，standalone通过不关闭S08/JOB04/JOB06。最终稳定交付后停止写入。",
+    "user_requested": true,
+    "request_id": "4e8fbb79-3173-4ff7-9dbc-58520ea2b9cc"
+  }
+}

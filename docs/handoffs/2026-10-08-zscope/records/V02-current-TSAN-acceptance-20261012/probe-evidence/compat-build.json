@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "/opt/zscope-test/bin/clang18",
+    "-fsanitize=thread",
+    "-g",
+    "-O0",
+    "-pthread",
+    "-Wl,-Map,/tmp/v02-compat-main.linkmap",
+    "-o",
+    "/tmp/v02-compat-main",
+    "/tmp/v02-compat-main.c"
+  ],
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

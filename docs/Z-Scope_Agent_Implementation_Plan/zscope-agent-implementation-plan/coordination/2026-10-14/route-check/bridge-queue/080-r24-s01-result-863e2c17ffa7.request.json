@@ -1,0 +1,8 @@
+{
+  "id": "r24-s01-result-863e2c17ffa7",
+  "tool": "get_result",
+  "arguments": {
+    "task_id": "task_d986e8232c",
+    "max_chars": 60000
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-15T04:10:14.366561+08:00",
+  "agent_task_id": "/root/astra_v3_editor_r6",
+  "round_id": "ASTRA-JOB-PROJECTION-R15",
+  "status": "actual_execution_observed",
+  "native_agent_report": "Read R15 snapshot and shared projection source. Investigating openJobResult response-binding checks and invalidation of displayed acceptance results on run/input changes. Actual HTTP/owner/resume reproduction pending; scanner/report synthetic.",
+  "independent_acceptance": false,
+  "integrated": false,
+  "whole_package_complete": false
+}

@@ -1,0 +1,7 @@
+{
+  "id": "validation-context-r19-values-preflight",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": false
+  }
+}

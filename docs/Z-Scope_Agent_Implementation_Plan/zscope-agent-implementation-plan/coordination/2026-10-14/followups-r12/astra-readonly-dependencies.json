@@ -1,0 +1,25 @@
+{
+  "at": "2026-10-15T02:18:59.875689+08:00",
+  "workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\astra-queue-ux-r12",
+  "files": [
+    {
+      "path": "zscope/orchestration/jobs/owner.py",
+      "before": "6d125c4c989c690136ef21ca6104ca1e178dc3921ac010b7be5f89b716efef9c",
+      "after": "f8fed439d80205c19c61c84b50335ccf1ed78e701a2ce9698b3e9f2963629b54"
+    },
+    {
+      "path": "zscope/orchestration/jobs/work_queue.py",
+      "before": "342ae336a28dc00df128d4e427e33b63156878e769c5f130e2153492f3ac1ad6",
+      "after": "3402130084e38ce644000f5d70f2471ddd9e444a80fdfe56ebef87586368af98"
+    },
+    {
+      "path": "tests/test_scan_job_execution.py",
+      "before": "a69d0284e487cb7b80f0fefec0c3e06380915769cfde0f87718208c64c38e98b",
+      "after": "d62fdca9205758cad255b2d90d1d9a094f803dba73c02f341044b2725b40fdec"
+    }
+  ],
+  "source_review": "artifacts/coordinator-shared-r12-acceptance-20261015/review.json",
+  "changes_owned_by": "coordinator",
+  "worker_baseline_preserved": true,
+  "active_check_at_refresh": false
+}

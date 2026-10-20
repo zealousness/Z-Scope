@@ -1,0 +1,13 @@
+{
+  "session_id": "sess_a3dc643fae",
+  "kinds": "permission",
+  "start_offset": 0,
+  "next_offset": 0,
+  "pages": 1,
+  "total_matching": 0,
+  "has_more": false,
+  "events_read": 0,
+  "latest_at": null,
+  "failed_tools": [],
+  "completed_tail": []
+}

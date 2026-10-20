@@ -7,25 +7,28 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 from urllib.parse import parse_qs, urlsplit
 
 from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
 from ..framework.llm_usage import scan_token_usage_snapshot
 from ..snapshots.store import SnapshotStore
+from ..snapshots.readonly import ReadonlySnapshotStore
+from ..retrieval.cached_index import CachedCodeIndex
 from ..tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from ..tools.runtime import ToolsRuntime
 from ..tools.contracts import tool_result
 from ..orchestration.entry_discovery import EntryDiscovery
 from ..orchestration.rollout import rollout_runtime_policy
-from ..orchestration.scan_request import ScanRequestError, ScanRequestService
 from ..retrieval.code_index import CodeIndex
 from ..rules.catalog import serialize_effective_rules
 from ..rules.extensions import preflight_rules
 from ..wiki.control import wiki_query, wiki_status
+from .jobs_adapter import McpJobsAdapter
 
 MCP_TOOL_NAMES: Dict[str, str] = {
+    "zscope.config.prepare": "prepare_saved_config",
     "zscope.code.search": "search_code",
     "zscope.code.read": "read_code",
     "zscope.semantic.context": "get_semantic_context",
@@ -36,9 +39,39 @@ MCP_TOOL_NAMES: Dict[str, str] = {
     "zscope.entries.discover": "discover_entries",
     "zscope.scan.run": "run_scan",
     "zscope.scan.status": "scan_status",
+    "zscope.jobs.list": "jobs_list",
+    "zscope.jobs.events": "jobs_events",
+    "zscope.jobs.result": "jobs_result",
+    "zscope.jobs.cancel": "jobs_cancel",
+    "zscope.jobs.resume": "jobs_resume",
     "zscope.wiki.status": "wiki_status",
     "zscope.wiki.query": "wiki_query",
 }
+
+# MCP job tools dispatch onto the shared persistent service through the
+# adapter; the runtime names exist only as dispatch keys (the tools runtime
+# itself has no job tools).
+JOBS_TOOL_METHODS: Dict[str, str] = {
+    "run_scan": "start",
+    "scan_status": "status",
+    "jobs_list": "list",
+    "jobs_events": "events",
+    "jobs_result": "result",
+    "jobs_cancel": "cancel",
+    "jobs_resume": "resume",
+}
+
+MCP_PROFILES = ("default", "read_only", "candidate_blind")
+_READ_TOOLS = frozenset(
+    {
+        "zscope.code.search",
+        "zscope.code.read",
+        "zscope.semantic.context",
+        "zscope.graph.query",
+        "zscope.flow.trace",
+        "zscope.findings.query",
+    }
+)
 
 
 class ZScopeMcpProvider:
@@ -53,10 +86,31 @@ class ZScopeMcpProvider:
         tool_policy: Optional[ToolPolicy] = None,
         max_result_chars: int = 60000,
         config_path: Optional[Path] = None,
-        scan_request_service: Optional[ScanRequestService] = None,
+        jobs_adapter: Optional[McpJobsAdapter] = None,
+        profile: str = "default",
     ):
-        preflight_rules(config)
+        if profile not in MCP_PROFILES:
+            raise ValueError("Unknown MCP profile")
+        self.profile = profile
+        self._owns_code_index = code_index is None
+        if profile != "default":
+            if any(
+                item is not None
+                for item in (code_index, snapshot_store, tools_runtime, jobs_adapter)
+            ):
+                raise ValueError(
+                    "Read-only MCP profiles require their controlled cached-state factory"
+                )
+            code_index = cast(CodeIndex, CachedCodeIndex(config))
+            snapshot_store = cast(
+                SnapshotStore, ReadonlySnapshotStore(Path(config.analysis.snapshot_dir))
+            )
+        else:
+            preflight_rules(config)
         self.config = config
+        self.config_path = (
+            Path(config_path).expanduser().resolve() if config_path is not None else None
+        )
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
             config.project.compile_commands_path,
@@ -77,30 +131,30 @@ class ZScopeMcpProvider:
         if tools_runtime is None:
             user_config = None
             configured_user_file = getattr(config.project, "user_config_file", None)
-            if configured_user_file and Path(configured_user_file).exists():
+            if (
+                profile == "default"
+                and configured_user_file
+                and Path(configured_user_file).exists()
+            ):
                 user_config = UserConfigStore(Path(configured_user_file))
             self.tools_runtime = ToolsRuntime(
                 self.code_index,
                 self.snapshot_store,
                 user_config=user_config,
                 tool_policy=resolved_policy,
+                access_profile=profile,
             )
         else:
             self.tools_runtime = tools_runtime
         self.tool_policy = resolved_policy if tool_policy else self.tools_runtime.tool_policy
         self.max_result_chars = max(1000, int(max_result_chars or 60000))
         self.protocol_version = "2025-06-18"
-        self.scan_request_service = scan_request_service
-        if self.scan_request_service is None and config_path is not None:
-            requested_depth_source = str(getattr(config.scan, "requested_depth_source", "") or "")
-            self.scan_request_service = ScanRequestService(
-                Path(config_path),
-                default_scan_depth=(
-                    str(getattr(config.scan, "requested_depth", "") or "") or None
-                    if requested_depth_source == "cli"
-                    else None
-                ),
-            )
+        # Job control goes through the same persistent ScanJobService the Web
+        # jobs API uses; the adapter is lazy, so constructing a provider (any
+        # profile) starts no backend, thread, or store.
+        self.jobs_adapter = jobs_adapter
+        if profile == "default" and self.jobs_adapter is None and config_path is not None:
+            self.jobs_adapter = McpJobsAdapter(self.config_path)
 
     def list_resources(self) -> List[Dict[str, Any]]:
         resources = [
@@ -141,15 +195,46 @@ class ZScopeMcpProvider:
                 "mimeType": "application/json",
             },
         ]
+        if self.config_path is not None:
+            resources.append(
+                {
+                    "uri": "zscope://config/preparation",
+                    "name": "Saved Configuration Preparation",
+                    "description": (
+                        "Read-only saved-config readiness, declared field wiring, "
+                        "and start capability; does not run a scan or select a target."
+                    ),
+                    "mimeType": "application/json",
+                }
+            )
+        if self.profile == "candidate_blind":
+            resources = []
+        elif self.profile == "read_only":
+            resources = [
+                r
+                for r in resources
+                if r["uri"]
+                in {
+                    "zscope://config",
+                    "zscope://config/preparation",
+                    "zscope://reports/latest",
+                }
+            ]
         return self.tool_policy.filter_resources(resources)
 
     def read_resource(self, uri: str) -> Dict[str, Any]:
         base_uri, query = self._parse_resource_uri(uri)
+        if self.profile != "default" and base_uri not in {r["uri"] for r in self.list_resources()}:
+            raise PermissionError("Resource unavailable in this MCP profile")
         policy_error = self.tool_policy.enforce_resource(base_uri, actor="mcp")
         if policy_error:
             raise PermissionError(policy_error["error"])
         if base_uri == "zscope://config":
             return self._resource(uri, self._config_dict())
+        if base_uri == "zscope://config/preparation":
+            if uri != "zscope://config/preparation":
+                raise ValueError("Saved configuration preparation accepts no URI parameters.")
+            return self._resource(uri, self._saved_config_preparation())
         if base_uri == "zscope://knowledge/stats":
             return self._resource(uri, self._knowledge_stats())
         if base_uri == "zscope://knowledge/functions":
@@ -193,6 +278,8 @@ class ZScopeMcpProvider:
         raise KeyError(f"Unknown resource: {uri}")
 
     def list_prompts(self) -> List[Dict[str, Any]]:
+        if self.profile != "default":
+            return []
         prompts: List[Dict[str, Any]] = [
             {
                 "name": "zscope.entry_discovery",
@@ -213,6 +300,8 @@ class ZScopeMcpProvider:
         return self.tool_policy.filter_prompts(prompts)
 
     def get_prompt(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if self.profile != "default":
+            raise PermissionError("Prompt unavailable in this MCP profile")
         arguments = arguments or {}
         policy_error = self.tool_policy.enforce_prompt(name, arguments, actor="mcp")
         if policy_error:
@@ -253,8 +342,39 @@ class ZScopeMcpProvider:
                 schema["_meta"] = {"anthropic/maxResultSizeChars": self.max_result_chars}
                 tools.append(schema)
 
-        tools.extend(self._management_tool_schemas(include_output=include_output))
+        if self.profile == "default":
+            tools.extend(self._management_tool_schemas(include_output=include_output))
+        else:
+            tools = [t for t in tools if self._profile_allows_tool(t["name"])]
+        if self.config_path is not None and self._profile_allows_tool("zscope.config.prepare"):
+            preparation_schema: Dict[str, Any] = {
+                "name": "zscope.config.prepare",
+                "description": (
+                    "Inspect the server's saved configuration using the same read-only "
+                    "preparation as CLI/Web; disclose field wiring and whether it can start. "
+                    "Does not execute, index, run a model, or choose a build target."
+                ),
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+                "annotations": {
+                    "readOnlyHint": True,
+                    "idempotentHint": True,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                },
+                "_meta": {"anthropic/maxResultSizeChars": self.max_result_chars},
+            }
+            if include_output:
+                preparation_schema["outputSchema"] = {"type": "object"}
+            tools.append(preparation_schema)
         return self.tool_policy.filter_tool_schemas(tools)
+
+    def _profile_allows_tool(self, name: str) -> bool:
+        if name == "zscope.config.prepare":
+            return self.profile in {"default", "read_only"}
+        return self.profile == "default" or (
+            name in _READ_TOOLS
+            and not (self.profile == "candidate_blind" and name == "zscope.findings.query")
+        )
 
     def _management_tool_schemas(self, *, include_output: bool) -> List[Dict[str, Any]]:
         readonly = {
@@ -300,25 +420,123 @@ class ZScopeMcpProvider:
             ),
             (
                 "zscope.scan.run",
-                "Start one asynchronous Z-SCOPE scan with a bounded depth override.",
+                "Start one persistent scan job on the saved config; returns the durable job, run, revision, and input binding. Duplicate request_id replays the same job.",
                 {
                     "type": "object",
                     "properties": {
-                        "scan_depth": {"type": "string", "enum": ["fast", "balanced", "deep"]}
+                        "request_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "Caller-chosen idempotency key for this exact request",
+                        },
+                        "scan_depth": {
+                            "type": "string",
+                            "enum": ["fast", "balanced", "deep"],
+                            "description": "Optional depth override; omit to use the saved config",
+                        },
+                        "stop_at": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                            "description": "ISO8601 absolute time with timezone; one window for this attempt only",
+                        },
                     },
+                    "required": ["request_id"],
                     "additionalProperties": False,
                 },
                 mutating,
             ),
             (
                 "zscope.scan.status",
-                "Read status and token usage telemetry for an interface scan.",
+                "Read one persistent job's status, revision, input binding, owner state, and capabilities by job_id.",
                 {
                     "type": "object",
-                    "properties": {"scan_id": {"type": "string"}},
+                    "properties": {"job_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+                    "required": ["job_id"],
                     "additionalProperties": False,
                 },
                 readonly,
+            ),
+            (
+                "zscope.jobs.list",
+                "List this project's persistent scan jobs and whether a new one can start.",
+                {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                readonly,
+            ),
+            (
+                "zscope.jobs.events",
+                "Page the persistent event log of one job after a cursor (after_seq).",
+                {
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "after_seq": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Cursor from a previous page; 0 starts at the beginning",
+                        },
+                    },
+                    "required": ["job_id"],
+                    "additionalProperties": False,
+                },
+                readonly,
+            ),
+            (
+                "zscope.jobs.result",
+                "Read the current attempt's verified report binding with the "
+                "lightweight findings/acceptance projection; findings come only "
+                "from the bound snapshot, whose review scope is shared with the "
+                "current report only when the content still matches.",
+                {
+                    "type": "object",
+                    "properties": {"job_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+                    "required": ["job_id"],
+                    "additionalProperties": False,
+                },
+                readonly,
+            ),
+            (
+                "zscope.jobs.cancel",
+                "Request cancellation of one job; the detached owner stops its own process group.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "base_revision": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Revision of the job this request was made against",
+                        },
+                        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    "required": ["job_id", "base_revision", "request_id"],
+                    "additionalProperties": False,
+                },
+                mutating,
+            ),
+            (
+                "zscope.jobs.resume",
+                "Arm a new attempt of a resumable job with a fresh input verification; the old window is not carried over.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "base_revision": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Revision of the job this request was made against",
+                        },
+                        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    "required": ["job_id", "base_revision", "request_id"],
+                    "additionalProperties": False,
+                },
+                mutating,
             ),
             (
                 "zscope.wiki.status",
@@ -363,6 +581,17 @@ class ZScopeMcpProvider:
         return result
 
     def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if not self._profile_allows_tool(name):
+            return tool_result(
+                status="forbidden",
+                data=None,
+                error={
+                    "code": "profile_denied",
+                    "path": None,
+                    "message": "Tool unavailable in this MCP profile.",
+                    "retryable": False,
+                },
+            )
         requested_name = name
         runtime_name = MCP_TOOL_NAMES.get(requested_name)
         if arguments is None:
@@ -418,6 +647,24 @@ class ZScopeMcpProvider:
         if runtime_name is None:
             return {"success": False, "error": f"Unknown MCP tool: {requested_name}"}
         start = time.perf_counter()
+        if runtime_name == "prepare_saved_config":
+            if arguments:
+                result = {
+                    "success": False,
+                    "code": "invalid_arguments",
+                    "error": "Saved configuration preparation accepts no arguments.",
+                }
+            else:
+                try:
+                    result = {"success": True, "data": self._saved_config_preparation()}
+                except ValueError:
+                    result = {
+                        "success": False,
+                        "code": "preparation_unavailable",
+                        "error": "Saved configuration preparation is unavailable.",
+                    }
+            result = self._bounded_tool_result(requested_name, result)
+            return self._post_tool_result(requested_name, arguments, result, start)
         if runtime_name == "query_knowledge":
             result = self._bounded_tool_result(
                 requested_name,
@@ -441,22 +688,10 @@ class ZScopeMcpProvider:
                 },
             )
             return self._post_tool_result(requested_name, arguments, result, start)
-        if runtime_name in {"run_scan", "scan_status"}:
-            service = self.scan_request_service
-            if service is None:
-                result = {"success": False, "error": "scan service is unavailable"}
-            else:
-                try:
-                    data = (
-                        service.start(
-                            scan_depth=arguments.get("scan_depth"),
-                        )
-                        if runtime_name == "run_scan"
-                        else service.status(str(arguments.get("scan_id") or ""))
-                    )
-                    result = {"success": True, "data": data}
-                except ScanRequestError as exc:
-                    result = {"success": False, "error": str(exc)}
+        if runtime_name in JOBS_TOOL_METHODS:
+            result = self._bounded_tool_result(
+                requested_name, self._call_jobs_tool(runtime_name, arguments)
+            )
             return self._post_tool_result(requested_name, arguments, result, start)
         if runtime_name in {"wiki_status", "wiki_query"}:
             wiki = self.config.project.wiki
@@ -546,8 +781,58 @@ class ZScopeMcpProvider:
         result = self.tools_runtime._enforce_result_limit(result, self.max_result_chars)
         return self._post_tool_result(requested_name, arguments, result, start)
 
+    def _saved_config_preparation(self) -> Dict[str, Any]:
+        """Read the bound saved document afresh; never compose a second runtime.
+
+        The public MCP startup still composes its effective single-target
+        configuration. This projection does not relax that boundary: an
+        already running provider may inspect a subsequently saved multi-target
+        document, whose shared preparation reports execution as not startable.
+        """
+        if self.config_path is None:
+            raise ValueError("Saved configuration preparation is unavailable.")
+        from ..config.v3_preparation import prepare_saved_config
+
+        try:
+            return prepare_saved_config(str(self.config_path))
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            # Parser diagnostics may contain raw document values. The shared
+            # projection is unchanged, but transport errors expose no secrets.
+            raise ValueError("Saved configuration preparation is unavailable.") from exc
+
+    def _call_jobs_tool(self, runtime_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch one job tool onto the shared persistent job service.
+
+        The adapter owns validation and envelope translation; an adapter bug
+        surfaces as a generic internal error instead of leaking internals.
+        """
+
+        adapter = self.jobs_adapter
+        if adapter is None:
+            return {
+                "success": False,
+                "error": (
+                    "persistent scan jobs are unavailable: this session has no " "saved config path"
+                ),
+                "code": "unavailable",
+                "status_code": 503,
+            }
+        # Typed dispatch: the adapter method returns the MCP result mapping,
+        # so the call site keeps its declared return type.
+        method: Callable[[Any], Dict[str, Any]] = getattr(adapter, JOBS_TOOL_METHODS[runtime_name])
+        try:
+            return method(arguments)
+        except Exception as exc:  # defensive: the service maps its own errors
+            return {
+                "success": False,
+                "error": f"job tool failure ({type(exc).__name__})",
+                "code": "internal_error",
+                "status_code": 500,
+            }
+
     def close(self) -> None:
-        self.code_index.close()
+        if self._owns_code_index:
+            self.code_index.close()
 
     def _resource(self, uri: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         text = self._bounded_json_text(payload)
@@ -607,6 +892,25 @@ class ZScopeMcpProvider:
         return {"available": True, "path": str(db_path), "counts": counts}
 
     def _latest_report(self) -> Dict[str, Any]:
+        if self.profile != "default":
+            from ..common.readonly import ReadonlyStateError, read_bytes
+            from ..reporting.shared_objects import decode_storage
+
+            for name in ("zscope_batch_report.json", "report.json"):
+                try:
+                    value = decode_storage(
+                        json.loads(read_bytes(self.config.project.project_root, name))
+                    )
+                    return {
+                        "available": isinstance(value, dict),
+                        "path": name,
+                        "report": value if isinstance(value, dict) else {},
+                    }
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError, ReadonlyStateError):
+                    return {"available": False, "reason": "report_unavailable"}
+            return {"available": False}
         for name in ("zscope_batch_report.json", "report.json"):
             path = self.config.project.project_root / name
             if not path.is_file():

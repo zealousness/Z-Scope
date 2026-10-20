@@ -1,0 +1,30 @@
+{
+  "V01-V02-independent-reacceptance-20261010.md": {
+    "bytes": 15350,
+    "sha256": "56a4fa790c594d8188c6386f5ab6f1cb5f1c84e65ee546963fd26806de9fe0f8"
+  },
+  "V01-V02-independent-reacceptance-20261010.json": {
+    "bytes": 11320,
+    "sha256": "5f21c47a62df308fe47657f465dfed77a38c69d1d2d340ebd7dce0c39b158da7"
+  },
+  "V01-V02-independent-acceptance-20261010-ag7xwe18.json": {
+    "bytes": 153563,
+    "sha256": "a9d5d81f50c8b10cbec74a3ea8f29ee6f21fda8bb131bc1de144e46b9c53c588"
+  },
+  "V01-V02-compatibility-skips-20261010.json": {
+    "bytes": 94935,
+    "sha256": "e3cd7937bf6e67fd5e43346a6ad78d06e064b091b42fb5fa56ebc7e330a55b98"
+  },
+  "V01-V02-independent-acceptance-20261010.py": {
+    "bytes": 10681,
+    "sha256": "b98c6ba013bae91a7966840e5ff5e2d614811e82495eac658fdae484e1130e15"
+  },
+  "V01-V02-compatibility-skips-20261010.py": {
+    "bytes": 4236,
+    "sha256": "22cbc8168c5f5a47080556a3e7671222ec116082fd14cd4bb01dbdd2b67544b6"
+  },
+  "test_v01_v02_independent_drift.py": {
+    "bytes": 2994,
+    "sha256": "ec88778c128976ba07a4844af98ff97a144f871d3d733d86f7b110558f7c6118"
+  }
+}

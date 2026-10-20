@@ -1,0 +1,412 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:04:20.645054+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_72",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:04:20.901550+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_72",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:04:21.209207+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Running: MSYS_NO_PATHCONV=1 wsl -d Ubuntu -e bash -c '\ncd /…",
+        "tool_call_id": "0:Bash_71",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:04:21.209207+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Starting background: MSYS_NO_PATHCONV=1 wsl -d Ubuntu -e bash -c '\ncd /…",
+        "tool_call_id": "0:Bash_72",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:04:41.220587+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_71",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:04:41.223587+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_72",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:25.523564+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "TodoList",
+        "tool_call_id": "0:TodoList_73",
+        "kind": "other",
+        "status": "pending"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:26.177012+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:26.364171+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:26.553283+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:26.798248+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:26.929167+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:27.183455+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:27.311257+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:27.498494+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:27.685539+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:27.881507+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:28.063084+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:28.255189+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:28.437907+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:28.630068+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:28.828745+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:29.009746+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:29.279941+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:29.396746+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:29.576494+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:29.763681+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:29.956113+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:30.143545+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:30.335535+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:30.517461+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:30.717863+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:30.898675+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:31.084865+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:31.470535+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:31.653525+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:31.845232+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:32.029767+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:32.217650+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:32.411570+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:32.597564+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:32.787909+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:32.981125+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:06:33.185465+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_73",
+        "status": "in_progress"
+      }
+    }
+  ],
+  "offset": 8109,
+  "count": 44,
+  "next_offset": 8153,
+  "has_more": true,
+  "total_matching": 10292
+}

@@ -1,0 +1,7 @@
+{
+  "id": "r20-reconcile-sessions-d25d38f9cd",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": false
+  }
+}

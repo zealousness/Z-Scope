@@ -1,0 +1,17 @@
+{
+  "coordinator_authorized": true,
+  "authorized_by": "Existing user authorization: independently accept exact candidate, integrate into Stage and run current joint checks",
+  "write_paths": [
+    "zscope/semantics/instance_semantics.py",
+    "tests/test_instance_semantics.py"
+  ],
+  "source_sha256": {
+    "zscope/semantics/instance_semantics.py": "fcb1fc85b3f50fceff2362b17cf43c403d46afa9dc69454fb7d4e0f92d9bd351",
+    "tests/test_instance_semantics.py": "d13bdd2044fad733bf579c4fb197c3f1e4d73ef2c07a0a0603088abbe3efd701"
+  },
+  "previous_owner": "/root/s01_origin_repair_r31",
+  "stage_owner": "/root",
+  "previous_workspace_readonly": true,
+  "acceptance": "artifacts/s01-stage-intake-r32-20261017/module-acceptance.json",
+  "root_intake": false
+}

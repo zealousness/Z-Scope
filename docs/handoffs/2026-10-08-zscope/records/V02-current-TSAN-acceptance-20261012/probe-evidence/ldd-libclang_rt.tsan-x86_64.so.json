@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "ldd",
+    "/opt/zscope-test/llvm18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.so"
+  ],
+  "library_path": "/opt/zscope-test/host-libs:/opt/zscope-test/llvm18/lib",
+  "exit_code": 0,
+  "stdout": "\tlinux-vdso.so.1 (0x00007ffc9cbce000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007196bf987000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007196bf897000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007196c101a000)\n",
+  "stderr": ""
+}

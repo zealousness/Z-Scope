@@ -1,0 +1,1 @@
+{"id":"new-s01-all-messages","tool":"get_transcript","arguments":{"session_id":"sess_0dfdf879d4","offset":0,"limit":1000,"kinds":"message_chunk"}}

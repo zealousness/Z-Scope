@@ -1,0 +1,17 @@
+{
+  "image_id": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "nodes": [
+    "tests/test_java_source_backend.py::test_spoon_structure_frontend_lombok_processor_real_cli_contract",
+    "tests/test_java_source_backend.py::test_javaparser_structure_frontend_real_cli_contract"
+  ],
+  "JAVA_HOME": "/java-inputs/jdk",
+  "MAVEN_HOME": "/java-inputs/maven",
+  "PATH": "/java-inputs/maven/bin:/java-inputs/jdk/bin:/usr/local/bin:/usr/bin:/bin",
+  "JAVA_TOOL_OPTIONS": "-Xms32m -Xmx512m -XX:MaxMetaspaceSize=256m -Djava.io.tmpdir=/tmp/java -Duser.home=/tmp/worker-home",
+  "MAVEN_OPTS": "-Xms32m -Xmx512m -XX:MaxMetaspaceSize=256m -Djansi.mode=strip -Djansi.passthrough=true",
+  "settings_sha256": "f8bef00b489da8786ecc1874916126b11acfbcec9221d4f9070fc306fd8f54d7",
+  "cache": "/java-inputs/cache",
+  "target_outputs": "/tmp/java-targets",
+  "source_inputs_verified": true,
+  "python": "3.13.15 (main, Aug 25 2026, 03:39:59) [GCC 14.2.0]"
+}

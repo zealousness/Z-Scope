@@ -1,0 +1,1 @@
+{"status":"static_inventory_stopped","reason":"JDK docs directory symlink was outside the initial non-runtime omission allowlist; added explicit docs classification","new_tools_copied":0,"new_mounts":0,"runtime_test_executions":0}

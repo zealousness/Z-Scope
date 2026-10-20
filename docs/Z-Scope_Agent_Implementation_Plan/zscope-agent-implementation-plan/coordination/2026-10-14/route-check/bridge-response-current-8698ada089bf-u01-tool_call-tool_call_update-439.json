@@ -1,0 +1,55 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:48:31.782788+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Read: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_69dc5ccff8a243a9803f11f4",
+        "kind": "read",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u01-config\\tests\\test_config_v3.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\u01-config\\\\tests\\\\test_config_v3.py\", \"limit\": 40, \"offset\": 714}"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:48:31.791549+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_69dc5ccff8a243a9803f11f4",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:48:31.817606+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_69dc5ccff8a243a9803f11f4",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:48:31.873908+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_69dc5ccff8a243a9803f11f4",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u01-config\\tests\\test_config_v3.py"
+        ]
+      }
+    }
+  ],
+  "offset": 439,
+  "count": 4,
+  "next_offset": 443,
+  "has_more": false,
+  "total_matching": 443
+}

@@ -203,7 +203,9 @@ class RegexConcurrencySharedStateRules:
 
     def _rule_condvar_wait(self, lines: List[CodeLine], emit) -> None:
         for line in lines:
-            if not re.search(r"\bpthread_cond_(?:timed)?wait\s*\(", line.text):
+            if not re.search(
+                self._literal_api_pattern(r"\bpthread_cond_(?:timed)?wait\s*\("), line.text
+            ):
                 continue
             previous = self._previous_nonempty(lines, line.index, limit=4)
             if any(re.search(r"\bif\s*\(", item.text) for item in previous) and not any(
@@ -234,6 +236,7 @@ class RegexConcurrencySharedStateRules:
             self._lock_names,
             self._unlock_names,
             self.semantics.contracts,
+            restrict_to_semantics=self.restrict_to_semantics,
         )
         for idx, line in enumerate(lines):
             dcl = re.search(r"\bif\s*\(\s*!\s*(?P<obj>g_[A-Za-z_]\w*)\s*\)", line.text)
@@ -286,9 +289,12 @@ class RegexConcurrencySharedStateRules:
                     )
 
             for helper_name, obj in self._bound_api_calls(line.text, {"ownership_transfer"}):
-                if self.semantics.contracts.effect_status(
-                    helper_name, "ownership_transfer", line.text, object_name=obj
-                ) != "applies":
+                if (
+                    self.semantics.contracts.effect_status(
+                        helper_name, "ownership_transfer", line.text, object_name=obj
+                    )
+                    != "applies"
+                ):
                     continue
                 earlier = lines[max(0, idx - 12) : idx]
                 later = lines[idx + 1 : idx + 10]
@@ -306,7 +312,10 @@ class RegexConcurrencySharedStateRules:
                         for item in later
                         if re.search(rf"\b{re.escape(obj)}->[A-Za-z_]\w*\s*=", item.text)
                         or re.search(
-                            rf"\bpthread_mutex_init\s*\(\s*&\s*{re.escape(obj)}->", item.text
+                            self._literal_api_pattern(
+                                rf"\bpthread_mutex_init\s*\(\s*&\s*{re.escape(obj)}->"
+                            ),
+                            item.text,
                         )
                     ),
                     None,
@@ -317,8 +326,7 @@ class RegexConcurrencySharedStateRules:
                         rule="object_published_by_helper_before_initialization",
                         line=line,
                         description=(
-                            f"`{obj}` 被传给发布辅助函数 `{helper_name}`，"
-                            "随后才进行字段初始化。"
+                            f"`{obj}` 被传给发布辅助函数 `{helper_name}`，" "随后才进行字段初始化。"
                         ),
                         root_cause="并发读者可能在对象经辅助函数发布之后、所有字段初始化完成之前就观察到它。",
                         suggested_fix="在调用负责链接/发布对象的辅助函数之前，先完成所有字段初始化。",
@@ -487,7 +495,9 @@ class GraphConcurrencySharedStateRules:
                             reachability,
                             f"{call_name} line {same_lock[1].number}: callee acquires `{same_lock[0]}`",
                         ],
-                        negative=["Verify feasible acquisition-success branches, lock identity and recursive mutex attributes; lexical order is not a path proof."],
+                        negative=[
+                            "Verify feasible acquisition-success branches, lock identity and recursive mutex attributes; lexical order is not a path proof."
+                        ],
                         evidence={
                             "proof_authority": False,
                             "acquisition_applicability": "possible_success",
@@ -501,7 +511,7 @@ class GraphConcurrencySharedStateRules:
                                     "callee reachable from locked region",
                                     "both acquisitions succeed on the same feasible execution",
                                 ],
-                            }
+                            },
                         },
                     )
                 )
@@ -543,7 +553,9 @@ class GraphConcurrencySharedStateRules:
                                 and not re.search(r"=\s*(?:0|NULL|nullptr)\s*;", line.text)
                             )
                             or re.search(
-                                rf"\bpthread_(?:mutex|cond|rwlock)_init\s*\([^;]*\b{re.escape(var)}->",
+                                self._literal_api_pattern(
+                                    rf"\bpthread_(?:mutex|cond|rwlock)_init\s*\([^;]*\b{re.escape(var)}->"
+                                ),
                                 line.text,
                             )
                         )
@@ -702,7 +714,9 @@ class GraphConcurrencySharedStateRules:
             view,
             re.compile(r"\(void\)\s*__sync_bool_compare_and_swap|__sync_bool_compare_and_swap"),
         )
-        if not cas_line:
+        if not cas_line or not self._semantic_call_allowed(
+            "__sync_bool_compare_and_swap", "standard_operation"
+        ):
             return
         text = "\n".join(line.text for line in view.lines)
         if not re.search(r"\(void\)\s*__sync_bool_compare_and_swap", text):
@@ -752,7 +766,9 @@ class GraphConcurrencySharedStateRules:
         if not enqueue_line:
             return
         if re.search(
-            r"\b(?:pthread_cond_signal|pthread_cond_broadcast|eventfd_write|notify|trigger|wakeup)\s*\(",
+            self._literal_api_pattern(
+                r"\b(?:pthread_cond_signal|pthread_cond_broadcast|eventfd_write|notify|trigger|wakeup)\s*\("
+            ),
             text,
             re.I,
         ):
@@ -884,19 +900,28 @@ class GraphConcurrencySharedStateRules:
             return
         lock_line = self._first_line_matching(
             view,
-            re.compile(r"\b(?:pthread_mutex_trylock )\s*\([^;]*(?:sem|signal|exception)", re.I),
+            re.compile(
+                self._literal_api_pattern(
+                    r"\b(?:pthread_mutex_trylock )\s*\([^;]*(?:sem|signal|exception)"
+                ),
+                re.I,
+            ),
         )
         log_line = self._first_line_matching(
             view,
             re.compile(
-                rf"\b(?:{self._names_pattern(set(self.semantics.format_sinks) | {'snprintf', 'printf'})})\s*\("
+                self._literal_api_pattern(
+                    rf"\b(?:{self._names_pattern(set(self.semantics.format_sinks) | {'snprintf', 'printf'})})\s*\("
+                )
             ),
         )
         if not (lock_line and log_line):
             shared_write = self._first_line_matching(
                 view,
                 re.compile(
-                    r"\bg_[A-Za-z_0-9]+(?:->|\.)[A-Za-z_]\w+\s*=|__atomic_store_n\s*\(\s*&\s*g_",
+                    self._literal_api_pattern(
+                        r"\bg_[A-Za-z_0-9]+(?:->|\.)[A-Za-z_]\w+\s*=|__atomic_store_n\s*\(\s*&\s*g_"
+                    ),
                     re.I,
                 ),
             )
@@ -1100,8 +1125,12 @@ class GraphConcurrencySharedStateRules:
         issues: List[Dict[str, Any]],
     ) -> None:
         text = "\n".join(line.text for line in view.lines)
-        path_check = self._first_line_matching(view, re.compile(r"\b(?:access|stat|lstat)\s*\("))
-        key_line = self._first_line_matching(view, re.compile(r"\b(?:ftok)\s*\("))
+        path_check = self._first_line_matching(
+            view, re.compile(self._literal_api_pattern(r"\b(?:access|stat|lstat)\s*\("))
+        )
+        key_line = self._first_line_matching(
+            view, re.compile(self._literal_api_pattern(r"\b(?:ftok)\s*\("))
+        )
         if not (path_check and key_line):
             return
         lock_line = self._first_line_matching(view, self._lock_call_re)
@@ -1144,9 +1173,11 @@ class GraphConcurrencySharedStateRules:
                 continue
             callee_text = "\n".join(line.text for line in callee_view.lines)
             path_check = self._first_line_matching(
-                callee_view, re.compile(r"\b(?:access|stat|lstat)\s*\(")
+                callee_view, re.compile(self._literal_api_pattern(r"\b(?:access|stat|lstat)\s*\("))
             )
-            key_line = self._first_line_matching(callee_view, re.compile(r"\b(?:ftok)\s*\("))
+            key_line = self._first_line_matching(
+                callee_view, re.compile(self._literal_api_pattern(r"\b(?:ftok)\s*\("))
+            )
             if not (path_check and key_line and "path" in callee_text):
                 continue
             lock_line = self._first_line_matching(callee_view, self._lock_call_re)
@@ -1419,8 +1450,7 @@ class GraphConcurrencySharedStateRules:
         names = re.findall(r"\b[A-Za-z_]\w*\b", str(rhs or ""))
         return [name for name in names if name not in skip and name.startswith("_")]
 
-    @staticmethod
-    def _callback_free_line(view: FunctionView) -> Optional[GraphLine]:
+    def _callback_free_line(self, view: FunctionView) -> Optional[GraphLine]:
         arg_aliases = {"arg"}
         for line in view.lines:
             alias = re.search(r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?arg\b", line.text)
@@ -1431,7 +1461,12 @@ class GraphConcurrencySharedStateRules:
                 line
                 for line in view.lines
                 if any(
-                    re.search(rf"\b(?:free|kfree)\s*\(\s*{re.escape(alias)}\s*\)", line.text)
+                    re.search(
+                        self._literal_api_pattern(
+                            rf"\b(?:free|kfree)\s*\(\s*{re.escape(alias)}\s*\)"
+                        ),
+                        line.text,
+                    )
                     for alias in arg_aliases
                 )
             ),
@@ -1492,8 +1527,13 @@ class GraphConcurrencySharedStateRules:
                             f"{left.function} lines {left.first_line}-{left.second_line}: {left.first_lock} before {left.second_lock}",
                             f"{right.function} lines {right.first_line}-{right.second_line}: {right.first_lock} before {right.second_lock}",
                         ],
-                        negative=["Verify both lock-order paths are feasible and acquisition outcomes succeed; mutually exclusive branches must not be merged."],
-                        evidence={"proof_authority": False, "acquisition_applicability": "possible_success"},
+                        negative=[
+                            "Verify both lock-order paths are feasible and acquisition outcomes succeed; mutually exclusive branches must not be merged."
+                        ],
+                        evidence={
+                            "proof_authority": False,
+                            "acquisition_applicability": "possible_success",
+                        },
                     )
                 )
 
@@ -1641,14 +1681,22 @@ class ClangConcurrencySharedStateRules:
         # exempted. An unlock effect on a business function says nothing about
         # its other acquisitions, exits, or recursive calls.
         facts = read_source_facts(
-            {"func_name": func_name, "file_path": file_path,
-             "code": "\n".join(item.text for item in lines)},
+            {
+                "func_name": func_name,
+                "file_path": file_path,
+                "code": "\n".join(item.text for item in lines),
+            },
             self.semantics.contracts,
         )
         inherited_unlocks: set[tuple[str, str]] = set()
         if (
-            facts.complete and not facts.unknown_calls and len(facts.calls) == 1
-            and any(c.effects_trusted for c in self.semantics.contracts.find(func_name, "unlock", file_path))
+            facts.complete
+            and not facts.unknown_calls
+            and len(facts.calls) == 1
+            and any(
+                c.effects_trusted
+                for c in self.semantics.contracts.find(func_name, "unlock", file_path)
+            )
         ):
             operation = facts.calls[0]
             inherited_unlocks = {
@@ -2143,7 +2191,10 @@ class ClangConcurrencySharedStateRules:
             (
                 item
                 for item in reversed(prefix)
-                if re.search(r"\b(?:access|stat|lstat|file_exists)\s*\(", item.text)
+                if re.search(
+                    self._literal_api_pattern(r"\b(?:access|stat|lstat|file_exists)\s*\("),
+                    item.text,
+                )
             ),
             None,
         )
@@ -2466,7 +2517,7 @@ class ClangConcurrencySharedStateRules:
                     ),
                 )
 
-        if re.search(r"\bpthread_cond_(?:timed)?wait\s*\(", line.text):
+        if re.search(self._literal_api_pattern(r"\bpthread_cond_(?:timed)?wait\s*\("), line.text):
             previous = lines[max(0, idx - 4) : idx]
             if any(re.search(r"\bif\s*\(", item.text) for item in previous) and not any(
                 re.search(r"\bwhile\s*\(", item.text) for item in previous
@@ -2734,7 +2785,9 @@ class ClangConcurrencySharedStateRules:
         line: ClangCfgLine,
     ) -> None:
         for api, args in self._calls(line.text):
-            if api not in {"munmap", "UnmapViewOfFile"}:
+            if api not in {"munmap", "UnmapViewOfFile"} or not self._semantic_call_allowed(
+                api, "io_release"
+            ):
                 continue
             first = self._resource_var(self._first_arg(args))
             if not first or not first.startswith("g_"):

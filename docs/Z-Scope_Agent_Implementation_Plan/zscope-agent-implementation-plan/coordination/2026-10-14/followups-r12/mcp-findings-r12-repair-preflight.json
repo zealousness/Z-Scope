@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-14T19:02:42.507392+00:00",
+  "session_state": "ready",
+  "processes": {
+    "workspace": "mcp-findings-r12",
+    "processes": []
+  },
+  "source_matches_diagnostic": true,
+  "diagnostic": "coordinator-mcp-findings-r12-boundary-probes-20261015"
+}

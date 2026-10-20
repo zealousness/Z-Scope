@@ -86,6 +86,26 @@ def _tool_result_evidence_atoms(value: Any, path: Tuple[str, ...] = ()) -> set[s
 class ValidatorAgent(JsonToolAgent):
     """Agent for verifying and triaging findings."""
 
+    @staticmethod
+    def _execution_context_metadata() -> Dict[str, Any]:
+        """The precise build/entry scope this agent run executes under.
+
+        Captured from the live scope bindings at run time — never from the
+        candidate's self-reported data — so every validator decision's
+        metadata carries the exact compilation instance and the analyzed
+        function's native identity for audit and downstream verification.
+        """
+
+        from ...core.validation.execution_context import current_execution_context
+
+        context = current_execution_context()
+        entry_name, entry_usr = context.entry_symbol
+        return {
+            "execution_build_context_id": context.build_context_id,
+            "execution_entry_symbol": entry_name,
+            "execution_entry_usr": entry_usr,
+        }
+
     def __init__(
         self,
         llm_client: LLMClient,
@@ -132,6 +152,7 @@ class ValidatorAgent(JsonToolAgent):
             "validator_repair_attempted": 0,
             "validator_repair_accepted": 0,
             "validator_final_tool_call_count": 0,
+            **self._execution_context_metadata(),
         }
 
         for attempt in range(1, max_retries + 1):
@@ -262,6 +283,7 @@ class ValidatorAgent(JsonToolAgent):
             "validator_repair_accepted": 0,
             "validator_length_retry_count": 0,
             "evidence_slice_token_count": int(input_data.get("evidence_slice_token_count") or 0),
+            **self._execution_context_metadata(),
         }
         prompt = self._validator_v3_prompt(evidence_slice, expected_pass)
         messages = self._messages(input_data, prompt)
@@ -857,9 +879,20 @@ class ValidatorAgent(JsonToolAgent):
                 }
             if name == "propose_related_candidate":
                 refs = args.get("evidence_refs", []) if isinstance(args, dict) else []
-                if not refs or any(ref not in tool_fact_catalog and ref not in {f["fact_uid"] for f in investigation_facts} for ref in refs):
-                    return {"success": False, "error": "related proposal requires recorded tool evidence"}
-            tool_result = review_session.execute(name, args) if review_session is not None and name in review_tools else self._tool_executor(name, args)
+                if not refs or any(
+                    ref not in tool_fact_catalog
+                    and ref not in {f["fact_uid"] for f in investigation_facts}
+                    for ref in refs
+                ):
+                    return {
+                        "success": False,
+                        "error": "related proposal requires recorded tool evidence",
+                    }
+            tool_result = (
+                review_session.execute(name, args)
+                if review_session is not None and name in review_tools
+                else self._tool_executor(name, args)
+            )
             if review_enabled or review_session is not None:
                 review_tool_results.append({"name": name, "arguments": args, "result": tool_result})
             stable_result = json.dumps(
@@ -950,11 +983,17 @@ class ValidatorAgent(JsonToolAgent):
 
         def terminal_handler(payload: Dict[str, Any]) -> Dict[str, Any]:
             if review_enabled:
-                from ...core.validation.review_protocol import parse_review_result, adjudicate_review
+                from ...core.validation.review_protocol import (
+                    parse_review_result,
+                    adjudicate_review,
+                )
 
                 envelope = parse_review_result(
-                    payload, candidate_uid=candidate_uid, cluster_uid=cluster_uid,
-                    expected_pass=pass_kind, allowed_refs=allowed_refs,
+                    payload,
+                    candidate_uid=candidate_uid,
+                    cluster_uid=cluster_uid,
+                    expected_pass=pass_kind,
+                    allowed_refs=allowed_refs,
                     rejection_expected=input_data.get("review_rejection_expected") is True,
                 )
                 if envelope is None:
@@ -1013,7 +1052,9 @@ class ValidatorAgent(JsonToolAgent):
             aggregate["review_tool_results"] = review_tool_results
         if review_enabled:
             aggregate["review_adjudication"] = accepted_review.get("envelope", {})
-            aggregate["review_disposition_reason"] = accepted_review.get("reason", "invalid_review_envelope")
+            aggregate["review_disposition_reason"] = accepted_review.get(
+                "reason", "invalid_review_envelope"
+            )
         parsed = self._extract_v3_result(
             result,
             candidate_uid=candidate_uid,
@@ -1066,6 +1107,7 @@ class ValidatorAgent(JsonToolAgent):
             "validator_fast_path_accepted": 0,
             "validator_repair_attempted": 0,
             "validator_repair_accepted": 0,
+            **self._execution_context_metadata(),
             "validator_final_tool_call_count": 0,
             "validator_session_count": 1,
             "validator_api_call_count": 0,

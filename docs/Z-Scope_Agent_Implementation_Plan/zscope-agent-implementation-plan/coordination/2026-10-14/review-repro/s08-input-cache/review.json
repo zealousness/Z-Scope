@@ -1,0 +1,11 @@
+{
+  "synthetic_only": true,
+  "no_scanner_or_model_started": true,
+  "service_sha256": "0bd0e039cf52d188ba4e5b8c51153868ee77fb23954f57c5772a28ab6214770d",
+  "service_bytes_stable_during_probe": true,
+  "initial_revision": "075047ceb8625701419aabd106f7f864b18e84f8d67d3839b82db2387f3aeccf",
+  "cached_after_revision": "075047ceb8625701419aabd106f7f864b18e84f8d67d3839b82db2387f3aeccf",
+  "fresh_after_revision": "923dd39d5746fe1d517760be175164c1934fe521690577cbd00163c5bc4c78cc",
+  "source_change_detected_by_fresh_computation": true,
+  "cached_service_missed_source_change": true
+}

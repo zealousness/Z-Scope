@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from .indexing_identity import (
     command_identity,
@@ -17,21 +17,98 @@ from .indexing_identity import (
 )
 
 
+def compilation_contexts(
+    compile_commands: Path, *, selected_contexts: Optional[Iterable[str]] = None
+) -> Dict[str, Any]:
+    """Describe every original command without inventing variant equivalence.
+
+    The identity is exactly the one used by native extraction and LLVM builds.
+    Only identical command/environment/response-file identities share a context;
+    a different macro, include order or ABI flag remains an uncovered variant.
+    Selection is supplied by an observed plan, never inferred from source count.
+    """
+    commands = load_commands(compile_commands)
+    selected = set(selected_contexts) if selected_contexts is not None else None
+    contexts: Dict[str, Dict[str, Any]] = {}
+    command_rows = []
+    invalid = []
+    for ordinal, command in enumerate(commands):
+        try:
+            if not command.get("file"):
+                raise ValueError("command has no source file")
+            identity = command_identity(command, compile_commands.parent)
+            if not identity["arguments"]:
+                raise ValueError("command has no compiler arguments")
+            context = digest_json(identity)
+            row = contexts.setdefault(
+                context,
+                {
+                    "context": context,
+                    "source": identity["source"],
+                    "identity": identity,
+                    "command_indices": [],
+                },
+            )
+            duplicate = row["command_indices"][0] if row["command_indices"] else None
+            row["command_indices"].append(ordinal)
+            selection = (
+                "unverified"
+                if selected is None
+                else "selected" if context in selected else "uncovered"
+            )
+            row["selection_status"] = selection
+            command_rows.append(
+                {
+                    "command_index": ordinal,
+                    "context": context,
+                    "source": identity["source"],
+                    "selection_status": (
+                        "equivalent"
+                        if duplicate is not None and selection == "selected"
+                        else selection
+                    ),
+                    "equivalent_to_command": duplicate,
+                    "equivalence_basis": (
+                        "identical_command_identity" if duplicate is not None else None
+                    ),
+                }
+            )
+        except (ValueError, OSError) as exc:
+            invalid.append({"command_index": ordinal, "reason": str(exc)})
+    by_source: Dict[str, list[str]] = {}
+    for key, row in contexts.items():
+        by_source.setdefault(row["source"], []).append(key)
+    return {
+        "command_entries": len(commands),
+        "compile_contexts": len(contexts),
+        "contexts": list(contexts.values()),
+        "command_records": command_rows,
+        "invalid_commands": invalid,
+        "source_variants": [
+            {
+                "source": source,
+                "contexts": keys,
+                "selected_contexts": (
+                    None if selected is None else [key for key in keys if key in selected]
+                ),
+                "uncovered_contexts": (
+                    None if selected is None else [key for key in keys if key not in selected]
+                ),
+            }
+            for source, keys in sorted(by_source.items())
+        ],
+        "selection_verified": selected is not None
+        and not invalid
+        and not (selected - contexts.keys()),
+        "unrecognized_selected_contexts": sorted((selected or set()) - contexts.keys()),
+        "equivalence_note": "Identical invocation identities only; no semantic equivalence is inferred.",
+    }
+
+
 def inventory(
     compile_commands: Path, bitcode_directory: Path, manifest: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     commands = load_commands(compile_commands)
-    contexts: Dict[str, Dict[str, Any]] = {}
-    invalid = []
-    for index, command in enumerate(commands):
-        try:
-            identity = command_identity(command, compile_commands.parent)
-            key = digest_json(identity)
-            contexts.setdefault(
-                key, {"context": key, "source": identity["source"], "command_indices": []}
-            )["command_indices"].append(index)
-        except (ValueError, OSError) as exc:
-            invalid.append({"command_index": index, "reason": str(exc)})
     if manifest is None:
         try:
             manifest = json.loads(
@@ -41,6 +118,20 @@ def inventory(
             manifest = {}
     attempts = manifest.get("attempts", {})
     artifacts = manifest.get("bitcode", {})
+    selection = compilation_contexts(
+        compile_commands,
+        selected_contexts=(
+            [
+                key
+                for key, attempt in attempts.items()
+                if attempt.get("status") not in {None, "not_selected"}
+            ]
+            if attempts
+            else None
+        ),
+    )
+    contexts = {row["context"]: row for row in selection["contexts"]}
+    invalid = selection["invalid_commands"]
     rows = []
     validator = InputValidator([bitcode_directory])
     for key, context in contexts.items():
@@ -156,10 +247,16 @@ def inventory(
             else None
         ),
         "invalid_commands": invalid,
+        "command_records": selection["command_records"],
+        "source_variants": selection["source_variants"],
+        "selection_verified": selection["selection_verified"],
+        "unrecognized_selected_contexts": selection["unrecognized_selected_contexts"],
+        "equivalence_note": selection["equivalence_note"],
         "status_counts": dict(counts),
         "contexts": rows,
         "coverage_verified": bool(rows)
         and not invalid
+        and not selection["unrecognized_selected_contexts"]
         and all(row["status"] in {"compiled", "reused"} for row in rows),
         "groups": groups,
         "tasks_by_tool": dict(Counter(group["tool"] for group in groups)),

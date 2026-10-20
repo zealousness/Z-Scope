@@ -1,0 +1,13 @@
+{
+  "id": "u02-disposition-confirmed-kimi",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "kimi",
+    "model": "volceapi/kimi-k3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "U02 身份绑定验收处置（高风险独立Kimi分支）",
+    "user_requested": true,
+    "request_id": "0ba4b4bc-a960-4e85-8709-a54f23145843",
+    "message": "undefined\n父任务现在明确要求优先让可用Kimi的S08/U02独立任务稳定运行；你承担这项高风险后端，不是前端。之前两个U02请求在旧客户端中断前没有回执；现在public list_sessions仅含S08/S01/失败DS，未创建U02会话，旧队列已consumed，不会自动重放。请只处理自己指定隔离目录，不操作另一个U02或用户保留caller任务。\n完整原任务消息位于项目原根 docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/bridge-queue/010-u02-disposition-kimi.request.json（只读读取其arguments.message作为任务完整规格）。API合同与dirty基线已在各隔离目录复制。\n本隔离目录 .coordination/20261014/workspaces/u02-disposition；仅新增 zscope/config/acceptance_feedback.py 与 tests/test_acceptance_feedback.py 及DELIVERY/artifacts。实现与verdict/业务答案/suppression独立的持久duplicate/risk_accept/followup/clear，绑定真实report/issue/build/object范围，原子CAS revision与request_id幂等；真实持久化/并发冲突/撤回/过期/输入失效测试，不跨构建复用，不改验证结论，不创建外部任务或业务源码。给协调者GET/POST接线接口。\n现在最多四个Kimi开发分支，每分支只跑自己的定向Linux测试、独立tmp，禁止同时重建共享native或大型全回归。控制连接为独立持久后台标准MCP。禁止再向任何其他模型/子Agent转交实现或UI；可自己代码阅读。"
+  }
+}

@@ -89,3 +89,116 @@ def test_local_usr_normalization_preserves_object_equality_and_scope():
     assert compiler_structure(facts(one, one)) != compiler_structure(
         facts(one.replace("a.c", "b.c"), one)
     )
+    assert compiler_structure({"pointee_record_usr": one}) == compiler_structure(
+        {"pointee_record_usr": moved}
+    )
+    assert compiler_structure({"pointee_record_usr": one}) != compiler_structure(
+        {"pointee_record_usr": one.replace("@p", "@q")}
+    )
+
+
+def test_native_wrapper_publication_hot_reuse_and_changed_guard(project, monkeypatch):
+    from zscope.semantics.native_wrappers import NativeWrapper
+
+    prepare(project, '#include <stdlib.h>\nvoid *probe(int bad) { void *p=malloc(8); if(bad) {free(p); return 0;} return p; }\n')
+    checked = []
+    original = NativeWrapper.run
+
+    def record(self):
+        checked.append(self.context["func_name"])
+        return original(self)
+
+    monkeypatch.setattr(NativeWrapper, "run", record)
+    calls, stats, _ = run(project)
+    assert calls == [] and stats.deterministic_snapshot_count == 1
+    assert checked == ["probe"]
+    assert stats.resource_inference_coverage["interface_counts"] == {"source_verified": 1}
+    checked.clear()
+    calls, stats, _ = run(project)
+    assert calls == [] and stats.cache_hit_functions == 1
+    assert checked == []
+    _, root, _ = project
+    (root / "a.c").write_text(
+        "#include <stdlib.h>\nvoid *probe(int bad) { void *p=malloc(8); if(bad) free(p); return p; }\n"
+    )
+    calls, stats, _ = run(project)
+    assert checked and calls == ["probe"]  # Controlled discovery response; no trusted adapter.
+    assert stats.cache_hit_functions == 0
+    assert stats.resource_inference_coverage["interface_counts"] != {"source_verified": 1}
+
+
+def test_native_wrapper_header_and_command_changes_recheck(project, monkeypatch):
+    from zscope.semantics.native_wrappers import NativeWrapper
+
+    prepare(
+        project,
+        '#include <stdlib.h>\n#include "shared.h"\nvoid *probe(flag_t n) { return malloc(n); }\n',
+    )
+    _, root, cdb = project
+    (root / "shared.h").write_text("typedef int flag_t;\n")
+    checks = []
+    original = NativeWrapper.run
+
+    def record(self):
+        checks.append(self.build)
+        return original(self)
+
+    monkeypatch.setattr(NativeWrapper, "run", record)
+    assert run(project)[1].deterministic_snapshot_count == 1
+    first = checks[-1]
+    (root / "shared.h").write_text("typedef long flag_t;\n")
+    stats = run(project)[1]
+    assert stats.cache_hit_functions == 0 and checks[-1] != first
+    second = checks[-1]
+    commands = json.loads(cdb.read_text())
+    commands[0]["arguments"].insert(1, "-DPROJECT_VARIANT=1")
+    cdb.write_text(json.dumps(commands))
+    stats = run(project)[1]
+    assert stats.cache_hit_functions == 0 and checks[-1] != second
+    before = len(checks)
+    assert run(project)[1].cache_hit_functions == 1
+    assert len(checks) == before
+
+
+def test_native_existence_only_include_changes_identity_and_hot_reuse(project):
+    from zscope.retrieval.build_context import context_input_status
+
+    backend, root, _ = project
+    # The probe intentionally points into an excluded artifact directory:
+    # directory inventories alone must not hide an actual compiler lookup.
+    hidden = root / ".zscope-probe"
+    hidden.mkdir()
+    header = hidden / "optional.header_probe"
+    prepare(
+        project,
+        f"""extern int first(void); extern int second(void);
+#if __has_include("{header}")
+#define CHOICE second
+#else
+#define CHOICE first
+#endif
+int probe(void) {{ return CHOICE(); }}
+""",
+    )
+    contexts = []
+    for present in (False, True, False):
+        if present:
+            header.write_text("/* queried but never entered */\n")
+        elif header.exists():
+            header.unlink()
+        if contexts:
+            assert context_input_status(contexts[-1]) == "stale_include_probe"
+        assert build(project)
+        facts = backend.get_function_program_facts("probe", "a.c")
+        assert facts["complete"]
+        context = facts["build_context"]
+        assert context_input_status(context) == "current"
+        assert str(header) not in context["dependencies"]
+        probe = next(q for q in context["include_probes"]["queries"] if q["name"] == str(header))
+        assert probe["found"] is present
+        contexts.append(context)
+        assert build(project)
+        stats = json.loads(backend.db.get_metadata("clang_batch_stats"))
+        assert stats["compiled_tus"] == 0 and stats["reused_tus"] == 2
+    assert contexts[0]["build_context_id"] != contexts[1]["build_context_id"]
+    assert contexts[0]["build_context_id"] == contexts[2]["build_context_id"]

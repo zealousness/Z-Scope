@@ -1,0 +1,139 @@
+{
+  "ok": true,
+  "scope": "current_instance",
+  "other_live_instances": 5,
+  "sessions": [
+    {
+      "session_id": "sess_d6826bfece",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "1aa6ce16-ba93-46a5-b15d-9361d9a7c93b",
+      "proc_state": "idle_unloaded",
+      "turns": 4,
+      "title": "S09 当前共享报告格式接线修复",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-14T06:28:56.111474+00:00"
+    },
+    {
+      "session_id": "sess_51642e1126",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "5fb125b8-1cd5-463a-832e-99158a12e224",
+      "proc_state": "idle_unloaded",
+      "turns": 1,
+      "title": "S07 全量增量与需求调度对照测试准备",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-14T05:30:58.175301+00:00"
+    },
+    {
+      "session_id": "sess_c05c0ea581",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "c9126076-0562-436b-8e45-ce120f180695",
+      "proc_state": "idle_unloaded",
+      "turns": 3,
+      "title": "U01 v3只读准备后端数据闭环",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-14T07:27:06.729569+00:00"
+    },
+    {
+      "session_id": "sess_13e7fecbfc",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "974a4659-c8d5-4fdd-bd3c-54f12a811674",
+      "proc_state": "idle_unloaded",
+      "turns": 2,
+      "title": "S01 原会话编译身份与显式入口范围修复",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-14T07:22:50.058823+00:00"
+    },
+    {
+      "session_id": "sess_b2d3c1d8e8",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "bfa2578d-d50e-41ba-a2ef-a0619c0e67fe",
+      "proc_state": "idle_unloaded",
+      "turns": 2,
+      "title": "S08 R5真实owner请求原子性修复",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-14T09:33:09.389545+00:00"
+    },
+    {
+      "session_id": "sess_c3c6c01381",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "99213846-3df8-4406-a607-4e3f2e413ebd",
+      "proc_state": "idle_unloaded",
+      "turns": 2,
+      "title": "s01-cdb-coverage原会话身份返修",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-14T09:40:59.010442+00:00"
+    },
+    {
+      "session_id": "sess_a3dc643fae",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "8187f35a-db4c-4c7b-926e-e08336e638e8",
+      "proc_state": "idle_unloaded",
+      "turns": 2,
+      "title": "s08-fair-queue原会话身份返修",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-14T09:42:21.971436+00:00"
+    },
+    {
+      "session_id": "sess_261a55289f",
+      "agent": "kimi",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "session_099d9f9d-3243-4d0c-8283-3e4a2d707505",
+      "proc_state": "idle_unloaded",
+      "turns": 12,
+      "title": "SCAN-CHECKPOINT-R17-PUBLICATION",
+      "model": "volceapi/kimi-k3",
+      "effort": null,
+      "last_active_at": "2026-10-15T08:13:47.188658+00:00"
+    },
+    {
+      "session_id": "sess_3b6b9a19b2",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "20d8851b-bbe0-4bf4-b79a-4de62eb44d91",
+      "proc_state": "idle_unloaded",
+      "turns": 7,
+      "title": "CHECKPOINT-ZCODE-R18",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-15T08:55:37.090555+00:00"
+    },
+    {
+      "session_id": "sess_a0adb99b15",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "bb7d7d0a-b5b7-47d2-807f-60494d8dd513",
+      "proc_state": "idle_unloaded",
+      "turns": 11,
+      "title": "VALIDATION-CONTEXT-R18",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-15T10:20:23.283455+00:00"
+    },
+    {
+      "session_id": "sess_b91680bb39",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "289450dd-e6dd-4def-a806-77c277696119",
+      "proc_state": "busy",
+      "turns": 0,
+      "title": "U01-STOP-AT-R18",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-15T09:23:58.968132+00:00"
+    }
+  ]
+}

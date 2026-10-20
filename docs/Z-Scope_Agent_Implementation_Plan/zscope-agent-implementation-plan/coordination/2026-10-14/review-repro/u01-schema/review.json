@@ -1,0 +1,38 @@
+{
+  "synthetic_only": true,
+  "kind": "actual_parser_and_generated_schema_inspection_not_full_jsonschema_validator",
+  "cases": [
+    {
+      "case": "stop_at_pattern",
+      "schema_pattern": "(?:[01]\\d|2[0-3]):[0-5]\\d",
+      "pattern_search_accepts": true,
+      "parser_accepted": false,
+      "parser_error": "execution.stop_at must be a local 'HH:MM' wall-clock time (00:00-23:59)"
+    },
+    {
+      "case": "focus_duplicates",
+      "schema_uniqueItems": true,
+      "parser_accepted": true,
+      "parsed_focus": [
+        "memory"
+      ]
+    },
+    {
+      "case": "stop_requires_timezone",
+      "schema_required": [],
+      "schema_dependentRequired": null,
+      "schema_allOf": null,
+      "parser_accepted": false,
+      "parser_error": "execution.stop_at requires an explicit execution.timezone so the boundary does not depend on the loading machine"
+    },
+    {
+      "case": "cpp_requires_database",
+      "schema_target_required": [
+        "id"
+      ],
+      "schema_allOf": null,
+      "parser_accepted": false,
+      "parser_error": "project.targets[0].compile_commands is required for C/C++"
+    }
+  ]
+}

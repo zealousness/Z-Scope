@@ -1,0 +1,13 @@
+原 task_1cee9c8e9d 有最终DELIVERY、96/222自验/compileall/mypy，但独立边界验收尚未通过，未集成。继续同sess_261a55289f、Kimi K3、原scan-session-r12副本，仅原5个owned文件。保留旧交付和收据，修复已核实问题及原任务未覆盖的在途停止，不重做他人任务/服务。
+
+独立冻结源码与你最终5文件字节一致。有效已核实产品缺陷：
+1. artifacts/coordinator-scan-session-r12-native-owner-probes-20261015/command-0.log 中 test_scan_session_native_boundary.py 的 resume=True：真的设置config.analysis.workflow_name='resume'，实际runner._handle_plan_resume_entries 在主run决定instance_execution_mode之前仍调用_ensure_semantic_phase，命中禁止global modeling断言。普通resume不止self.resume=True，必须覆盖实际resume workflow；C/C++不能旧裸名saved report授权/全局语义，Java保留自己的路径。
+2. 同收据 foreign JSON checkpoint反例：真正ScanJobService.start产生job/run/input/owner，只延迟合法owner启动；在per-job checkpoint放foreign-job/foreign-run、当前input_revision的JSON。实际owner/ScanSession把它当complete，返回instances=[]，完全跳过native双变体分析。load_checkpoint仅schema/input/reportdict不够；在验证真实当前job/run/owner/input/plan、可信持久完成收据之前不能接受外来磁盘JSON。文件hash须和真实完成SQL/event绑定，不接受JSON自称hash/owner/complete。若要共享store/queue新API，给精确签名和必要不变量，由协调者负责；不能自行改shared。
+
+其他需完成核验：_bind_job_deadline在_build_instance_analyzer之后替换token、expired remaining走None，analyzer及其entry/validator可能持旧token；InstanceWorkHandlers仅入口查work.cancellation，执行Analyzer/validation未绑定该token。原测试只在开始前cancel/deadline，不代表在途取消/真实到点。请实际owner+native session+在途可取消模型等待边界验证cancel和deadline，在owner watchdog前cooperative停止、无新claim、真实remaining/partial。不能只假handler全成功或先行cancel覆盖此项。
+
+协调者自己的探针经历了准备问题，明确区分：旧boundary-probes里fixture额外main.c无compile command；native-owner版本有cancel预期202错误（共享cancel实际200）及source_root='.'扫描生成物令input变化，不据这些算产品故障。随后源码子目录探针又暴露CodeIndex真实shared问题：native DB source=unit.c，CodeIndex native查询却project-relative src/unit.c，导致source_root!=project_root时无实例。这属协调者共享文件code_index.py，正在coordinator-shared-r13修复并真实native核验，原worker副本目前不能直接通过最新子目录owner探针；不要改你的5文件来绕开它，等协调者经过验收后给只读依赖刷新。已核实的上述resume与foreign JSON在root==source_root真实native/owner下独立复现，不受这个共享缺陷影响。
+
+队列集成建议：当前work-queue.db.UUID的attempt队列确实避免无checkpoint时跳过未持久化in-memory batch，但协调者owner目前只读取canonical work-queue.db，最终pending_count会变unknown。协调者将按当前run/input的session_scheduler_started可信事件精确选择实际队列并验证路径/meta，不能glob任意队列或读JSON推算剩余；不需要你修改owner。如果改队列位置/恢复合同先交建议，避免双方冲突。整体重分析可作为当前安全恢复边界明示，逐实例durable checkpoint仍剩余，不宣称整S08完成。
+
+质量：对5个owned Python文件最终完整black --check要通过。你列出的两个共享文件3个局部既有hunk已核对，可以仅按Black修这3处局部格式（这些文件现在属于本任务修改范围），不大范围格式化仓库。不得跳过质量检查或把would-reformat称通过。保留真实native/session/jobs/resume/ledger及全部相关回归、compileall/mypy；稳定SHA/日志/JUnit/UTC+8时刻；后台全部结束且源码停写后再交新DELIVERY。

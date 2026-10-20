@@ -1,0 +1,57 @@
+{
+  "status": "prepared_identity_before_authorized_execution",
+  "files": {
+    "continuation-authorization.json": {
+      "sha256": "ae946b5fc35fcc7cc2787289fe59b6426e895b488dfa0c87713cd968c94b4378",
+      "bytes": 4937
+    },
+    "control-manifest.json": {
+      "sha256": "7ca7190c205b1b284c00c39b3cecf652fac0a5cdd7d8ec0c76430cf3fa158730",
+      "bytes": 2591
+    },
+    "generated/mvn": {
+      "sha256": "9654f41cb05a5354f2d4213bbb40de00ac149926de7df80b26921beb449f9156",
+      "bytes": 318
+    },
+    "generated/settings.xml": {
+      "sha256": "f8bef00b489da8786ecc1874916126b11acfbcec9221d4f9070fc306fd8f54d7",
+      "bytes": 234
+    },
+    "generated/simplelogger.properties": {
+      "sha256": "13428608924c6dc094d4a6b18e4e6c242f51cedb68d14ffa1e2f8a828f5f0312",
+      "bytes": 86
+    },
+    "input-manifest.json": {
+      "sha256": "a77792554f225a8e864d03a0ae22a3fec36d19eef4f4e9fb79a9c195308ac873",
+      "bytes": 1895437
+    },
+    "JAVA-MAVEN-EXECUTION-PLAN.md": {
+      "sha256": "3d859db48e360f09e7c636264a3a72470def17e58ae85bb85aa4393c8c87ff81",
+      "bytes": 7741
+    },
+    "java-two-nodes-container.proposed.py": {
+      "sha256": "7b784d4f5479e73737117d8b7786b4d1ec2fbbc09c87cc5d7c8de091e91f5145",
+      "bytes": 12675
+    },
+    "java-two-nodes-inside.proposed.py": {
+      "sha256": "db5f40fc5e82ecedf57bcee741a42cde027f4b1a09da620b90ead99103a16920",
+      "bytes": 8116
+    },
+    "preparation-attempt1.json": {
+      "sha256": "040eb81b685b7c2db29248e35ca0d5580e53538caa8487405b7919aea14920f1",
+      "bytes": 231
+    },
+    "python-dependencies.json": {
+      "sha256": "863edb6d8fa70340804da5d85415665033f20aaefe44a35abddc007018351227",
+      "bytes": 1479274
+    },
+    "rollback-java-stage.proposed.py": {
+      "sha256": "7c3e1a796c6680ee5af818e0a4426a5b40b44aeeb35bbcf890b4cec289fb42ea",
+      "bytes": 1144
+    },
+    "static-preparation-check.json": {
+      "sha256": "2dd139cd57f3afac2ce0fd0f523252fad37c351e1b02b90bdffcb6385432d78c",
+      "bytes": 642
+    }
+  }
+}

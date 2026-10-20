@@ -1,0 +1,148 @@
+{
+  "at": "2026-10-15T02:11:13.389599+08:00",
+  "current_root_joint": "artifacts/coordinator-r11-all-intaken-20261015/review.json",
+  "root_unchanged_since_joint": true,
+  "owner_pid": 80748,
+  "tasks": [
+    {
+      "id": "SCAN-SESSION-R12",
+      "workspace": "scan-session-r12",
+      "agent": "kimi",
+      "model": "volceapi/kimi-k3",
+      "session_id": "sess_261a55289f",
+      "owns": [
+        "zscope/orchestration/scan_session.py",
+        "zscope/orchestration/parallel_analyzer.py",
+        "zscope/orchestration/jobs/scan_work.py",
+        "tests/test_scan_session_instances.py",
+        "tests/test_scan_session_jobs.py"
+      ],
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\scan-session-r12",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/scan-session-r12",
+      "depends_on": [
+        "CURRENT-JOINT-R11"
+      ],
+      "packages": [
+        "S01",
+        "S08"
+      ],
+      "owner": "kimi",
+      "requested_model": "volceapi/kimi-k3",
+      "write_paths": [
+        "zscope/orchestration/scan_session.py",
+        "zscope/orchestration/parallel_analyzer.py",
+        "zscope/orchestration/jobs/scan_work.py",
+        "tests/test_scan_session_instances.py",
+        "tests/test_scan_session_jobs.py"
+      ],
+      "status": "dispatched_execution_observed",
+      "checked_at": "2026-10-15T02:11:13.389599+08:00",
+      "artifact_available": false,
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "whole_package_complete": false,
+      "baseline_receipt": "followups-r12/scan-session-r12-baseline.json",
+      "bridge_task_id": "task_1cee9c8e9d",
+      "bridge_session_id": "sess_261a55289f",
+      "accepted_model": "volceapi/kimi-k3",
+      "observed_model": null,
+      "request_id": "b10f12e8-9dd3-47df-ae85-1227be634db7",
+      "actual_execution_at": "2026-10-14T18:09:21.058735+00:00",
+      "dispatch_evidence": "route-check/bridge-response-scan-session-r12.json",
+      "execution_evidence": "route-check/bridge-response-r12-current-kimi-14c0f23164.json"
+    },
+    {
+      "id": "CONTRACT-VALIDATION-R12",
+      "workspace": "contract-validation-r12",
+      "agent": "zcode",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "session_id": "sess_a0adb99b15",
+      "owns": [
+        "zscope/semantics/contracts.py",
+        "zscope/semantics/build_scope.py",
+        "zscope/semantics/call_context.py",
+        "zscope/semantics/contract_compiler.py",
+        "zscope/core/validation/runner.py",
+        "tests/test_contract_usr_scope.py",
+        "tests/test_validation_build_scope.py"
+      ],
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\contract-validation-r12",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/contract-validation-r12",
+      "depends_on": [
+        "CURRENT-JOINT-R11"
+      ],
+      "packages": [
+        "S01"
+      ],
+      "owner": "zcode",
+      "requested_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "write_paths": [
+        "zscope/semantics/contracts.py",
+        "zscope/semantics/build_scope.py",
+        "zscope/semantics/call_context.py",
+        "zscope/semantics/contract_compiler.py",
+        "zscope/core/validation/runner.py",
+        "tests/test_contract_usr_scope.py",
+        "tests/test_validation_build_scope.py"
+      ],
+      "status": "dispatched_execution_observed",
+      "checked_at": "2026-10-15T02:11:13.389599+08:00",
+      "artifact_available": false,
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "whole_package_complete": false,
+      "baseline_receipt": "followups-r12/contract-validation-r12-baseline.json",
+      "bridge_task_id": "task_315195c1a1",
+      "bridge_session_id": "sess_a0adb99b15",
+      "accepted_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": null,
+      "request_id": "a6d41a81-fcf3-44a6-a1bd-31382665feef",
+      "actual_execution_at": "2026-10-14T18:09:21.637837+00:00",
+      "dispatch_evidence": "route-check/bridge-response-contract-validation-r12.json",
+      "execution_evidence": "route-check/bridge-response-r12-current-zcode-8d040a8bf3.json"
+    },
+    {
+      "id": "ASTRA-QUEUE-UX-R12",
+      "workspace": "astra-queue-ux-r12",
+      "agent": "Astra",
+      "model": "gpt-6-astra",
+      "owns": [
+        "zscope/web/static/**",
+        "tests/test_agent_workbench_ui.py",
+        "tests/fixtures/agent_workbench_ui.cjs"
+      ],
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\astra-queue-ux-r12",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/astra-queue-ux-r12",
+      "depends_on": [
+        "CURRENT-JOINT-R11"
+      ],
+      "packages": [
+        "U01",
+        "U02"
+      ],
+      "owner": "Astra",
+      "requested_model": "gpt-6-astra",
+      "write_paths": [
+        "zscope/web/static/**",
+        "tests/test_agent_workbench_ui.py",
+        "tests/fixtures/agent_workbench_ui.cjs"
+      ],
+      "status": "dispatched_execution_observed",
+      "checked_at": "2026-10-15T02:11:13.389599+08:00",
+      "artifact_available": false,
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "whole_package_complete": false,
+      "baseline_receipt": "followups-r12/astra-queue-ux-r12-baseline.json",
+      "agent_kind": "native_astra",
+      "native_agent_id": "/root/astra_v3_editor_r6",
+      "actual_execution_at": "2026-10-15T02:11:13.389599+08:00",
+      "execution_evidence": "followups-r12/astra-execution.json"
+    }
+  ],
+  "shared_blocker": "owner._finalize overwrites actual remaining with question count; coordinator owns fix. Full ScanSession and precise contracts not yet independently accepted.",
+  "reserved_s06": "human-confirmed archived; no API query/resume/dispatch"
+}

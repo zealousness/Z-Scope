@@ -1,0 +1,7 @@
+{
+  "id": "r21-design-preflight-sessions-2f88cbe989",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  }
+}

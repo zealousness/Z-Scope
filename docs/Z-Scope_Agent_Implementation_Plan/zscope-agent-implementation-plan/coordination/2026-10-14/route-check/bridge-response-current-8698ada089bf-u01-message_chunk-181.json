@@ -1,0 +1,138 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:46:42.434296+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "逐段修改 schema 生成。先扩展 `_section_schema` 支持依赖与条件。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:10.026513+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "上一"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:10.322655+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "编辑留下了草稿残留（`if False` 分支），立即"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:10.376170+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "清理为干净的辅助函数。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:27.615778+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "更新"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:27.921361+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "各字段 schema（minLength、锚定 pattern、focus 正规化、"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:27.922976+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "依赖条件）。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:53.907055+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Root"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:54.167373+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 段：llms propertyNames、"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:54.427988+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "project/execution 条件接入、根级 preset 条件"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:54.462519+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "与披露清单。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:48:09.687604+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "检查"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:48:09.846939+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "文件尾部确保替换完整。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:48:22.774860+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "v"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:48:23.061798+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "3.py 语法正确。现在补测试。先看测试文件 schema"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:48:23.090051+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 段当前状态。"
+      }
+    }
+  ],
+  "offset": 181,
+  "count": 16,
+  "next_offset": 197,
+  "has_more": false,
+  "total_matching": 197
+}

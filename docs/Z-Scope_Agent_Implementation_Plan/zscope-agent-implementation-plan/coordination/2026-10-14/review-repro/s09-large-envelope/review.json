@@ -1,0 +1,11 @@
+{
+  "synthetic_only": true,
+  "size": 16777978,
+  "actual_large_threshold": 16777216,
+  "empty_forbidden_marker": "matched_pairs",
+  "result": {
+    "accepted": false,
+    "error": "storage failed the official validation for /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/s09-large-envelope/synthetic-report.json: Large benchmark reports require: pip install 'zscope[benchmark]'",
+    "code": "report_storage_invalid"
+  }
+}

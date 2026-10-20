@@ -156,6 +156,7 @@ def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> No
                 )
             ]
         ),
+        analysis=SimpleNamespace(semantic_snapshot_candidate_mode="off"),
     )
     analyzer.candidate_pipeline = SimpleNamespace(
         collect_signal_candidates=lambda state: batch,

@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-14T17:45:09.249689+00:00",
+  "author": "coordinator",
+  "reason": "Same preexisting tool-description failure proven on dispatch baseline; root synchronized test and stronger no-body check passed50, then complete current root776. Producer source unchanged; independent full suite will include this file.",
+  "root_evidence": "artifacts/coordinator-r11-astra-intaken-20261015/review.json",
+  "files": [
+    {
+      "path": "tests/test_function_info_tool.py",
+      "previous_sha256": "d6d83c3735e8c4db286f631c6acc03a7472016593dbe2785c773f8c42f99b88f",
+      "sha256": "bafc59ba8fba24d45d40fae027a9057b8d1496d525a7cec47b855d4c2768b0b4"
+    }
+  ]
+}

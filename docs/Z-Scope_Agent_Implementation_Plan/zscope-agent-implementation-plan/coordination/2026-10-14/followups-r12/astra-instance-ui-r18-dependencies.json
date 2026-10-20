@@ -1,0 +1,15 @@
+{
+  "recorded_at": "2026-10-15T09:32:16.710142+00:00",
+  "coordinator_authorized": true,
+  "validation": "artifacts/coordinator-lightweight-r18-20261015/review.json",
+  "files": [
+    {
+      "path": "zscope/web/services.py",
+      "previous_sha256": "0a550bbb5204e86b0b6c87f0d7104dd1cc9293b0613b709f8cd817f3909b3f03",
+      "sha256": "ca9643ee172c0fa20839295b90e5c6c27dd146c81ccc68d4586b43ebee7ff707",
+      "source": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\coordinator-lightweight-r18\\zscope\\web\\services.py",
+      "readonly": true
+    }
+  ],
+  "root_changed": false
+}

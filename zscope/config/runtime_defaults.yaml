@@ -47,6 +47,28 @@ analysis:
   enable_subagent_workers: false
   # Rollout starts in shadow mode; release policy controls promotion to active.
   security_semantic_enrichment_mode: shadow
+  # Independent, bounded investigation; never changes one-shot discovery.
+  active_investigation_mode: "off"
+  active_investigation_max_rounds: 4
+  active_investigation_timeout_seconds: 120
+  active_investigation_max_scope_extensions: 1
+  semantic_snapshot_candidate_mode: "off"
+  semantic_model_demand_mode: "off"
+  # V01 controlled dynamic reproduction (ASAN/TSAN harness execution).  "off"
+  # keeps the shipped scan inert; "shadow" records provider metadata without
+  # granting confirmation authority; "on" lets a qualified witness reach the
+  # shared adjudication.  Never exposed through public project YAML.
+  dynamic_reproduction_mode: "off"
+  # max_replays authorizes the total number of plan executions for one
+  # verification: the primary execution plus its independent replays.
+  dynamic_reproduction_required_replays: 2
+  dynamic_reproduction_max_replays: 3
+  dynamic_reproduction_timeout_seconds: 30
+  # One shared wall-clock deadline for the whole verification (build plus every
+  # run); per-process timeouts are a weaker, separate bound.
+  dynamic_reproduction_deadline_seconds: 900
+  dynamic_reproduction_memory_limit_mb: 512
+  dynamic_reproduction_isolation: process
   max_subagent_tickets: 4
   subagent_max_turns: 20
   request_deadline_seconds: 120

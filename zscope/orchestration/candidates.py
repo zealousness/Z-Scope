@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, cast
+from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Tuple, TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .jobs.instance_results import FrozenJSON, InstanceKey, PendingCandidate
 
 from .candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
@@ -37,6 +41,98 @@ TERMINAL_DISPOSITIONS = frozenset(
     }
 )
 NONTERMINAL_STATUSES = frozenset({"pending", "queued", "planned", "running"})
+
+PENDING_MANIFEST_SCHEMA = "zscope.instance-pending-manifest.v1"
+PENDING_WIRE_ADAPTER_VERSION = "zscope.instance-pending-wire-adapter.v1"
+_PENDING_WIRE_FIELDS = frozenset(
+    {
+        "candidate_schema_version",
+        "candidate_uid",
+        "candidate_id",
+        "obligation_uid",
+        "validation_cluster_uid",
+        "history_key",
+        "build_context_id",
+        "decision_context_version",
+        "evidence_hash",
+        "decision_evidence_hash",
+        "provenance_hashes",
+        "evidence_hashes",
+        "context_signature",
+        "validation_contexts",
+        "occurrence_uids",
+        "occurrences",
+        "entries",
+        "call_paths",
+        "entry_paths",
+        "sources",
+        "record_role",
+        "status",
+        "defect_class",
+        "canonical_source",
+        "canonical_sink",
+        "root_cause_key",
+        "dedup_key",
+        "ticket",
+    }
+)
+
+
+def _pending_merge_key(projection: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        projection[key]
+        for key in (
+            "build_context_id",
+            "candidate_uid",
+            "obligation_uid",
+            "validation_cluster_uid",
+            "evidence_hash",
+            "context_signature",
+        )
+    )
+
+
+def _pending_json(value: Any, ancestors: Optional[set[int]] = None) -> Any:
+    """Detach known JSON views; never stringify or coerce unknown evidence."""
+    if value is None or type(value) in (str, int, bool):
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("pending_record_nonfinite_number")
+        return value
+    if not isinstance(value, (dict, list)):
+        raise ValueError("pending_record_non_json_evidence")
+    parents = set() if ancestors is None else ancestors
+    if id(value) in parents:
+        raise ValueError("pending_record_recursive_evidence")
+    parents.add(id(value))
+    try:
+        if isinstance(value, dict):
+            if any(type(key) is not str for key in value):
+                raise ValueError("pending_record_non_string_key")
+            return {key: _pending_json(item, parents) for key, item in value.items()}
+        return [_pending_json(item, parents) for item in value]
+    finally:
+        parents.remove(id(value))
+
+
+def _pending_bytes(value: Any) -> bytes:
+    return json.dumps(
+        _pending_json(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+@dataclass(frozen=True)
+class PendingRecordSnapshot:
+    """One complete locked projection, independent of later ledger mutation."""
+
+    records: Tuple["PendingCandidate", ...]
+    manifest_json: "FrozenJSON"
+    diagnostics_json: "FrozenJSON"
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -242,13 +338,20 @@ class CandidateRegistrar:
                 # visibility gate.  Re-assert it at the registrar boundary so
                 # no producer or fact refresh can promote the hypothesis.
                 issue["candidate_promotion_eligible"] = False
-                issue["candidate_promotion_reason"] = "active_discovery_rollout_shadow"
+                issue["candidate_promotion_reason"] = (
+                    "conditional_snapshot_shadow"
+                    if issue.get("candidate_kind") == "conditional_snapshot_observation"
+                    and issue.get("candidate_source") == "semantic_snapshot"
+                    else "active_discovery_rollout_shadow"
+                )
                 issue["candidate_promotion_terminal_status"] = "shadow_observation"
             evidence = dict(issue.get("evidence_pack") or {})
             evidence.update(
                 {
                     "candidate_id": str(issue.get("candidate_id") or issue.get("id") or ""),
                     "candidate_schema_version": envelope.schema_version,
+                    "build_context_id": envelope.build_context_id,
+                    "identity_build_context_id": envelope.build_context_id,
                     "candidate_uid": envelope.candidate_uid,
                     "occurrence_uid": envelope.occurrence_uid,
                     "history_key": envelope.history_key,
@@ -516,6 +619,7 @@ class CandidateRecord:
         if not include_context:
             ticket_dict.pop("context_slice", None)
         return {
+            "build_context_id": str((self.ticket.evidence or {}).get("build_context_id") or ""),
             "candidate_id": self.candidate_id,
             "dedup_key": self.dedup_key,
             "status": self.status,
@@ -583,6 +687,485 @@ class CandidateLedger:
         self._frozen = False
         self._review_appendices: List["CandidateLedger"] = []
 
+    def pending_instance_snapshot(
+        self,
+        *,
+        instance: "InstanceKey",
+        entry_instances: Mapping[Tuple[str, str], "InstanceKey"],
+    ) -> PendingRecordSnapshot:
+        """Export all pending members for an exact instance under the ledger lock.
+
+        The independently enumerated live identity list is compared with the
+        detached projection before publishing the manifest. Unknown ownership
+        or a terminal member invalidates the whole instance; it is never filtered
+        away to manufacture an apparently complete empty result.
+        """
+        from dataclasses import asdict
+        from .jobs.instance_results import FrozenJSON, PendingCandidate
+
+        with self._lock:
+            if self._frozen or self._review_appendices:
+                raise ValueError("pending_export_ledger_not_open")
+            selected: list[tuple[CandidateRecord, tuple["InstanceKey", ...]]] = []
+            live_members: list[dict[str, Any]] = []
+            for key, record in sorted(self._records.items()):
+                build = record.ticket.evidence.get("build_context_id")
+                if not isinstance(build, str) or not build or not record.occurrences:
+                    raise ValueError("pending_record_ownership_unknown")
+                owners: dict[str, "InstanceKey"] = {}
+                for occurrence in record.occurrences:
+                    owner = entry_instances.get((occurrence.entry_identity, build))
+                    if owner is None or owner.build_context_id != build:
+                        raise ValueError("pending_record_entry_binding_unknown")
+                    owners[owner.identity] = owner
+                if instance.identity not in owners:
+                    continue
+                if owners[instance.identity] != instance:
+                    raise ValueError("pending_record_instance_mismatch")
+                if (
+                    key != record.validation_cluster_uid
+                    or not record.candidate_uid
+                    or not record.obligation_uid
+                    or record.status not in {"pending", "queued"}
+                    or record.record_role not in {"triage_lead", "validation_obligation"}
+                    or type(record.disposition) is not str
+                    or record.disposition != ""
+                    or type(record.decision_proof) is not dict
+                    or record.decision_proof != {}
+                    or type(record.terminal_issue) is not dict
+                    or record.terminal_issue != {}
+                    or type(record.validation_attempt_count) is not int
+                    or record.validation_attempt_count != 0
+                    or type(record.duplicate_count) is not int
+                    or record.duplicate_count < 0
+                    or record.evidence_completion_status != "not_requested"
+                    or record.engine_status != "complete"
+                    or record.worker_report_id is not None
+                    or record.schema_version != CANDIDATE_SCHEMA_VERSION
+                    or record.decision_context_version != DECISION_CONTEXT_VERSION
+                ):
+                    raise ValueError("pending_record_not_neutral")
+                owner_tuple = tuple(owners[name] for name in sorted(owners))
+                selected.append((record, owner_tuple))
+                live_members.append(
+                    {
+                        "build_context_id": build,
+                        "candidate_uid": record.candidate_uid,
+                        "obligation_uid": record.obligation_uid,
+                        "validation_cluster_uid": key,
+                        "evidence_hash": record.evidence_hash,
+                        "context_signature": record.context_signature,
+                        "owner_instances": [asdict(owner) for owner in owner_tuple],
+                        "record_role": record.record_role,
+                        "duplicate_count": record.duplicate_count,
+                        "occurrence_uids": list(record.occurrence_uids),
+                        "occurrences": [occurrence.to_dict() for occurrence in record.occurrences],
+                    }
+                )
+            result: list["PendingCandidate"] = []
+            projections: list[dict[str, Any]] = []
+            projected_members: list[dict[str, Any]] = []
+            diagnostics: list[dict[str, Any]] = []
+            for record, record_owners in selected:
+                # to_ticket() updates ticket aliases. Perform that operation
+                # only on a detached copy, preserving the live ledger bytes.
+                detached = deepcopy(record)
+                projection = _pending_json(detached.to_dict(include_context=True))
+                projection["terminal_issue"] = {}
+                projections.append(projection)
+                projected_members.append(
+                    {
+                        key: projection[key]
+                        for key in (
+                            "build_context_id",
+                            "candidate_uid",
+                            "obligation_uid",
+                            "validation_cluster_uid",
+                            "evidence_hash",
+                            "context_signature",
+                            "record_role",
+                            "occurrence_uids",
+                            "occurrences",
+                            "duplicate_count",
+                        )
+                    }
+                    | {"owner_instances": [asdict(owner) for owner in record_owners]}
+                )
+                diagnostics.append(
+                    {
+                        "record_key": list(_pending_merge_key(projection)),
+                        "duplicate_count": record.duplicate_count,
+                    }
+                )
+                wire = {key: projection[key] for key in sorted(_PENDING_WIRE_FIELDS)}
+                result.append(
+                    PendingCandidate(
+                        schema="zscope.instance-pending-record.v1",
+                        candidate_uid=record.candidate_uid,
+                        obligation_uid=record.obligation_uid,
+                        validation_cluster_uid=record.validation_cluster_uid,
+                        build_context_id=str(projection["build_context_id"]),
+                        owner_instances=record_owners,
+                        status=cast(Literal["pending", "queued"], record.status),
+                        record_role=cast(
+                            Literal["triage_lead", "validation_obligation"], record.record_role
+                        ),
+                        record_json=FrozenJSON(_pending_bytes(wire)),
+                    )
+                )
+            if _pending_bytes(live_members) != _pending_bytes(projected_members):
+                raise ValueError("pending_export_membership_changed")
+            manifest = {
+                "schema": PENDING_MANIFEST_SCHEMA,
+                "wire_adapter": PENDING_WIRE_ADAPTER_VERSION,
+                "instance": asdict(instance),
+                "record_count": len(selected),
+                "obligation_count": sum(
+                    record.record_role == "validation_obligation" for record, _owners in selected
+                ),
+                "occurrence_count": sum(
+                    len(record.occurrence_uids) for record, _owners in selected
+                ),
+                "occurrence_row_count": sum(
+                    len(record.occurrences) for record, _owners in selected
+                ),
+                "members": live_members,
+                "membership_sha256": hashlib.sha256(_pending_bytes(live_members)).hexdigest(),
+                "records_sha256": hashlib.sha256(_pending_bytes(projections)).hexdigest(),
+                "diagnostics_sha256": hashlib.sha256(_pending_bytes(diagnostics)).hexdigest(),
+            }
+            return PendingRecordSnapshot(
+                tuple(result),
+                FrozenJSON(_pending_bytes(manifest)),
+                FrozenJSON(_pending_bytes(diagnostics)),
+            )
+
+    def export_pending_instance_records(
+        self,
+        *,
+        instance: "InstanceKey",
+        entry_instances: Mapping[Tuple[str, str], "InstanceKey"],
+    ) -> Tuple["PendingCandidate", ...]:
+        return self.pending_instance_snapshot(
+            instance=instance, entry_instances=entry_instances
+        ).records
+
+    @staticmethod
+    def _pending_record_from_projection(
+        pending: "PendingCandidate", *, duplicate_count: int
+    ) -> CandidateRecord:
+        def unique_strings(value: Any) -> list[str]:
+            if not isinstance(value, list) or any(type(item) is not str for item in value):
+                raise ValueError("pending_import_invalid_string_list")
+            if len(set(value)) != len(value):
+                raise ValueError("pending_import_duplicate_members")
+            return list(value)
+
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("pending_import_duplicate_json_key")
+                result[key] = value
+            return result
+
+        raw = json.loads(pending.record_json, object_pairs_hook=pairs)
+        if not isinstance(raw, dict) or _pending_bytes(raw) != pending.record_json:
+            raise ValueError("pending_import_noncanonical_record")
+        if set(raw) != _PENDING_WIRE_FIELDS:
+            raise ValueError("pending_import_incomplete_wire_projection")
+        if type(duplicate_count) is not int or duplicate_count < 0:
+            raise ValueError("pending_import_invalid_diagnostic_count")
+        uids = unique_strings(raw.get("occurrence_uids"))
+        hashes = unique_strings(raw.get("provenance_hashes"))
+        raw.update(
+            candidate_disposition="",
+            decision_proof={},
+            terminal_issue={},
+            validation_attempt_count=0,
+            evidence_completion_status="not_requested",
+            engine_status="complete",
+            worker_report_id=None,
+            duplicate_count=duplicate_count,
+            provenance_hash=hashes[0] if hashes else "",
+            alias_occurrence_uids=uids[1:],
+            occurrence_count=len(uids),
+            grouped_alias_count=max(0, len(uids) - 1),
+            entry_count=len(raw["entries"]),
+        )
+        if (
+            raw.get("candidate_schema_version") != CANDIDATE_SCHEMA_VERSION
+            or raw.get("decision_context_version") != DECISION_CONTEXT_VERSION
+            or raw.get("status") not in {"pending", "queued"}
+            or raw.get("record_role") not in {"triage_lead", "validation_obligation"}
+            or raw.get("candidate_disposition") != ""
+            or raw.get("decision_proof") != {}
+            or raw.get("terminal_issue") != {}
+            or type(raw.get("validation_attempt_count")) is not int
+            or raw.get("validation_attempt_count") != 0
+            or raw.get("evidence_completion_status") != "not_requested"
+            or raw.get("engine_status") != "complete"
+            or raw.get("worker_report_id") is not None
+        ):
+            raise ValueError("pending_import_not_neutral")
+        for key, value in (
+            ("candidate_uid", pending.candidate_uid),
+            ("obligation_uid", pending.obligation_uid),
+            ("validation_cluster_uid", pending.validation_cluster_uid),
+            ("build_context_id", pending.build_context_id),
+            ("record_role", pending.record_role),
+            ("status", pending.status),
+        ):
+            if raw.get(key) != value or not value:
+                raise ValueError("pending_import_coordinate_mismatch")
+        text_fields = (
+            "candidate_id",
+            "dedup_key",
+            "history_key",
+            "defect_class",
+            "canonical_source",
+            "canonical_sink",
+            "root_cause_key",
+            "evidence_hash",
+            "decision_evidence_hash",
+            "context_signature",
+        )
+        if any(type(raw.get(key)) is not str for key in text_fields):
+            raise ValueError("pending_import_invalid_scalar")
+        if not all(
+            raw[key]
+            for key in (
+                "candidate_id",
+                "dedup_key",
+                "evidence_hash",
+                "decision_evidence_hash",
+                "context_signature",
+            )
+        ):
+            raise ValueError("pending_import_missing_identity")
+        if type(raw.get("duplicate_count")) is not int or raw["duplicate_count"] < 0:
+            raise ValueError("pending_import_invalid_duplicate_count")
+        ticket_json = raw.get("ticket")
+        if not isinstance(ticket_json, dict):
+            raise ValueError("pending_import_missing_ticket")
+        from dataclasses import fields
+
+        if set(ticket_json) != {item.name for item in fields(SubAgentTicket)}:
+            raise ValueError("pending_import_incomplete_ticket")
+        ticket = SubAgentTicket(**_pending_json(ticket_json))
+        if (
+            ticket.id != raw["candidate_id"]
+            or ticket.dedup_key != raw["dedup_key"]
+            or not isinstance(ticket.evidence, dict)
+            or ticket.evidence.get("build_context_id") != pending.build_context_id
+        ):
+            raise ValueError("pending_import_ticket_identity_mismatch")
+        for key in (
+            "candidate_uid",
+            "obligation_uid",
+            "validation_cluster_uid",
+            "evidence_hash",
+            "context_signature",
+        ):
+            carried = ticket.evidence.get(key)
+            if carried not in (None, "", raw[key]):
+                raise ValueError("pending_import_ticket_evidence_identity_mismatch")
+        payload = ticket.evidence.get("candidate_payload")
+        if (
+            not isinstance(payload, dict)
+            or payload.get("build_context_id") != pending.build_context_id
+        ):
+            raise ValueError("pending_import_missing_full_candidate_payload")
+        uids = unique_strings(raw.get("occurrence_uids"))
+        occurrences: list[CandidateOccurrence] = []
+        for occurrence in raw.get("occurrences", ()):
+            if not isinstance(occurrence, dict) or set(occurrence) != {
+                "occurrence_uid",
+                "entry_identity",
+                "call_paths",
+                "context_signature",
+            }:
+                raise ValueError("pending_import_invalid_occurrence")
+            if any(
+                type(occurrence[key]) is not str or not occurrence[key]
+                for key in ("occurrence_uid", "entry_identity", "context_signature")
+            ):
+                raise ValueError("pending_import_incomplete_occurrence")
+            paths = occurrence["call_paths"]
+            if not isinstance(paths, list) or any(
+                not isinstance(path, list) or any(type(item) is not str for item in path)
+                for path in paths
+            ):
+                raise ValueError("pending_import_invalid_call_paths")
+            occurrences.append(
+                CandidateOccurrence(
+                    occurrence_uid=occurrence["occurrence_uid"],
+                    entry_identity=occurrence["entry_identity"],
+                    call_paths=tuple(tuple(path) for path in paths),
+                    context_signature=occurrence["context_signature"],
+                )
+            )
+        if not occurrences or {occurrence.occurrence_uid for occurrence in occurrences} != set(
+            uids
+        ):
+            raise ValueError("pending_import_occurrence_membership_mismatch")
+        record = CandidateRecord(
+            candidate_id=raw["candidate_id"],
+            dedup_key=raw["dedup_key"],
+            ticket=ticket,
+            status=pending.status,
+            sources=unique_strings(raw.get("sources")),
+            call_paths=_pending_json(raw["call_paths"]),
+            duplicate_count=raw["duplicate_count"],
+            defect_class=raw["defect_class"],
+            canonical_source=raw["canonical_source"],
+            canonical_sink=raw["canonical_sink"],
+            root_cause_key=raw["root_cause_key"],
+            candidate_uid=pending.candidate_uid,
+            history_key=raw["history_key"],
+            obligation_uid=pending.obligation_uid,
+            decision_context_version=raw["decision_context_version"],
+            evidence_hash=raw["evidence_hash"],
+            decision_evidence_hash=raw["decision_evidence_hash"],
+            provenance_hashes=unique_strings(raw["provenance_hashes"]),
+            evidence_hashes=unique_strings(raw["evidence_hashes"]),
+            validation_cluster_uid=pending.validation_cluster_uid,
+            context_signature=raw["context_signature"],
+            context_signatures=unique_strings(raw["validation_contexts"]),
+            occurrence_uids=uids,
+            occurrences=occurrences,
+            record_role=pending.record_role,
+        )
+        projection = record.to_dict(include_context=True)
+        projection["terminal_issue"] = {}
+        if (
+            _pending_bytes({key: projection[key] for key in sorted(_PENDING_WIRE_FIELDS)})
+            != pending.record_json
+        ):
+            raise ValueError("pending_import_projection_not_lossless")
+        return record
+
+    @staticmethod
+    def _join_pending_records(
+        existing: CandidateRecord, incoming: CandidateRecord
+    ) -> CandidateRecord:
+        left, right = deepcopy(existing), deepcopy(incoming)
+        a, b = left.to_dict(True), right.to_dict(True)
+        union_fields = (
+            "sources",
+            "call_paths",
+            "entry_paths",
+            "validation_contexts",
+            "provenance_hashes",
+            "evidence_hashes",
+            "occurrence_uids",
+            "occurrences",
+        )
+        derived = (
+            "duplicate_count",
+            "provenance_hash",
+            "alias_occurrence_uids",
+            "occurrence_count",
+            "grouped_alias_count",
+            "entry_count",
+            "entries",
+        )
+        for projection in (a, b):
+            for key in (*union_fields, *derived):
+                projection.pop(key)
+            for key in ("sources", "call_paths", "priority_reasons"):
+                projection["ticket"].pop(key)
+        if _pending_bytes(a) != _pending_bytes(b):
+            raise ValueError("pending_import_conflicting_record_payload")
+
+        def joined(first: list[Any], second: list[Any]) -> list[Any]:
+            result = deepcopy(first)
+            for item in second:
+                if item not in result:
+                    result.append(deepcopy(item))
+            return result
+
+        for attr in (
+            "sources",
+            "call_paths",
+            "context_signatures",
+            "provenance_hashes",
+            "evidence_hashes",
+            "occurrence_uids",
+            "occurrences",
+        ):
+            setattr(left, attr, joined(getattr(left, attr), getattr(right, attr)))
+        left.ticket.priority_reasons = joined(
+            left.ticket.priority_reasons, right.ticket.priority_reasons
+        )
+        left.ticket.sources = list(left.sources)
+        left.ticket.call_paths = deepcopy(left.call_paths)
+        left.duplicate_count = max(left.duplicate_count, right.duplicate_count)
+        return left
+
+    def _stage_pending_instance_records(
+        self,
+        *,
+        records: Tuple["PendingCandidate", ...],
+        allowed_instances: Mapping[str, "InstanceKey"],
+        diagnostics: Mapping[tuple[str, ...], int],
+        entry_instances: Mapping[Tuple[str, str], "InstanceKey"],
+    ) -> Dict[str, CandidateRecord]:
+        if self._frozen or self._review_appendices:
+            raise ValueError("pending_import_ledger_not_open")
+        expected_keys = {_pending_merge_key(json.loads(record.record_json)) for record in records}
+        if set(diagnostics) != expected_keys:
+            raise ValueError("pending_import_orphan_or_missing_diagnostics")
+        staged = dict(self._records)
+        for pending in records:
+            if not pending.owner_instances:
+                raise ValueError("pending_import_no_owner")
+            for owner in pending.owner_instances:
+                if (
+                    allowed_instances.get(owner.identity) != owner
+                    or owner.build_context_id != pending.build_context_id
+                ):
+                    raise ValueError("pending_import_owner_not_in_current_plan")
+            wire = json.loads(pending.record_json)
+            merge_key = _pending_merge_key(wire)
+            if merge_key not in diagnostics:
+                raise ValueError("pending_import_missing_record_diagnostics")
+            incoming = self._pending_record_from_projection(
+                pending, duplicate_count=diagnostics[merge_key]
+            )
+            mapped = {
+                entry_instances.get((occurrence.entry_identity, pending.build_context_id))
+                for occurrence in incoming.occurrences
+            }
+            if None in mapped or mapped != set(pending.owner_instances):
+                raise ValueError("pending_import_occurrence_owner_mismatch")
+            key = pending.validation_cluster_uid
+            if key in staged:
+                staged[key] = self._join_pending_records(staged[key], incoming)
+            else:
+                staged[key] = incoming
+        return staged
+
+    def restore_pending_instance_records(
+        self,
+        *,
+        records: Tuple["PendingCandidate", ...],
+        allowed_instances: Mapping[str, "InstanceKey"],
+        diagnostics: Optional[Mapping[tuple[str, ...], int]] = None,
+        entry_instances: Optional[Mapping[Tuple[str, str], "InstanceKey"]] = None,
+    ) -> None:
+        """Commit the complete chosen batch once; a late conflict changes nothing."""
+        with self._lock:
+            if records and (diagnostics is None or entry_instances is None):
+                raise ValueError("pending_import_complete_manifest_required")
+            staged = self._stage_pending_instance_records(
+                records=records,
+                allowed_instances=allowed_instances,
+                diagnostics=diagnostics or {},
+                entry_instances=entry_instances or {},
+            )
+            self._records = staged
+
     def attach_review_appendix(self, ledger: "CandidateLedger") -> None:
         """Attach a separately frozen discovery generation without reopening this ledger."""
         if ledger is self or ledger._review_appendices or not ledger._frozen:
@@ -601,6 +1184,8 @@ class CandidateLedger:
             raise ValueError("review restoration requires frozen candidate and cluster identities")
         evidence = deepcopy(issue.get("evidence_pack") or {})
         for key in (
+            "build_context_id",
+            "identity_build_context_id",
             "candidate_uid",
             "validation_cluster_uid",
             "obligation_uid",
@@ -1190,7 +1775,13 @@ class CandidateLedger:
 
     @classmethod
     def canonical_key(cls, ticket: SubAgentTicket) -> str:
-        return cls._ticket_root_cause_key(ticket, "")
+        from ..common.issue_identity import issue_build_context_id
+
+        key = cls._ticket_root_cause_key(ticket, "")
+        scope = issue_build_context_id(ticket.evidence or {})
+        if scope:
+            key += "|build=" + hashlib.sha256(scope.encode("utf-8")).hexdigest()
+        return key
 
     @staticmethod
     def _candidate_id(validation_key: str) -> str:

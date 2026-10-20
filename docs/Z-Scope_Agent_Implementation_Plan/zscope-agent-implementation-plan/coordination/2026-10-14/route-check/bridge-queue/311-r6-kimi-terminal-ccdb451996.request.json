@@ -1,0 +1,8 @@
+{
+  "id": "r6-kimi-terminal-ccdb451996",
+  "tool": "wait_task",
+  "arguments": {
+    "timeout_sec": 40,
+    "task_id": "task_c5ebd65572"
+  }
+}

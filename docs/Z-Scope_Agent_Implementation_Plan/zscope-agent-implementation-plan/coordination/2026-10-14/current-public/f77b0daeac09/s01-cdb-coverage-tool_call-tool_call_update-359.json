@@ -1,0 +1,194 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:39:27.143598+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_7632cc1cfc48434eb9911266",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\zscope\\orchestration\\entry_instance_coverage.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:37.600333+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_4708bb4472b5479684249bc1",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\zscope\\orchestration\\entry_instance_coverage.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s01-coverage\\\\zscope\\\\orchestration\\\\entry_instance_coverage.py\", \"new_string\": \"    Read-only: no command from the database is executed and no stored state is\\n    modified. Returns ``zscope.entry-instance-coverage.v1`` with the expected\\n    command denominator (``None`` when it cannot be established), the\\n    per-command reconciliation outcome and explicit gaps. A command counts as\\n    c…"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:37.603335+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_5de0727d3e374d0495141167",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\tests\\test_entry_instance_coverage.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s01-coverage\\\\tests\\\\test_entry_instance_coverage.py\", \"new_string\": \"def _stored_context(\\n    row: dict,\\n    cdb: Path,\\n    *,\\n    status: str = \\\"indexed\\\",\\n    tool: dict | None = None,\\n    cdb_sha: str | None = None,\\n    extra_dependency: Path | None = None,\\n) -> dict:\\n    \\\"\\\"\\\"Build a manifest shaped like the real publisher's stored context.\\\"\\\"\\\"\\n\\n    identity = command_iden…"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:37.614679+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_4708bb4472b5479684249bc1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:37.663588+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_4708bb4472b5479684249bc1",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:37.683011+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_4708bb4472b5479684249bc1",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\zscope\\orchestration\\entry_instance_coverage.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:38.071435+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_5de0727d3e374d0495141167",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:38.071435+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_5de0727d3e374d0495141167",
+        "status": "failed",
+        "output": "{\"type\":\"tool_execution_failed\",\"message\":\"File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.\",\"code\":\"7\",\"detail\":\"code=7\",\"stack\":\"Error: File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.\\n    at createCoreError (C:\\\\Users\\\\10273\\\\AppData\\\\Local\\\\Programs\\\\ZCode\\\\resources\\\\glm\\\\zcode.cjs:66:2640)\\n    at createToolHandlerFailureError (C:\\\\Users\\\\10273\\\\AppData\\\\Loca…"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:42.276265+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Read: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_67d85a46ed2e40d5880433c3",
+        "kind": "read",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\tests\\test_entry_instance_coverage.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s01-coverage\\\\tests\\\\test_entry_instance_coverage.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:42.294907+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_67d85a46ed2e40d5880433c3",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:42.326030+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_67d85a46ed2e40d5880433c3",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:42.379558+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_67d85a46ed2e40d5880433c3",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\tests\\test_entry_instance_coverage.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:40:42.138153+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_7f9910f5d8554cdd89aa239a",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\tests\\test_entry_instance_coverage.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s01-coverage\\\\tests\\\\test_entry_instance_coverage.py\", \"new_string\": \"def _stored_context(\\n    row: dict,\\n    cdb: Path,\\n    *,\\n    status: str = \\\"indexed\\\",\\n    tool: dict | None = None,\\n    cdb_sha: str | None = None,\\n    extra_dependency: Path | None = None,\\n) -> dict:\\n    \\\"\\\"\\\"Build a manifest shaped like the real publisher's stored context.\\\"\\\"\\\"\\n\\n    identity = command_iden…"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:40:42.140823+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_979881c661234e1e866d15cc",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\tests\\test_entry_instance_coverage.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s01-coverage\\\\tests\\\\test_entry_instance_coverage.py\", \"new_string\": \"def test_missing_tool_receipt_is_a_conservative_gap(tmp_path):\\n    rows, cdb = _write_project(tmp_path)\\n    # The receipts-less tools are part of the manifest from creation, so the\\n    # declared identity stays self-consistent and the gap is the tool receipt.\\n    stored = [\\n        _stored_context(rows[0], cdb, tool={\\…"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:40:42.153051+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_7f9910f5d8554cdd89aa239a",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:40:42.314338+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_7f9910f5d8554cdd89aa239a",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 359,
+  "count": 16,
+  "next_offset": 375,
+  "has_more": true,
+  "total_matching": 379
+}

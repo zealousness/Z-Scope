@@ -1,0 +1,39 @@
+{
+  "at": "2026-10-16T10:03:31.524452+08:00",
+  "tasks": {
+    "S01-INSTANCE-MODELING-DESIGN-R21": {
+      "task_id": "task_4d76d1be39",
+      "session_id": "sess_85c532abde",
+      "status": "completed",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "started_at": "2026-10-15T17:34:26.804657+00:00",
+      "finished_at": "2026-10-15T17:41:34.135303+00:00",
+      "recent_tool_activity_count": 0,
+      "receipt": "route-check/bridge-response-r21-design-status-s01-instance-modeling-design-r21-43238fbede01.json",
+      "design_revision": 1,
+      "delivery_file_present": true,
+      "audit_file_present": true,
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false
+    },
+    "S08-PARTIAL-RECOVERY-DESIGN-R21": {
+      "task_id": "task_6416e33454",
+      "session_id": "sess_9f1956ea27",
+      "status": "completed",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "started_at": "2026-10-15T17:34:30.588566+00:00",
+      "finished_at": "2026-10-15T17:39:01.001780+00:00",
+      "recent_tool_activity_count": 0,
+      "receipt": "route-check/bridge-response-r21-design-status-s08-partial-recovery-design-r21-43238fbede01.json",
+      "design_revision": 1,
+      "delivery_file_present": true,
+      "audit_file_present": true,
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false
+    }
+  }
+}

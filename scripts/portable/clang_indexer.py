@@ -45,6 +45,7 @@ def build(source, work, arch, jobs):
                 "ArgumentCheck.h",
                 "FunctionOwnership.h",
                 "ProgramEvents.h",
+                "PthreadCleanup.h",
             )
         },
     }

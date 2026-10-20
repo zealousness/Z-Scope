@@ -1,0 +1,7 @@
+{
+  "id": "r20-protocol-recovery-sessions",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": false
+  }
+}

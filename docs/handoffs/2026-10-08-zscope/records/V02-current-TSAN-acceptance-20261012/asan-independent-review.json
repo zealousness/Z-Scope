@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "checks": {
+    "original_five_nodes_zero_skips": true,
+    "same_image": true,
+    "default_profile": true,
+    "isolation_verified": true,
+    "inputs_unchanged": true,
+    "host_aslr_unchanged": true,
+    "container_cleaned": true,
+    "observer_error_free": true,
+    "positive_source_site": true,
+    "positive_two_independent_replays": true,
+    "negative_no_finding": true,
+    "broken_build_no_run": true,
+    "original_test_hash": true,
+    "raw_log_hashes": true
+  },
+  "raw_files": 58,
+  "raw_bytes": 27526,
+  "source_evidence": "/mnt/c/Users/10273/Documents/Codex/2026-10-12/task-3/v01-v02-kimi-resume-20261012/post-probe-acceptance-symbolizer-route/zscope-common-asan-20261012-a8lga4np"
+}

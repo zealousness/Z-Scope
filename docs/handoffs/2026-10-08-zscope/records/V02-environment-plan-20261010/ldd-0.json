@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "ldd",
+    "/usr/lib/llvm-18/bin/clang"
+  ],
+  "exit_code": 0,
+  "stdout": "\tlinux-vdso.so.1 (0x00007fff51fa9000)\n\tlibclang-cpp.so.18.1 => /usr/lib/llvm-18/bin/../lib/libclang-cpp.so.18.1 (0x00007ce2da800000)\n\tlibLLVM.so.18.1 => /usr/lib/llvm-18/bin/../lib/libLLVM.so.18.1 (0x00007ce2d3000000)\n\tlibstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007ce2d2c00000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007ce2d2800000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007ce2de5df000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007ce2de6f5000)\n\tlibffi.so.8 => /lib/x86_64-linux-gnu/libffi.so.8 (0x00007ce2da7f4000)\n\tlibedit.so.2 => /lib/x86_64-linux-gnu/libedit.so.2 (0x00007ce2da7ba000)\n\tlibz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (0x00007ce2da79e000)\n\tlibzstd.so.1 => /lib/x86_64-linux-gnu/libzstd.so.1 (0x00007ce2da6e4000)\n\tlibtinfo.so.6 => /lib/x86_64-linux-gnu/libtinfo.so.6 (0x00007ce2da6b0000)\n\tlibxml2.so.2 => /lib/x86_64-linux-gnu/libxml2.so.2 (0x00007ce2d2a1e000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ce2da680000)\n\tlibbsd.so.0 => /lib/x86_64-linux-gnu/libbsd.so.0 (0x00007ce2da66a000)\n\tlibicuuc.so.74 => /lib/x86_64-linux-gnu/libicuuc.so.74 (0x00007ce2d2400000)\n\tliblzma.so.5 => /lib/x86_64-linux-gnu/liblzma.so.5 (0x00007ce2da638000)\n\tlibmd.so.0 => /lib/x86_64-linux-gnu/libmd.so.0 (0x00007ce2da629000)\n\tlibicudata.so.74 => /lib/x86_64-linux-gnu/libicudata.so.74 (0x00007ce2d0600000)\n",
+  "stderr": ""
+}

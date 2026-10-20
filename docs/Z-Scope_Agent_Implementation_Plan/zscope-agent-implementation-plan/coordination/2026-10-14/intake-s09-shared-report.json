@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-14T06:42:45.249045+00:00",
+  "task_id": "task_5d7aa39420",
+  "prior_intake": "intake-s09-prep.json",
+  "existing_source_changes": [],
+  "tests": "s09-shared-report-independent-tests.xml:39 passed/3.19s; no formal/LLM/native",
+  "large_report_limit": "Actual 16MiB read rejects because optional ijson unavailable; streaming path untested. No formal-ready claim.",
+  "files": [
+    {
+      "path": "scripts/agent_plan_evaluation.py",
+      "before_sha256": "4a729c66fd5ada5d52bc71db19db4f1334441ed5e8e24727053f4503f690c809",
+      "sha256": "7842f544886e5e39a4e6ba77977d0ce3b3761db20025ee8a09dc2caf15d392f0"
+    },
+    {
+      "path": "tests/test_agent_plan_evaluation.py",
+      "before_sha256": "7b226f8ad4d43bba4b968965621554f99131d9a97f1effd3c3cb2a268f10cace",
+      "sha256": "4ef668664234cb09de89678e06ace1bdb09d5b711dfa15e06ff7937f0ab86a32"
+    }
+  ]
+}

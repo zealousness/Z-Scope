@@ -1,0 +1,65 @@
+{
+  "at": "2026-10-10T05:21:06.288Z",
+  "report": {
+    "name": "V01-V02-resource-review-blocked-20261010.md",
+    "sha256": "982fee2aa3e9fdbd9ef8ea1c19914181b8cee01f81a38d77c3d995cee4402323"
+  },
+  "files": {
+    "gateway-resource-repair-20261010/candidate-regressions.json": {
+      "bytes": 2038,
+      "sha256": "16d10d56330d401a44d7572ff8d7c24784f800c5275c37201dfb7b04f0092a8e"
+    },
+    "gateway-resource-repair-20261010/candidate-regressions.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gateway-resource-repair-20261010/candidate-regressions.stdout.log": {
+      "bytes": 833,
+      "sha256": "600fd69c59dbb83d787cb55a72c98f15e21c6d5552fcf3aee2ece59433b1b338"
+    },
+    "gateway-resource-repair-20261010/candidate-regressions.xml": {
+      "bytes": 1770,
+      "sha256": "e104d39155b6ebbf6fc266ea3235cc96366de019cab90879cba1d8cf530e9f20"
+    },
+    "gateway-resource-repair-20261010/candidate-review.json": {
+      "bytes": 1589,
+      "sha256": "95489f10195f6e5cbc344100511df56b41d1a61bed56e35acdd0bef7eedb1c8b"
+    },
+    "gateway-resource-repair-20261010/independent-review-rejected.json": {
+      "bytes": 685,
+      "sha256": "9877fa2acf839d7d0209c89cdcba93224cd17d9e62c5f7fdf848cb47d116fdf3"
+    },
+    "gateway-resource-repair-20261010/model-answer.txt": {
+      "bytes": 15164,
+      "sha256": "5d2204d2929eeab96be9990c1560b003e40935bd45e8c6ed412e60ceba83b256"
+    },
+    "gateway-resource-repair-20261010/packet-manifest.json": {
+      "bytes": 858,
+      "sha256": "ed2c76dff5220d8798fd3bf09555c24a772822cefffd8390b193651da264e1cc"
+    },
+    "gateway-resource-repair-20261010/submission-result.json": {
+      "bytes": 4674,
+      "sha256": "ccdb17731a9e6346c907821a6648720fdf808cd8a86bc24176b1121686bf3f9b"
+    },
+    "gateway-resource-repair2-20261010/packet-manifest.json": {
+      "bytes": 779,
+      "sha256": "e1b06a96f1dbe79c2e037e79537eb7ac7fa52f091d90e5917d4b459368f2571b"
+    },
+    "gateway-resource-repair2-20261010/repair-prompt.txt": {
+      "bytes": 54628,
+      "sha256": "2522e048dcdac6235daacb38eeba0e69ee3efee05f94693ef7f26194e5f8ac97"
+    },
+    "result-and-exact-rejection.json": {
+      "bytes": 3254,
+      "sha256": "4dcd1978b698e72de48ae84a607540a5489cd609d5c0398bb58c0c402c564ad4"
+    },
+    "test_v01_v02_resource_bounds.py": {
+      "bytes": 4310,
+      "sha256": "73afe4850d485a2b8ddeca3f53be31972ab4dcbdfed1e1f7edd14c4543f834db"
+    },
+    "test_v01_v02_resource_controls.py": {
+      "bytes": 2570,
+      "sha256": "a3c711194ef4f44b4ea7f528a675fdcb47b657d2f6283d5a079d7876faa148ee"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "id": "r25-s08-repair-result-9b500da402a0",
+  "tool": "get_result",
+  "arguments": {
+    "task_id": "task_8886dcf232",
+    "max_chars": 60000
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "id": "r21-correction-active-ec59550680ab",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  }
+}

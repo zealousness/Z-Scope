@@ -1,0 +1,380 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T04:57:13.532446+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_15",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:13.716392+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_15",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:13.900279+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_15",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:14.125533+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_15",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:14.266977+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_15",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:14.452186+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_15",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:14.658089+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_15",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:14.841076+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Reading C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\zscope\\orchestration\\jobs\\runner.py",
+        "tool_call_id": "0:Read_14",
+        "kind": "read",
+        "status": "in_progress",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/runner.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:14.841603+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Reading C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\zscope\\orchestration\\jobs\\scheduler_hook.py",
+        "tool_call_id": "0:Read_15",
+        "kind": "read",
+        "status": "in_progress",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/scheduler_hook.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:14.848492+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_15",
+        "status": "completed",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/scheduler_hook.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:14.848492+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_14",
+        "status": "completed",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/runner.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:19.083909+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Read",
+        "tool_call_id": "0:Read_16",
+        "kind": "read",
+        "status": "pending"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:19.433035+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:19.628646+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:19.782019+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:19.955906+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:20.131464+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:20.307331+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:20.481623+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:20.655278+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:20.830213+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:21.004408+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:21.186102+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:21.356343+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:21.530879+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:21.704324+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:21.879892+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:22.061956+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:22.228899+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:22.402798+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:22.579221+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:22.753989+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:22.927855+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:23.102033+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:23.293922+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Reading C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\zscope\\orchestration\\jobs\\store.py",
+        "tool_call_id": "0:Read_16",
+        "kind": "read",
+        "status": "in_progress",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/store.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:23.299546+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_16",
+        "status": "completed",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/store.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:27.151043+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Read",
+        "tool_call_id": "0:Read_17",
+        "kind": "read",
+        "status": "pending"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:57:27.498902+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Read_17",
+        "status": "in_progress"
+      }
+    }
+  ],
+  "offset": 352,
+  "count": 38,
+  "next_offset": 390,
+  "has_more": true,
+  "total_matching": 1254
+}

@@ -1,0 +1,25 @@
+{
+  "args": [
+    "-q",
+    "-s",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/pytest-asan",
+    "--junitxml=/work/asan.xml",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_positive_fixture_confirms_through_shared_adjudication",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_negative_fixture_is_not_reproduced_and_never_rejects",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_unrelated_crash_never_confirms_the_candidate",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_build_generated_binary_confirms_without_a_declared_digest",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_build_failure_stays_undecided"
+  ],
+  "nodes": [
+    "tests/test_dynamic_reproduction_execution.py::test_asan_positive_fixture_confirms_through_shared_adjudication",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_negative_fixture_is_not_reproduced_and_never_rejects",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_unrelated_crash_never_confirms_the_candidate",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_build_generated_binary_confirms_without_a_declared_digest",
+    "tests/test_dynamic_reproduction_execution.py::test_asan_build_failure_stays_undecided"
+  ],
+  "observer": "read-only sys.setprofile; no monkeypatch",
+  "started_utc": "2026-10-10T04:39:29.179429+00:00"
+}

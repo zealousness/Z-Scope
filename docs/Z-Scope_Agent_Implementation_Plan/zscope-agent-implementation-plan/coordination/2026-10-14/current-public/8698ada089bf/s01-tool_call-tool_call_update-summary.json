@@ -1,0 +1,55 @@
+{
+  "session_id": "sess_13e7fecbfc",
+  "kinds": "tool_call,tool_call_update",
+  "start_offset": 0,
+  "next_offset": 162,
+  "pages": 9,
+  "total_matching": 162,
+  "has_more": false,
+  "events_read": 162,
+  "latest_at": "2026-10-14T06:50:07.980312+00:00",
+  "failed_tools": [
+    {
+      "ts": "2026-10-14T06:47:52.740609+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_fc190edc25fa4d1e8b14bd0f",
+        "status": "failed",
+        "output": "{\"type\":\"tool_execution_failed\",\"message\":\"File does not exist. Note: your current working directory is C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s01-instances.\",\"code\":\"TOOL_EXECUTION_FAILED\",\"detail\":\"code=read_file_not_found\\nFile not found: C:\\\\Users\\\\10273\\\\home\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s01-instances\\\\zscope\\\\retrieval\\\\indexing_inventory.py\\nENOENT: no such file or directory, stat 'C:\\\\Users\\\\10273\\\\home\\\\Z…"
+      }
+    }
+  ],
+  "completed_tail": [
+    {
+      "ts": "2026-10-14T06:47:55.223858+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_29798175f0c04d42b2e4bad5",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:47:55.286524+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_29798175f0c04d42b2e4bad5",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-instances\\zscope\\retrieval\\indexing_inventory.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T06:50:07.980312+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_92586a89f69e4828b95988f8",
+        "status": "completed"
+      }
+    }
+  ]
+}

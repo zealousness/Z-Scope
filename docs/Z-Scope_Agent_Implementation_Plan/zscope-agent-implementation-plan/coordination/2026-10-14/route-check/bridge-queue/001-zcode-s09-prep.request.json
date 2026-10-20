@@ -1,0 +1,14 @@
+{
+  "id": "zcode-s09-prep",
+  "branch": "S09-PREP",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S09 答案隔离与同版本质量性能评测准备",
+    "user_requested": true,
+    "request_id": "b2031a89-bc54-4f62-af7a-37c2352a19a4",
+    "message": "undefined\n本任务S09-PREP（中等难度），通过现有ZCode ACP0.67.0正式wrapper；必须选择现有hw provider (97ad75c3-e785-4369-9730-55a5ee47c71c) 的 glm-5.3，base_url约定火山网关。控制器已只读核对配置字段，不准切换其它provider/模型或修改凭据。若模型配置/认证/内容/权限拒绝，停止受影响工作并准确分类，不重试换路线。\n唯一可写隔离目录 .coordination/20261014/workspaces/s09-prep，只新增 scripts/agent_plan_evaluation.py、tests/test_agent_plan_evaluation.py、本分支DELIVERY/artifacts。不修改原根产品/正式benchmark/scorer/Range/groundtruth/配置/路由/UI/native/协议文件。\n先读10/16与docs/range-benchmark.md、modules/benchmarking.md；21最新已验收记录覆盖旧待办。实际实现一个本地开发评测准备/同版本对照辅助程序：接收明确source/scanner/config/model/tool identity、冷/热/增量输入与实际reports/usage/projections，生成可执行但不自动启动formal的矩阵/preflight和结构化比较；记录candidate/confirmed/with-review/pending/ruled_out/coverage、时间资源及全部失败/重试成本，不把缺失值按零/完整或零分母按100%。比较必须绑定同一源码/目标/build context/schema/model spec；不匹配fail/未测，不能假装同版本质量。\n答案隔离：scanner输入严格不含truth/评分/历史verdict/标签，结果冻结后独立scorer读truth。本任务不实际创建缺陷注入集，不修改标注，不启动LLM扫描、formal/release/外部OCI网络。可提供允许的离线开发对照（原样/新增callback/删除变体/契约变化等）工序和报告结构；不复制已有正式评分器，正式gate不更改，也不自报formal eligible。\n测试包含答案泄漏拒绝、旧/不同构建/不同model或source比较拒绝、缺报告/失败/取消/重试成本保留、N/A零分母、全量/增量候选/终态/未决/coverage差异显式。仅定向Linuxpytest（不与四个Kimi做大型回归/native重建），给精确命令/证据与能力边界。所有前端/UX归Astra，不实现任何页面。\n本次版本/路由核对通过Bridge公开session配置；若观察model无法匹配或警告返回，控制器会停分支，不把你自报模型当采样事实。"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "coordinator_authorized": true,
+  "write_paths": [
+    "zscope/semantics/models.py",
+    "tests/test_semantics_shadow_overlay.py"
+  ],
+  "reason": "Coordinator-only shared merge_overlay pruning, preserving the original S01 P1-02 authority oracle. Producer owns only its two new files and cannot edit this shared seam. Root intake remains forbidden until independent checks and review; worker ownership unchanged."
+}

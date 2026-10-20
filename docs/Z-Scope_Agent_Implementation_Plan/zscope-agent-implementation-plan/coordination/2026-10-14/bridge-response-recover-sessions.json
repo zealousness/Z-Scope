@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "scope": "current_instance",
+  "other_live_instances": 3,
+  "sessions": [
+    {
+      "session_id": "sess_66640fd67a",
+      "agent": "kimi",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "session_c0f12cc0-b453-40e5-888a-c9c292f8ff90",
+      "proc_state": "idle_unloaded",
+      "turns": 0,
+      "title": "S08 持久作业与独立 owner（隔离分支）",
+      "model": "volceapi/kimi-k3",
+      "effort": null,
+      "last_active_at": "2026-10-14T02:07:49.959381+00:00"
+    },
+    {
+      "session_id": "sess_9669ed4555",
+      "agent": "kimi",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "session_6ffabd20-c88c-4987-909a-acd6f75aa98f",
+      "proc_state": "idle_unloaded",
+      "turns": 0,
+      "title": "S01 全编译变体入口调度（独立隔离分支）",
+      "model": "volceapi/kimi-k3",
+      "effort": null,
+      "last_active_at": "2026-10-14T02:07:51.291520+00:00"
+    },
+    {
+      "session_id": "sess_7552dc222f",
+      "agent": "dsh",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "069f3847-ab0e-4e4f-95ae-e6dc58e9edc0",
+      "proc_state": "idle_unloaded",
+      "turns": 0,
+      "title": "简单计划文档链接与编号核对（仅审计）",
+      "model": "deepseek-v4.1-flash",
+      "effort": null,
+      "last_active_at": "2026-10-14T02:08:10.092767+00:00"
+    }
+  ]
+}

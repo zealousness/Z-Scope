@@ -1,0 +1,224 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:38:55.955035+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_adaefc466ac2418e8850cf8c",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:01.531502+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_d3d1cd96c3b745f39b32fb96",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\\tests\\\\test_scan_job_work_queue.py\", \"new_string\": \"    done = queue.complete(first[\\\"item_id\\\"], claim_token=first[\\\"claim_token\\\"], now=1001.0)\\n    assert done[\\\"status\\\"] == \\\"completed\\\" and done[\\\"scope_key\\\"] == \\\"main\\\"\\n    done_second = queue.complete(\\n        claimed[1][\\\"item_id\\\"], claim_token=claimed[1][\\\"claim_token\\\"], now=1001.5\\n    )\\n    assert done_second…"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:01.534165+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_2d4e943cd191495687964833",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\\tests\\\\test_scan_job_work_queue.py\", \"new_string\": \"    queue.complete(by_scope[\\\"i1\\\"][\\\"item_id\\\"], claim_token=by_scope[\\\"i1\\\"][\\\"claim_token\\\"], now=1000.5)\", \"old_string\": \"    queue.complete(by_scope[\\\"i1\\\"][\\\"item_id\\\"], now=1000.5)\", \"replace_all\": false}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:01.544435+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_d3d1cd96c3b745f39b32fb96",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:01.576247+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_d3d1cd96c3b745f39b32fb96",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:01.599239+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_d3d1cd96c3b745f39b32fb96",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:02.012766+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_2d4e943cd191495687964833",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:02.020294+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_2d4e943cd191495687964833",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:02.038178+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_2d4e943cd191495687964833",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:05.723370+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Read: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_9953431735934873bba519f9",
+        "kind": "read",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\\tests\\\\test_scan_job_work_queue.py\", \"limit\": 50, \"offset\": 598}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:05.730806+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_9953431735934873bba519f9",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:05.754766+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_9953431735934873bba519f9",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:05.803821+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_9953431735934873bba519f9",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:18.639308+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_0ff334bbd1844cae9cbd9631",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\\tests\\\\test_scan_job_work_queue.py\", \"new_string\": \"        (lambda: queue.complete(999, claim_token=\\\"tok\\\"), \\\"item_not_found\\\"),\\n        (lambda: queue.defer(999, \\\"reason\\\", claim_token=\\\"tok\\\"), \\\"item_not_found\\\"),\\n    ]\\n    for call, code in cases:\\n        with pytest.raises(JobError) as exc:\\n            call()\\n        assert exc.value.code == code\\n    assert que…"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:18.647308+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_0ff334bbd1844cae9cbd9631",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:18.688837+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_0ff334bbd1844cae9cbd9631",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:18.707838+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_0ff334bbd1844cae9cbd9631",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py",
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\\test_scan_job_work_queue.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:55.655140+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: cd \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\" && grep -n \"^def test_\" tests/test_scan_job_work_queue.py",
+        "tool_call_id": "call_56089b1eb36844a7bdbaf509",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"cd \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\" && grep -n \\\"^def test_\\\" tests/test_scan_job_work_queue.py\", \"description\": \"List test functions with line numbers\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:39:55.664277+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_56089b1eb36844a7bdbaf509",
+        "status": "in_progress"
+      }
+    }
+  ],
+  "offset": 325,
+  "count": 19,
+  "next_offset": 344,
+  "has_more": true,
+  "total_matching": 382
+}

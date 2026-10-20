@@ -1,0 +1,18 @@
+{
+  "session_id": "sess_261a55289f",
+  "pages": [
+    "bridge-response-r6-kimi-first-completion-40e375bc7c.json",
+    "bridge-response-r6-kimi-first-completion-ab6b0b85ee.json",
+    "bridge-response-r6-kimi-first-completion-77e7177bd4.json"
+  ],
+  "next_offset": 174,
+  "has_more": true,
+  "first_completed": [
+    {
+      "ts": "2026-10-14T12:19:28.662544+00:00",
+      "tool_call_id": "0:Bash_0_b6f21309",
+      "title": null
+    }
+  ],
+  "scope": "Search for first completed tool, not full transcript audit"
+}

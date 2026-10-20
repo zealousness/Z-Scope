@@ -1,0 +1,28 @@
+{
+  "at": "2026-10-10T04:40:31.189Z",
+  "record": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\docs\\handoffs\\2026-10-08-zscope\\records\\V01-V02-four-drift-repair-20261010.md",
+  "productDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "ordinaryPassed": 1715,
+  "asanPassed": true,
+  "taskStatusUnchanged": {
+    "V01": "in_progress",
+    "V02": "blocked"
+  },
+  "changes": [
+    {
+      "path": "docs/modules/analysis-pipeline.md",
+      "before": "fae413a40848fff22d8282d4758a0419277d51b18902b710a3401142fffc42bd",
+      "after": "449a3c5b9b9aa73a97ebc05b3cc9f38c09c7d91cd0287927e499e50d8ce376df"
+    },
+    {
+      "path": "docs/handoffs/2026-10-08-zscope/TASKS.yaml",
+      "before": "8734d2e97734e15afa8aed5a8a20160167493ffca17d620d546aaf438e0dd1c6",
+      "after": "ad2a20e7a8e84b354ee30dcbe9f1cb6d2eef546803558860df5340365f2f8b7e"
+    },
+    {
+      "path": "docs/handoffs/2026-10-08-zscope/PROGRESS.md",
+      "before": "47cfc786298fb401b26dda51d494ac1190692c82e2a355619587289f7bbd4c64",
+      "after": "577c46fca58d57dbd70b6dd2011a24804b2fadb5435e0dcb0001d46a64006e53"
+    }
+  ]
+}

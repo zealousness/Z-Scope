@@ -1,0 +1,24 @@
+{
+  "review_date_local": "2026-10-10",
+  "timezone": "Asia/Taipei",
+  "retrieval": "web.run, public upstream documentation and source only; no software asset downloaded",
+  "sources": [
+    {"url": "https://clang.llvm.org/docs/ThreadSanitizer.html", "supports": "Linux x86_64, sanitizer build flags, PIE/static-libc and virtual-memory limitations"},
+    {"url": "https://github.com/llvm/llvm-project/blob/llvmorg-18.1.3/compiler-rt/lib/tsan/rtl/tsan_platform_linux.cpp", "supports": "Conditional ASLR-disabling fallback, lines 231-277"},
+    {"url": "https://github.com/llvm/llvm-project/blob/llvmorg-22.1.7/compiler-rt/lib/tsan/rtl/tsan_platform_linux.cpp", "supports": "Conditional ASLR-disabling fallback remains"},
+    {"url": "https://github.com/llvm/llvm-project/blob/llvmorg-23.1.3/compiler-rt/lib/tsan/rtl/tsan_platform_linux.cpp", "supports": "Conditional ASLR-disabling fallback remains, lines 270-310"},
+    {"url": "https://github.com/llvm/llvm-project/blob/llvmorg-18.1.3/compiler-rt/lib/tsan/rtl/tsan_platform.h", "supports": "Mapping48AddressSpace constants"},
+    {"url": "https://github.com/llvm/llvm-project/blob/llvmorg-23.1.3/compiler-rt/lib/tsan/rtl/tsan_platform.h", "supports": "Same main x86_64 mapping ranges as checked in 18.1.3"},
+    {"url": "https://github.com/llvm/llvm-project/releases/tag/llvmorg-23.1.3", "supports": "Official version and release"},
+    {"url": "https://github.com/llvm/llvm-project/releases/expanded_assets/llvmorg-23.1.3", "supports": "Linux-X64 xz asset, published SHA256 and displayed compressed size"}
+  ],
+  "fallback_asset": {
+    "name": "LLVM-23.1.3-Linux-X64.tar.xz",
+    "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.3/LLVM-23.1.3-Linux-X64.tar.xz",
+    "sha256": "ca9fe385a5d9e2d88132dc0e23a00e9f87f38fa75f67207b5e457d208e71d013",
+    "displayed_size": "1.88 GB",
+    "expanded_size": "unknown; not downloaded",
+    "compatibility_proven": false
+  },
+  "unavailable_metadata_route": "web.run could not open the public GitHub release API; used official expanded-assets HTML, without fetching binary assets"
+}

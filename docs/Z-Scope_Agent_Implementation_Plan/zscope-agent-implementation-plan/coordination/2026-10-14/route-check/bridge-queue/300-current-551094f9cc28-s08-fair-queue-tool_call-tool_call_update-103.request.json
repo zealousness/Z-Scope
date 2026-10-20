@@ -1,0 +1,1 @@
+{"id": "current-551094f9cc28-s08-fair-queue-tool_call-tool_call_update-103", "tool": "get_transcript", "arguments": {"session_id": "sess_a3dc643fae", "offset": 103, "limit": 1000, "kinds": "tool_call,tool_call_update"}}

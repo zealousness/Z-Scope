@@ -1,0 +1,15 @@
+{
+  "id": "s01-instance-modeling-design-r21-revision-1",
+  "branch": "s01-instance-modeling-design-r21",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S01-INSTANCE-MODELING-DESIGN-R21 revision-1",
+    "session_id": "sess_85c532abde",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "user_requested": true,
+    "request_id": "3e50c3d5-5fdb-490d-a1dc-8a32c3aae85f",
+    "message": "原隔离 Windows 目录 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-instance-modeling-design-r21；Linux 对应 /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-instance-modeling-design-r21，必须继续在同一副本，只读产品。\n同一逻辑只读设计任务 S01-INSTANCE-MODELING-DESIGN-R21 的第1次审查修订，保留原 task/session 与全部历史。只在原隔离副本 /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-instance-modeling-design-r21 工作，模型仍固定 glm-5.3。原 DELIVERY.md 和 artifacts/instance-modeling-design-r21/audit.json 已冻结，不得覆盖；只可新增 artifacts/instance-modeling-design-r21/revision-1/DELIVERY.md 与 audit.json。所有产品/旧测试/文档/native/配置/Root仍只读，不运行测试、扫描、服务、Bridge或native，不改平台/凭据/环境/时钟，不操作旧S06、不reset/clean/commit/push。初版审查收据 /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/artifacts/readonly-design-review-r21-20261016/s01-instance-modeling-design-r21/review.json，请完整读取并逐项修正以下设计/证据问题：\nS01-A proposes inferred rows whose build_context_id is empty. Unknown inferred build is not a wildcard; require exact known build/USR and current checked publication/consumer receipts, or conservatively exclude/defer. Manual/builtin name-level rows must be separated from inferred authorization.\nF8 cites build_scope.py:570-578, but _in_scope is in contracts.py:570. Correct citations and recheck every claimed call path.\nProvide explicit recomputed source_hashes_after rather than only an equality note. The reported started_at precedes actual Bridge dispatch; use public worker/tool observation times and distinguish the revision audit interval.\n保留所有已确认能力/缺口/非缺陷和未完成范围；更正设计不能通过删除保护或把未知构建当通配符解决。逐项给源码路径/实际行/SHA/调用与消费链，重新计算显式before/after SHA，记录真实本修订起止时间。原任务公开进程开始/结束与首次工具观测见审查收据，不能把snapshot捕获时间冒充实际开始；未知准确时间标unknown。这是只读设计修订，不是功能实现/整包/真实项目验收，不冒记产品开发失败。完成停止写入。"
+  }
+}

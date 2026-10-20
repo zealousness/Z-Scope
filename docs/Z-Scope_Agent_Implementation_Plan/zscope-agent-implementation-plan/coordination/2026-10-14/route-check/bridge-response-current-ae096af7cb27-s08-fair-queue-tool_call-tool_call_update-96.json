@@ -1,0 +1,82 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:00:01.426904+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_b66cea07fa7f4eb583f86cbb",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\zscope\\orchestration\\jobs\\__init__.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:00:08.884874+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: cd \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\" && ls tests/ | grep -i \"job\\|schedul\" && echo \"===\" && grep -n \"stop_at_epoch\\|window\\|deadline\" zscope/orchestration/jobs/owner.py | head -30",
+        "tool_call_id": "call_2f9712a1d9ea49c2946eeb71",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"cd \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\" && ls tests/ | grep -i \\\"job\\\\|schedul\\\" && echo \\\"===\\\" && grep -n \\\"stop_at_epoch\\\\|window\\\\|deadline\\\" zscope/orchestration/jobs/owner.py | head -30\", \"description\": \"Find existing job tests and owner window handling\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:00:08.890681+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_2f9712a1d9ea49c2946eeb71",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:00:09.143636+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_2f9712a1d9ea49c2946eeb71",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:00:12.504430+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: cd \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\" && head -100 tests/test_scan_jobs.py && echo \"...\" && grep -n \"def test_\" tests/test_scan_jobs.py | head -40",
+        "tool_call_id": "call_19359c42e8f04b39b8b6970e",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"cd \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\" && head -100 tests/test_scan_jobs.py && echo \\\"...\\\" && grep -n \\\"def test_\\\" tests/test_scan_jobs.py | head -40\", \"description\": \"Review existing scan jobs test style\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:00:12.510040+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_19359c42e8f04b39b8b6970e",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:00:12.724855+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_19359c42e8f04b39b8b6970e",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 96,
+  "count": 7,
+  "next_offset": 103,
+  "has_more": false,
+  "total_matching": 103
+}

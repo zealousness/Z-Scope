@@ -1,0 +1,17 @@
+{
+  "at": "2026-10-14T03:55:26.924333+00:00",
+  "branch": "u02-disposition",
+  "source_baseline": "41d9c25a0e259457164b68191ed6d797b5d7e1e5a8b748b501fd79df37deabd1",
+  "files": [
+    {
+      "path": "zscope/config/acceptance_feedback.py",
+      "sha256": "282ba0fe2a9112e2ceaa25240ca7d87c8b334a744d3bd8ff4c9bcfb865405e9f"
+    },
+    {
+      "path": "tests/test_acceptance_feedback.py",
+      "sha256": "c738fede392d4fbb407b21f2722d6f447904de01b520e0964fa85dd76097a875"
+    }
+  ],
+  "existing_source_changes": [],
+  "state": "immutable_intake_snapshot_pending_independent_integration_tests_and_final_worker_receipt"
+}

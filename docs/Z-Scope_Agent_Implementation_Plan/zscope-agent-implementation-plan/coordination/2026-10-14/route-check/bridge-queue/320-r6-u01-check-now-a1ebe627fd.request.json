@@ -1,0 +1,7 @@
+{
+  "id": "r6-u01-check-now-a1ebe627fd",
+  "arguments": {
+    "task_id": "task_9abeb34f8f"
+  },
+  "tool": "check_task"
+}

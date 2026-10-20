@@ -1,0 +1,70 @@
+{
+  "at": "2026-10-14T09:05:04.261812+00:00",
+  "astra_final_bytes_verified": {
+    "index.html": "c739a7976281ef9ab1dc9f747f48f7415466f9fee7622dd12dca700f87215e91",
+    "dashboard_workbench.js": "caa7ab961963cfc46781010dc1fa941c4341a2a9bd9ef807c959da29f82e1ff6",
+    "dashboard_workbench.css": "c57bd0ca61d564b3cb05b7ddc27aca5043b93762a48ad0dc34d4a11d55b898c0"
+  },
+  "before": {
+    "index.html": {
+      "sha256": "556743eb150a746d3a117a47d11594733ab8163efa720d36185588c7e52e9b64",
+      "license": "MIT"
+    },
+    "report_view.js": {
+      "sha256": "ad0b93ea04440cfe7d6e2e1e73b12c51a9a1d49b101027451fd15a9d8bbe225a",
+      "license": "MIT"
+    },
+    "report_view.css": {
+      "sha256": "d2e2a3c95d89c709bcaa91a737b9fa4bdf11cfea53f377fa6a24d9f918b90ad8",
+      "license": "MIT"
+    },
+    "offline_review.js": {
+      "sha256": "9ca5d645541b30d820eb707d8c7c02311ff2c0565fd9d649262e0b2862508042",
+      "license": "MIT"
+    },
+    "dashboard_reports.js": {
+      "sha256": "554009551f76265cd3f096cded04e8fa5d06254f33d83883a604f1cb96320637",
+      "license": "MIT"
+    },
+    "dashboard_workbench.js": {
+      "sha256": "22ebe1a4e3e3133b2dc424981b8b2455d09c1a5d87318960f093081f81af5119",
+      "license": "MIT"
+    },
+    "dashboard_workbench.css": {
+      "sha256": "27a7604e62919ac40c36b53b77cdcc367262b726b3b8d1d757707a40664f1a54",
+      "license": "MIT"
+    }
+  },
+  "after": {
+    "index.html": {
+      "sha256": "c739a7976281ef9ab1dc9f747f48f7415466f9fee7622dd12dca700f87215e91",
+      "license": "MIT"
+    },
+    "report_view.js": {
+      "sha256": "ad0b93ea04440cfe7d6e2e1e73b12c51a9a1d49b101027451fd15a9d8bbe225a",
+      "license": "MIT"
+    },
+    "report_view.css": {
+      "sha256": "d2e2a3c95d89c709bcaa91a737b9fa4bdf11cfea53f377fa6a24d9f918b90ad8",
+      "license": "MIT"
+    },
+    "offline_review.js": {
+      "sha256": "9ca5d645541b30d820eb707d8c7c02311ff2c0565fd9d649262e0b2862508042",
+      "license": "MIT"
+    },
+    "dashboard_reports.js": {
+      "sha256": "554009551f76265cd3f096cded04e8fa5d06254f33d83883a604f1cb96320637",
+      "license": "MIT"
+    },
+    "dashboard_workbench.js": {
+      "sha256": "caa7ab961963cfc46781010dc1fa941c4341a2a9bd9ef807c959da29f82e1ff6",
+      "license": "MIT"
+    },
+    "dashboard_workbench.css": {
+      "sha256": "c57bd0ca61d564b3cb05b7ddc27aca5043b93762a48ad0dc34d4a11d55b898c0",
+      "license": "MIT"
+    }
+  },
+  "vendor_and_other_lock_inputs_unchanged": true,
+  "network_or_tailwind_rebuild": false
+}

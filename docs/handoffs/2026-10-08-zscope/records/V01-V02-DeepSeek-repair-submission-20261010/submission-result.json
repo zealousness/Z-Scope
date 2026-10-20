@@ -1,0 +1,28 @@
+{
+  "started_utc": "2026-10-10T03:12:09.603Z",
+  "executable": "C:/Users/10273/AppData/Local/Programs/DeepSeek Harness/DeepSeek Harness.exe",
+  "args": [
+    "--expose-internals",
+    "C:/Users/10273/AppData/Local/Programs/DeepSeek Harness/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js",
+    "--profile",
+    "headless",
+    "--patch",
+    "C:\\Users\\10273\\Documents\\Codex\\2026-10-09\\task-3\\deepseek-v01-v02-repair-20261010\\limited-repair.patch.yml",
+    "--json",
+    "-"
+  ],
+  "cwd": "C:\\Users\\10273\\Documents\\Codex\\2026-10-09\\task-3\\deepseek-v01-v02-repair-20261010",
+  "approved_prompt_sha256": "dcb23273d5d6a68df4dd39eb612154fcc8250b313145b44c36f327d3e14dda71",
+  "prompt_bytes": 86726,
+  "new_session": true,
+  "original_session_unchanged": true,
+  "tool_execution": "disabled by temporary overlay and monotonic guard",
+  "timeout_seconds": 900,
+  "output_limit_bytes": 2097152,
+  "session_id": "session-6345b6e2-1245-440c-ae91-f953c08b9655",
+  "exit_code": 1,
+  "signal": null,
+  "stopped": null,
+  "output_bytes": 829,
+  "finished_utc": "2026-10-10T03:12:11.532Z"
+}

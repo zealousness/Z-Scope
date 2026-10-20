@@ -1,0 +1,43 @@
+{
+  "at": "2026-10-10T05:04:45.963Z",
+  "scope": "Only RG01 build memory limit and RG02 hard output capture; same approved provider/model/endpoint and credential resolver",
+  "sourceDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "promptDigest": "aee9134833f696a600a714010bb5b76510dd5944bf581abd52763b21d0357dd6",
+  "promptBytes": 34007,
+  "spans": [
+    [
+      90,
+      111
+    ],
+    [
+      344,
+      393
+    ],
+    [
+      1933,
+      1966
+    ],
+    [
+      2210,
+      2294
+    ],
+    [
+      2378,
+      2444
+    ],
+    [
+      2588,
+      2782
+    ]
+  ],
+  "testsDigest": "73afe4850d485a2b8ddeca3f53be31972ab4dcbdfed1e1f7edd14c4543f834db",
+  "counts": {
+    "passed": 1,
+    "failed": 4,
+    "errors": 0,
+    "skipped": 0
+  },
+  "no_credentials": true,
+  "no_unrelated_files": true,
+  "model_tools_disabled": true
+}

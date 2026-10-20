@@ -1,0 +1,16 @@
+先处理本会话仍挂起的旧验证，再修改源码。上一task_6b0ca95206 Bridge已completed，原session若ready可安全接收此控制任务；协调者观察到旧WSL test_slot等待进程（最近PID2182844，必须重新核对完整来源/工作区/祖先，PID可能变化），不是其它人的验证。不要直接继续与它并行写源码。请先通过你自己的工具停止本会话上一轮的“格式化后重跑37文件”旧后台等待/执行命令，确认该命令链及其检查进程全部结束，保留现有日志/JUnit和停止原因；不能停止协调者probe_frozen_r12/verify_delivery_r12/根联合验证、Kimi/Astra/MCP任务或Bridge服务。若无法确认旧命令已停止，则先不改源码，交出实际进程和阻塞。这里由原owner控制自己的工具，协调者不越过Bridge驱动CLI或杀进程。
+
+停止原因是有可核实的回归失败，并非省略标准：你已保存的 artifacts/contract-validation-r12/results-contract-validation-r12-repair.xml（03:19:55落盘）实际892 tests/5 failures/0error/skip，并不是全绿。原结果务必保留。该XML可能来自格式化前的运行，协调者没有将它冒充当前字节的独立执行结论：请先在当前稳定字节上实际重现下面5个case，再按真实结果返修；如果已全部通过且能给出对应收据，不做多余修改，继续完整最终验证。你前一公开result仅到“mypy/compileall”，尚无新最终DELIVERY，因此协调者不接受这个版本。后续必须在最终稳定字节跑全部原37文件/相关原生协议与质量，0fail/error/skip；不得只以11个边界探针通过收尾，也不能把5失败删掉/跳过/降低身份标准。
+
+五个实际失败（原仓库只读测试）：
+- tests/test_native_wrapper_inference.py::test_published_native_output_is_the_same_object_in_consumers：经真实native compile→publish/workbook reload后，Regex/ClangAstCfg/graph/security_map消费make的语义事件丢失。
+- tests/test_handle_integration.py::test_workbook_reload_keeps_descriptor_and_backing_separate：bind_build_scope(real h_close context)内find_for_call h_close返回空。
+- tests/test_refcount_integration.py::test_workbook_reload_keeps_count_effects_out_of_deallocator_pairs：同样ref_drop重载后find_for_call返回空。
+- tests/test_lock_modes.py::test_mode_wrapper_from_actual_native_facts_and_reload：alpha真实pthread wrapper publish/reload后find_for_call返回空。
+- tests/test_pool_protocol_modeling.py::test_native_code_to_real_terminal_tool_workbook_and_pool_consumers[a-False]：真实entry/outer/drop/两池链中正确归还同pool仍报leak；另一池的正例必须仍报告，不得全禁规则。
+
+保持unknown/wrong/foreign USR及冲突build严格拒绝，builtin标准根核验不变。核对实际native caller/callee USR→contract编译/发布→workbook reload→实际消费者，不能为了兼容旧name-only效果回退通配。尤其有空USR与确切USR同时出现在同名注册项时，精确已核验callee不应被不具该身份的记录劫持/误拒；`find_for_call`被很多真实协议消费者直接读取effects_trusted，不只是“发现列表”，不能只在match_call最末层过滤而让其它授权口绕过。
+
+若失败只是一个旧正例遗漏显式native USR，请给协调者确切API调用点、native receipt及不变断言建议，不能自己改只读旧测试。上面native wrapper consumers和真实pool候选链是实际产品调用，不能通过改测试去掉它们，需实现正确接线；若必须修改所有权外的native/protocol/candidate/semantic_modeling文件，请给最小接口建议，由协调者集成。允许继续修改原7个owned文件（contracts/build_scope/call_context/contract_compiler/ValidationRunner/新2测试），不覆盖Kimi和共享工作。
+
+协调者同时在冻结新版副本运行11个独立边界探针，属于coordinator_verification进程，不能杀掉或改探针。共享source_root查询修复已218/0/0skip+全部质量通过并根目录导入，当前根联合正在运行；原contract副本暂未刷新该只读依赖，不改它。当前native工具与WSL login shell/两槽/default fd/ext4 TMPDIR要求照旧。先格式化必要变更，再跑最终字节全量和质量，避免已知失败版本重复排队。最终新DELIVERY追加真实时间/完整SHA/JUnit/日志/剩余缺口，后台全部结束才交付。

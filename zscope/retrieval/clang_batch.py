@@ -33,18 +33,22 @@ from .indexing_identity import (
     load_commands,
     InputValidator,
     include_search_roots,
+    include_probes_current,
 )
 from .indexing_runtime import admitted_workers, run_process, heartbeat
 from .knowledge_db import KnowledgeDB
 from .compiler_compat import POLICY_VERSION as ARGUMENT_POLICY_VERSION, POLICY_DIGEST
 from .clang_derived_cache import DerivedCache, cache_key
 from .clang_source_snapshot import DerivedSourceSnapshots
+from .build_context import BuildContext
 
 logger = logging.getLogger(__name__)
 PROTOCOL = "zscope.clang-facts.v2"
-PRODUCER = "zscope.batch.v2"
+PRODUCER = "zscope.batch.v3"
 FAILURE_LOG_SAMPLES = 3
 FACT_TABLES = (
+    "compilation_instances",
+    "compilation_facts",
     "translation_units",
     "functions",
     "type_definitions",
@@ -190,19 +194,19 @@ class BatchIndexer:
 
     def _jobs(self) -> List[Dict[str, Any]]:
         path = Path(self.backend._compile_commands_path)
+        self.command_file_hash = file_digest(path)
         selected: Dict[str, Dict[str, Any]] = {}
         rows = load_commands(path)
         allowed_sources = {str(p.resolve()) for p in self.backend._collect_source_files()}
         for ordinal, row in enumerate(rows):
             identity = command_identity(row, path.parent)
             source = Path(identity["source"])
-            # Match clangd's one selected command per source; do not expand the
-            # compilation-variant range just because the CDB has duplicates.
             if source.suffix.lower() not in {".c", ".cc", ".cpp", ".cxx"}:
                 continue
             if str(source) not in allowed_sources:
                 continue
-            if str(source) in selected:
+            context = digest_json(identity)
+            if context in selected:
                 continue
             key = digest_json(
                 {
@@ -216,16 +220,25 @@ class BatchIndexer:
                     "excludes": [str(p) for p in self.backend._exclude_paths],
                 }
             )
-            selected[str(source)] = {
+            selected[context] = {
                 **identity,
-                "context": digest_json(identity),
+                "context": context,
+                "command_identity": identity,
                 "key": key,
                 "ordinal": ordinal,
                 "root": str(self.root),
                 "includes": [str(p.resolve()) for p in self.backend._include_paths],
                 "excludes": [str(p.resolve()) for p in self.backend._exclude_paths],
             }
-        self.stats.update(command_entries=len(rows), selected_compile_contexts=len(selected))
+        source_counts = Counter(job["source"] for job in selected.values())
+        self.stats.update(
+            command_entries=len(rows),
+            selected_compile_contexts=len(selected),
+            variant_sources={source: count for source, count in source_counts.items() if count > 1},
+            projection_complete=all(count == 1 for count in source_counts.values()),
+        )
+        if file_digest(path) != self.command_file_hash:
+            raise RuntimeError("compilation database changed while planning native extraction")
         return list(selected.values())
 
     def _cached(self, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -237,6 +250,7 @@ class BatchIndexer:
                 and manifest.get("dependencies_complete")
                 and self.validator.dependencies(manifest.get("dependencies"))
                 and self.validator.searches(manifest.get("search_directories"))
+                and include_probes_current(manifest.get("include_probes"))
                 and file_digest(artifact) == manifest.get("artifact_sha256")
             ):
                 return {**manifest, "artifact": str(artifact), "reused": True}
@@ -304,6 +318,7 @@ class BatchIndexer:
                 {"errno": exc.errno, "filename": exc.filename},
             ) from exc
         footer: Dict[str, Any] = {}
+        target_values: Dict[str, Any] = {}
         artifact_error = ""
         first = True
         try:
@@ -311,6 +326,14 @@ class BatchIndexer:
                 if first and row.get("protocol") != PROTOCOL:
                     raise ValueError("native artifact protocol mismatch")
                 first = False
+                if row.get("kind") == "program_function":
+                    target_values.update(
+                        {
+                            key: value
+                            for key, value in row.get("target_values", {}).items()
+                            if key.startswith("target.")
+                        }
+                    )
                 footer = row
             if footer.get("kind") != "complete":
                 raise ValueError("native artifact missing complete footer")
@@ -377,6 +400,8 @@ class BatchIndexer:
         complete = bool(footer.get("dependencies_complete")) and set(footer["dependencies"]) <= set(
             dependencies
         )
+        probes = footer.get("include_probes")
+        complete = complete and include_probes_current(probes)
         search_roots = include_search_roots(job["arguments"], Path(job["directory"]), dependencies)
         search_roots.extend(Path(path) for path in footer.get("search_directories", []))
         searches = self.validator.directories(search_roots)
@@ -390,6 +415,9 @@ class BatchIndexer:
             "artifact_sha256": file_digest(artifact),
             "dependencies": dependencies,
             "dependencies_complete": complete,
+            "include_probes": probes,
+            "include_lookups": footer.get("include_lookups"),
+            "target_values": target_values,
             "search_directories": searches,
             "metrics": process.metrics,
             "argument_adjustments": adjustments,
@@ -458,7 +486,12 @@ class BatchIndexer:
         try:
             with heartbeat("clang-batch", self.stats), self._import_session():
                 ready = self._run()
-                self.stats["complete"] = bool(ready and self.stats.get("type_refs_complete", True))
+                self.stats["complete"] = bool(
+                    ready
+                    and self.stats.get("type_refs_complete", True)
+                    and self.stats.get("projection_complete", True)
+                    and not self.stats["failed_tus"]
+                )
                 return ready
         except Exception as exc:
             self.stats["error"] = f"{type(exc).__name__}: {exc}"
@@ -555,7 +588,7 @@ class BatchIndexer:
                                 )
                             self.stats["reused_tus" if package["reused"] else "compiled_tus"] += 1
                         except Exception as exc:
-                            failed.add(job["source"])
+                            failed.add(job["key"])
                             self._report_failure(job, exc)
                         self.stats["completed_tus"] = len(packages) + len(failed)
                         self.stats["remaining_tus"] = len(jobs) - self.stats["completed_tus"]
@@ -580,10 +613,12 @@ class BatchIndexer:
                 self.stats["reused_tus"],
                 len(failed),
             )
+        self.stats["extraction_complete"] = len(packages) == len(jobs) and not failed
         covered = (
             set().union(*(set(p["dependencies"]) for p in packages.values())) if packages else set()
         )
-        fallback = (set(hashes) - covered) | failed
+        failed_sources = {job["source"] for job in jobs if job["key"] in failed}
+        fallback = (set(hashes) - covered) | failed_sources
         self.stats["fallback_files"] = sorted(fallback)
         if failed:
             # Make diagnostics available before potentially long LSP fallback.
@@ -602,9 +637,12 @@ class BatchIndexer:
             raise RuntimeError(
                 f"strict batch extraction incomplete: {len(fallback)} files require LSP"
             )
+        if file_digest(Path(self.backend._compile_commands_path)) != self.command_file_hash:
+            raise RuntimeError("compilation database changed during extraction")
         input_key = digest_json(
             {
                 "files": hashes,
+                "compilation_database": self.command_file_hash,
                 "jobs": [j["key"] for j in jobs],
                 "packages": {key: p["artifact_sha256"] for key, p in packages.items()},
                 "producer": PRODUCER,
@@ -622,7 +660,7 @@ class BatchIndexer:
             coverage = counts(self.db)
             complete = not any(coverage[k] for k in ("pending", "in_progress", "failed"))
             self.stats.update(
-                complete=complete,
+                complete=complete and self.stats["projection_complete"] and not failed,
                 ready_for_queries=True,
                 type_refs_complete=complete,
                 type_refs_functions=coverage,
@@ -649,13 +687,19 @@ class BatchIndexer:
                 )
                 stage._conn.execute("CREATE INDEX native_fact_file ON native_facts(file,kind)")
                 projection: Dict[str, str] = {}
+                projected_sources: Set[str] = set()
                 for job in jobs:
                     selected_package = packages.get(job["key"])
                     if selected_package:
                         for dependency in selected_package["dependencies"]:
                             projection.setdefault(dependency, job["key"])
                         # A main file always uses its own selected command.
-                        projection[job["source"]] = job["key"]
+                        # The old name/file tables remain a navigation projection.
+                        # All instances live in compilation_facts; proof queries
+                        # require an explicit context when this projection is lossy.
+                        if job["source"] not in projected_sources:
+                            projection[job["source"]] = job["key"]
+                            projected_sources.add(job["source"])
                 for key, package in packages.items():
                     batch = []
                     for sequence, row in enumerate(records(Path(package["artifact"]))):
@@ -681,6 +725,7 @@ class BatchIndexer:
                 self._publish_base(stage, hashes, fallback)
                 self._publish_references(stage, fallback)
                 self._publish_program_facts(stage)
+                self._publish_compilation_instances(stage, jobs, packages)
                 from .clang_type_state import initialize_states, counts
 
                 contexts = {
@@ -700,17 +745,23 @@ class BatchIndexer:
                     ready_for_queries=True,
                     type_refs_complete=type_complete,
                     type_refs_functions=coverage,
-                    complete=type_complete,
+                    complete=type_complete and self.stats["projection_complete"] and not failed,
                 )
                 for path_value, expected in hashes.items():
                     if file_digest(Path(path_value)) != expected:
                         raise RuntimeError("source changed before publication: " + path_value)
                 if self._native_sources is not None:
                     self._native_sources.validate_all()
+                if file_digest(Path(self.backend._compile_commands_path)) != self.command_file_hash:
+                    raise RuntimeError("compilation database changed before publication")
                 final_validator = InputValidator(self.validation_excludes)
                 if any(
                     not final_validator.dependencies(p["dependencies"])
                     or not final_validator.searches(p["search_directories"])
+                    or (
+                        p["dependencies_complete"]
+                        and not include_probes_current(p.get("include_probes"))
+                    )
                     for p in packages.values()
                 ):
                     raise RuntimeError("dependency changed before publication")
@@ -752,10 +803,20 @@ class BatchIndexer:
     ) -> Dict[str, Any]:
         usr, name = target.get("usr", ""), target.get("qualified_name") or target["name"]
         if kind == "type" and target.get("is_system_header"):
-            record = types.get((name, target.get("type_kind"),
-                                self._relative(target["location"]["file"]), target["location"]["line"]))
+            record = types.get(
+                (
+                    name,
+                    target.get("type_kind"),
+                    self._relative(target["location"]["file"]),
+                    target["location"]["line"],
+                )
+            )
             if record:
-                return {"id": record["id"], "index_name": KnowledgeDB.type_index_name(record), "reason": ""}
+                return {
+                    "id": record["id"],
+                    "index_name": KnowledgeDB.type_index_name(record),
+                    "reason": "",
+                }
 
         def compute() -> Dict[str, Any]:
             self.stats["identity_queries"] = self.stats.get("identity_queries", 0) + 1
@@ -878,7 +939,9 @@ class BatchIndexer:
             tu_id, changed = stage.register_tu_hash(relative, digest)
             seen: Set[str] = set()
             for row in self._rows(
-                stage, source, ("function", "type", "global", "macro", "include", "call", "type_reference")
+                stage,
+                source,
+                ("function", "type", "global", "macro", "include", "call", "type_reference"),
             ):
                 key = digest_json(row)
                 if key in seen:
@@ -902,14 +965,17 @@ class BatchIndexer:
                 elif kind == "type_reference" and row["target"].get("is_system_header"):
                     target = row["target"]
                     if target.get("type_definition"):
-                        values["type_rows"].append({
-                            "name": target.get("qualified_name") or target["name"],
-                            "kind": target["type_kind"],
-                            "file_path": self._relative(target["location"]["file"]),
-                            "start_line": target["location"]["line"],
-                            "end_line": target["location"]["line"],
-                            "full_definition": target["type_definition"], "members": [],
-                        })
+                        values["type_rows"].append(
+                            {
+                                "name": target.get("qualified_name") or target["name"],
+                                "kind": target["type_kind"],
+                                "file_path": self._relative(target["location"]["file"]),
+                                "start_line": target["location"]["line"],
+                                "end_line": target["location"]["line"],
+                                "full_definition": target["type_definition"],
+                                "members": [],
+                            }
+                        )
                 elif kind == "type":
                     values["type_rows"].append(
                         {
@@ -967,10 +1033,12 @@ class BatchIndexer:
                 elif kind == "call":
                     target = row["target"]
                     definition = definitions.get(str(target.get("usr") or ""))
-                    resolved_file = (definition["begin"]["file"] if definition
-                                     else target["location"]["file"])
-                    resolved_signature = (definition["signature"] if definition
-                                          else target.get("signature", ""))
+                    resolved_file = (
+                        definition["begin"]["file"] if definition else target["location"]["file"]
+                    )
+                    resolved_signature = (
+                        definition["signature"] if definition else target.get("signature", "")
+                    )
                     values["call_rows"].append(
                         (
                             row["owner"]["name"],
@@ -979,10 +1047,19 @@ class BatchIndexer:
                             self._relative(resolved_file),
                             row["location"]["line"],
                             row.get("call_type", "direct"),
-                            ("function" if definition else
-                             "system_function" if target.get("is_system_header") else
-                             "external_function" if not target.get("has_definition", True) else
-                             row.get("callee_kind", "function")),
+                            (
+                                "function"
+                                if definition
+                                else (
+                                    "system_function"
+                                    if target.get("is_system_header")
+                                    else (
+                                        "external_function"
+                                        if not target.get("has_definition", True)
+                                        else row.get("callee_kind", "function")
+                                    )
+                                )
+                            ),
                             resolved_signature,
                         )
                     )
@@ -1004,6 +1081,74 @@ class BatchIndexer:
             if stats.get("failed"):
                 raise RuntimeError("clangd fallback base facts incomplete")
 
+    def _publish_compilation_instances(
+        self,
+        stage: KnowledgeDB,
+        jobs: List[Dict[str, Any]],
+        packages: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """Publish the exact-context store in the same transaction as the projection."""
+        stage._conn.execute("DELETE FROM compilation_facts")
+        stage._conn.execute("DELETE FROM compilation_instances")
+        failures = {row["context"]: row for row in self.stats["failed_tus"]}
+        for job in jobs:
+            package = packages.get(job["key"])
+            dependencies = (
+                package["dependencies"]
+                if package
+                else {job["source"]: file_digest(Path(job["source"]))}
+            )
+            context = BuildContext.create(
+                job["command_identity"],
+                tool=self.tool,
+                dependencies=dependencies,
+                dependencies_complete=bool(package and package["dependencies_complete"]),
+                target=package.get("target_values", {}) if package else {},
+                include_probes=package.get("include_probes") if package else None,
+                include_lookups=package.get("include_lookups") if package else None,
+            )
+            manifest = context.to_dict()
+            manifest.update(
+                source=self._relative(job["source"]),
+                status="indexed" if package else "failed",
+                failure=failures.get(job["context"]),
+                search_directories=package.get("search_directories", {}) if package else {},
+                search_excludes=[str(path) for path in self.validation_excludes],
+                compilation_database={
+                    "path": str(Path(self.backend._compile_commands_path).resolve()),
+                    "sha256": self.command_file_hash,
+                },
+            )
+            stage._conn.execute(
+                "INSERT INTO compilation_instances VALUES (?,?,?,?)",
+                (context.context_id, context.command_id, manifest["source"], json.dumps(manifest)),
+            )
+            if not package:
+                continue
+            rows = []
+            for sequence, row in enumerate(records(Path(package["artifact"]))):
+                owner = row.get("owner") or {}
+                target = row.get("target") or {}
+                symbol = owner.get("name") or row.get("name") or target.get("qualified_name") or ""
+                # Raw compiler identities remain intact. The surrounding context
+                # supplies their namespace, including file-local USRs in headers.
+                rows.append(
+                    (
+                        context.context_id,
+                        sequence,
+                        row.get("kind", ""),
+                        self._relative(_file(row)),
+                        symbol,
+                        json.dumps(row),
+                    )
+                )
+                if len(rows) >= 1000:
+                    stage._conn.executemany(
+                        "INSERT INTO compilation_facts VALUES (?,?,?,?,?,?)", rows
+                    )
+                    rows.clear()
+            stage._conn.executemany("INSERT INTO compilation_facts VALUES (?,?,?,?,?,?)", rows)
+
     def _publish_program_facts(self, stage: KnowledgeDB) -> None:
         # This stage contains the complete selected native projection. Replace
         # it as a generation: changed/removed functions and newly unsupported
@@ -1018,8 +1163,14 @@ class BatchIndexer:
             owner_file = owner.get("file") or location.get("file")
             stage._conn.execute(
                 "INSERT OR REPLACE INTO function_program_facts VALUES(?,?,?,?,?,?)",
-                (owner["name"], self._relative(str(owner_file)),
-                 int(owner.get("line") or 0), row["kind"], digest_json(row), json.dumps(row)),
+                (
+                    owner["name"],
+                    self._relative(str(owner_file)),
+                    int(owner.get("line") or 0),
+                    row["kind"],
+                    digest_json(row),
+                    json.dumps(row),
+                ),
             )
 
     def _publish_references(self, stage: KnowledgeDB, fallback: Set[str]) -> None:

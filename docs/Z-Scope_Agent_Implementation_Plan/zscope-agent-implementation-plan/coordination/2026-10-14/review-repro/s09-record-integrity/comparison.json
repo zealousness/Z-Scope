@@ -1,0 +1,306 @@
+{
+  "schema_version": "zscope.agent-plan-evaluation-comparison.v1",
+  "comparison_id": "cmp-b171d38e1f41b6c9",
+  "created_at": "2026-10-14T04:59:29+00:00",
+  "mode": "equivalence",
+  "benchmark_scope": "development_only",
+  "formal_eligible": false,
+  "release_eligible": false,
+  "identity_bound_same_version": true,
+  "baseline_label": "cold",
+  "comparison_status": "compared",
+  "integrity": {
+    "violations": [],
+    "notes": []
+  },
+  "identity_check": {
+    "required_fields": [
+      "source_tree_hash",
+      "project_id",
+      "entry_functions",
+      "build_context_ids",
+      "candidate_schema_version",
+      "validation_policy_version",
+      "report_schema_version",
+      "config_hash",
+      "model_manifest_hash",
+      "scanner_identity",
+      "tool_sha256"
+    ],
+    "field_results": {
+      "source_tree_hash": {
+        "values": {
+          "cold": "\"abababababababababababababababababababababababababababababababab\"",
+          "warm": "\"abababababababababababababababababababababababababababababababab\""
+        },
+        "labels_missing_field": []
+      },
+      "project_id": {
+        "values": {
+          "cold": "\"dev-fixture\"",
+          "warm": "\"dev-fixture\""
+        },
+        "labels_missing_field": []
+      },
+      "entry_functions": {
+        "values": {
+          "cold": "[\"main\"]",
+          "warm": "[\"main\"]"
+        },
+        "labels_missing_field": []
+      },
+      "build_context_ids": {
+        "values": {
+          "cold": "[\"bc-1\"]",
+          "warm": "[\"bc-1\"]"
+        },
+        "labels_missing_field": []
+      },
+      "candidate_schema_version": {
+        "values": {
+          "cold": "\"v3.5\"",
+          "warm": "\"v3.5\""
+        },
+        "labels_missing_field": []
+      },
+      "validation_policy_version": {
+        "values": {
+          "cold": "\"v3\"",
+          "warm": "\"v3\""
+        },
+        "labels_missing_field": []
+      },
+      "report_schema_version": {
+        "values": {
+          "cold": "2",
+          "warm": "2"
+        },
+        "labels_missing_field": []
+      },
+      "config_hash": {
+        "values": {
+          "cold": "\"cfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcf\"",
+          "warm": "\"cfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcf\""
+        },
+        "labels_missing_field": []
+      },
+      "model_manifest_hash": {
+        "values": {
+          "cold": "\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\"",
+          "warm": "\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\""
+        },
+        "labels_missing_field": []
+      },
+      "scanner_identity": {
+        "values": {
+          "cold": "\"git:010f402\"",
+          "warm": "\"git:010f402\""
+        },
+        "labels_missing_field": []
+      },
+      "tool_sha256": {
+        "values": {
+          "cold": "{\"clang_indexer\":\"d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3\"}",
+          "warm": "{\"clang_indexer\":\"d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3\"}"
+        },
+        "labels_missing_field": []
+      }
+    },
+    "mismatched_fields": [],
+    "missing_fields": [],
+    "status": "matched"
+  },
+  "variant_binding": null,
+  "runs": {
+    "cold": {
+      "sample_size": 1,
+      "modes": [
+        "cold"
+      ],
+      "run_statuses": [
+        "complete"
+      ],
+      "all_runs_complete": true,
+      "record_ids": [
+        "run-a3a4f3a81edd2d8b"
+      ]
+    },
+    "warm": {
+      "sample_size": 1,
+      "modes": [
+        "warm"
+      ],
+      "run_statuses": [
+        "complete"
+      ],
+      "all_runs_complete": true,
+      "record_ids": [
+        "run-15acef95959f4d34"
+      ]
+    }
+  },
+  "counts_comparison": {
+    "candidate_count": {
+      "cold": null,
+      "warm": null,
+      "baseline_value": null,
+      "difference_vs_baseline": false
+    },
+    "confirmed_count": {
+      "cold": 2.0,
+      "warm": 999.0,
+      "baseline_value": 2.0,
+      "difference_vs_baseline": true
+    },
+    "with_review_count": {
+      "cold": 2.0,
+      "warm": 2.0,
+      "baseline_value": 2.0,
+      "difference_vs_baseline": false
+    },
+    "pending_count": {
+      "cold": 0.0,
+      "warm": 0.0,
+      "baseline_value": 0.0,
+      "difference_vs_baseline": false
+    },
+    "ruled_out_count": {
+      "cold": null,
+      "warm": null,
+      "baseline_value": null,
+      "difference_vs_baseline": false
+    },
+    "deduplicated_alias_count": {
+      "cold": null,
+      "warm": null,
+      "baseline_value": null,
+      "difference_vs_baseline": false
+    },
+    "operational_incomplete_count": {
+      "cold": null,
+      "warm": null,
+      "baseline_value": null,
+      "difference_vs_baseline": false
+    },
+    "shadow_observation_count": {
+      "cold": null,
+      "warm": null,
+      "baseline_value": null,
+      "difference_vs_baseline": false
+    },
+    "coverage": {
+      "cold": null,
+      "warm": null,
+      "baseline_value": null,
+      "difference_vs_baseline": false
+    }
+  },
+  "resource_comparison": {
+    "cold": {
+      "wall_seconds": {
+        "values": [
+          null
+        ],
+        "median": null
+      },
+      "end_to_end_wall_seconds": {
+        "values": [
+          null
+        ],
+        "median": null
+      },
+      "usage_ledger": {
+        "present": false,
+        "event_counts": [],
+        "request_count": 0,
+        "successful_calls": 0,
+        "denied_requests": 0,
+        "failed_or_unknown_calls": 0,
+        "retry_count": 0,
+        "repair_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cached_prompt_tokens": 0,
+        "reasoning_tokens": 0,
+        "failed_or_denied_token_cost": 0,
+        "retry_token_cost": 0,
+        "budget_violation_count": 0,
+        "tool_call_count": 0,
+        "new_fact_count": 0,
+        "duration_ms": 0
+      }
+    },
+    "warm": {
+      "wall_seconds": {
+        "values": [
+          null
+        ],
+        "median": null
+      },
+      "end_to_end_wall_seconds": {
+        "values": [
+          null
+        ],
+        "median": null
+      },
+      "usage_ledger": {
+        "present": false,
+        "event_counts": [],
+        "request_count": 0,
+        "successful_calls": 0,
+        "denied_requests": 0,
+        "failed_or_unknown_calls": 0,
+        "retry_count": 0,
+        "repair_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cached_prompt_tokens": 0,
+        "reasoning_tokens": 0,
+        "failed_or_denied_token_cost": 0,
+        "retry_token_cost": 0,
+        "budget_violation_count": 0,
+        "tool_call_count": 0,
+        "new_fact_count": 0,
+        "duration_ms": 0
+      }
+    },
+    "baseline_label": "cold"
+  },
+  "derived_metrics": {
+    "cold": {
+      "confirmation_rate": {
+        "numerator": 2,
+        "denominator": null,
+        "value": null,
+        "status": "missing_input"
+      }
+    },
+    "warm": {
+      "confirmation_rate": {
+        "numerator": 999,
+        "denominator": null,
+        "value": null,
+        "status": "missing_input"
+      }
+    }
+  },
+  "differences": [
+    {
+      "field": "confirmed_count",
+      "values": {
+        "cold": 2.0,
+        "warm": 999.0
+      },
+      "note": "explicit_count_difference"
+    }
+  ],
+  "caveats": [
+    "missing values are preserved as null and never treated as zero",
+    "zero denominators are reported as N/A and never as 100%",
+    "failed, cancelled and missing runs keep their costs and are never dropped",
+    "development-only output; formal gates and scorers are unchanged",
+    "every side has a single run; single-run samples are not a stable advantage claim"
+  ]
+}

@@ -418,7 +418,8 @@ def test_discovery_hypothesis_only_enters_ledger_as_open_obligation(tmp_path) ->
     ).run(semantic_map, export_path=tmp_path / "security-map.json")
 
     assert len(planned_map.audit_units) == 1
-    assert state["status"] == "complete"
+    assert state["status"] == "partial"
+    assert state["coverage_completed_unit_count"] == 0
     assert state["security_map_coverage"] == planned_map.coverage
     assert state["hypothesis_count"] == 1
     assert state["new_validation_group_count"] == 1

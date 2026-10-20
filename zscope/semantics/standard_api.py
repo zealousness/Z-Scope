@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 from .contract_conditions import compare, negate
 
-STANDARD_API_VERSION = "zscope.standard-api.v3"
+STANDARD_API_VERSION = "zscope.standard-api.v7"
 POSIX_REFERENCE = "https://pubs.opengroup.org/onlinepubs/9799919799/functions/contents.html"
 
 
@@ -13,7 +13,16 @@ def standard_contracts() -> list[dict[str, Any]]:
     ret = {"kind": "return"}
 
     def add(
-        names, role, family="", pair="", *, argument=None, output=False, success=None, behavior=""
+        names,
+        role,
+        family="",
+        pair="",
+        *,
+        argument=None,
+        output=False,
+        success=None,
+        behavior="",
+        lock_mode="unknown",
     ):
         for name in names.split():
             carrier = (
@@ -31,6 +40,7 @@ def standard_contracts() -> list[dict[str, Any]]:
                     "role": role,
                     "carrier": carrier,
                     "resource_family": family,
+                    "protocol": ({"lock_mode": lock_mode} if role == "lock" else {}),
                     "pairs": [pair] if pair else [],
                     "source": "builtin_defaults",
                     "preconditions": {"op": "true"},
@@ -112,6 +122,9 @@ def standard_contracts() -> list[dict[str, Any]]:
         success=zero,
         behavior="error_release_state_platform_dependent",
     )
+    # The catalog already records that close errors have no universal release
+    # state. Do not publish the generic helper's stronger no_effect fallback.
+    rows[-1]["effect_cases"][1]["effect"] = "unknown"
     add(
         "fclose",
         "io_release",
@@ -130,6 +143,7 @@ def standard_contracts() -> list[dict[str, Any]]:
         "pthread_mutex_unlock",
         argument=0,
         success=robust,
+        lock_mode="exclusive",
     )
     add("pthread_mutex_unlock", "unlock", "mutex", argument=0, success=zero)
     add(
@@ -151,12 +165,22 @@ def standard_contracts() -> list[dict[str, Any]]:
         behavior="repair_robust_state; no_lock_acquisition",
     )
     add(
-        "pthread_rwlock_rdlock pthread_rwlock_wrlock pthread_rwlock_tryrdlock pthread_rwlock_trywrlock pthread_rwlock_timedrdlock pthread_rwlock_timedwrlock",
+        "pthread_rwlock_rdlock pthread_rwlock_tryrdlock pthread_rwlock_timedrdlock",
         "lock",
         "rwlock",
         "pthread_rwlock_unlock",
         argument=0,
         success=zero,
+        lock_mode="shared",
+    )
+    add(
+        "pthread_rwlock_wrlock pthread_rwlock_trywrlock pthread_rwlock_timedwrlock",
+        "lock",
+        "rwlock",
+        "pthread_rwlock_unlock",
+        argument=0,
+        success=zero,
+        lock_mode="exclusive",
     )
     add("pthread_rwlock_unlock", "unlock", "rwlock", argument=0, success=zero)
     add(
@@ -175,6 +199,7 @@ def standard_contracts() -> list[dict[str, Any]]:
         "pthread_spin_unlock",
         argument=0,
         success=zero,
+        lock_mode="exclusive",
     )
     add("pthread_spin_unlock", "unlock", "spinlock", argument=0, success=zero)
     add(
@@ -233,11 +258,25 @@ def standard_contracts() -> list[dict[str, Any]]:
     )
     add("pthread_join pthread_detach", "thread_release", "thread", argument=0, success=zero)
     add(
+        "pthread_cancel",
+        "standard_operation",
+        "thread",
+        argument=0,
+        success=zero,
+        behavior="cancellation_request_is_not_callback_completion",
+    )
+    add(
         "pthread_once",
         "callback_register",
         argument=1,
         success=zero,
         behavior="synchronous_once_callback",
+    )
+    add(
+        "pthread_testcancel",
+        "standard_operation",
+        "thread",
+        behavior="deferred_cancellation_point; pending_request_runs_lifo_cleanup_without_return",
     )
     add("memcpy memmove memset strcpy strncpy strcat strncat", "copy", argument=0)
     add("read recv recvfrom", "recv_source", argument=1)
@@ -293,7 +332,25 @@ def standard_contracts() -> list[dict[str, Any]]:
         if name == "pthread_create":
             row["pairs"] = ["pthread_join", "pthread_detach"]
         transitions = []
-        if name in {"realloc", "reallocarray"}:
+        if name in {"pthread_create", "pthread_join", "pthread_detach", "pthread_cancel"}:
+            action = {
+                "kind": {
+                    "pthread_create": "start_callback",
+                    "pthread_join": "wait_callback_completion",
+                    "pthread_detach": "release_join_handle",
+                    "pthread_cancel": "request_cancellation",
+                }[name],
+                "object": row["carrier"],
+            }
+            if name == "pthread_create":
+                action.update(
+                    {
+                        "callback": {"kind": "argument", "argument_index": 2},
+                        "context": {"kind": "argument", "argument_index": 3},
+                    }
+                )
+            transitions = [{"when": zero, "actions": [action]}]
+        elif name in {"realloc", "reallocarray"}:
             nonzero = compare({"kind": "argument", "index": 1}, ">", 0)
             zero_size = compare({"kind": "argument", "index": 1}, "==", 0)
             if name == "reallocarray":
@@ -337,13 +394,26 @@ def standard_contracts() -> list[dict[str, Any]]:
                     ],
                 },
             ]
+        elif row["role"] in {"lock", "unlock"}:
+            transitions = [
+                {
+                    "when": row["effect_cases"][0]["when"],
+                    "actions": [
+                        {
+                            "kind": "acquire" if row["role"] == "lock" else "release",
+                            "object": row["carrier"],
+                            "lock_mode": row["protocol"].get("lock_mode", "unknown"),
+                        }
+                    ],
+                }
+            ]
         elif row["role"] == "lock_wait":
             transitions = [
                 {
                     "when": row["effect_cases"][0]["when"],
                     "actions": [
                         {"kind": "release", "object": row["carrier"]},
-                        {"kind": "acquire", "object": row["carrier"]},
+                        {"kind": "acquire", "object": row["carrier"], "lock_mode": "exclusive"},
                     ],
                 }
             ]
@@ -361,6 +431,7 @@ def standard_contracts() -> list[dict[str, Any]]:
         }
         if transitions or name in extent_indices:
             row["protocol"] = {
+                **row["protocol"],
                 "kind": "standard_api_effects",
                 "version": STANDARD_API_VERSION,
                 "transitions": transitions,

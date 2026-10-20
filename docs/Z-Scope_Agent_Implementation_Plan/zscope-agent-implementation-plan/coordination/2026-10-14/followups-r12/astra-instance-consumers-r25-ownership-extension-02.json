@@ -1,0 +1,10 @@
+{
+  "coordinator_authorized": true,
+  "actual_task": "/root/astra_design_contract_r23",
+  "logical_task": "ASTRA-INSTANCE-CONSUMERS-R25",
+  "write_paths": [
+    "zscope/core/candidates/cpp_domains/shared_access.py"
+  ],
+  "previous_sha256": "0e713b6b77deb9c3edad2ed509768a39f630fd22a9f297e3f4bc116592813106",
+  "reason": "Concrete exact-mode literal atomic suppression bypass in SharedAccessIndex.match; same Astra task exclusively owns this one additional seam and adds actual emit positive/negative tests. Default behavior and trusted native atomic facts remain; strings do not mint authority."
+}

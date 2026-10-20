@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-15T07:53:39.833086+00:00",
+  "session_state": "ready",
+  "processes": {
+    "workspace": "scan-checkpoint-r17",
+    "processes": []
+  },
+  "source_matches_diagnostic": true,
+  "diagnostic": "coordinator-checkpoint-r17-authority-probes-20261015"
+}

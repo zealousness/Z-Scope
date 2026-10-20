@@ -1,0 +1,11 @@
+ZCode glm-5.3：新独立 native-hot-cache-r19 工作目录，使用sess_3b6b9a19b2；不要写原checkpoint-zcode-r18目录或恢复旧S06会话。复杂源码/真实native热复用回归，不交Kimi或DSH。
+
+协调者已在当前Root真实WSL/native独立复现：artifacts/coordinator-current-native-replay-r19-20261015/review.json，19:33:43，27pass/1fail/0error/0skip，源码/native稳定。失败 tests/test_incremental_replay.py::test_real_mutation_replay 的baseline_hot rebuilt_tus严格断言。语义complete/零未解释差异等前面断言均通过，但这不代表热复用通过。完整实际report与指标由prepare_native_hot_r19.py保存同目录，原始ext4 fixture路径也在report证据。此前stop_at生产者旧副本对照不是当前Root证据。本任务基于当前Root冻结快照，不包含未验收context/stop分支。
+
+先原样复现28测试（开实际native变量），保留失败JUnit，定位真实工具执行、TU缓存键/依赖/include-probe/发布与统计阶段，区分真重编、统计残留和过期的保守失效基线。实际native-metrics.json已取回：所有baseline_hot都是compiled0/reused4，包括negative_include；该用例incremental compiled4/reused0。全部stages projection_complete=false如实记录，不能把extraction_complete等同投影全覆盖。先核对当前include-probes.v1、原生负查找收据和该旧用例为何曾要求hot重编2。若当前精确否定前提允许hot0且新增/消失/高优先级文件仍确实失效，不得为了通过旧断言强制无必要重编2；交协调者独立实验和具体测试迁移建议，旧断言由协调者在证据齐备后决策。若真有产品缺口，再修最小必要Python路径。不要直接改计数为0、清缓存/删证据、弱化摘要/currentness/include否定前提。原tests/test_incremental_replay.py只读，clean reused0、全mutation/zero differences全部保留，不skip/xfail/减少mutation/放宽标准。
+
+初始写权限仅 zscope/retrieval/clang_batch.py、zscope/retrieval/incremental_replay.py、新 tests/test_native_replay_hot_cache.py；日志/脚本/DELIVERY放artifacts/或DELIVERY.md。确需其它源文件先交具体诊断及拟改路径给协调者，不能自行扩范围。其它旧tests、code_index/clang_backend/identity/native/语义/ScanSession/owner/store/queue/配置/CLI/UI/Root全部只读；没有其它工作者写本任务三文件。共享文件由协调者独验集成。
+
+新增实际native冷/热/变异正反例，核对真实工具进程复用及语义/coverage不丢失，保留现有batch/cache/build/全实例/identity/include-probe回归。Linux WSL zeal bash -lc /home/zeal/venv313/bin/python，经根coordination的test_slot.py两槽/default fd/ext4，不嵌套；Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399。禁止native源码/工具/完成标记修改，不安装或起新服务/改凭据/commit/push/reset/clean。compileall zscope scripts test tests、mypy zscope、仅修改Python必要Black。
+
+所有失败和最终收据/最终SHA/时间/源码稳定性写DELIVERY，停后台停写。不是全S07/完整扫描/真实项目或正式benchmark验收。Root2079集合另因墙钟回退失败，正在同字节时钟观察重跑；不得在本目录调整系统时钟或测试超时。

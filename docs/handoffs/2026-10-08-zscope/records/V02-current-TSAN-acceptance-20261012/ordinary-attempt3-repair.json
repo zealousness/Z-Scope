@@ -1,0 +1,19 @@
+{
+  "reason": "prior stage omitted install.sh; complete public root inputs with install.sh and MANIFEST.in",
+  "first_and_second_failures_preserved": true,
+  "known_environment_blockers": [
+    "Maven/Java absent: 2 original skips",
+    "ordinary PATH lacks clang: 3 original skips"
+  ],
+  "scope": "same image, same default profile/resources, no new tool or dependency mounts; product/tests unchanged",
+  "original_expected_compatibility": {
+    "passed": 1543,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "previous_193_passes_reused": true,
+  "quality_checks_first": true,
+  "driver_sha256": "09ef51c413ac05786cc4c23a763c64f3aa4b8f44009a99c275b433bd818c06fe",
+  "inside_sha256": "c810ff7eada13ccc1325276bb54c11f5d97ca24d625b856218c410e7a95b64cc"
+}

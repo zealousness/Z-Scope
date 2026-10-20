@@ -1,0 +1,9 @@
+协调者补充源码审查及真实SQL诊断（21:40:44），供最终验收及同会话接续。任务仍运行，尚不计实际开发交付失败；既有三验收切片保持。
+
+1. artifacts/coordinator-job-cli-live-frozen-r20-probes-20261015/review.json：固定生产者副本8/8通过，21:38:18，producer_current_matches_frozen=true。这只是窗口/身份边界诊断，不是完整独验。
+2. artifacts/coordinator-job-cli-authority-live-frozen-r20-probes-20261015/review.json：4项，原窗口2过、新SQL边界2失败，21:40:44，固定源码与生产者一致。新探针 followups-r12/test_job_cli_window_snapshot_boundary.py 只读。真实service创建SQL行与input fingerprint正前提先成功；随后受控并发的真实乐观SQL更新发生在首次get_job读取完成后。stand_down_reason先验证旧owner行，第二次get_job却读取新owner清空的窗口，返回了JobWindowAuthority(stop_at_epoch=None)。身份和窗口必须来自同一个已经核验的行/版本，不混合旧身份与新预算；接受同一份已验证旧窗口快照或重新校验后拒绝换代都可以，不能把外来owner的新窗口当本attempt的合法None。
+3. 当前合法SQL行的stop_at_epoch被改为TEXT 'nan'后，session_stop_window_authority仍返回NaN权限值。非有限/损坏时刻应明确拒绝，不能当合法空窗口或传播到共享token；合法None和有限但过期窗口仍分别保持原语义。无需扩写其它产品文件即可修复当前适配模块。不要降低探针或吞异常。
+
+原两窗口修复前探针不可覆盖。工作副本初版r20-probes-before-fix文件曾被中途ImportError结果覆盖，已看到保留intermediate-importerror与rebuilt对照；请交付明确说明这段历史，重建对照不能冒充原始失败，更不能替代协调者独立原始收据。当前Root额外8失败基线与两个生产者SQL新失败保持分开；完整独验须纳入全部探针与原有回归/质量。完成后停写、停止后台，等待独验；不写Root/其它副本/旧S06，不绕过平台限制。
+
+21:50追加：原35消费者中test_own_window_reason_is_reported_when_it_fires_first的失败已由协调者在未变Root确定性复现。只读 test_stop_first_cause_observation_boundary.py 两例2/2失败，artifacts/coordinator-current-first-cause-r20-probes-20261015/review.json。该公共token原因固化问题已单列交给原生 Astra /root/astra_first_cause_r20（xhigh），独占 common/cancellation.py 与新tests/test_cancellation_first_cause.py；你保持原三文件所有权，不改公共token或旧测试/轮询/超时。协调者会在Astra独验后将其作为只读依赖装入你的副本再做完整联合独验；你当前聚焦上述SQL同一行权限与nonfinite窗口两项。保留原消费者34/1、MCP实际revision_conflict失败和所有同字节重复结果，不擅自放宽旧测试或宣称全通过。MCP fixture使用受控scanner并未走新CLI窗口函数，当前源日志说明旧running revision在合法owner更新后过期；协调者会独立核对，不把它归因或默算你的新CLI缺陷。此反馈文件由协调者提供，读取后请在交付说明明确确认；若正在后台测试，先保留现有结果，不同时改源码并把旧测试结果当新版本结论。

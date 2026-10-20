@@ -1,0 +1,52 @@
+{
+  "at": "2026-10-15T22:30:44.170900+08:00",
+  "nodes": 79,
+  "layers": 23,
+  "dag_valid": true,
+  "source_sha256": {
+    "zscope/orchestration/scan_session.py": "cfaa823b957ee31f20575f572760bb079f9c18d56a26fbe30e37849f64266d9e",
+    "zscope/orchestration/parallel_analyzer.py": "57d437add01220ab22c5afa29fc80c5a77947c1a84bbf82128ab6a55a874d7b0",
+    "zscope/core/analysis/analyzer.py": "6ebd7263b1819fca5d045cd49774c382f96d93676521d99eef7cf6695babfb8e",
+    "zscope/config/v3.py": "e135ccef15efcc5686d63aa88ce5984ddda44878011c6690bb52230274ce7b67"
+  },
+  "current_active_native": [
+    "/root/astra_job_cli_sql_r20"
+  ],
+  "remaining": {
+    "S01": "Exact-instance Analyzer runs, but shared semantics/overlay deliberately empty, semantic_result absent, project fact pass and discovery isolated. Per-instance modeling/full backend and link consumers remain.",
+    "S08": "Actual instance analysis and shared validation and whole-plan bound checkpoint accepted. Per-instance candidate/obligation durable recovery and ongoing fair batches remain.",
+    "U01": "Four runtime meanings are declared-only; multi-target execution rejected. Current effective-window SQL repair does not close them.",
+    "S02-S07": "Additional protocols, unified obligations, harness/TSan, demand and full incremental execution remain dependent work. Existing archived S06-R02 preserved; no new task issued."
+  },
+  "next_parallel_candidates": [
+    {
+      "work_item": "S01 exact-instance semantic modeling",
+      "owner_preference": "ZCode glm-5.3",
+      "dispatch_state": "not_dispatched",
+      "dependency": "New exact-build/USR modeling, cache/publication contracts and exclusive partition of global_modeler/semantic_modeling/parallel_analyzer/scan_session required; current CLI repair owns none of these but first current-union gate is prioritized."
+    },
+    {
+      "work_item": "S08 per-instance durable recovery and fair batches",
+      "owner_preference": "ZCode glm-5.3",
+      "dispatch_state": "not_dispatched",
+      "dependency": "Current effective-window and first-cause intake/joint; partition jobs and shared scan_session against S01 before dispatch."
+    },
+    {
+      "work_item": "Astra UI consumers",
+      "owner_preference": "Astra",
+      "dispatch_state": "not_dispatched",
+      "dependency": "Stable, implemented backend contracts; static files/browser tests remain exclusive, shared HTTP/services/resources coordinator owned. No repeated UI task for already accepted native fixture."
+    }
+  ],
+  "not_actual_external_blockers": [
+    "Unknown/unprobed real model connection",
+    "Formal benchmark/portable prerequisites not requested or preflighted",
+    "Conditional S10 and Q01/Q02 not enabled"
+  ],
+  "actual_gates": [
+    "SQL repair delivery and independent full acceptance",
+    "Nine-file coordinator intake",
+    "Strict current full selected union plus six commands and source proof"
+  ],
+  "no_whole_package_or_real_project_acceptance": true
+}

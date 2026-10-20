@@ -1,0 +1,34 @@
+{
+  "accepted": true,
+  "sessionId": "session-5017afd3-5c7c-4562-82bc-b15b6a3f5c2f",
+  "sourceDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "candidateDigest": "91c35d5988414830ffce46057bca2d2364d76ee26d5f5fe1a4448b657b96add1",
+  "modelCandidateDigest": "77c82832b03cd2e0bb2adacb0dbc19983daaa08912c23a9546ddb9ae0b08d1b4",
+  "localReviewChanges": [
+    "Always clean the owned process group after EOF, including descendants that closed both pipes",
+    "Read errors fail closed instead of being treated as complete EOF",
+    "Format only changed Python ranges"
+  ],
+  "resource_tests": {
+    "passed": 8,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "lifecycle_tests": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "formatting_ast_equivalent": true,
+  "static_review": [
+    "Exact original-source replacements only",
+    "Per-stream spool writes and EOF probes stay bounded",
+    "No replacement of cancellation/shared budget/deadline",
+    "Known owned process-group identity survives leader exit",
+    "Always clean descendants, including closed-pipe children",
+    "Pipe read errors cannot become clean EOF",
+    "Source/binary drift, witness trust and TTL unchanged"
+  ]
+}

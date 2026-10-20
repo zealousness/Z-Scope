@@ -1,0 +1,107 @@
+{
+  "schema": "zscope.provider-read-audit.v1",
+  "files": [
+    {
+      "path": "C:\\Users\\10273\\.dsh\\settings.yaml.imported",
+      "exists": true,
+      "non_secret_fields": [
+        {
+          "line": 4,
+          "field": "provider",
+          "value": "deepseek"
+        },
+        {
+          "line": 5,
+          "field": "model",
+          "value": "deepseek-v4.1-flash"
+        },
+        {
+          "line": 9,
+          "field": "baseURL",
+          "value": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"
+        }
+      ]
+    },
+    {
+      "path": "C:\\Users\\10273\\.dsh\\settings.yaml",
+      "exists": false
+    },
+    {
+      "path": "C:\\Users\\10273\\.dsh\\profiles\\acp\\cordis.yml",
+      "exists": true,
+      "non_secret_fields": []
+    },
+    {
+      "path": "C:\\Users\\10273\\.dsh\\profiles\\acp\\cordis.patch.yml",
+      "exists": true,
+      "non_secret_fields": []
+    },
+    {
+      "path": "C:\\Users\\10273\\.dsh\\profiles\\desktop\\cordis.patch.yml",
+      "exists": true,
+      "non_secret_fields": [
+        {
+          "line": 11,
+          "field": "provider",
+          "value": "deepseek"
+        },
+        {
+          "line": 12,
+          "field": "model",
+          "value": "deepseek-v4.1-flash"
+        },
+        {
+          "line": 18,
+          "field": "baseURL",
+          "value": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"
+        }
+      ]
+    },
+    {
+      "path": "C:\\Users\\10273\\.agent-bridge\\agents.toml",
+      "exists": true,
+      "non_secret_fields": []
+    }
+  ],
+  "changes": "none",
+  "note": "only selected route/model fields; no credential/config body emitted",
+  "zcode_non_secret_routes": [
+    {
+      "path": "C:\\Users\\10273\\.zcode\\v2\\config.json",
+      "non_secret_fields": [
+        {
+          "field": "provider.builtin:bigmodel.options.baseURL",
+          "value": "https://open.bigmodel.cn/api/anthropic"
+        },
+        {
+          "field": "provider.builtin:zai.options.baseURL",
+          "value": "https://api.z.ai/api/anthropic"
+        },
+        {
+          "field": "provider.builtin:bigmodel-coding-plan.options.baseURL",
+          "value": "https://open.bigmodel.cn/api/anthropic"
+        },
+        {
+          "field": "provider.builtin:bigmodel-start-plan.options.baseURL",
+          "value": "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
+        },
+        {
+          "field": "provider.builtin:zai-coding-plan.options.baseURL",
+          "value": "https://api.z.ai/api/anthropic"
+        },
+        {
+          "field": "provider.builtin:zai-start-plan.options.baseURL",
+          "value": "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
+        },
+        {
+          "field": "provider.97ad75c3-e785-4369-9730-55a5ee47c71c.options.baseURL",
+          "value": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"
+        }
+      ]
+    },
+    {
+      "path": "C:\\Users\\10273\\.zcode\\v2\\setting.json",
+      "non_secret_fields": []
+    }
+  ]
+}

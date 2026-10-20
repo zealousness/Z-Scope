@@ -1,0 +1,65 @@
+{
+  "path": "/home/zeal/venv313/bin:/home/zeal/go/bin:/usr/lib/llvm-18/bin:/home/zeal/.local/svf/SVF-linux-x86_64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  "ld_library_path": "/home/zeal/.local/svf/SVF-linux-x86_64/lib:/home/zeal/.local/svf/llvm-18.1.0.obj/lib",
+  "Z_SCOPE_TEST_LLVM": "1",
+  "tools": {
+    "cmake": {
+      "path": "/usr/bin/cmake",
+      "sha256": "1c5227af4edd22d8d689def545e18ee458260c0fd579eba2187967f38817e638"
+    },
+    "gcc": {
+      "path": "/usr/bin/gcc",
+      "sha256": "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26"
+    },
+    "cc": {
+      "path": "/usr/bin/cc",
+      "sha256": "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26"
+    },
+    "clang": {
+      "path": "/usr/lib/llvm-18/bin/clang",
+      "sha256": "8ef402d453d1ba4902e4ee0f0f847f6cfa01400c95aa43c24e97818b9c0e3f45"
+    },
+    "clangd": {
+      "path": "/usr/lib/llvm-18/bin/clangd",
+      "sha256": "553224114539729bc00ed96ac6c16df6015c40265658610624da74da930f3894"
+    },
+    "gclang": {
+      "path": "/home/zeal/go/bin/gclang",
+      "sha256": "4490048f1e057a53aa315019d586c3a2e6ae3f69927b240f63df43522a60cab9"
+    },
+    "get-bc": {
+      "path": "/home/zeal/go/bin/get-bc",
+      "sha256": "817a491abb67a70766727465d12485ed52d517ef782d418a2ee89695177e657e"
+    },
+    "llvm-link": {
+      "path": "/usr/lib/llvm-18/bin/llvm-link",
+      "sha256": "e340363ed9e5346f0d6dc4441f4953c5f516ff73fa0a03e1955c1adaad68b651"
+    },
+    "llvm-nm": {
+      "path": "/usr/lib/llvm-18/bin/llvm-nm",
+      "sha256": "3f85dd567c2806f2c031e317871e7145f858072fc9595aba4dc33d2e3a671402"
+    },
+    "wpa": {
+      "path": "/home/zeal/.local/svf/SVF-linux-x86_64/bin/wpa",
+      "sha256": "51abab0bcde8debbf56a6618e3ecda6e1fced00e009b1c8613003eac69f41aa0"
+    },
+    "saber": {
+      "path": "/home/zeal/.local/svf/SVF-linux-x86_64/bin/saber",
+      "sha256": "a1942f4a5112c60d159b9e89ee1546cb02ad62da057d7a335b0cc3bcc1f56587"
+    }
+  },
+  "ldd": {
+    "wpa": {
+      "exit_code": 0,
+      "output": "\tlinux-vdso.so.1 (0x00007ffd277cb000)\n\tlibSvfLLVM.so.3 => /home/zeal/.local/svf/SVF-linux-x86_64/lib/libSvfLLVM.so.3 (0x00007d1042dff000)\n\tlibLLVM.so.18.1rc => /home/zeal/.local/svf/llvm-18.1.0.obj/lib/libLLVM.so.18.1rc (0x00007d103ac00000)\n\tlibSvfCore.so.3 => /home/zeal/.local/svf/SVF-linux-x86_64/lib/libSvfCore.so.3 (0x00007d103a600000)\n\tlibstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007d103a200000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007d1039e00000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007d1042dc7000)\n\tlibrt.so.1 => /lib/x86_64-linux-gnu/librt.so.1 (0x00007d1042dc2000)\n\tlibdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x00007d1042dbd000)\n\tlibpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007d1042db8000)\n\tlibz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (0x00007d1042d9c000)\n\tlibtinfo.so.6 => /lib/x86_64-linux-gnu/libtinfo.so.6 (0x00007d1042d66000)\n\tlibxml2.so.2 => /lib/x86_64-linux-gnu/libxml2.so.2 (0x00007d103a01e000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007d103ab17000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007d1042ee8000)\n\tlibz3.so => /lib/x86_64-linux-gnu/libz3.so (0x00007d1038e00000)\n\tlibicuuc.so.74 => /lib/x86_64-linux-gnu/libicuuc.so.74 (0x00007d1038a00000)\n\tliblzma.so.5 => /lib/x86_64-linux-gnu/liblzma.so.5 (0x00007d1042d32000)\n\tlibicudata.so.74 => /lib/x86_64-linux-gnu/libicudata.so.74 (0x00007d1036c00000)\n"
+    },
+    "saber": {
+      "exit_code": 0,
+      "output": "\tlinux-vdso.so.1 (0x00007ffcfb9b4000)\n\tlibSvfLLVM.so.3 => /home/zeal/.local/svf/SVF-linux-x86_64/lib/libSvfLLVM.so.3 (0x0000720922d30000)\n\tlibLLVM.so.18.1rc => /home/zeal/.local/svf/llvm-18.1.0.obj/lib/libLLVM.so.18.1rc (0x000072091ac00000)\n\tlibSvfCore.so.3 => /home/zeal/.local/svf/SVF-linux-x86_64/lib/libSvfCore.so.3 (0x000072091a600000)\n\tlibz3.so => /lib/x86_64-linux-gnu/libz3.so (0x0000720919600000)\n\tlibstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000720919200000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x0000720918e00000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000072091abc8000)\n\tlibrt.so.1 => /lib/x86_64-linux-gnu/librt.so.1 (0x000072091abc3000)\n\tlibdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x000072091abbe000)\n\tlibpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x000072091abb9000)\n\tlibz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (0x000072091ab9b000)\n\tlibtinfo.so.6 => /lib/x86_64-linux-gnu/libtinfo.so.6 (0x000072091ab67000)\n\tlibxml2.so.2 => /lib/x86_64-linux-gnu/libxml2.so.2 (0x000072091901e000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x000072091aa7e000)\n\t/lib64/ld-linux-x86-64.so.2 (0x0000720922e20000)\n\tlibicuuc.so.74 => /lib/x86_64-linux-gnu/libicuuc.so.74 (0x0000720918a00000)\n\tliblzma.so.5 => /lib/x86_64-linux-gnu/liblzma.so.5 (0x000072091aa4a000)\n\tlibicudata.so.74 => /lib/x86_64-linux-gnu/libicudata.so.74 (0x0000720916c00000)\n"
+    }
+  },
+  "llvm_shared_library": {
+    "path": "/home/zeal/.local/svf/llvm-18.1.0.obj/lib/libLLVM.so.18.1rc",
+    "sha256": "7b82c9ef64c63b6d70a07ae0cc699ef6a1b179d79cd94d95a1778a2cb6c47f39"
+  }
+}

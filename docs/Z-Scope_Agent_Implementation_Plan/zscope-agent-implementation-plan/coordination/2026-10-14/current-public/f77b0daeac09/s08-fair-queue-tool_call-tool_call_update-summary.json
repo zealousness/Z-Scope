@@ -1,0 +1,45 @@
+{
+  "session_id": "sess_a3dc643fae",
+  "kinds": "tool_call,tool_call_update",
+  "start_offset": 268,
+  "next_offset": 382,
+  "pages": 7,
+  "total_matching": 382,
+  "has_more": false,
+  "events_read": 114,
+  "latest_at": "2026-10-14T09:42:07.557164+00:00",
+  "failed_tools": [],
+  "completed_tail": [
+    {
+      "ts": "2026-10-14T09:41:52.912030+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_59f41f4de8ac4e729b5fd5b9",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\DELIVERY\\DELIVERY.md",
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\DELIVERY\\DELIVERY.md"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T09:42:02.029314+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_3f57baa62cdf4e4c837452ce",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:42:07.557164+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_8ed7146256a443e1aff58cfd",
+        "status": "completed"
+      }
+    }
+  ]
+}

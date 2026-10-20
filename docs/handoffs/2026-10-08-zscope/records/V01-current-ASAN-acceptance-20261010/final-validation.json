@@ -1,0 +1,78 @@
+{
+  "at": "2026-10-10T11:31:29.288713+00:00",
+  "linux_python": "/home/zeal/venv313/bin/python",
+  "source_sha256": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7",
+  "checks": [
+    {
+      "label": "handoff-docs",
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--junitxml=/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-current-ASAN-acceptance-20261010/handoff-docs.xml",
+        "tests/test_agent_docs.py"
+      ],
+      "cwd": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+      "exit_code": 0,
+      "elapsed_seconds": 2.393,
+      "stdout": "handoff-docs.stdout.log",
+      "stderr": "handoff-docs.stderr.log"
+    },
+    {
+      "label": "git-diff-check",
+      "command": [
+        "git",
+        "-c",
+        "core.whitespace=cr-at-eol",
+        "diff",
+        "--check"
+      ],
+      "cwd": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+      "exit_code": 0,
+      "elapsed_seconds": 15.905,
+      "stdout": "git-diff-check.stdout.log",
+      "stderr": "git-diff-check.stderr.log"
+    }
+  ],
+  "docs_counts": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "markdown_encoding_checks": {
+    "docs/handoffs/2026-10-08-zscope/records/V01-current-ASAN-acceptance-20261010.md": {
+      "utf8": true,
+      "no_bom": true,
+      "LF_only": true,
+      "final_newline": true
+    },
+    "docs/handoffs/2026-10-08-zscope/PROGRESS.md": {
+      "utf8": true,
+      "no_bom": true,
+      "LF_only": true,
+      "final_newline": true
+    }
+  },
+  "current_ASAN_counts": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "changed_existing_inputs": [],
+  "existing_input_count": 403,
+  "declared_existing_handoff_changes": [
+    "docs/handoffs/2026-10-08-zscope/PROGRESS.md",
+    "docs/handoffs/2026-10-08-zscope/TASKS.yaml"
+  ],
+  "product_or_test_changes": false,
+  "new_TSAN_probe_or_fixture_executions": 0,
+  "new_external_dispatch": false,
+  "V01": "done",
+  "V02": "blocked"
+}

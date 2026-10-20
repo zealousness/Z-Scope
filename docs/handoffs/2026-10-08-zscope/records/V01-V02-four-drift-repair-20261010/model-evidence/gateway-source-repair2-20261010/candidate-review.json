@@ -1,0 +1,52 @@
+{
+  "sessionId": "session-be6d74c9-f676-489a-aad6-46673164bde7",
+  "sourceDigest": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+  "candidateDigest": "d78417fb96b22380f43e3611e841fa75a15f39a8b0af41057cbc6e7f230775ca",
+  "modelAnswerDigest": "7544fe39bdf56637507ebb489d9ad58a2ea5005fd3caa2f76a369ff38b577659",
+  "edits": [
+    {
+      "symbol": "ExecutionRecord",
+      "line": 766,
+      "oldBytes": 155,
+      "newBytes": 453
+    },
+    {
+      "symbol": "ExecutionRecord.to_dict",
+      "line": 836,
+      "oldBytes": 192,
+      "newBytes": 280
+    },
+    {
+      "symbol": "_record",
+      "line": 2722,
+      "oldBytes": 118,
+      "newBytes": 174
+    },
+    {
+      "symbol": "_record",
+      "line": 2812,
+      "oldBytes": 184,
+      "newBytes": 309
+    },
+    {
+      "symbol": "SanitizerReproductionRunner.execute",
+      "line": 2127,
+      "oldBytes": 994,
+      "newBytes": 1485
+    },
+    {
+      "symbol": "FakeDynamicReproductionRunner.execute",
+      "line": 3105,
+      "oldBytes": 221,
+      "newBytes": 291
+    },
+    {
+      "symbol": "register_dynamic_reproduction",
+      "line": 3579,
+      "oldBytes": 276,
+      "newBytes": 622
+    }
+  ],
+  "explanation": "Populate the accepted source/harness/input snapshot at execution time: the real runner captures it immediately after identity is accepted (before any build/run) and threads it through _record, and the fake runner captures it when building its record. ExecutionRecord carries it (and serializes it). register_dynamic_reproduction now freezes record.source_digests and re-checks the current files via source_digests_hold, so a mutate/delete after execution but before registration forbids authority, while unchanged controls and empty synthetic snapshots with explicit test-only promotion still confirm. Final-use liveness already re-checks the same minted digests. Binary-liveness untouched.",
+  "productApplied": false
+}

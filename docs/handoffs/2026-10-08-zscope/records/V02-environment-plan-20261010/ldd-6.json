@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "ldd",
+    "/usr/lib/gcc/x86_64-linux-gnu/13/libtsan.so"
+  ],
+  "exit_code": 0,
+  "stdout": "\tlinux-vdso.so.1 (0x00007ffc6fdb7000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007aba86f0f000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007aba86c00000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007aba86ee1000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007aba8809e000)\n",
+  "stderr": ""
+}

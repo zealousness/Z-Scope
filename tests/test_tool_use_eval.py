@@ -33,7 +33,12 @@ def _passing_traces(suite: dict) -> dict[str, dict]:
     for scenario in suite["scenarios"]:
         expected = scenario["expected"]
         first_name = expected["first_tool"]
-        calls = [{"name": first_name, "arguments": _arguments(first_name)}]
+        calls = [
+            {
+                "name": first_name,
+                "arguments": scenario.get("example_arguments", _arguments(first_name)),
+            }
+        ]
         recovery_name = expected.get("recovery_tool")
         if recovery_name:
             calls.append({"name": recovery_name, "arguments": _arguments(recovery_name)})

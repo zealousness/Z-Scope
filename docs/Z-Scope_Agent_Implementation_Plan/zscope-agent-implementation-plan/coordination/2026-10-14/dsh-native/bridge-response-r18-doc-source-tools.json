@@ -1,0 +1,250 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-15T09:37:18.942895+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "grep",
+        "tool_call_id": "call_00_laisdu4v96ykd8okyk1qcl2s",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\", \"pattern\": \"find_for_call|SymbolIdentity|EntryInstancePlan\", \"include\": \"*.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:19.140227+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "grep",
+        "tool_call_id": "call_01_b5rcxudm8u7bce022gyqksde",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\docs\", \"pattern\": \"build_coverage|planned|scheduled|reused\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:25.956317+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_huo9oggxq7uvo35ylk0fdz41",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\semantics\\\\contracts.py\", \"offset\": 1, \"limit\": 80}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:25.956317+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_01_8ke9j3uazagyu0m5l8gcbsg7",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\semantics\\\\contracts.py\", \"offset\": 125, \"limit\": 160}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:27.940562+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_r1a3vmhveydkw0vaby3m34fd",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\semantics\\\\contracts.py\", \"limit\": 240, \"offset\": 560}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:29.750299+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_bi2f28e8rikeuix4ovbpmsic",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\semantics\\\\call_context.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:32.064065+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_wl9cle4yw9zg7dva2nimmxp4",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\semantics\\\\build_scope.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:38.589307+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_sxo5pvsf4gzf7ns5nhw9tcsq",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\tests\\\\test_contract_usr_scope.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:43.450154+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_zkesppbrnwuqsjr4151xh651",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\tests\\\\test_scan_session_instances.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:43.457156+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "grep",
+        "tool_call_id": "call_01_sfg69056dss6sfw0gyhtpdo7",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"include\": \"*.py\", \"path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\", \"pattern\": \"planned_instances|scheduled_instances|analyzed_instances|current_execution|reused\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:47.080039+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_e14ypk0pjt53byyldm9b3gll",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\orchestration\\\\entry_instances.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:49.038400+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_5dh76z2dqqba20sdf9zyhxor",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\orchestration\\\\scan_session.py\", \"limit\": 190, \"offset\": 480}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:51.090627+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "grep",
+        "tool_call_id": "call_00_4og2zgap8w6szqhnoevh7w19",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"include\": \"*.py\", \"path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\", \"pattern\": \"instance_analysis|run_instance_analysis|instance_execution\"}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:53.580860+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_j9x73z51qwumqbonc5sq4qyf",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\orchestration\\\\scan_session.py\", \"limit\": 150, \"offset\": 120}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:53.580860+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_01_px2saw1ys7kwelzma6gzisji",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\orchestration\\\\scan_session.py\", \"limit\": 160, \"offset\": 800}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:56.434187+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_rb5wv7v8ndw4h6uoc67wy3o1",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\orchestration\\\\scan_session.py\", \"limit\": 130, \"offset\": 1400}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:37:56.434187+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_01_mck5gdql5o7npx2pp291rgkk",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\retrieval\\\\instance_index.py\", \"limit\": 120, \"offset\": 1610}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:38:01.203302+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_rw2zw6yjwqdbngtl5xmplrvf",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\retrieval\\\\instance_index.py\", \"limit\": 160, \"offset\": 1}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:38:03.722409+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_yj21pi3cc56m25zbvqrt53cu",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\orchestration\\\\parallel_analyzer.py\", \"limit\": 300, \"offset\": 330}"
+      }
+    },
+    {
+      "ts": "2026-10-15T09:38:06.703929+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "read",
+        "tool_call_id": "call_00_7pafmuxsxe750yxvrgszz5zr",
+        "kind": "other",
+        "status": "in_progress",
+        "input": "{\"file_path\": \".coordination\\\\20261014\\\\workspaces\\\\doc-identity-r18\\\\zscope\\\\orchestration\\\\jobs\\\\scan_work.py\"}"
+      }
+    }
+  ],
+  "offset": 60,
+  "count": 20,
+  "next_offset": 80,
+  "has_more": true,
+  "total_matching": 94
+}

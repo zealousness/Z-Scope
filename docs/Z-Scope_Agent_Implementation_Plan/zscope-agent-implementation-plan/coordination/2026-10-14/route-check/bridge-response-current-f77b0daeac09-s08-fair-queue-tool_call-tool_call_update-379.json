@@ -1,0 +1,40 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:42:07.542015+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "TodoWrite: {\"todos\":[{\"content\":\"返修：complete/defer 必须当前 claim token（移除 ",
+        "tool_call_id": "call_8ed7146256a443e1aff58cfd",
+        "kind": "other",
+        "status": "pending",
+        "input": "{\"todos\": [{\"content\": \"返修：complete/defer 必须当前 claim token（移除 token=None 旁路）\", \"priority\": \"high\", \"status\": \"completed\"}, {\"content\": \"更新测试：修复 token-less 调用 + 新增重派/重开/恢复稳定性正反例\", \"priority\": \"high\", \"status\": \"completed\"}, {\"content\": \"WSL 验证：直调全部测试（非 pytest）+ 静态检查\", \"priority\": \"high\", \"status\": \"completed\"}, {\"content\": \"单次 pytest + 新 JUnit，更新 DELIVERY SHA/返修记录\", \"priority\": \"high\", \"status\": \"completed\"}]}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:42:07.551014+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_8ed7146256a443e1aff58cfd",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:42:07.557164+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_8ed7146256a443e1aff58cfd",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 379,
+  "count": 3,
+  "next_offset": 382,
+  "has_more": false,
+  "total_matching": 382
+}

@@ -372,6 +372,7 @@ def test_effective_rule_hash_changes_config_and_validator_cache_identity(
     runner.llm_clients = {}
     runner.code_index = SimpleNamespace(backend=None, backend_name="regex")
     runner.tool_policy_for_agent = lambda _name: None
+    runner._instance_scope = None  # Match the unscoped constructor binding.
 
     config_hash_before = analyzer._config_hash()
     validator_hash_before = runner._build_validation_environment_fingerprint()

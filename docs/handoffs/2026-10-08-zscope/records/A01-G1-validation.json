@@ -1,0 +1,99 @@
+{
+  "task": "A01",
+  "gate": "G1",
+  "scope": "offline_only",
+  "cwd": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+  "python": "/home/zeal/venv313/bin/python",
+  "checks": {
+    "pytest": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_external_investigation.py",
+        "tests/test_investigation_evidence.py",
+        "tests/test_bounded_investigation.py",
+        "tests/test_investigation_runtime.py",
+        "--basetemp=/tmp/zscope-parallel-20261008/A01/g1-final1/tmp",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/A01/g1-final1/cache"
+      ],
+      "exit_code": 0,
+      "output": "........................................................................ [ 44%]\n........................................................................ [ 88%]\n..................                                                       [100%]\n162 passed in 8.17s\n"
+    },
+    "mypy": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "mypy",
+        "zscope/orchestration/external_investigation.py",
+        "--cache-dir",
+        "/tmp/zscope-parallel-20261008/A01/g1-final1/mypy-cache"
+      ],
+      "exit_code": 0,
+      "output": "Success: no issues found in 1 source file\n"
+    },
+    "compileall": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "compileall",
+        "-f",
+        "-q",
+        "zscope/orchestration/external_investigation.py",
+        "tests/test_external_investigation.py"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    "black": {
+      "command": [
+        "/home/zeal/.cache/zscope-p1-black-venv/bin/black",
+        "--check",
+        "zscope/orchestration/external_investigation.py",
+        "tests/test_external_investigation.py"
+      ],
+      "exit_code": 0,
+      "output": "All done! \u2728 \ud83c\udf70 \u2728\n2 files would be left unchanged.\n"
+    },
+    "diffcheck": {
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "--",
+        "zscope/orchestration/external_investigation.py",
+        "tests/test_external_investigation.py"
+      ],
+      "exit_code": 0,
+      "output": ""
+    }
+  },
+  "input_before": {
+    "zscope/orchestration/external_investigation.py": "db86b4578777654dd5352bccf755fcfcf55937d5190205a8fa86d0770fea6708",
+    "tests/test_external_investigation.py": "6c11625fa91c75927299b94afde392fc98e5cd5899d9f5e2ebedba70f3d42ead",
+    "zscope/orchestration/investigation.py": "ceb0834f9ae85837f3fb38ba586c3c61f5bec3c33374783d43913902386724b9",
+    "zscope/orchestration/active_discovery.py": "0c118d146b076e3ab40be55c7f8b14c1a0f6626e1fd70af2f9f30758e2f0b408",
+    "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+    "zscope/orchestration/bounded_investigation.py": "c43bc3932ac20671fb0e08ed8f0137edb53237a894cf281887df463961a1b4e6",
+    "tests/test_investigation_evidence.py": "c105008d6ee7c9a8863cfcb70f63f3e1b2e071ba1503265da16c1cc37912c285",
+    "tests/test_bounded_investigation.py": "f784af5f94b4ffb9a6cad6e32054599efc5484221a3f8d826ba5f17df56589d9",
+    "tests/test_investigation_runtime.py": "710fa71d5a71397203465937589d462b5d127c6cca810592a8d9fb56de8d983c"
+  },
+  "input_after": {
+    "zscope/orchestration/external_investigation.py": "db86b4578777654dd5352bccf755fcfcf55937d5190205a8fa86d0770fea6708",
+    "tests/test_external_investigation.py": "6c11625fa91c75927299b94afde392fc98e5cd5899d9f5e2ebedba70f3d42ead",
+    "zscope/orchestration/investigation.py": "ceb0834f9ae85837f3fb38ba586c3c61f5bec3c33374783d43913902386724b9",
+    "zscope/orchestration/active_discovery.py": "0c118d146b076e3ab40be55c7f8b14c1a0f6626e1fd70af2f9f30758e2f0b408",
+    "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+    "zscope/orchestration/bounded_investigation.py": "c43bc3932ac20671fb0e08ed8f0137edb53237a894cf281887df463961a1b4e6",
+    "tests/test_investigation_evidence.py": "c105008d6ee7c9a8863cfcb70f63f3e1b2e071ba1503265da16c1cc37912c285",
+    "tests/test_bounded_investigation.py": "f784af5f94b4ffb9a6cad6e32054599efc5484221a3f8d826ba5f17df56589d9",
+    "tests/test_investigation_runtime.py": "710fa71d5a71397203465937589d462b5d127c6cca810592a8d9fb56de8d983c"
+  },
+  "input_stable": true,
+  "real_provider": "not_run",
+  "native_backend": "not_run",
+  "gate_passed": true
+}

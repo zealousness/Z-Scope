@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T04:19:27.378695+00:00",
+      "type": "raw",
+      "data": {
+        "update_type": "AvailableCommandsUpdate"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:19:27.379697+00:00",
+      "type": "raw",
+      "data": {
+        "update_type": "CurrentModeUpdate"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:19:27.379697+00:00",
+      "type": "raw",
+      "data": {
+        "update_type": "ConfigOptionUpdate"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:19:27.387697+00:00",
+      "type": "raw",
+      "data": {
+        "update_type": "SessionInfoUpdate",
+        "title": "用户明确要求在其修改当前默认权限配置后重新派发本分支。原task已公开cancelled，原session已end_session=dead且ACP PID消失；新会话读取现有用户配置，禁止自行改权限、原生包、provider/model或凭据。工具schema错误已核到：Write必须用path/content，Read不允许limit；严格按当前工具声明用参数，不沿用其它Agent惯例。任何真"
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 4,
+  "next_offset": 4,
+  "has_more": false,
+  "total_matching": 4
+}

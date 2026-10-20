@@ -1,0 +1,221 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T07:24:14.768221+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_5ebcd8c3f5a44d7f80f147c5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:14.862904+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_5ebcd8c3f5a44d7f80f147c5",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:14.899183+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_5ebcd8c3f5a44d7f80f147c5",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_jobs.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:37.255640+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_43a413935de44c78b175cf6f",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_jobs.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-owner\\\\tests\\\\test_scan_jobs.py\", \"new_string\": \"    report_path.unlink()\\n    payload = service.result(job[\\\"job_id\\\"]).payload\\n    assert payload[\\\"reason\\\"] == \\\"report_artifact_missing\\\"\\n\\n\\n# ---------------------------------------------------------------------------\\n# report binding: real shared-json.v1 object graphs (write_report_atomic)\\n\\n\\ndef _owner_for_binding(project: Path…"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:37.264703+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_43a413935de44c78b175cf6f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:37.367248+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_43a413935de44c78b175cf6f",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:37.402643+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_43a413935de44c78b175cf6f",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_jobs.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:50.674423+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_17eb746429a84adbb336ef1e",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_job_execution.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-owner\\\\tests\\\\test_scan_job_execution.py\", \"new_string\": \"SCANNER_SCRIPT = \\\"\\\"\\\"\\\\\\nimport json\\nimport sys\\nimport time\\nfrom pathlib import Path\\n\\nmode = sys.argv[1]\\nroot = Path(sys.argv[2])\\nreport = root / \\\"zscope_batch_report.json\\\"\\n\\nREPORT = {\\n    \\\"completeness\\\": \\\"complete\\\",\\n    \\\"metadata\\\": {\\n        \\\"build_coverage\\\": {\\\"selected_tus\\\": 1, \\\"total_tus\\\": 1},\\n      …"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:50.683960+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_17eb746429a84adbb336ef1e",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:50.748756+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_17eb746429a84adbb336ef1e",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:24:50.782959+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_17eb746429a84adbb336ef1e",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_job_execution.py",
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_job_execution.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T07:25:03.595313+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_cbbd5cfb3abd49ed9d84b82f",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_job_execution.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-owner\\\\tests\\\\test_scan_job_execution.py\", \"new_string\": \"def test_owner_crash_marks_lost_reaps_scanner_then_resume_recovers(job_env):\\n    job_env[\\\"mode_box\\\"][0] = \\\"sleep\\\"\\n    service = job_env[\\\"factory\\\"]()\\n    job = start_job(service, request_id=\\\"req-crash\\\")\\n    job_id = job[\\\"job_id\\\"]\\n    running = wait_running(service, job_id)\\n    owner_pid = int(running[\\\"owner_pid\\\"])\\…"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:25:03.605730+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_cbbd5cfb3abd49ed9d84b82f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:25:03.672667+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_cbbd5cfb3abd49ed9d84b82f",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:25:03.709179+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_cbbd5cfb3abd49ed9d84b82f",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_job_execution.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T07:25:24.835103+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_f840f4d8b26a48b08aa864bd",
+        "kind": "edit",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_job_execution.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-owner\\\\tests\\\\test_scan_job_execution.py\", \"new_string\": \"def test_failed_scanner_records_error_and_artifacts(job_env):\\n    job_env[\\\"mode_box\\\"][0] = \\\"fail\\\"\\n    service = job_env[\\\"factory\\\"]()\\n    job = start_job(service, request_id=\\\"req-fail\\\")\\n    terminal = wait_terminal(service, job[\\\"job_id\\\"])\\n    assert terminal[\\\"status\\\"] == \\\"failed\\\"\\n    assert terminal[\\\"error\\\"][\\\"…"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:25:24.844103+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_f840f4d8b26a48b08aa864bd",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:25:24.911202+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_f840f4d8b26a48b08aa864bd",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T07:25:24.946070+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_f840f4d8b26a48b08aa864bd",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\tests\\test_scan_job_execution.py"
+        ]
+      }
+    }
+  ],
+  "offset": 278,
+  "count": 19,
+  "next_offset": 297,
+  "has_more": true,
+  "total_matching": 604
+}

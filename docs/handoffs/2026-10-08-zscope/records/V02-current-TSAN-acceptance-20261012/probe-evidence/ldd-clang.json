@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "ldd",
+    "/opt/zscope-test/llvm18/bin/clang"
+  ],
+  "library_path": "/opt/zscope-test/host-libs:/opt/zscope-test/llvm18/lib",
+  "exit_code": 0,
+  "stdout": "\tlinux-vdso.so.1 (0x00007fffe9fef000)\n\tlibclang-cpp.so.18.1 => /opt/zscope-test/llvm18/lib/libclang-cpp.so.18.1 (0x000079535593e000)\n\tlibLLVM.so.18.1 => /opt/zscope-test/llvm18/lib/libLLVM.so.18.1 (0x000079534e333000)\n\tlibstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x000079534e0c6000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x000079534ded2000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x000079534dde0000)\n\t/lib64/ld-linux-x86-64.so.2 (0x000079535973f000)\n\tlibffi.so.8 => /opt/zscope-test/host-libs/libffi.so.8 (0x000079534ddd4000)\n\tlibedit.so.2 => /opt/zscope-test/host-libs/libedit.so.2 (0x000079534dd9a000)\n\tlibz.so.1 => /opt/zscope-test/host-libs/libz.so.1 (0x000079534dd7e000)\n\tlibzstd.so.1 => /opt/zscope-test/host-libs/libzstd.so.1 (0x000079534dcc4000)\n\tlibtinfo.so.6 => /opt/zscope-test/host-libs/libtinfo.so.6 (0x000079534dc8e000)\n\tlibxml2.so.2 => /opt/zscope-test/host-libs/libxml2.so.2 (0x000079534daac000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000079534da7f000)\n\tlibbsd.so.0 => /opt/zscope-test/host-libs/libbsd.so.0 (0x000079534da69000)\n\tlibicuuc.so.74 => /opt/zscope-test/host-libs/libicuuc.so.74 (0x000079534d85c000)\n\tliblzma.so.5 => /opt/zscope-test/host-libs/liblzma.so.5 (0x000079534d82a000)\n\tlibmd.so.0 => /opt/zscope-test/host-libs/libmd.so.0 (0x000079534d819000)\n\tlibicudata.so.74 => /opt/zscope-test/host-libs/libicudata.so.74 (0x000079534bab9000)\n",
+  "stderr": ""
+}

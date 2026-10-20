@@ -1,0 +1,89 @@
+{
+  "captured_at": "2026-10-14T07:01:21.600831+00:00",
+  "task_id": "task_f2a4721a58",
+  "state_before": "running",
+  "checkpoint": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\checkpoints\\s08-before-zcode-api-recovery",
+  "files": [
+    {
+      "path": "zscope/orchestration/jobs/__init__.py",
+      "sha256": "c97a892a6e4ef1e78709bfe7891030aafe473b7155640e809e84857e6a16fe07",
+      "mtime_ns": 1791954635979855300
+    },
+    {
+      "path": "zscope/orchestration/jobs/__main__.py",
+      "sha256": "2ad11455aaf4eb0f5f163c0f65e0bb74fadd8452053c820d63bd976c4e303d77",
+      "mtime_ns": 1791954635979307500
+    },
+    {
+      "path": "zscope/orchestration/jobs/fingerprint.py",
+      "sha256": "bc0d64d167e93fbb3e3f54f55b23a46687cff0989f1d30f10188e2159a899862",
+      "mtime_ns": 1791948980830228200
+    },
+    {
+      "path": "zscope/orchestration/jobs/identity.py",
+      "sha256": "de2c740a1008db144415227f7d9364afd2c9310b8092471c3648f3e136bc1002",
+      "mtime_ns": 1791950968019463200
+    },
+    {
+      "path": "zscope/orchestration/jobs/models.py",
+      "sha256": "3648843d3fa687d548b4daa0d7b812bf226d991b125794aa8c0df0081332006c",
+      "mtime_ns": 1791948527335113800
+    },
+    {
+      "path": "zscope/orchestration/jobs/owner.py",
+      "sha256": "ad05224e4851396718c186cba28b69778888dac714fb239c86d608daf0302285",
+      "mtime_ns": 1791949935819581700
+    },
+    {
+      "path": "zscope/orchestration/jobs/runner.py",
+      "sha256": "73fc2326da6d8f9d4c943da543dc3053baf2b433d28db944fac79ab9c78313bf",
+      "mtime_ns": 1791949089980886500
+    },
+    {
+      "path": "zscope/orchestration/jobs/scheduler_hook.py",
+      "sha256": "f6ecbddcc051966d42319f045b3231001825ff64c0a680f155cc953fede4fa16",
+      "mtime_ns": 1791949164425895900
+    },
+    {
+      "path": "zscope/orchestration/jobs/service.py",
+      "sha256": "0bd0e039cf52d188ba4e5b8c51153868ee77fb23954f57c5772a28ab6214770d",
+      "mtime_ns": 1791951271163456600
+    },
+    {
+      "path": "zscope/orchestration/jobs/store.py",
+      "sha256": "6488909057d4196c416532c3541243da4190368f6812f9ac27e548b6fddc6623",
+      "mtime_ns": 1791950947693964900
+    },
+    {
+      "path": "tests/test_scan_jobs.py",
+      "sha256": "b96e5ad74bf9b31418b4365dd3866ab32fb099f0814785a46b666e8bbb5993f2",
+      "mtime_ns": 1791957364106832400
+    },
+    {
+      "path": "tests/test_scan_job_execution.py",
+      "sha256": "475cf43d2d3dc9c717ad04ae093f8b511a074f4c71bbe78a7e239090de53e9a2",
+      "mtime_ns": 1791958743178650200
+    },
+    {
+      "path": "DELIVERY.md",
+      "sha256": "2119659deaa2d36b53e888e6ef4335a9ad69856ca4d18f4ea2fdff9be8037145",
+      "mtime_ns": 1791958988634075800
+    }
+  ],
+  "api_failure_metadata": [
+    {
+      "at": "2026-10-14T06:41:22.990000+00:00",
+      "errorName": "APIEmptyResponseError",
+      "nextAttempt": 2
+    },
+    {
+      "at": "2026-10-14T06:52:50.684000+00:00",
+      "errorName": "APIEmptyResponseError",
+      "nextAttempt": 2
+    }
+  ],
+  "qualification": "No new APITimeoutError in this repair turn; repeated empty API responses are a distinct ordinary API failure. Existing older timeouts retained, not relabeled.",
+  "source": "Readonly native Kimi session_c219a6de wire whitelist: type/time/errorName/attempt/modelAlias only. No bodies, tool arguments, credentials captured.",
+  "modelAlias": "volceapi/kimi-k3",
+  "new_zcode_dispatch_allowed_only_after": "exact cancelled/failed/completed task receipt and identical post-stop bytes"
+}

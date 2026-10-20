@@ -1,0 +1,13 @@
+{
+  "id": "u02-projection-kimi",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "kimi",
+    "model": "volceapi/kimi-k3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "U02 高风险保守验收与覆盖轻量投影",
+    "user_requested": true,
+    "request_id": "4392c2f8-33d3-4542-ae22-ab182c181672",
+    "message": "undefined\n本任务U02-PROJECTION（证据语义风险高，用户已授权KimiK3，不涉及UI）：隔离目录 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u02-projection。可写仅新增zscope/reporting/acceptance.py、tests/test_acceptance_projection.py、本分支DELIVERY.md/artifacts；既有services/report/views/proofs等只读，集成owner接线。\n按API_CONTRACT实现纯后台轻量投影，接口建议 acceptance_for_issue(issue, report_context) 和 acceptance_coverage(report)，给协调者明确调用方式。先读取真实report/schema/views/pipeline/proofs/protocol assessment的实际字段，不能只根据label字符串、validation_status validated、model verified/high confidence、LLM rejected、无动态触发就升级confirmed/ruled_out。业务conditional须当前专门assessment只有业务前提未确认，技术缺口pending；充分程序证明的当前性/适用构建需要后台持有的真实依据；旧报告/资料不足/无法重验保守pending并说明，不造可恢复JSON授权。投影只展示已有裁决，绝不签发证明、添加validator或重复大报告。保持severity、coverage、suppression、shadow独立。\n输出每个finding acceptance.state confirmed|business_conditional|pending|ruled_out, reason, resource_label/build_context_id/trigger_summary/reproduction/status/summary/sources_count；未知null。从当前真实字段得到资源/触发摘要/复现状态，来源去重计数；不按函数名/地址猜。coverage从metadata.build_coverage、completeness、已有覆盖缺口与延期真实数投影，未知null；避免复制完整evidence_pack/protocol路径/JSON，轻量长度有界，不能因截断抹掉缺口。\n测试真实report shape正反例、仅模型verified/rejected、高分、partial、技术与业务前提、旧/缺收据、异构构建/不同对象同一行、shadow和risk_accept不改变裁决、没有完整report fallback。不要修改被隔离protocol_assessment或任何rule/native。质量命令Linux。\n并发资源：本轮已有两个独立Kimi分支，仅本分支定向pytest，不启动大型全回归/共享native构建。所有测试在隔离cwd生成私有临时状态。若Linux入口环境报权限错误，停止受影响执行并准确报告，不能用Windows测试代替。"
+  }
+}

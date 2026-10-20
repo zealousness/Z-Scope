@@ -1,0 +1,15 @@
+{
+  "id": "s08-session-r6-review1",
+  "tool": "dispatch_task",
+  "branch": "s08-session-r6-review1",
+  "arguments": {
+    "session_id": "sess_3b6b9a19b2",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "agent": "zcode",
+    "title": "S08-SESSION-SCHEDULER-R1",
+    "message": "S08-SESSION-SCHEDULER 原会话的独立预审返修。上一轮 task_28a929d996 已正常 cancelled（20:50:03），公开 get_result 完整无分页/无错误/无审核阻断；同会话 sess_3b6b9a19b2 proc_state=ready。保留已有代码，继续初始范围，不重做漫长规划。\n仅在 .coordination/20261014/workspaces/s08-session-r6 修改原独占4文件及 DELIVERY/artifacts。读取当前源码和根 coordination/2026-10-14/followups-r6/s08-session-r6-request.json 的初始授权、所有权与验收要求；不改根目录、不改其他分支、work_queue/store/scan_session/parallel_analyzer仍只读；不改变provider/权限/实验默认，不操作旧S06会话。\n协调者已用真实SQLite复现3个失败（当前根目录未导入此消费端）：\n1. _settle 在 complete/defer 验证 claim_token 之前 _submit_discoveries；旧token被拒绝但stale-child已经入队。\n2. 注册回调执行中将真实job行input_revision改成fp1，旧input的parent和child仍completed，当前代码只在构造时绑定输入。\n3. 回调执行中owner_token变化，旧callback仍completed并入队child，之后下一轮才stand_down。\n失败探针和JUnit：根 docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/followups-r6/test_scheduler_guard_probes.py；artifacts/coordinator-s08-guard-probe-r6-20261014/results.xml。该探针只读，不修改/放宽断言；可直接用自己的PYTHONPATH通过test_slot执行。预审收据 followups-r6/s08-guard-probe-review.json。\n修复提交边界：在每次claim、提交verdict及接纳discoveries前重新核对实际job/run/owner/input；不可读当前绑定必须停止消费并保留未知/缺口，不能None当授权。旧lease/owner/run/input的结果和子发现全部拒绝，不产生completed、业务问题或新batch。有效结果的新发现仍精确下一batch、去重、公平、有界；不要只修completed计数标签。若原子verdict+discoveries需要共享work_queue API，明确给出必要接口/补丁建议由协调者接，禁止越权改只读文件。保持真实pending、未知分母、输入改变后的恢复失效、当前callback注册与owner的有界协作/最终原子attempt不变量。\n完成尚未写出的 tests/test_job_session_scheduler.py，以真实SQLite/回调/owner与scanner子进程验收原始范围及上述3个反例。已由协调者补齐 .editorconfig/.gitattributes 只读依赖，收据 followups-r6/s08-session-r6-dependencies.json，原971文件基线不改。\n所有测试/质量在WSL Ubuntu /home/zeal/venv313/bin/python，通过根 coordination/2026-10-14/test_slot.py --workspace /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-session-r6 -- <argv>；PYTHONPATH只指向本副本，TMPDIR已为ext4 /tmp，最多两个检查。完成相关回归、compileall/mypy/Black，交付稳定逐文件SHA、实际命令时间/JUnit、未覆盖及需协调接线项。完整扫描消费者接入仍由协调者承担，不把standalone consumer通过说成整个S08/JOB04/06已完成。",
+    "user_requested": true,
+    "request_id": "338299d9-acc7-4b5b-a31b-b3d2d11f3c6c"
+  }
+}

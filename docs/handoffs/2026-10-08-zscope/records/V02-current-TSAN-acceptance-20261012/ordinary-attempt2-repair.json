@@ -1,0 +1,9 @@
+{
+  "reason": "first compatibility failure: missing tools/java_structure_frontend.py in snapshot",
+  "change": "include existing tracked tools/ plus Python sources; no product/test modifications",
+  "prior_passed_reused": 193,
+  "remaining_expected_passed": 1543,
+  "first_failure_preserved": "C:\\Users\\10273\\Documents\\Codex\\2026-10-12\\task-3\\v01-v02-kimi-resume-20261012\\common-ordinary-20261012\\ordinary-container-result.json",
+  "driver_sha256": "a109b1ea68bd16ea0e78ba5c9053ecda0e466cd8a562c29052c661c7a86a2820",
+  "inside_driver_sha256": "c810ff7eada13ccc1325276bb54c11f5d97ca24d625b856218c410e7a95b64cc"
+}

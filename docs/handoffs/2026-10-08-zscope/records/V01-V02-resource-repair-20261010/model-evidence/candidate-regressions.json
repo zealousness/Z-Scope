@@ -1,0 +1,46 @@
+{
+  "at": "2026-10-10T07:27:16.812360+00:00",
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/zscope-resource-candidate-20261010-iw4n6dxa/tmp",
+    "--junitxml=/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/candidate-regressions.xml",
+    "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/test_v01_v02_resource_bounds.py",
+    "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/test_v01_v02_resource_controls.py"
+  ],
+  "exit_code": 0,
+  "counts": {
+    "passed": 8,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "failures": [],
+  "product_source_digest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "candidate_digest": "77c82832b03cd2e0bb2adacb0dbc19983daaa08912c23a9546ddb9ae0b08d1b4",
+  "product_modified": false,
+  "changed_inputs": [],
+  "pressure": false,
+  "memory_pressure": false,
+  "max_fixture_output_bytes_per_stream": 64,
+  "work": "/tmp/zscope-resource-candidate-20261010-iw4n6dxa",
+  "artifacts": {
+    "candidate-regressions.xml": {
+      "sha256": "18d366c077042642d5820d05dcafdb0362c245a4e84a2e951f9d61a33eada063",
+      "bytes": 1306
+    },
+    "candidate-regressions.stdout.log": {
+      "sha256": "315af93b37b675c12c438052ce2a5c1c3dc52629525ee9c4f2fdb9ec6e4f96be",
+      "bytes": 98
+    },
+    "candidate-regressions.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  }
+}

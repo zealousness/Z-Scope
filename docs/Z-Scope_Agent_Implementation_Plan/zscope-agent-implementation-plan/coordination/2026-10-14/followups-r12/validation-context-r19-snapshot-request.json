@@ -1,0 +1,15 @@
+{
+  "id": "validation-context-r19-snapshot",
+  "branch": "validation-context-r18",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "VALIDATION-CONTEXT-R18-SNAPSHOT",
+    "session_id": "sess_a0adb99b15",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "user_requested": true,
+    "request_id": "1390b9bb-90b0-4e4d-be44-ca16f3a5c3f5",
+    "message": "ZCode glm-5.3：继续 validation-context-r18 隔离目录 / sess_a0adb99b15。task_bf7efdfce3 已完成，协调者完整独立1074/0及四质量命令0于19:34:03通过，但额外真实native/框架快照探针2/2失败，尚未整体独验/集成。不是恢复旧S06，也不是规避审核。\n\n证据 artifacts/coordinator-validation-snapshot-r19-probes-20261015/{review.json,command-0.log,results.xml,test_validation_call_snapshot_boundary.py}，19:34:36，源码/native冻结不变。原探针 followups-r12/test_validation_call_snapshot_boundary.py 只读：真实native混合int/char入口本来unknown；capture或真实provider提交后，父绑定的observations字典变化为intUSR，工作者就错误选中唯一int契约。既有call_facts按引用携带不满足提交快照冻结；frozen dataclass不冻结嵌套列表/字典。\n\n先原样复现留新JUnit，再修复同六文件范围。冻结call entries/arguments/results/values/observations的嵌套可变值，同时保留同一个registry引用与当前性核验，不能deepcopy registry导致身份检查失效、不能复制任意ContextVar、不能接受自报JSON身份。每个provider边界独立快照，不让父输入或另一个provider修改重写提交时身份。保持有效same-entry映射、mixed/unknown为空、切换入口和legacy清除、finally/timeout/cancel/异常/池复用恢复；不得只清所有call_facts牺牲有效正例。\n\n保留17新用例、原六探针和全部回归；新增父修改、嵌套call值修改、同池并发/复用快照正反例。两个额外独立探针原样通过后，完整回归与compileall zscope scripts test tests / mypy zscope / 六修改Python的Black均真实退出0。测试经根test_slot.py两个共享Linux槽、WSL zeal bash -lc、venv313、default fd/ext4；不嵌套、不skip/xfail/放宽超时，不tail管道掩盖退出码。\n\n写权限仍仅原六文件（含prospective call_context.py）；Root/其它副本/旧tests/探针/UI/native工具只读。所有调试脚本/日志放artifacts；native SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399不变。无需新服务/安装/凭据/权限变更/commit/push/reset/clean。交付最终六SHA、时间、失败与通过收据、剩余未测并稳定停写。1074切片通过不能代替快照边界，更不能代替完整S01或真实项目/模型效果。\n"
+  }
+}

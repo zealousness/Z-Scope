@@ -1,0 +1,13 @@
+{
+  "synthetic_only": true,
+  "before_status": "rejected_identity_mismatch",
+  "after_status": "compared",
+  "record_id_unchanged": true,
+  "confirmed_comparison": {
+    "cold": 2.0,
+    "warm": 999.0,
+    "baseline_value": 2.0,
+    "difference_vs_baseline": true
+  },
+  "report_and_usage_inputs_unchanged": true
+}

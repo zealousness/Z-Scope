@@ -1,0 +1,142 @@
+{
+  "date": "2026-10-09",
+  "work": "/tmp/zscope-reacceptance-final-a40h_2o3",
+  "checks": [
+    {
+      "label": "scan-seam",
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/zscope-reacceptance-final-a40h_2o3/scan-seam",
+        "--junitxml=/tmp/zscope-reacceptance-final-a40h_2o3/scan-seam.xml",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-integration.py",
+        "-k",
+        "missing_optional"
+      ],
+      "exit_code": 1,
+      "stdout": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_ test_missing_optional_candidate_identity_does_not_abort_scan_without_provider _\ndocs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-integration.py:25: in test_missing_optional_candidate_identity_does_not_abort_scan_without_provider\n    outcome = d.attempt_dynamic_reproduction(issue, policy=d.DynamicReproductionPolicy(enabled=True))\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nzscope/core/validation/dynamic_reproduction.py:3212: in attempt_dynamic_reproduction\n    if is_shadow_candidate(bind_candidate(issue)):\n                           ^^^^^^^^^^^^^^^^^^^^^\nzscope/core/validation/dynamic_reproduction.py:506: in bind_candidate\n    return CandidateBinding(\n<string>:17: in __init__\n    ???\nzscope/core/validation/dynamic_reproduction.py:367: in __post_init__\n    raise DynamicReproductionError(\nE   zscope.core.validation.dynamic_reproduction.DynamicReproductionError: incomplete_candidate_binding:source_revision\n=========================== short test summary info ============================\nFAILED docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-integration.py::test_missing_optional_candidate_identity_does_not_abort_scan_without_provider\n1 failed, 1 deselected in 2.43s\n",
+      "stderr": "",
+      "counts": {
+        "passed": 0,
+        "failed": 1,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "label": "docs",
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/zscope-reacceptance-final-a40h_2o3/docs",
+        "--junitxml=/tmp/zscope-reacceptance-final-a40h_2o3/docs.xml",
+        "tests/test_agent_docs.py"
+      ],
+      "exit_code": 0,
+      "stdout": "......                                                                   [100%]\n6 passed in 1.84s\n",
+      "stderr": "",
+      "counts": {
+        "passed": 6,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "label": "diff-check",
+      "command": [
+        "git",
+        "-c",
+        "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "warning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/checked_proofs_eval.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/dedup_fix_verify.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/fold_tp_safety.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/fp_decomp2.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/gen_dashboard.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/m58c_awarenenss.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/m5_tpr_backlog.md', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/m5tpr_blind_coverage.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/m5tpr_map_verify.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/m5tpr_replay.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/merged_missed_probe.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/score_table.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'benchmarks/experiments/balanced_confirmed_tp/v2b_adjudication_replay.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'docs/research_on_wrapper.md', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'tests/test_checked_proofs_gate.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'tests/test_dedup_site_aware.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'tests/test_issue_dedup.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'tests/test_review_runtime.py', CRLF will be replaced by LF the next time Git touches it\nwarning: in the working copy of 'zscope/benchmarking/protocol.py', CRLF will be replaced by LF the next time Git touches it\n"
+    },
+    {
+      "label": "head",
+      "command": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit_code": 0,
+      "stdout": "010f40210b54ba0f79a088312ce5d8be3a82ace0\n",
+      "stderr": ""
+    },
+    {
+      "label": "branch",
+      "command": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "exit_code": 0,
+      "stdout": "v1.3.1_feat/llm-wiki\n",
+      "stderr": ""
+    }
+  ],
+  "source_changes": [],
+  "baseline_combined": "6bfe70ca8b04aef7584627b63c65e91041c6b307a3c0ae7907adcc82de75b96b",
+  "encoding": {
+    "records/V01-V02-reacceptance-review.md": {
+      "utf8_bom": false,
+      "crlf": false,
+      "final_lf": true
+    },
+    "TASKS.yaml": {
+      "utf8_bom": false,
+      "crlf": false,
+      "final_lf": true
+    },
+    "PROGRESS.md": {
+      "utf8_bom": false,
+      "crlf": false,
+      "final_lf": true
+    }
+  },
+  "previous_review_scripts_preserved": {
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-regressions.py": true,
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-driver.py": true,
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-container-review.py": true
+  },
+  "artifacts": {
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-build-evidence.json": "3d41c5ee9f4e251236882548a176d1e0d54be0cdf5170af3bf6b266063186fe1",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-container-initial.json": "4045dc3d62c494c645083a3e6d48df4ac22ad71ff2299cedc3ea6d6e24f6d44a",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-container-validation.json": "dfe8d12be49f20892bb572788db0f13b143d31d733b126a7cc8bbec1094d963f",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-container.py": "39a388e64c32f1dbdeac4ceb994806576e9486c6579f620990117923a8c193bb",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-driver.py": "7437f65ba244d1ffcede822b576c6a5f8cb5cc7533ac5faee246950d7a11b2dd",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-final-check.py": "12c6fac3081b2b40da46f5801d958c9a30f8dbcc74632a56b34e9c44f0c6c7c7",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-integration.py": "7f4d0af4812ac5cee9df5ad6f6ff060789fc8a652d3e58a04a8eebabfdc4f392",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-regressions.py": "8d05c9deb3b674c0906ae71f8136c2e8d1e3d2a53d775434dde680c876c794a6",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-review.md": "982f04159db2e7b239ae689b5f1d71769a3323d457bdabfd464459971a61b13e",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-validation.json": "a1f54988cc5a8a57438d17e203a4f94d10101754a250377d6a5a02be9b5e93aa"
+  },
+  "original_artifacts_preserved": {
+    "benchmarks/experiments/balanced_confirmed_tp/dashboard/server.pid": true,
+    "benchmarks/experiments/balanced_confirmed_tp/m5tpr_replay_results.jsonl": true
+  },
+  "task_status": {
+    "V01": {
+      "status": "in_progress",
+      "result_record": "records/V01-V02-reacceptance-review.md"
+    },
+    "V02": {
+      "status": "blocked",
+      "result_record": "records/V01-V02-reacceptance-review.md"
+    }
+  },
+  "evidence_sealed_after_container_rerun": true
+}

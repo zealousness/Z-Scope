@@ -1,0 +1,25 @@
+{
+  "at": "2026-10-14T05:35:50.720052+00:00",
+  "branch": "s07-oracle",
+  "source_baseline": "41d9c25a0e259457164b68191ed6d797b5d7e1e5a8b748b501fd79df37deabd1",
+  "files": [
+    {
+      "path": "tests/test_scan_demand_equivalence.py",
+      "sha256": "a27956205dc9c26fd5e833d193f4069190ecd196c8ceb0d9526efd0a7bc1cdc9"
+    },
+    {
+      "path": "tests/fixtures/scan_demand_equivalence/scenarios.json",
+      "sha256": "f7dfbb6a64bf9f0a17ad9c3f13afd62859753e12fbde6a31f0a77057e36b05dc"
+    },
+    {
+      "path": "tests/fixtures/scan_demand_equivalence/stale_serialized_plan.json",
+      "sha256": "09c2e945752be5da14a65630fdeb2c11025e7962add5eb8f96e2c9870d6d3cb5"
+    },
+    {
+      "path": "tests/fixtures/scan_demand_equivalence/README.md",
+      "sha256": "f805124c63b725614f9c9a3f56ab62b6484d32af35441068ade6f8762b2a0789"
+    }
+  ],
+  "existing_source_changes": [],
+  "state": "immutable_intake_snapshot_pending_independent_integration_tests_and_final_worker_receipt"
+}

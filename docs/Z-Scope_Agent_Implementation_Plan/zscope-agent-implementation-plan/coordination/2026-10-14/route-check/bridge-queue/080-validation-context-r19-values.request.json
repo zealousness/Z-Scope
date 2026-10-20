@@ -1,0 +1,15 @@
+{
+  "id": "validation-context-r19-values",
+  "branch": "validation-context-r18",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "VALIDATION-CONTEXT-R19-VALUES",
+    "session_id": "sess_a0adb99b15",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "user_requested": true,
+    "request_id": "969b8385-a4a2-4b9a-8fb6-66ff09a98323",
+    "message": "ZCode glm-5.3：继续同 validation-context-r18 / sess_a0adb99b15，task_d4f97ce947 已于19:59:55交付并取得完整get_result，当前仍未独验/集成。协调者最新正确独立6边界预检4过/2败（20:05:09，源码/native冻结），证据 artifacts/coordinator-validation-context-r19-corrected-values-preflight-20261015/review.json / command-0.log / frozen-probes。原callee切换/清空和身份快照4项已过，新增有效调用值正例与嵌套payload隔离2项失败。\n\n明确区分探针纠错：更早 artifacts/coordinator-validation-context-r19-boundary-preflight-20261015 两项失败发生在协调者错误的mixed guard值前置假设，已保留并标记fixture无效，不作为产品返修依据。现在的原探针 followups-r12/test_validation_call_values_snapshot_boundary.py 已改为实际native唯一int调用身份 + 受控嵌套payload，仅检验存储/兼容，不把受控payload作native条件/效果授权。native实际target.pointer_bits/target.triple等值与受控payload在捕获前均可读取，捕获后全部变为{}；前置条件真实通过，后置失败才是有效产品证据。\n\n已定位直接原因：freeze_call_facts把arguments列表转tuple，而current_call_values仍args == arguments（下游传list），导致每个冻结调用都不再匹配，连实际native target.*也消失。不能用清空有效事实换隔离。另MappingProxyType(dict(values))只复制/只读外层，嵌套list/dict仍共享；规范化参数后还须真正隔离嵌套值，保持消费者原类型/值语义、registry同一引用及currentness，不深拷贝registry、不从JSON/候选/环境获得身份、不扩大名称/unknown fallback。只有top层只读不等于嵌套快照。\n\n六文件范围保持无扩权。先原样复现最新6探针留新失败，再修；新增有效native target.*捕获前后正例、实际consumer参数list/快照tuple一致匹配、父嵌套值修改不影响快照、同池两任务隔离、真实provider路径中的非空有效值正例。已有自测的assert \"forged\" not in values在values={}时也过，不能证明有效值保存，须补非空/精确值正例。保留原19用例及全部原契约/验证/协议回归，4已过探针仍保持；协调者6探针原样通过后完整批/compileall zscope scripts test tests/mypy zscope/六修改Python Black全部真实退出0。不得删原义务、skip/xfail/少跑或扩大超时；同名探针只选一个冻结副本收集，避免重复模块，不以此省掉用例。\n\n所有helpers/log/JUnit在artifacts，各轮独名保留失败不覆盖。WSL zeal bash -lc /home/zeal/venv313/bin/python，经根test_slot.py两槽/default fd/ext4、不嵌套；native只读SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，不改源码/工具/完成标记。Root/其它副本/旧tests/独立探针/UI/旧S06只读；无新服务/安装/凭据/审核规避/commit/push/reset/clean。交付六SHA/时间/真实退出码/未测，稳定停写。Root当前选定2079+六命令已过但extra native replay仍开放；各集合不相加、不宣称全包/真实项目效果。\n"
+  }
+}

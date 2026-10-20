@@ -1,0 +1,8 @@
+{
+  "tool": "wait_task",
+  "arguments": {
+    "task_id": "task_c5ebd65572",
+    "timeout_sec": 40
+  },
+  "id": "r6-kimi-wait-53b4f09661"
+}

@@ -1,0 +1,186 @@
+{
+  "startedAt": "2026-10-10T04:23:33.101Z",
+  "profile": "headless",
+  "provider": "deepseek",
+  "model": "deepseek-v4.1-flash",
+  "baseURL": "user-approved gateway (private endpoint redacted)",
+  "overlay": "C:/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-headless-auth-20261010/probe.patch.yml",
+  "sourceDigest": "d78417fb96b22380f43e3611e841fa75a15f39a8b0af41057cbc6e7f230775ca",
+  "promptDigest": "18d4d16e5b6696f905e67c18a577cc3c2a45c496fd1cd1971e8a720410f77951",
+  "promptBytes": 39755,
+  "events": [
+    "gateway-credential-presence",
+    "session",
+    "status",
+    "status",
+    "gateway-request-controls",
+    "gateway-model-status",
+    "thinking",
+    "status",
+    "gateway-model-status",
+    "status",
+    "final"
+  ],
+  "statuses": [
+    {
+      "phase": "turn_start"
+    },
+    {
+      "phase": "step_start"
+    },
+    {
+      "phase": "step_end",
+      "usage": {
+        "inputTokens": 10644,
+        "outputTokens": 32768,
+        "totalTokens": 43412
+      }
+    },
+    {
+      "phase": "turn_end",
+      "reason": {
+        "kind": "max-tokens"
+      }
+    }
+  ],
+  "modelStatuses": [
+    {
+      "eventType": "assistant/message",
+      "facts": [
+        {
+          "key": "inputTokens",
+          "value": 10644
+        },
+        {
+          "key": "outputTokens",
+          "value": 32768
+        },
+        {
+          "key": "totalTokens",
+          "value": 43412
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-start"
+        },
+        {
+          "key": "type",
+          "value": "reasoning-chunks"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-end"
+        },
+        {
+          "key": "type",
+          "value": "reasoning"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "usage"
+        },
+        {
+          "key": "inputTokens",
+          "value": 10644
+        },
+        {
+          "key": "outputTokens",
+          "value": 32768
+        },
+        {
+          "key": "totalTokens",
+          "value": 43412
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "finish"
+        },
+        {
+          "key": "kind",
+          "value": "max-tokens"
+        },
+        {
+          "key": "kind",
+          "value": "pi-ai"
+        },
+        {
+          "key": "responseId",
+          "value": "021791606213403a8f260d187d1adb21c57239ba9cb480a51626c"
+        },
+        {
+          "key": "stopReason",
+          "value": "length"
+        },
+        {
+          "key": "type",
+          "value": "reasoning"
+        },
+        {
+          "key": "kind",
+          "value": "pi-ai"
+        },
+        {
+          "key": "responseId",
+          "value": "021791606213403a8f260d187d1adb21c57239ba9cb480a51626c"
+        },
+        {
+          "key": "stopReason",
+          "value": "length"
+        }
+      ]
+    },
+    {
+      "eventType": "turn/end",
+      "facts": [
+        {
+          "key": "kind",
+          "value": "max-tokens"
+        }
+      ]
+    }
+  ],
+  "requestId": null,
+  "rawDiagnosticsDiscarded": true,
+  "privateReasoningDiscarded": true,
+  "credentialValuesExcluded": true,
+  "modelToolsDisabled": true,
+  "persistentSessionsDisabled": true,
+  "routeVerified": {
+    "configured": true,
+    "source": "file",
+    "selectionMatches": true,
+    "endpointMatches": true
+  },
+  "sessionId": "session-2e38aacc-bcc9-40b2-a0a4-93bb3bd536f3",
+  "requestControls": {
+    "provider": "deepseek",
+    "model": "deepseek-v4.1-flash",
+    "maxTokens": null,
+    "reasoningEffort": null
+  },
+  "completedAt": "2026-10-10T04:26:55.000Z",
+  "exitCode": 1,
+  "signal": null,
+  "stdoutBytes": 10220,
+  "stderrBytes": 263,
+  "answerBytes": 0,
+  "answerDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "modelReturnedAnswer": false,
+  "productSourceUnchanged": true
+}

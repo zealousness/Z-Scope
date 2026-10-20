@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T02:07:52.174710+00:00",
+      "type": "raw",
+      "data": {
+        "update_type": "AvailableCommandsUpdate"
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 1,
+  "next_offset": 1,
+  "has_more": true,
+  "total_matching": 7
+}

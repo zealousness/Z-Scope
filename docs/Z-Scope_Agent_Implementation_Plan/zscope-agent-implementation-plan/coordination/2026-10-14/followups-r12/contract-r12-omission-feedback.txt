@@ -1,0 +1,14 @@
+继续原 ZCode GLM5.3/session/contract-validation-r12，不重复服务/任务。task_07fdfa490a Bridge于04:32:47结束，但最终native自验/DELIVERY延续至04:38，协调者14:29实际核对WSL生产者进程为空。你的943/0自验原样保留，13旧边界现独验通过，但新增3反例真实失败，尚未独验/集成。
+
+有效冻结证据 artifacts/coordinator-contract-r12-r3-omission-probes-20261015/review.json：14:35:20完成，16测试13pass/3fail/0error/skip，stable_frozen_inputs=true、producer_current_matches_frozen=true。新增 followups-r12/test_contract_omitted_usr_boundary.py：前两项明确synthetic selection隔离，第三项实际clang-indexer+真实compiler publication/native mixed overload，未伪造native事实。每项都有实际确切USR查询正例或实际caller正例，失败在最后拒收断言，不是fixture设置失败。
+- 仅bind_build_scope(build-a)，无当前callee/entry身份时，match_call省略usr仍选择已发布且effects_trusted的dispose并授予applies；显式usr=""拒收，省略却变通配。
+- 同样无身份的find_for_call省略USR选择pinned契约，而raw find已可承担发现查询。
+- 真实log.cpp的mixed中两种log_msg调用，callee_usr_map实际为空；registry只发布int重载，native only_int正例选中正确USR，但mixed省略USR仍借用唯一已发布的int记录。你旧测试注册两个重载，只因registry歧义返回空，掩盖了本例；已发布数量不证明当前调用选择该目标。该native测试只证明选择身份，未把空函数的io_acquire角色当已证明物理效果。
+
+必须取消将 current_callee_usr(...) 的空串转成None后按名fallback授效果的行为。省略参数可以触发实际native解析，但解析失败/歧义/缺收据必须按unknown拒绝pinned契约，不能依赖已发布记录唯一或为旧未绑定正例回退。find_for_call也是多个实际效果消费者入口；发现查询用find或明示discovery API，不能借“省略不同于显式未知”规避同一身份事实。内层allocation_extent/acquisition_domain/resolve/effect_status/resolved_transitions及间接消费保持一致。实际已知callee/入口symbol以当前native事实接入，不能猜callee或从契约自身USR反推选择。版本失效/Registry缓存语义也核对，不能旧弱记录继续授权。
+
+所有权：原12已授权文件继续；retention_protocols.py第13文件的原越界审计保存在 artifacts/coordinator-contract-r16-ownership-review-20261015/original-audit.json，协调者逐字比较确认仅owner-USR发布增量，未倒写历史合规或视为通过。基于用户既有开发/返修/共享集成授权，已 prospective交接第13文件供此次必要返修，followups-r12/contract-validation-r12-ownership-extension-r4.json及decision.json；root原文件未改，无其他writer。以后不能把理由概括当自动扩大文件清单。该checker目前不同于另3份，尚未在前置要求owner.usr非空：一起核对缺native身份时不得发布可授强效果的未知记录，不弱化原AST/build/CFG检查。其它文件仍只读。
+
+旧正例如果真的缺少调用上下文或nativeUSR，要修真实产品接线或给协调者精确只读测试迁移方案，不能为测试变绿保留name-only授权；有新的最小写路径需求先交调用点与接口建议，由协调者交接，不私改。不要采用上版async_paths建议把frame.body.owner.usr当标准callee.USR：那是调用方身份，实际callee在event.callee；当前async标准路径还独立核对builtin/current system/catalog，未发现本例需要变动该归档域，不恢复旧S06-R02会话。
+
+原37文件、已增加checker直测及全部4份边界探针都保留，新16边界均加入最后稳定字节验证；不改只读旧测试/独立探针/timeout，不skip/xfail/删失败，不把局部探针绿当完整包。13变更文件Black、compileall/mypy全部真实通过后新DELIVERY、SHA、UTC+8时间、日志/JUnit和停写。只能原副本；Kimi/Astra已停写各自交付，协调者正在处理其独验与测试迁移，不能碰其目录/根。根当前R16真实1207/0fail/error/skip+六命令0，04:31:42，1009当前hash匹配，不含本交付。原native工具只读不重建，WSL zeal bash -lc/venv313/root两槽/defaultfd/ext4TMPDIR不变。无额外权限/provider/审批修改，无commit/push/reset/clean；遇到平台/审批/额度拦截停止受影响操作，不能换路由绕过。

@@ -1,0 +1,17 @@
+{
+  "prepared_at": "2026-10-17T09:34:08.342439+08:00",
+  "logical_task": "S01-INSTANCE-SEMANTICS-MIN-R23",
+  "new_workspace": ".coordination/20261014/workspaces/s01-origin-repair-r31",
+  "write_paths": [
+    "zscope/semantics/instance_semantics.py",
+    "tests/test_instance_semantics.py"
+  ],
+  "artifact_write_paths": [
+    "DELIVERY.md",
+    "artifacts/s01-repair-r31/**"
+  ],
+  "target_owner_conflicts": [],
+  "old_workspace_readonly": true,
+  "root_and_stage_readonly": true,
+  "request_id": "18b2c44d-ca08-4694-bebf-e9623d5331cb"
+}

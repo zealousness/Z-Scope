@@ -1,0 +1,274 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T05:00:49.974427+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " env)."
+      }
+    },
+    {
+      "ts": "2026-10-14T05:00:50.109038+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " Let me smoke"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:00:50.263246+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "-test a minimal literal"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:00:50.388509+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " config in"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:00:50.517847+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " WSL before writing tests"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:00:50.701307+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "."
+      }
+    },
+    {
+      "ts": "2026-10-14T05:01:38.442479+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Qu"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:01:38.573333+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "oting got"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:01:38.708394+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " mangled. Let me write"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:01:38.843516+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the smoke files properly"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:01:38.978479+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " with the Write tool,"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:01:39.129132+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " then run in W"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:01:39.314828+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "SL."
+      }
+    },
+    {
+      "ts": "2026-10-14T05:02:08.218936+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Config"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:02:08.350561+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " v"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:02:08.482215+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "2 requires"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:02:08.659910+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:02:08.744631+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " `concurrency` mapping."
+      }
+    },
+    {
+      "ts": "2026-10-14T05:02:08.877039+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " Adding it."
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:39.496832+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Smoke passes"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:39.742728+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " — config"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:39.990958+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " loads"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:40.244287+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ", fingerprint computes"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:40.487415+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ", service responds"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:40.735820+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ". Now let me set"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:40.990428+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " up the"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:41.234692+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " work plan"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:41.485054+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " and check pytest availability"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:41.730328+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " in the v"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:09:41.981419+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "env."
+      }
+    },
+    {
+      "ts": "2026-10-14T05:10:14.464251+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Now"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:10:14.619513+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " writing the package"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:10:14.792800+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " entry points."
+      }
+    }
+  ],
+  "offset": 58,
+  "count": 33,
+  "next_offset": 91,
+  "has_more": false,
+  "total_matching": 91
+}

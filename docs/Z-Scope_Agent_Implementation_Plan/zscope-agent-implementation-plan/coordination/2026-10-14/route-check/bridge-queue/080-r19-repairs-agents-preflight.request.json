@@ -1,0 +1,5 @@
+{
+  "id": "r19-repairs-agents-preflight",
+  "tool": "list_agents",
+  "arguments": {}
+}

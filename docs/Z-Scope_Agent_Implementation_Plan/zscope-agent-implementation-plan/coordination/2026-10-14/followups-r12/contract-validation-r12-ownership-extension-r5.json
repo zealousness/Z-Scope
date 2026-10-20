@@ -1,0 +1,19 @@
+{
+  "coordinator_authorized": true,
+  "authorized_at": "2026-10-15T15:41:00+08:00",
+  "write_paths": [
+    "zscope/semantics/resource_coverage.py"
+  ],
+  "reason": "Current context exists but coverage effect lookup lacks its exact native identity; fix actual native cache regression without weakening coverage assertions.",
+  "root_changed": false,
+  "other_writers": [],
+  "historical_ownership_violation_waived": false,
+  "semantic_modeling_write_authorized": false,
+  "coordinator_readonly_test_migration": [
+    "tests/test_contract_build_scope.py",
+    "tests/test_native_wrapper_inference.py",
+    "tests/test_single_slot_pool.py",
+    "tests/test_retention_protocols.py"
+  ],
+  "authorization_recorded_at": "2026-10-15T15:43:01.206447+08:00"
+}

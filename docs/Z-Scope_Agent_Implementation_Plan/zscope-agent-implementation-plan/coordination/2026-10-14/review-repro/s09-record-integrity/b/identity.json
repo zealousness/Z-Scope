@@ -1,0 +1,23 @@
+{
+  "schema_version": "zscope.agent-plan-evaluation-identity.v1",
+  "source_tree_hash": "abababababababababababababababababababababababababababababababab",
+  "source_revision": "rev-1",
+  "project_id": "dev-fixture",
+  "entry_functions": [
+    "main"
+  ],
+  "build_context_ids": [
+    "bc-1"
+  ],
+  "scanner_identity": "git:010f402",
+  "config_hash": "cfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcf",
+  "model_manifest_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "model_provider": "hw",
+  "model_name": "glm-5.3",
+  "tools": {
+    "clang_indexer": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+  },
+  "candidate_schema_version": "v3.5",
+  "validation_policy_version": "v3",
+  "report_schema_version": 2
+}

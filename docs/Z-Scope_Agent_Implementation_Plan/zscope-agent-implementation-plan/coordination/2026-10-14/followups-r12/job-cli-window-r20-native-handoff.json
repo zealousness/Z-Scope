@@ -1,0 +1,73 @@
+{
+  "at": "2026-10-15T22:25:40.632100+08:00",
+  "logical_work_item": "U01-JOB-CLI-WINDOW-R20",
+  "native_task_id": "/root/astra_job_cli_sql_r20",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "previous_bridge_task_id": "task_d98c531060",
+  "previous_session_id": "sess_e10155a00c",
+  "bridge_session_closed": true,
+  "own_paths": [
+    "zscope/cli/cli.py",
+    "zscope/orchestration/execution_profile.py",
+    "tests/test_job_cli_stop_window.py"
+  ],
+  "owned_before": {
+    "zscope/cli/cli.py": "9964cc77ce1527d8f543153b98bb4b757492429e2da7569d82c8647921376b15",
+    "zscope/orchestration/execution_profile.py": "170b0158115dc5f7e8c2cfb0e4ac1fc1dedbd08599b1d5a203419440114fac87",
+    "tests/test_job_cli_stop_window.py": "4b163140dfa6295a098914ce43f268ab3957343ffc61124d1260d7bbf4e50543"
+  },
+  "readonly_dependencies": {
+    "captured_at": "2026-10-15T14:23:47.962904+00:00",
+    "coordinator_authorized": true,
+    "files": [
+      {
+        "path": "zscope/common/cancellation.py",
+        "previous_sha256": "a1757bdc643f027420170190df983d7f2f10c0543b8bdba0e373bf654df041c2",
+        "sha256": "af3aef876f9137518c33118505d9237d766cf35a85c01d3d395b38b4c0302f40",
+        "owner": "/root/astra_first_cause_r20",
+        "independent_review": "artifacts/coordinator-first-cause-r20-final-acceptance-20261015/review.json",
+        "worker_write_permission": false
+      },
+      {
+        "path": "tests/test_cancellation_first_cause.py",
+        "previous_sha256": null,
+        "sha256": "aa276d26c64972618d5b8633ad7a2afc9f600c3851d2abb5c6ce28c4bcc2c67d",
+        "owner": "/root/astra_first_cause_r20",
+        "independent_review": "artifacts/coordinator-first-cause-r20-final-acceptance-20261015/review.json",
+        "worker_write_permission": false
+      },
+      {
+        "path": "AGENTS.md",
+        "previous_sha256": "b8c5ba94528fa3e13bbb7f588c0f4cb8e1f0c0d1772f110ebf116598609ee774",
+        "sha256": "61f52815598d58f2d39e3e2867744aa63fa65f0d35f5f916186569a644f51ce3",
+        "owner": "coordinator_readonly_module_notes",
+        "worker_write_permission": false
+      },
+      {
+        "path": "README.md",
+        "previous_sha256": "4dbbbec4f5d5f7d4273f7e91282bea6ee3da12a812630d3696ee39c5f27d31b2",
+        "sha256": "1015dcbea2dc0288b2363d83d51b633a2b381fdbd8234adaa63e6ed69414c9b2",
+        "owner": "coordinator_readonly_module_notes",
+        "worker_write_permission": false
+      },
+      {
+        "path": "docs/modules/configuration-state.md",
+        "previous_sha256": "11be8fc7c8879801086061c4253c596a65611d8a394f96beb0df3edb665443c0",
+        "sha256": "2cbe26da0fcd6378fdf0c3768d6006567d4f7cbb45956a1c302296361dd4fc53",
+        "owner": "coordinator_readonly_module_notes",
+        "worker_write_permission": false
+      },
+      {
+        "path": "docs/modules/execution-orchestration.md",
+        "previous_sha256": "5621fbce70ed2b5ddd59a8e7536f0d10fcd49bf0b18b9613922c58f5543ec1ea",
+        "sha256": "11c9fa8ae339f6ffd20a448815aee9a16b4ffca050e7c5fe9a7059c1f0da2cfa",
+        "owner": "coordinator_readonly_module_notes",
+        "worker_write_permission": false
+      }
+    ],
+    "scope": "Independently accepted two-file Astra cancellation dependency and four staged readonly coordinator docs; producer ownership remains exactly three code/test files; Root unchanged"
+  },
+  "development_failure_streak_before": 1,
+  "routing_reason": "Explicit user policy permits particularly complex work to Astra/xhigh. Atomic SQL identity/window, project-store and persisted run-directory authority requires deeper review. GLM network-only failure is not a fourth development failure or a platform rejection; history and first delivery retained."
+}

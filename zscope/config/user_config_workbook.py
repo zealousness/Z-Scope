@@ -39,6 +39,7 @@ RESOURCE_KINDS = frozenset(
         "format_sink",
         "callback_register",
         "ownership_transfer",
+        "reference_retention",
         "thread_create", "thread_release", "standard_operation",
     }
 )

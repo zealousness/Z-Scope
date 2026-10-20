@@ -1,0 +1,44 @@
+{
+  "session_id": "sess_4b386346c6",
+  "kinds": "tool_call,tool_call_update",
+  "start_offset": 48,
+  "next_offset": 1274,
+  "pages": 29,
+  "total_matching": 1274,
+  "has_more": false,
+  "events_read": 1226,
+  "latest_at": "2026-10-14T05:11:32.726301+00:00",
+  "failed_tools": [],
+  "completed_tail": [
+    {
+      "ts": "2026-10-14T05:10:35.985605+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Write_37",
+        "status": "completed",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/__init__.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T05:10:55.442505+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_39",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:11:32.726301+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_40",
+        "status": "completed"
+      }
+    }
+  ]
+}

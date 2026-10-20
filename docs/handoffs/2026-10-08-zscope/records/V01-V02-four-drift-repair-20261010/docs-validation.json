@@ -1,0 +1,46 @@
+{
+  "at": "2026-10-10T04:42:09.252557+00:00",
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/zscope-four-fix-docs-20261010-vpq1s8gy/pytest",
+    "--junitxml=/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-four-drift-docs-20261010.xml",
+    "tests/test_agent_docs.py"
+  ],
+  "python": "/home/zeal/venv313/bin/python",
+  "exit_code": 0,
+  "counts": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "input_audit_before": {
+    "tracked_inputs": 403,
+    "declared_documentation_changes": [
+      "docs/modules/analysis-pipeline.md",
+      "docs/handoffs/2026-10-08-zscope/TASKS.yaml",
+      "docs/handoffs/2026-10-08-zscope/PROGRESS.md"
+    ],
+    "actual_changes_from_tested_snapshot": [],
+    "unexpected_concurrent_changes": []
+  },
+  "input_audit_after": {
+    "tracked_inputs": 403,
+    "declared_documentation_changes": [
+      "docs/modules/analysis-pipeline.md",
+      "docs/handoffs/2026-10-08-zscope/TASKS.yaml",
+      "docs/handoffs/2026-10-08-zscope/PROGRESS.md"
+    ],
+    "actual_changes_from_tested_snapshot": [],
+    "unexpected_concurrent_changes": []
+  },
+  "junit": "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-four-drift-docs-20261010.xml",
+  "stdout": "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-four-drift-docs-20261010.stdout.log",
+  "stderr": "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-four-drift-docs-20261010.stderr.log"
+}

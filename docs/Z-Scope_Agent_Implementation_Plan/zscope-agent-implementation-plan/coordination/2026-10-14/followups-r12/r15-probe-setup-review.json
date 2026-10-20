@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-15T04:10:14.366561+08:00",
+  "classification": "retained diagnostic setup limitations; not accepted failures of delivered product",
+  "records": [
+    {
+      "artifact": "artifacts/coordinator-scan-session-r12-r2-refreshed-probes-20261015/review.json",
+      "reason": "Dependency refresh overlapped frozen snapshot; producer_current_matches_frozen=false. Superseded by stable final probe,8tests/2actualfailures."
+    },
+    {
+      "artifact": "artifacts/coordinator-contract-r12-final2-boundary-20261015/protocol-results.xml",
+      "reason": "Manual supplemental invocation omitted native environment;2skipped, not acceptance. Full launcher subsequently set actual native tool and ran no-skip collection."
+    },
+    {
+      "artifact": "artifacts/coordinator-contract-r12-final2-protocol-boundary-20261015/review.json",
+      "reason": "Legacy checker-direct positive fixture lacks published USR; failed before negative assertions. Corrected to actualcompile→publish→workbook reload. Valid new published-protocol collection13/2fail, positiveassertionspass."
+    }
+  ],
+  "valid_main_diagnostic": "artifacts/coordinator-scan-session-r12-r2-refreshed-final-probes-20261015/review.json",
+  "valid_contract_diagnostic": "artifacts/coordinator-contract-r12-final2-published-protocol-20261015/review.json"
+}

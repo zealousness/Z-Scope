@@ -1,0 +1,13 @@
+{
+  "accepted": true,
+  "sessionId": "session-be6d74c9-f676-489a-aad6-46673164bde7",
+  "sourceDigest": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+  "candidateDigest": "d78417fb96b22380f43e3611e841fa75a15f39a8b0af41057cbc6e7f230775ca",
+  "scope": "source/harness/input snapshot bookkeeping only",
+  "review": [
+    "Snapshot carried from before real build/run into canonical execution record.",
+    "Fake execution carries actual present-file snapshot; explicit promotion and test trust unchanged.",
+    "Registration and final use read accepted digests; current rehash no longer replaces baseline.",
+    "No assertions/tests, authority object checks, TTL, identity, budgets or permissions weakened."
+  ]
+}

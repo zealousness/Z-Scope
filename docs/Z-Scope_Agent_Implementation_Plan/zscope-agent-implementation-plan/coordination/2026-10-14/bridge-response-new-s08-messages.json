@@ -1,0 +1,186 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T04:38:56.113268+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "I"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.113268+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "'ll"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.113782+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " start"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.114306+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " with"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.115832+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " a"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.115832+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " small"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.122615+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " read"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.123122+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "-only"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.123656+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " call"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.135509+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " to"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.136550+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " confirm"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.137087+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.137608+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " environment"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.139182+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " responds"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.152652+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ","
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.153199+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " then"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.154217+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " pick"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.168448+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " up"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.168958+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.170481+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " existing"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.181304+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " work"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.181304+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "."
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 22,
+  "next_offset": 22,
+  "has_more": false,
+  "total_matching": 22
+}

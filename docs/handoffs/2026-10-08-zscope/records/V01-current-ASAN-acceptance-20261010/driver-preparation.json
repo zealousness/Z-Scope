@@ -1,0 +1,8 @@
+{
+  "old_outer_sha256": "1284e998f9ef969b6cb0324de63560a809609c3d447b75fb241310a91692105a",
+  "new_outer_sha256": "16862727a8f08614fa32ee283b0590df3bf71887a4dcf9025f523585642c5986",
+  "inside_driver_sha256": "f311464bdd8b8277bf8680c7b1c586298e8fe3a1754025b08c51b1a9f79c917f",
+  "approved_boundary_changed": false,
+  "test_nodes_changed": false,
+  "changes": "New result directory and name; current 403-input baseline and explicit product hash; unchanged inner driver, image, limits, mounts and five nodes."
+}

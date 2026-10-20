@@ -1,0 +1,41 @@
+{
+  "at": "2026-10-10T04:59:30.005437+00:00",
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/zscope-v01-v02-gate-docs-20261010-n0qxn7i7/tmp",
+    "--junitxml=/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-remaining-gates-docs-20261010.xml",
+    "tests/test_agent_docs.py"
+  ],
+  "exit_code": 0,
+  "counts": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "input_count": 406,
+  "changed_existing_inputs": [],
+  "implementation_changes": false,
+  "sanitizer_execution": false,
+  "DeepSeek_requests": 0,
+  "files": {
+    "V01-V02-remaining-gates-docs-20261010.stdout.log": {
+      "bytes": 98,
+      "sha256": "b548c6a28fa839f726fb6913a8f089e010b678666c35538de902dd5849ade7ad"
+    },
+    "V01-V02-remaining-gates-docs-20261010.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "V01-V02-remaining-gates-docs-20261010.xml": {
+      "bytes": 956,
+      "sha256": "6ccaf08c18484db7bb5d10f7e94191cb9d07c0038f191cf18bef063df0c01d5d"
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "schema": "zscope.development-agent-bindings.v1",
+  "purpose": "Project-local development coordination only; not product runtime configuration",
+  "rules": "Inspect official installation/config/session before updating; no PATH/default-provider fallback; no secrets",
+  "dsh": {
+    "entry": "C:\\Users\\10273\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+    "version": "0.2.1-rc.2",
+    "version_evidence": "verified 2026-10-19T09:10:46Z: installed EXE FileVersion, bundled ASAR @deepseek-ai/dsh-desktop-host metadata, and bundled dsh.cmd --version all report 0.2.1-rc.2; version-only check, no ACP/model connectivity retest after upgrade; Bridge's cmd.exe version field is not DSH version",
+    "entry_sha256": "c6c38be7f9f66a7bfb96d5ac9490618f9713df5ffb552cb7e66b831affb20ab9",
+    "provider": "deepseek",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "base_url": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
+    "command": ["C:\\Windows\\System32\\cmd.exe", "/d", "/c", "call", "C:\\Users\\10273\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd", "--profile", "acp"],
+    "provider_route_status": "approved_acp_patch_registered; independent_native_ACP_advertised_exact_deepseek_route_and_single_OK_call_completed; Bridge_task_sampling_pending",
+    "acp_patch_sha256": "23259e019f6a7293ebb429654d7cc223414d3651d5be542968a81fc6265fc38b",
+    "native_connectivity_session": "6218fb14-88dc-456f-9bf0-e52ba7ce173c",
+    "dispatch_ready": true
+  },
+  "zcode": {
+    "entry": "C:\\Users\\10273\\.agent-bridge\\adapters\\zcode-acp-0.67.0\\node_modules\\.bin\\zcode-acp-server.cmd",
+    "version": "0.67.0",
+    "entry_sha256": "d494fa23bcb31a4b208a553eb2f13a5765ac3538c2e79759ea9541b44fe90ef2",
+    "adapter_sha256": "43261f0a286b47d8c4130ad21c0cd13580745ae3aa0a9997569a330946b89011",
+    "provider": "97ad75c3-e785-4369-9730-55a5ee47c71c",
+    "provider_name": "hw",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "base_url": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
+    "command": ["C:\\Users\\10273\\.agent-bridge\\adapters\\zcode-acp-0.67.0\\node_modules\\.bin\\zcode-acp-server.cmd"],
+    "provider_route_status": "existing_hw_registry_and_explicit_process_bootstrap_verified; controlled_original_scope_recovery_authorized; model_HTTP_success_unproven",
+    "last_task_id": "task_f531d6882c",
+    "prompt_may_have_been_sent": true,
+    "dispatch_ready": true,
+    "stop_reason": "Only --route-check --zcode-bootstrap controlled recovery; old failed prompt uncertainty retained; stop on new mismatch/error"
+  }
+}

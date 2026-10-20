@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "scope": "current_instance",
+  "other_live_instances": 7,
+  "sessions": [
+    {
+      "session_id": "sess_85c532abde",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "d6ffb94b-30b0-42f8-969a-4a2992c3a4e9",
+      "proc_state": "ready",
+      "turns": 1,
+      "title": "S01-INSTANCE-MODELING-DESIGN-R21",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-15T17:24:06.425381+00:00"
+    },
+    {
+      "session_id": "sess_9f1956ea27",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "8ca9014f-9b23-432b-ac36-ccef2b2e19b6",
+      "proc_state": "ready",
+      "turns": 1,
+      "title": "S08-PARTIAL-RECOVERY-DESIGN-R21",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-15T17:22:27.664249+00:00"
+    }
+  ]
+}

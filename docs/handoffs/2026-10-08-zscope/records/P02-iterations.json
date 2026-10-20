@@ -1,0 +1,172 @@
+{
+  "scope": "controlled fake fixtures; raw failures preserved",
+  "iterations": {
+    "unit1": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_semantic_demand.py",
+        "--basetemp",
+        "/tmp/zscope-parallel-20261008/P02/unit1/pytest",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/P02/unit1/pytest-cache"
+      ],
+      "exit_code": 1,
+      "output": "........F.......FFF.......                                               [100%]\n=================================== FAILURES ===================================\n_ test_first_scan_source_gaps_do_not_require_map_or_candidates[int entry(void) { int *p = source(); p++; return *p; }-unknown_alias] _\n\ncode = 'int entry(void) { int *p = source(); p++; return *p; }'\nreason = 'unknown_alias'\n\n    @pytest.mark.parametrize(\"code,reason\", [\n        (\"int entry(void) { return arbitrary_endpoint(); }\", \"opaque_interface\"),\n        (\"int entry(void) { return (*handler)(); }\", \"unknown_callback\"),\n        (\"int entry(void) { int *p = source(); p++; return *p; }\", \"unknown_alias\"),\n        (\"int entry(void) { while (1) {} return 0; }\", \"source_coverage_gap\"),\n    ])\n    def test_first_scan_source_gaps_do_not_require_map_or_candidates(code, reason):\n        result = plan(context(code=code))\n>       assert reason in result[\"rows\"][0][\"reasons\"]\nE       AssertionError: assert 'unknown_alias' in ['opaque_interface']\n\ntests/test_semantic_demand.py:60: AssertionError\n_ test_d03_objects_variants_unknown_build_and_entry_occurrences_are_not_collapsed _\n\n    def test_d03_objects_variants_unknown_build_and_entry_occurrences_are_not_collapsed():\n>       result = plan(security_map=coverage_map(context()))\n                                   ^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_semantic_demand.py:134: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ntests/test_semantic_demand.py:118: in coverage_map\n    unit = AuditUnit(\n<string>:20: in __init__\n    ???\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = AuditUnit(unit_id='unit', unit_kind='resource_lifecycle', fingerprint='fingerprint', risk_score=20, risk_reasons=(), r...='entry2', entry_path=('entry2', 'entry'), event_refs=('ev2',), reachability='call_path')), migration_status='current')\n\n    def __post_init__(self) -> None:\n        if self.schema_version != AUDIT_UNIT_SCHEMA_VERSION:\n            raise ValueError(\"unsupported AuditUnit schema_version\")\n        if self.unit_kind not in AUDIT_UNIT_KINDS:\n>           raise ValueError(f\"unsupported AuditUnit unit_kind: {self.unit_kind}\")\nE           ValueError: unsupported AuditUnit unit_kind: resource_lifecycle\n\nzscope/semantics/security_map.py:667: ValueError\n_____________ test_old_coverage_never_binds_or_marks_current[True] _____________\n\nstale = True\n\n    @pytest.mark.parametrize(\"stale\", [True, False])\n    def test_old_coverage_never_binds_or_marks_current(stale):\n        ctx = context()\n>       value = coverage_map(ctx, migration=\"current\" if stale else \"legacy_unverifiable\")\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_semantic_demand.py:145: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ntests/test_semantic_demand.py:118: in coverage_map\n    unit = AuditUnit(\n<string>:20: in __init__\n    ???\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = AuditUnit(unit_id='unit', unit_kind='resource_lifecycle', fingerprint='fingerprint', risk_score=20, risk_reasons=(), r...='entry2', entry_path=('entry2', 'entry'), event_refs=('ev2',), reachability='call_path')), migration_status='current')\n\n    def __post_init__(self) -> None:\n        if self.schema_version != AUDIT_UNIT_SCHEMA_VERSION:\n            raise ValueError(\"unsupported AuditUnit schema_version\")\n        if self.unit_kind not in AUDIT_UNIT_KINDS:\n>           raise ValueError(f\"unsupported AuditUnit unit_kind: {self.unit_kind}\")\nE           ValueError: unsupported AuditUnit unit_kind: resource_lifecycle\n\nzscope/semantics/security_map.py:667: ValueError\n____________ test_old_coverage_never_binds_or_marks_current[False] _____________\n\nstale = False\n\n    @pytest.mark.parametrize(\"stale\", [True, False])\n    def test_old_coverage_never_binds_or_marks_current(stale):\n        ctx = context()\n>       value = coverage_map(ctx, migration=\"current\" if stale else \"legacy_unverifiable\")\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_semantic_demand.py:145: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ntests/test_semantic_demand.py:118: in coverage_map\n    unit = AuditUnit(\n<string>:20: in __init__\n    ???\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = AuditUnit(unit_id='unit', unit_kind='resource_lifecycle', fingerprint='fingerprint', risk_score=20, risk_reasons=(), r...ntry_path=('entry2', 'entry'), event_refs=('ev2',), reachability='call_path')), migration_status='legacy_unverifiable')\n\n    def __post_init__(self) -> None:\n        if self.schema_version != AUDIT_UNIT_SCHEMA_VERSION:\n            raise ValueError(\"unsupported AuditUnit schema_version\")\n        if self.unit_kind not in AUDIT_UNIT_KINDS:\n>           raise ValueError(f\"unsupported AuditUnit unit_kind: {self.unit_kind}\")\nE           ValueError: unsupported AuditUnit unit_kind: resource_lifecycle\n\nzscope/semantics/security_map.py:667: ValueError\n=========================== short test summary info ============================\nFAILED tests/test_semantic_demand.py::test_first_scan_source_gaps_do_not_require_map_or_candidates[int entry(void) { int *p = source(); p++; return *p; }-unknown_alias]\nFAILED tests/test_semantic_demand.py::test_d03_objects_variants_unknown_build_and_entry_occurrences_are_not_collapsed\nFAILED tests/test_semantic_demand.py::test_old_coverage_never_binds_or_marks_current[True]\nFAILED tests/test_semantic_demand.py::test_old_coverage_never_binds_or_marks_current[False]\n4 failed, 22 passed in 8.58s\n",
+      "before": {
+        "zscope/orchestration/semantic_demand.py": "5afa2ccf844d4bb0a07d1495c4b4b63fe14833e21d17eeb9328f8dff86e566a0",
+        "zscope/orchestration/semantic_modeling.py": "e41c9caf1cc6ae2ea13d1b7102bef62d567c23c96d20d17013b68ae79e353ccc",
+        "zscope/orchestration/global_modeler.py": "834653882a3bd3c24d141dd3a35d5a8057deb6e8bb71d117419a42e381236cc3",
+        "tests/test_semantic_demand.py": "408cdfaa8073e6be5ac802e4190ac46e02c453e5dd1d069647c58f222bf11127",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba"
+      },
+      "after": {
+        "zscope/orchestration/semantic_demand.py": "5afa2ccf844d4bb0a07d1495c4b4b63fe14833e21d17eeb9328f8dff86e566a0",
+        "zscope/orchestration/semantic_modeling.py": "e41c9caf1cc6ae2ea13d1b7102bef62d567c23c96d20d17013b68ae79e353ccc",
+        "zscope/orchestration/global_modeler.py": "834653882a3bd3c24d141dd3a35d5a8057deb6e8bb71d117419a42e381236cc3",
+        "tests/test_semantic_demand.py": "408cdfaa8073e6be5ac802e4190ac46e02c453e5dd1d069647c58f222bf11127",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba"
+      },
+      "inputs_stable": true
+    },
+    "unit2": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_semantic_demand.py",
+        "--basetemp",
+        "/tmp/zscope-parallel-20261008/P02/unit2/pytest",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/P02/unit2/pytest-cache"
+      ],
+      "exit_code": 1,
+      "output": "................F............                                            [100%]\n=================================== FAILURES ===================================\n_ test_d03_objects_variants_unknown_build_and_entry_occurrences_are_not_collapsed _\n\n    def test_d03_objects_variants_unknown_build_and_entry_occurrences_are_not_collapsed():\n        result = plan(security_map=coverage_map(context()))\n        rows = result[\"rows\"][0][\"coverage\"]\n>       assert len(rows) == len({row[\"identity\"] for row in rows}) == 3\nE       assert 0 == 3\nE        +  where 0 = len(set())\n\ntests/test_semantic_demand.py:194: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_semantic_demand.py::test_d03_objects_variants_unknown_build_and_entry_occurrences_are_not_collapsed\n1 failed, 28 passed in 9.05s\n",
+      "before": {
+        "zscope/orchestration/semantic_demand.py": "240be3c5c74cbaf3cdc4982495982b5f7cf8e56caa53b5022dba4f55038e6f32",
+        "zscope/orchestration/semantic_modeling.py": "be69e7056c1e73df9c86651f2b7e912290f47f8fcff5bb1460f63dd2cbf81bb4",
+        "zscope/orchestration/global_modeler.py": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+        "tests/test_semantic_demand.py": "73bb3c7e6e72aa433e3c8aeecaa77215ede2b3978687b9c60f27dd0fd40a7951",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "zscope/orchestration/snapshot_observations.py": "3ad875ebcae2df346e6d678a0b5fbba4e2a918ad6e9f02c3bee7bba3827e8985"
+      },
+      "after": {
+        "zscope/orchestration/semantic_demand.py": "240be3c5c74cbaf3cdc4982495982b5f7cf8e56caa53b5022dba4f55038e6f32",
+        "zscope/orchestration/semantic_modeling.py": "be69e7056c1e73df9c86651f2b7e912290f47f8fcff5bb1460f63dd2cbf81bb4",
+        "zscope/orchestration/global_modeler.py": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+        "tests/test_semantic_demand.py": "73bb3c7e6e72aa433e3c8aeecaa77215ede2b3978687b9c60f27dd0fd40a7951",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "zscope/orchestration/snapshot_observations.py": "3ad875ebcae2df346e6d678a0b5fbba4e2a918ad6e9f02c3bee7bba3827e8985"
+      },
+      "inputs_stable": true
+    },
+    "regression1": {
+      "results": [
+        {
+          "command": [
+            "/home/zeal/venv313/bin/python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_semantic_demand.py",
+            "tests/test_incremental_semantic_modeling.py",
+            "tests/test_global_modeler.py",
+            "tests/test_wrapper_contract_compiler.py",
+            "tests/test_semantic_modeling_usage.py",
+            "tests/test_semantic_model_retry.py",
+            "tests/test_java_semantic_modeler_schema.py",
+            "tests/test_conditional_ownership_contracts.py",
+            "--basetemp",
+            "/tmp/zscope-parallel-20261008/P02/regression1/pytest",
+            "-o",
+            "cache_dir=/tmp/zscope-parallel-20261008/P02/regression1/pytest-cache"
+          ],
+          "exit_code": 0,
+          "output": "........................................................................ [ 53%]\n...............................................................          [100%]\n135 passed in 32.08s\n"
+        },
+        {
+          "command": [
+            "/home/zeal/venv313/bin/python",
+            "-m",
+            "mypy",
+            "zscope/orchestration/semantic_demand.py",
+            "zscope/orchestration/semantic_modeling.py",
+            "zscope/orchestration/global_modeler.py",
+            "--cache-dir",
+            "/tmp/zscope-parallel-20261008/P02/regression1/mypy-cache"
+          ],
+          "exit_code": 1,
+          "output": "zscope/orchestration/snapshot_candidates.py:336: error: Item \"None\" of \"Any | None\" has no attribute \"snapshot_hash\"  [union-attr]\nzscope/orchestration/snapshot_candidates.py:336: error: Item \"None\" of \"Any | None\" has no attribute \"source_revision\"  [union-attr]\nzscope/orchestration/snapshot_candidates.py:337: error: Item \"None\" of \"Any | None\" has no attribute \"modeling_spec\"  [union-attr]\nzscope/orchestration/snapshot_candidates.py:337: error: Item \"None\" of \"Any | None\" has no attribute \"schema_hash\"  [union-attr]\nFound 4 errors in 1 file (checked 3 source files)\n"
+        }
+      ],
+      "before": {
+        "zscope/orchestration/semantic_demand.py": "dab3f43eedb96c2458d2e0765ccb4b3c4e28401784bafcb81ffe18c0ead057b5",
+        "zscope/orchestration/semantic_modeling.py": "59c3737273d4c1f6eb612f0a22439f80b481700b45046203ce5086f3dc3aa244",
+        "zscope/orchestration/global_modeler.py": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+        "tests/test_semantic_demand.py": "67a85a6a5f3ffc5e0e8125c506d52ae9a613002b114ded0254ac44950f6de7c3",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "zscope/orchestration/snapshot_observations.py": "4e85f286b80601eb72fe194c07e33a0b76b7e97d542ee287b6826ff9cc3ac4f2",
+        "zscope/semantics/contract_compiler.py": "cb8335f24f22a917442e8f205c8dcbb7c3620f9e8da07ac08a44f3f5f61bbcdb",
+        "zscope/semantics/contracts.py": "f4b881979887e5b23a5dea8a00295bfa3868c9858a514d8e2a298e24b0913101",
+        "zscope/orchestration/modeling_coordinator.py": "f197a5cf4ceedd3c1e0c8addaade96819e01ae90308a566cce7e30ecc1df8f98"
+      },
+      "after": {
+        "zscope/orchestration/semantic_demand.py": "dab3f43eedb96c2458d2e0765ccb4b3c4e28401784bafcb81ffe18c0ead057b5",
+        "zscope/orchestration/semantic_modeling.py": "59c3737273d4c1f6eb612f0a22439f80b481700b45046203ce5086f3dc3aa244",
+        "zscope/orchestration/global_modeler.py": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+        "tests/test_semantic_demand.py": "67a85a6a5f3ffc5e0e8125c506d52ae9a613002b114ded0254ac44950f6de7c3",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "zscope/orchestration/snapshot_observations.py": "4e85f286b80601eb72fe194c07e33a0b76b7e97d542ee287b6826ff9cc3ac4f2",
+        "zscope/semantics/contract_compiler.py": "cb8335f24f22a917442e8f205c8dcbb7c3620f9e8da07ac08a44f3f5f61bbcdb",
+        "zscope/semantics/contracts.py": "f4b881979887e5b23a5dea8a00295bfa3868c9858a514d8e2a298e24b0913101",
+        "zscope/orchestration/modeling_coordinator.py": "f197a5cf4ceedd3c1e0c8addaade96819e01ae90308a566cce7e30ecc1df8f98"
+      },
+      "inputs_stable": true
+    },
+    "unit3": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_semantic_demand.py",
+        "--basetemp",
+        "/tmp/zscope-parallel-20261008/P02/unit3/pytest",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/P02/unit3/pytest-cache"
+      ],
+      "exit_code": 0,
+      "output": "....................................                                     [100%]\n36 passed in 10.22s\n",
+      "before": {
+        "zscope/orchestration/semantic_demand.py": "dab3f43eedb96c2458d2e0765ccb4b3c4e28401784bafcb81ffe18c0ead057b5",
+        "zscope/orchestration/semantic_modeling.py": "79aabc1bc22d9ef3e3b28df09bd649b25a60f9fffab5aea098f850b2cc1d0381",
+        "zscope/orchestration/global_modeler.py": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+        "tests/test_semantic_demand.py": "a3bb9190797e6c249bf595e9aac6dc3a19f9ac0662e87c2008fce509e38c0839",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "zscope/orchestration/snapshot_observations.py": "320416d95e6248bbe182c5477b7d6fcd9619621318998a0d22bfc5acd2c173e2",
+        "zscope/orchestration/snapshot_candidates.py": "75fdc23f158ba03a106f347a8ce61cd3fad7ab0d809f0dd3cc2bd8ded52e0cde"
+      },
+      "after": {
+        "zscope/orchestration/semantic_demand.py": "dab3f43eedb96c2458d2e0765ccb4b3c4e28401784bafcb81ffe18c0ead057b5",
+        "zscope/orchestration/semantic_modeling.py": "79aabc1bc22d9ef3e3b28df09bd649b25a60f9fffab5aea098f850b2cc1d0381",
+        "zscope/orchestration/global_modeler.py": "2024781537099b546fd31aabb4d92b029a6c7dc3acb7170b34670d693f83c21f",
+        "tests/test_semantic_demand.py": "a3bb9190797e6c249bf595e9aac6dc3a19f9ac0662e87c2008fce509e38c0839",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "zscope/orchestration/snapshot_observations.py": "320416d95e6248bbe182c5477b7d6fcd9619621318998a0d22bfc5acd2c173e2",
+        "zscope/orchestration/snapshot_candidates.py": "75fdc23f158ba03a106f347a8ce61cd3fad7ab0d809f0dd3cc2bd8ded52e0cde"
+      },
+      "inputs_stable": true
+    }
+  }
+}

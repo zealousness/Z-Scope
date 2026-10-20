@@ -1,0 +1,35 @@
+{
+  "at": "2026-10-14T08:16:24.217594+00:00",
+  "task_id": "task_071c8fd074",
+  "existing_source_changes": [
+    "zscope/orchestration/scan_session.py",
+    "zscope/retrieval/code_index.py"
+  ],
+  "independent_collection": {
+    "junit": "s01-scope-fixed-independent-tests.xml",
+    "tests": 66
+  },
+  "files": [
+    {
+      "path": "tests/test_all_variant_scan.py",
+      "before_sha256": null,
+      "sha256": "743970af9463a990ff6e94d66c7209c9c7225fc4ff28e47421afb754e3d257ea"
+    },
+    {
+      "path": "zscope/orchestration/entry_instances.py",
+      "before_sha256": null,
+      "sha256": "20505e0e3bbb6fe87828e606d4129d5a4d8bb92307ac605eadae858bec7dc30e"
+    },
+    {
+      "path": "zscope/orchestration/scan_session.py",
+      "before_sha256": "23ed6bac305dcd44ae00d9559082500589b335eb51f6ce9449f46240e4cf3978",
+      "sha256": "6730c42c49c02aeac5938b6aa8ac9b74397e8c92642ccc8ed577d9faf4efdf64"
+    },
+    {
+      "path": "zscope/retrieval/code_index.py",
+      "before_sha256": "f98abeed190e99e4139456ee76306b9cf38e00bcae60774a21e3fab2ce2c502e",
+      "sha256": "cad1443a5d4c7138ae0bac8330d4a392d6ab27d898cae8cdc69660de29b41616"
+    }
+  ],
+  "state": "partial_slice_intaken_pending_same_root_integration_full_package_unfinished"
+}

@@ -1,0 +1,18 @@
+{
+  "at": "2026-10-10T05:19:18.144Z",
+  "applied": false,
+  "rejected": true,
+  "reasons": [
+    "The bounded late-descendant case failed: stdout/stderr are empty although the benign child emits 32 bytes after 0.1s.",
+    "select timeout plus leader exit is not EOF; early breaks can drop data and leave owned descendants alive.",
+    "The added finally drain uses a new five-second deadline, instead of preserving the verification deadline.",
+    "Owned process group termination must remain possible after its leader exits; getpgid(leader) can fail then."
+  ],
+  "counts": {
+    "passed": 7,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  "productSourceUnchanged": true
+}

@@ -1,0 +1,42 @@
+{
+  "sessionId": "session-5017afd3-5c7c-4562-82bc-b15b6a3f5c2f",
+  "sourceDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "candidateDigest": "91c35d5988414830ffce46057bca2d2364d76ee26d5f5fe1a4448b657b96add1",
+  "modelAnswerDigest": "609a2ae292fb3a931e1b6e4b974aeedc16e5bab9d7217fbb6742f7fee40a5c9e",
+  "edits": [
+    {
+      "symbol": "execute.build_rss_limit",
+      "line": 2257,
+      "oldBytes": 373,
+      "newBytes": 441
+    },
+    {
+      "symbol": "execute.build_resource_exhaustion",
+      "line": 2267,
+      "oldBytes": 511,
+      "newBytes": 1335
+    },
+    {
+      "symbol": "SanitizerReproductionRunner._run_once",
+      "line": 2649,
+      "oldBytes": 3472,
+      "newBytes": 6941
+    },
+    {
+      "symbol": "SanitizerReproductionRunner._kill_group",
+      "line": 2858,
+      "oldBytes": 385,
+      "newBytes": 805
+    }
+  ],
+  "explanation": "RG01: forward the plan's declared memory limit to the build through the existing RSS watchdog (RLIMIT_AS is reserved for run so sanitizer virtual memory is preserved) and short-circuit a build stopped by RSS/output-budget exhaustion as engine_failed/resource_exhaustion before any run or candidate decision. RG02: replace file redirection with bounded per-stream pipe reads that stop at output_capture_limit_bytes while consuming, keep reading until actual EOF or the existing deadline/cancellation/RSS/cap stops the run (a dead leader is NOT EOF and no fresh drain timer is added), mark a capped stream truncated/inconclusive, then digest/excerpt the bounded spool. The owned process-group id is captured at spawn and used for termination so the group can still be killed after its leader is reaped. Exact-cap output followed by real EOF stays complete; below-cap late descendant bytes are retained.",
+  "productApplied": false,
+  "modelCandidateDigest": "77c82832b03cd2e0bb2adacb0dbc19983daaa08912c23a9546ddb9ae0b08d1b4",
+  "localReviewChanges": [
+    "Always clean the owned process group after EOF, including descendants that closed both pipes",
+    "Read errors fail closed instead of being treated as complete EOF",
+    "Format only changed Python ranges"
+  ],
+  "preformatCandidateDigest": "8e3fc987a2cd939451c2364238cbec35e1bc4ac67380b912569d516fb472e694",
+  "formatting_ast_equivalent": true
+}

@@ -1,0 +1,8 @@
+{
+  "arguments": {
+    "max_chars": 60000,
+    "task_id": "task_28a929d996"
+  },
+  "id": "r6-s08-cancel-result-52ae4f70",
+  "tool": "get_result"
+}

@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-15T14:34:00.080779+08:00",
+  "coordinator_authorized": true,
+  "write_paths": [
+    "zscope/semantics/retention_protocols.py"
+  ],
+  "previous_sha256": {
+    "zscope/semantics/retention_protocols.py": "877ad173374577513579c5319a2c816d0930a2bcd1b51f033a8635aa8c654a30"
+  },
+  "decision": "artifacts/coordinator-contract-r16-ownership-review-20261015/decision.json",
+  "original_ownership_violation_retained": true
+}

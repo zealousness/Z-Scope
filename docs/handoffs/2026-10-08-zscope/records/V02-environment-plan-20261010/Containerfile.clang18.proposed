@@ -1,0 +1,2 @@
+FROM docker.io/library/python@sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a
+COPY rootfs/ /

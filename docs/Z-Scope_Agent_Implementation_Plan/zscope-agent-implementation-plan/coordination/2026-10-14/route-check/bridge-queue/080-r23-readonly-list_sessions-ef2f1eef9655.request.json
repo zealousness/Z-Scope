@@ -1,0 +1,7 @@
+{
+  "id": "r23-readonly-list_sessions-ef2f1eef9655",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "scope": "current_instance",
+  "other_live_instances": 3,
+  "sessions": [
+    {
+      "session_id": "sess_6ecde27723",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "1ecc4ee3-3813-4ac2-b838-078a2dde5407",
+      "proc_state": "busy",
+      "turns": 0,
+      "title": "S01-INSTANCE-SEMANTICS-MIN-R23",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-16T03:00:11.666125+00:00"
+    }
+  ]
+}

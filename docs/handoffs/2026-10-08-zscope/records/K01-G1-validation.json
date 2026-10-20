@@ -1,0 +1,428 @@
+{
+  "task": "K01",
+  "head": "010f40210b54ba0f79a088312ce5d8be3a82ace0",
+  "environment": "WSL Ubuntu /home/zeal/venv313/bin/python",
+  "path": "/home/zeal/venv313/bin:/home/zeal/go/bin:/usr/lib/llvm-18/bin:/home/zeal/.local/svf/SVF-linux-x86_64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  "cwd": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+  "runs": {
+    "unit1": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_snapshot_observation_shadow.py",
+        "--basetemp",
+        "/tmp/zscope-parallel-20261008/K01/unit1/tmp",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/K01/unit1/cache",
+        "--junitxml",
+        "/tmp/zscope-parallel-20261008/K01/unit1/junit.xml"
+      ],
+      "exit_code": 2,
+      "before": {
+        "zscope/orchestration/snapshot_observations.py": "b8ea4e9511a218e20ee510102498cb396a57593dd1357e76422ef896399b59ab",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "4219dfb0801eee2f654e9dd3d85041b671c7bab0858dd8d2ac4eef6d4f87b712",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "tests/test_snapshot_observation_shadow.py": "1f371ee1716bf43e87ee754579e4177cc92c123aa186e2debc5cf3f1ad34c7b1"
+      },
+      "after": {
+        "zscope/orchestration/snapshot_observations.py": "b8ea4e9511a218e20ee510102498cb396a57593dd1357e76422ef896399b59ab",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "4219dfb0801eee2f654e9dd3d85041b671c7bab0858dd8d2ac4eef6d4f87b712",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "tests/test_snapshot_observation_shadow.py": "1f371ee1716bf43e87ee754579e4177cc92c123aa186e2debc5cf3f1ad34c7b1"
+      },
+      "stable": true
+    },
+    "unit2": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_snapshot_observation_shadow.py",
+        "--basetemp",
+        "/tmp/zscope-parallel-20261008/K01/unit2/tmp",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/K01/unit2/cache",
+        "--junitxml",
+        "/tmp/zscope-parallel-20261008/K01/unit2/junit.xml"
+      ],
+      "exit_code": 0,
+      "before": {
+        "zscope/orchestration/snapshot_observations.py": "b8ea4e9511a218e20ee510102498cb396a57593dd1357e76422ef896399b59ab",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "4219dfb0801eee2f654e9dd3d85041b671c7bab0858dd8d2ac4eef6d4f87b712",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "tests/test_snapshot_observation_shadow.py": "3d6cdeaa709b3dccc2392ccd08950a6563fd791b1d1fea96c1b28fe7a44a1965"
+      },
+      "after": {
+        "zscope/orchestration/snapshot_observations.py": "b8ea4e9511a218e20ee510102498cb396a57593dd1357e76422ef896399b59ab",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "4219dfb0801eee2f654e9dd3d85041b671c7bab0858dd8d2ac4eef6d4f87b712",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "tests/test_snapshot_observation_shadow.py": "3d6cdeaa709b3dccc2392ccd08950a6563fd791b1d1fea96c1b28fe7a44a1965"
+      },
+      "stable": true
+    },
+    "unit3": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_snapshot_observation_shadow.py",
+        "--basetemp",
+        "/tmp/zscope-parallel-20261008/K01/unit3/tmp",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/K01/unit3/cache",
+        "--junitxml",
+        "/tmp/zscope-parallel-20261008/K01/unit3/junit.xml"
+      ],
+      "exit_code": 1,
+      "before": {
+        "zscope/orchestration/snapshot_observations.py": "b80001039e1fcc983e4d463141a1e847f612a179fc038cceb28c1be72f720e0b",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "tests/test_snapshot_observation_shadow.py": "18fd319fca77542373e2e68acf923bdab3eac7ce7500a24e7d016b1cfa9702d4"
+      },
+      "after": {
+        "zscope/orchestration/snapshot_observations.py": "b80001039e1fcc983e4d463141a1e847f612a179fc038cceb28c1be72f720e0b",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "tests/test_snapshot_observation_shadow.py": "18fd319fca77542373e2e68acf923bdab3eac7ce7500a24e7d016b1cfa9702d4"
+      },
+      "stable": true
+    },
+    "unit4": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_snapshot_observation_shadow.py",
+        "--basetemp",
+        "/tmp/zscope-parallel-20261008/K01/unit4/tmp",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/K01/unit4/cache",
+        "--junitxml",
+        "/tmp/zscope-parallel-20261008/K01/unit4/junit.xml"
+      ],
+      "exit_code": 0,
+      "before": {
+        "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "tests/test_snapshot_observation_shadow.py": "ea9025dea89ad95cb0149eff980170ff3aa03a002f873f4cbfd89377a51ed07f"
+      },
+      "after": {
+        "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "tests/test_snapshot_observation_shadow.py": "ea9025dea89ad95cb0149eff980170ff3aa03a002f873f4cbfd89377a51ed07f"
+      },
+      "stable": true
+    },
+    "G1": {
+      "results": [
+        {
+          "name": "pytest",
+          "command": [
+            "/home/zeal/venv313/bin/python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_snapshot_observation_shadow.py",
+            "tests/test_incremental_semantic_modeling.py",
+            "tests/test_investigation_evidence.py",
+            "tests/test_bounded_investigation.py",
+            "tests/test_audit_coverage.py",
+            "tests/test_single_entry_active_discovery.py",
+            "tests/test_parallel_shared_semantics.py",
+            "tests/test_validation_pipeline.py",
+            "tests/test_candidate_ledger.py",
+            "--basetemp",
+            "/tmp/zscope-parallel-20261008/K01/G1/tmp",
+            "-o",
+            "cache_dir=/tmp/zscope-parallel-20261008/K01/G1/cache",
+            "--junitxml",
+            "/tmp/zscope-parallel-20261008/K01/G1/junit.xml"
+          ],
+          "exit_code": 0
+        },
+        {
+          "name": "mypy",
+          "command": [
+            "/home/zeal/venv313/bin/python",
+            "-m",
+            "mypy",
+            "--cache-dir",
+            "/tmp/zscope-parallel-20261008/K01/G1/mypy",
+            "zscope/orchestration/snapshot_observations.py",
+            "zscope/orchestration/snapshot_candidates.py"
+          ],
+          "exit_code": 0
+        },
+        {
+          "name": "compileall",
+          "command": [
+            "/home/zeal/venv313/bin/python",
+            "-m",
+            "compileall",
+            "-q",
+            "zscope/orchestration/snapshot_observations.py",
+            "zscope/orchestration/snapshot_candidates.py",
+            "tests/test_snapshot_observation_shadow.py"
+          ],
+          "exit_code": 0
+        },
+        {
+          "name": "black_new",
+          "command": [
+            "/home/zeal/.cache/zscope-p1-black-venv/bin/black",
+            "--check",
+            "zscope/orchestration/snapshot_observations.py",
+            "tests/test_snapshot_observation_shadow.py"
+          ],
+          "exit_code": 0
+        },
+        {
+          "name": "black_changed",
+          "command": [
+            "/home/zeal/.cache/zscope-p1-black-venv/bin/black",
+            "--check",
+            "--line-ranges",
+            "218-540",
+            "zscope/orchestration/snapshot_candidates.py"
+          ],
+          "exit_code": 0
+        },
+        {
+          "name": "diff",
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "exit_code": 2
+        }
+      ],
+      "before": {
+        "tests/test_snapshot_observation_shadow.py": "ea9025dea89ad95cb0149eff980170ff3aa03a002f873f4cbfd89377a51ed07f",
+        "tests/test_incremental_semantic_modeling.py": "a3c4690a08eea0dad308b4bc5ff7b80b18da857598c26333d44a6ff90cd44b80",
+        "tests/test_investigation_evidence.py": "c105008d6ee7c9a8863cfcb70f63f3e1b2e071ba1503265da16c1cc37912c285",
+        "tests/test_bounded_investigation.py": "f784af5f94b4ffb9a6cad6e32054599efc5484221a3f8d826ba5f17df56589d9",
+        "tests/test_audit_coverage.py": "353a2c609d3b490e3eeb9e6a8421d1f28eca4666d3981503fa7422705cb405dd",
+        "tests/test_single_entry_active_discovery.py": "ad4e54370c4b6f498adf502b7d418ebaec0893a0ab962f3661d3fec2f1f6da34",
+        "tests/test_parallel_shared_semantics.py": "42099298cfad9fa7b7026da141169496680fd7a3e45815bafae5080bd971c9ca",
+        "tests/test_validation_pipeline.py": "0069af8b6fe248713756470d7dc4adbb995668b017d4e6732d33d07785cdc676",
+        "tests/test_candidate_ledger.py": "da166f0930f103b073dad681620ead2517034cb0d4dd32bb15d093c209eb0a15",
+        "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/orchestration/candidate_envelope.py": "bd300ae20897ef0e2170e7fe95d59d83e3a3d795beadc74cb4c7af9026b621a9",
+        "zscope/orchestration/investigation.py": "ceb0834f9ae85837f3fb38ba586c3c61f5bec3c33374783d43913902386724b9",
+        "zscope/orchestration/bounded_investigation.py": "c43bc3932ac20671fb0e08ed8f0137edb53237a894cf281887df463961a1b4e6",
+        "zscope/orchestration/active_discovery.py": "0c118d146b076e3ab40be55c7f8b14c1a0f6626e1fd70af2f9f30758e2f0b408",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "zscope/core/analysis/analyzer.py": "5445007339e187b09caa99c435add085f8e8817d9fdf681d31d992a32509ada9",
+        "zscope/orchestration/parallel_analyzer.py": "b133f89158580ee7a5136e08604805fd187167b929d6d5c918e8317ef7cce3aa",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/config/v2.py": "99787ab5f2468653d62527dfa5d4293c0f6a86908cc13e2d4d75bbb6c383a421",
+        "zscope/config/runtime_defaults.yaml": "1cccf53a3261cab9625e97493b06e821d641a1d1722c06a6be360910e7425dbd",
+        "zscope/tools/source_access.py": "8325cfc6263d1a20a5806110e20861798ca86f57a6f638722e66aebf356af8f8"
+      },
+      "after": {
+        "tests/test_snapshot_observation_shadow.py": "ea9025dea89ad95cb0149eff980170ff3aa03a002f873f4cbfd89377a51ed07f",
+        "tests/test_incremental_semantic_modeling.py": "a3c4690a08eea0dad308b4bc5ff7b80b18da857598c26333d44a6ff90cd44b80",
+        "tests/test_investigation_evidence.py": "c105008d6ee7c9a8863cfcb70f63f3e1b2e071ba1503265da16c1cc37912c285",
+        "tests/test_bounded_investigation.py": "f784af5f94b4ffb9a6cad6e32054599efc5484221a3f8d826ba5f17df56589d9",
+        "tests/test_audit_coverage.py": "353a2c609d3b490e3eeb9e6a8421d1f28eca4666d3981503fa7422705cb405dd",
+        "tests/test_single_entry_active_discovery.py": "ad4e54370c4b6f498adf502b7d418ebaec0893a0ab962f3661d3fec2f1f6da34",
+        "tests/test_parallel_shared_semantics.py": "42099298cfad9fa7b7026da141169496680fd7a3e45815bafae5080bd971c9ca",
+        "tests/test_validation_pipeline.py": "0069af8b6fe248713756470d7dc4adbb995668b017d4e6732d33d07785cdc676",
+        "tests/test_candidate_ledger.py": "da166f0930f103b073dad681620ead2517034cb0d4dd32bb15d093c209eb0a15",
+        "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "zscope/orchestration/candidates.py": "754505f91a6a3d886e930eb0f37d5271062e2a27c847f2243254fe0598a79ada",
+        "zscope/orchestration/candidate_envelope.py": "bd300ae20897ef0e2170e7fe95d59d83e3a3d795beadc74cb4c7af9026b621a9",
+        "zscope/orchestration/investigation.py": "ceb0834f9ae85837f3fb38ba586c3c61f5bec3c33374783d43913902386724b9",
+        "zscope/orchestration/bounded_investigation.py": "c43bc3932ac20671fb0e08ed8f0137edb53237a894cf281887df463961a1b4e6",
+        "zscope/orchestration/active_discovery.py": "0c118d146b076e3ab40be55c7f8b14c1a0f6626e1fd70af2f9f30758e2f0b408",
+        "zscope/semantics/security_map.py": "adf9b042ec822402337db3f6f333a2f8c7eef8b7cd03d4da13b1b3fe266627ba",
+        "zscope/core/validation/pipeline.py": "3d55c53ee8ccfc4fb49bcca6edf7646bf779f1d622262742ca09565c3c4c9f88",
+        "zscope/core/validation/runner.py": "bd4fa0678e2f1cb7a9fbbe49be1d0c764dda623562f8948119b252dbeaac28c7",
+        "zscope/core/analysis/analyzer.py": "5445007339e187b09caa99c435add085f8e8817d9fdf681d31d992a32509ada9",
+        "zscope/orchestration/parallel_analyzer.py": "b133f89158580ee7a5136e08604805fd187167b929d6d5c918e8317ef7cce3aa",
+        "zscope/config/config.py": "f2eb2b8cde37cefd9cff563b978f253170eafd906587087a203c32ff774f576a",
+        "zscope/config/v2.py": "99787ab5f2468653d62527dfa5d4293c0f6a86908cc13e2d4d75bbb6c383a421",
+        "zscope/config/runtime_defaults.yaml": "1cccf53a3261cab9625e97493b06e821d641a1d1722c06a6be360910e7425dbd",
+        "zscope/tools/source_access.py": "8325cfc6263d1a20a5806110e20861798ca86f57a6f638722e66aebf356af8f8"
+      },
+      "stable": true,
+      "tests": [
+        "tests/test_snapshot_observation_shadow.py",
+        "tests/test_incremental_semantic_modeling.py",
+        "tests/test_investigation_evidence.py",
+        "tests/test_bounded_investigation.py",
+        "tests/test_audit_coverage.py",
+        "tests/test_single_entry_active_discovery.py",
+        "tests/test_parallel_shared_semantics.py",
+        "tests/test_validation_pipeline.py",
+        "tests/test_candidate_ledger.py"
+      ]
+    },
+    "fullpath": {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_snapshot_observation_shadow.py",
+        "--basetemp",
+        "/tmp/zscope-parallel-20261008/K01/fullpath/tmp",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/K01/fullpath/cache"
+      ],
+      "exit_code": 0,
+      "before": {
+        "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "tests/test_snapshot_observation_shadow.py": "3fb35294f89558e3eede5bd9ea445a33aaedab7bd1b36a3120020b7d6be384ef"
+      },
+      "after": {
+        "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "zscope/orchestration/semantic_modeling.py": "61d1da82aeea55ade5c2ef16aed2018bd33d4c6845e17bd7b6be8dbff0c6e4e1",
+        "tests/test_snapshot_observation_shadow.py": "3fb35294f89558e3eede5bd9ea445a33aaedab7bd1b36a3120020b7d6be384ef"
+      },
+      "stable": true
+    },
+    "final-quality": {
+      "results": [
+        {
+          "name": "black",
+          "command": [
+            "/home/zeal/.cache/zscope-p1-black-venv/bin/black",
+            "--check",
+            "zscope/orchestration/snapshot_observations.py",
+            "tests/test_snapshot_observation_shadow.py"
+          ],
+          "exit_code": 0
+        },
+        {
+          "name": "compileall",
+          "command": [
+            "/home/zeal/venv313/bin/python",
+            "-m",
+            "compileall",
+            "-q",
+            "zscope/orchestration/snapshot_observations.py",
+            "zscope/orchestration/snapshot_candidates.py",
+            "tests/test_snapshot_observation_shadow.py"
+          ],
+          "exit_code": 0
+        }
+      ],
+      "before": {
+        "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "tests/test_snapshot_observation_shadow.py": "3fb35294f89558e3eede5bd9ea445a33aaedab7bd1b36a3120020b7d6be384ef"
+      },
+      "after": {
+        "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+        "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+        "tests/test_snapshot_observation_shadow.py": "3fb35294f89558e3eede5bd9ea445a33aaedab7bd1b36a3120020b7d6be384ef"
+      },
+      "stable": true
+    },
+    "diff-normalized": {
+      "command": [
+        "git",
+        "-c",
+        "core.autocrlf=true",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0
+    }
+  },
+  "final_owned_sha256": {
+    "zscope/orchestration/snapshot_observations.py": "88635c1bc15bde9980d43cb10d063cb19d5b4dfbd637ab1e827710c19485345f",
+    "zscope/orchestration/snapshot_candidates.py": "34f788fb2d55fe713035256a19569bd182d9ddd594bcfc118285c3d2cb0ab219",
+    "tests/test_snapshot_observation_shadow.py": "3fb35294f89558e3eede5bd9ea445a33aaedab7bd1b36a3120020b7d6be384ef"
+  },
+  "not_run": [
+    "real LLM",
+    "exclusive TP/FP or marginal model/human cost",
+    "compiled TU freshness receipt",
+    "Java classpath receipt",
+    "default active promotion"
+  ],
+  "freeze_note": "Only the test file gained one real fake-model publication-to-Registrar integration test after the 269-pass G1. Root G2 freeze notice raced with the already-dispatched addition; root was immediately notified. Product hashes did not change. Final 55-test own suite passed with stable inputs; final root G2 must bind the final file hash.",
+  "counts": {
+    "unit1": {
+      "passed": 0,
+      "failed": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    "unit2": {
+      "passed": 45,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "unit3": {
+      "passed": 51,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "unit4": {
+      "passed": 54,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "G1": {
+      "passed": 269,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "fullpath": {
+      "passed": 55,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  }
+}

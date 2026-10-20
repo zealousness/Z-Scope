@@ -17,9 +17,11 @@ from dataclasses import asdict, dataclass
 from threading import RLock
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
+from ...common.issue_identity import issue_build_context_id
 
-DECISION_FACT_VERSION = "zscope.decision-facts.v1.3"
-SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.2"
+
+DECISION_FACT_VERSION = "zscope.decision-facts.v1.4"
+SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.3"
 DECISION_CONTEXT_V31 = "zscope.decision-context.v3.1"
 DECISION_CONTEXT_V32 = "zscope.decision-context.v3.2"
 DECISION_CONTEXT_V33 = "zscope.decision-context.v3.3"
@@ -217,6 +219,7 @@ class DecisionFact:
     attributes: Mapping[str, Any]
     code_hash: str
     completeness: str
+    build_context_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -265,6 +268,7 @@ class SecurityObligation:
     required_fact_kinds: tuple[str, ...]
     decision_fact_slice: Optional[DecisionFactSlice] = None
     version: str = SECURITY_OBLIGATION_VERSION
+    build_context_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -286,12 +290,16 @@ class DecisionFactGraph:
         revision: str = "",
         index_epoch: str = "",
         source_fingerprint: str = "",
+        build_context_ids: Sequence[str] = (),
     ) -> None:
         self.project_id = str(project_id or "")
         self.revision = str(revision or "")
         self.index_epoch = str(index_epoch or "")
         self.source_fingerprint = str(source_fingerprint or "")
         self.facts = tuple(sorted(facts, key=lambda item: item.fact_uid))
+        self.build_context_ids = tuple(
+            sorted(set(build_context_ids) | {fact.build_context_id for fact in self.facts})
+        )
         self.edges = tuple(sorted(edges, key=lambda item: item.edge_uid))
         self._by_kind: Dict[str, list[DecisionFact]] = {}
         for fact in self.facts:
@@ -306,6 +314,7 @@ class DecisionFactGraph:
                 "revision": self.revision,
                 "index_epoch": self.index_epoch,
                 "source_fingerprint": self.source_fingerprint,
+                "build_context_ids": self.build_context_ids,
             },
             length=48,
         )
@@ -328,7 +337,10 @@ class DecisionFactGraph:
             or ""
         )
         file_path = normalize_path(issue.get("file") or issue.get("file_path") or path.get("file"))
-        function_uid = "FUNC_" + _digest({"file": file_path, "signature": function})
+        build_context_id = issue_build_context_id(issue)
+        function_uid = "FUNC_" + _digest(
+            {"file": file_path, "signature": function, "build_context_id": build_context_id}
+        )
         complete = bool(path.get("complete_in_function") is True or path.get("complete") is True)
         collection_failed = bool(
             issue.get("decision_fact_collection_failed")
@@ -373,6 +385,7 @@ class DecisionFactGraph:
                 attributes=dict(attributes or {}),
                 code_hash=code_hash,
                 completeness=fact_completeness,
+                build_context_id=build_context_id,
             )
             if fact not in facts:
                 facts.append(fact)
@@ -530,6 +543,7 @@ class DecisionFactGraph:
             revision=str(issue.get("revision") or ""),
             index_epoch=str(issue.get("index_epoch") or pack.get("index_epoch") or ""),
             source_fingerprint=code_hash,
+            build_context_ids=(build_context_id,),
         )
 
     @classmethod
@@ -579,6 +593,9 @@ class DecisionFactGraph:
             revision=resolved_revision,
             index_epoch=resolved_epoch,
             source_fingerprint=resolved_fingerprint,
+            build_context_ids=tuple(
+                scope for fragment in fragments for scope in fragment.build_context_ids
+            ),
         )
 
     def slice_for(
@@ -586,20 +603,23 @@ class DecisionFactGraph:
         obligation: SecurityObligation,
     ) -> DecisionFactSlice:
         subject = obligation.subject_uid
+        scoped_facts = [
+            fact for fact in self.facts if fact.build_context_id == obligation.build_context_id
+        ]
         selected = [
             fact
-            for fact in self.facts
+            for fact in scoped_facts
             if not subject or not fact.subject_uid or fact.subject_uid == subject
         ]
         # Source and sink are decision facts for a sink-sensitive obligation
         # even when their normalized subjects differ from the owned object.
         selected.extend(
             fact
-            for fact in self.facts
+            for fact in scoped_facts
             if fact.fact_kind in obligation.required_fact_kinds and fact not in selected
         )
         if not selected:
-            selected = list(self.facts)
+            selected = list(scoped_facts)
         selected_ids = {fact.fact_uid for fact in selected}
         fact_kinds = {fact.fact_kind for fact in selected}
         missing = tuple(
@@ -650,6 +670,7 @@ class DecisionFactGraphCache:
             {
                 "version": DECISION_FACT_VERSION,
                 "project": issue.get("project_id"),
+                "build_context_id": issue_build_context_id(issue),
                 "revision": issue.get("revision"),
                 "index_epoch": issue.get("index_epoch") or pack.get("index_epoch"),
                 "source_fingerprint": issue.get("dependency_code_hash")
@@ -835,6 +856,7 @@ def security_obligation_for(
         or []
     )
     region = {
+        "build_context_id": issue_build_context_id(issue),
         "function": str(
             issue.get("function_signature") or issue.get("function") or path.get("function") or ""
         ),
@@ -879,6 +901,7 @@ def security_obligation_for(
         sink_uid=normalize_subject(sink_uid),
         decision_region_uid="REGION_" + _digest(region),
         required_fact_kinds=required_fact_kinds_for_issue(issue),
+        build_context_id=issue_build_context_id(issue),
     )
 
 

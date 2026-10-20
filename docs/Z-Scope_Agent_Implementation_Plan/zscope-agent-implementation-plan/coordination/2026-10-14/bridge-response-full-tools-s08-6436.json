@@ -1,0 +1,416 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T03:50:03.642933+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:03.871609+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:04.060149+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:04.280424+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:04.490734+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:04.691932+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:04.913474+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:05.114236+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:05.400160+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:05.598465+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:05.799067+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:05.998229+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:06.168954+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:06.382934+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:07.008789+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:07.228095+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:07.434626+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:07.641262+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:07.852249+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:08.071340+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:08.274080+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:08.484203+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:08.695207+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:08.908615+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:09.199165+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:09.441135+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Editing C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner\\zscope\\orchestration\\jobs\\owner.py",
+        "tool_call_id": "1:Edit_52",
+        "kind": "edit",
+        "status": "in_progress",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/owner.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:09.451278+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_52",
+        "status": "completed",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/orchestration/jobs/owner.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:12.828962+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Edit",
+        "tool_call_id": "1:Edit_53",
+        "kind": "edit",
+        "status": "pending"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:13.160759+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:13.324489+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:13.495021+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:13.667631+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:13.838555+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:14.014272+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:14.179829+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:14.350853+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:14.522384+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:14.693375+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:14.865017+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:15.035688+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:15.207040+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:15.378946+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:15.547926+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:50:15.719091+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Edit_53",
+        "status": "in_progress"
+      }
+    }
+  ],
+  "offset": 6436,
+  "count": 44,
+  "next_offset": 6480,
+  "has_more": true,
+  "total_matching": 12334
+}

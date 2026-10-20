@@ -1,0 +1,13 @@
+{
+  "id": "u02-disposition-kimi",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "kimi",
+    "model": "volceapi/kimi-k3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "U02 高风险构建身份绑定验收处置存储",
+    "user_requested": true,
+    "request_id": "e7208177-0923-4c18-a81f-fee45a147f62",
+    "message": "undefined\n本任务U02-DISPOSITION（持久反馈/身份隔离风险高，用户已授权KimiK3，不涉及UI）：隔离目录 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u02-disposition。可写仅新增zscope/config/acceptance_feedback.py、tests/test_acceptance_feedback.py、本分支DELIVERY.md/artifacts；所有现有Web/feedback/report只读，由集成owner接线。\n按API_CONTRACT实现独立persistent acceptance disposition store，服务器绑定当前report/issue/build/object身份，不能信任客户端scope。建议Store接受后台派生IssueScope与get/saveAPI，提供服务层resolve/validation注入边界给协调者；只保留有明确消费的字段，不新建第二份validation库。duplicate/risk_accept/followup/clear为独立处置，不写validation verdict、business答案、baseline、suppression/Review Memory，不隐藏pending。followup只本地记录，不能外发消息、建新任务或改业务源码。风险接受可过期，clear留历史。\nSQLite/等价真正原子持久事务：单调revision/乐观base_revision、请求request_id幂等、并发冲突/失败旧记录保留、同一id不同请求拒绝；报告/问题/构建/对象摘要改变失效409，未知构建不是通配，跨报告/实例反馈不复用。duplicate只能当前同构建真实不同issue目标，必须根因/object保留不假合并；reason长度/类型/时间明确验证，路径不由客户端指定，异常不泄露凭据。GET/POST响应envelope精确使用API合同revision等字段。\n测试真实落盘+重新打开+并发CAS+失败回滚+幂等重发/冲突+构建/对象/报告失效+未知隔离+expiry/clear历史，证明不改变任何validation/业务存储。不要写原根文件，不需native。Linux质量命令。\n并发资源：本轮已有两个独立Kimi分支，仅本分支定向pytest，不启动大型全回归/共享native构建。所有测试在隔离cwd生成私有临时状态。若Linux入口环境报权限错误，停止受影响执行并准确报告，不能用Windows测试代替。"
+  }
+}

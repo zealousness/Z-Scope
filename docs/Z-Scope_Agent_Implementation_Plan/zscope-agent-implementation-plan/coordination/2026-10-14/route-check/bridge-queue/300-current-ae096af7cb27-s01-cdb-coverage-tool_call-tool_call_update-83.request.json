@@ -1,0 +1,1 @@
+{"id": "current-ae096af7cb27-s01-cdb-coverage-tool_call-tool_call_update-83", "tool": "get_transcript", "arguments": {"session_id": "sess_c3c6c01381", "offset": 83, "limit": 1000, "kinds": "tool_call,tool_call_update"}}

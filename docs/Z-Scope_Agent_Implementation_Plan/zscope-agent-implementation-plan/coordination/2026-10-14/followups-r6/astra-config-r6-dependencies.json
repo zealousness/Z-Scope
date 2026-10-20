@@ -1,0 +1,118 @@
+{
+  "reason": "accepted U01 repair and shared HTTP22 pass; phase2 real multi-target browser",
+  "files": [
+    {
+      "previous_sha256": null,
+      "sha256": "6e4fba2bf32da6bfe4a9de013c33c9d664f86190477d2221a70a9acdc4a371fd",
+      "path": ".editorconfig"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "b06bd4ee002f37a8b5ed320d78504e025e150e16feed695e3609a5709b397812",
+      "path": ".gitattributes"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "971c2de8c58848a2755354474711bbb2712a204cd6db11a3b85da511e7924a16",
+      "path": "LICENSE"
+    },
+    {
+      "previous_sha256": "5e59fa899f77ad8fab11bdebaddd9efa8ab142acd7c7e9748345217c356fad73",
+      "sha256": "b94e7ef95d235d0d64a5b183fb431dd60da475bec0b312ad171e66044dbd8795",
+      "path": "tests/test_cli_config_v2.py"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "47b65a6f7b2f33b072f43197b28ce8c76c7c0fd2e7cd415289844ec37b26840b",
+      "path": "tests/test_config_editor_http.py"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "b68da37ff2067b29a72156f56a3a2f8660b3db267bab3b4783775ee944e08a73",
+      "path": "tests/test_config_v3_entrypoints.py"
+    },
+    {
+      "previous_sha256": "256ad05ff3cc42279acbf124bfc1833f5181f503411c3ee0be47ae6889886b19",
+      "sha256": "7f313fb31110c7cd4c918cf5a32d18e00f09518d058c2d0b3dd925eaafef16dc",
+      "path": "tests/test_portable_runtime.py"
+    },
+    {
+      "previous_sha256": "237498d52dc598a7d6fb508e1192a306bbbbfe913aa5b3923c70029c8201980d",
+      "sha256": "3fafa5ec8fdfd64fc77e75bca35b15fe399e70f65b3ffc4e0d3f55142befdac3",
+      "path": "tests/test_reference_configs.py"
+    },
+    {
+      "previous_sha256": "358834c7d2ce7cc3f232c43eafaed6ab6d315aa04e86d163ca87fdb54ada8609",
+      "sha256": "e87786845fde7a14d92e755ccd59453e999f6594e9217634e6380deabb820aa3",
+      "path": "zscope.c_cpp.yaml"
+    },
+    {
+      "previous_sha256": "ee97888c6ad4447fba91010867b7356b8c17d26173c5fa5eac9be52143ef15ac",
+      "sha256": "f5692a0aef9f94fb0c8f5ec8117a71b72857633c2b0320a209ed8041b26738a9",
+      "path": "zscope.java.yaml"
+    },
+    {
+      "previous_sha256": "368a430b88d1a7abebbc8d77b9e90b1260a0f09962b710a7e93a3a6707f87e40",
+      "sha256": "839891173f5e70a784f86bb2f2e74f8d99e2cf0d99c385a9b922660701b740ac",
+      "path": "zscope/cli/config_cli.py"
+    },
+    {
+      "previous_sha256": "78f970a502347fd0fdefabfd1ee3d2015184f39c2d0270d01ad6f5bab75f9cae",
+      "sha256": "f369e68757349c3d466eabb6ec474919f2df42132f1b8bb243f9409709a538c3",
+      "path": "zscope/cli/init.py"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "e76ec75060adec49a082379bdc0131840c1eedd23d84fb7901107fbf7f514333",
+      "path": "zscope/config/editor.py"
+    },
+    {
+      "previous_sha256": "af10f8ee29c591ad62b56d68b4268dfefb881663969c406e19667c309395ef5a",
+      "sha256": "0a550bbb5204e86b0b6c87f0d7104dd1cc9293b0613b709f8cd817f3909b3f03",
+      "path": "zscope/web/services.py"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "5f05c4925dd3edf049a70b4b403ac0dd43b20f72501d9359911ddd25d5ac657d",
+      "path": "zscope/web/static/vendor/alpine.LICENSE"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "8709e3ac65c84637c422dc8082b893d9997fce093751c77b2f1983bf29dbf9ea",
+      "path": "zscope/web/static/vendor/daisyui.LICENSE"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "805f6cb28bb8b6d3a0badd83c93bccd9671fa01a3b4b92b7042b0743325ac243",
+      "path": "zscope/web/static/vendor/fflate.LICENSE"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98bd63961f9550",
+      "path": "zscope/web/static/vendor/js-yaml.LICENSE"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "792c48c5a849a15fdf9e37e8bcf9e6d1dd13b32b46c642a748a0a46a9919d473",
+      "path": "zscope/web/static/vendor/markdown-it.LICENSE"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b",
+      "path": "zscope/web/static/vendor/prism.LICENSE"
+    },
+    {
+      "previous_sha256": null,
+      "sha256": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985",
+      "path": "zscope/web/static/vendor/tailwind.LICENSE"
+    }
+  ],
+  "ui_six_files_unchanged": true,
+  "workspace": "astra-config-r6",
+  "upstream_intake": "artifacts/intake-u01-review1-r6-20261014/receipt.json",
+  "shared_http": "artifacts/intake-u01-review1-r6-20261014/shared-http.xml",
+  "owner": "coordinator",
+  "schema": "zscope.coordination.readonly-dependency-refresh.v1",
+  "upstream_acceptance": "artifacts/coordinator-u01-review1-r6-20261014/review.json",
+  "at": "2026-10-14T21:16:27.7980559+08:00"
+}

@@ -1,0 +1,182 @@
+{
+  "events": [
+    {
+      "node": "harmless_tsan_probe",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/usr/bin/cc",
+        "-fsanitize=thread",
+        "-g",
+        "-O0",
+        "-o",
+        "/tmp/zscope-tsan-probe-8zntzfmu/probe",
+        "/tmp/zscope-tsan-probe-8zntzfmu/probe.c",
+        "-pthread"
+      ],
+      "cwd": "/tmp/zscope-tsan-probe-8zntzfmu",
+      "exit_code": 0,
+      "stdout": {
+        "path": "/work/raw/001-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/002-direct-stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "node": "harmless_tsan_probe",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/tmp/zscope-tsan-probe-8zntzfmu/probe"
+      ],
+      "cwd": "/tmp/zscope-tsan-probe-8zntzfmu",
+      "exit_code": 0,
+      "stdout": {
+        "path": "/work/raw/003-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/004-direct-stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "node": "harmless_tsan_probe",
+      "event": "availability",
+      "type": "ProviderAvailability",
+      "evidence": {
+        "available": true,
+        "reason": "",
+        "details": {
+          "compiler": "/usr/bin/cc",
+          "probe_exit_code": "0"
+        }
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/usr/bin/cc",
+        "-fsanitize=thread",
+        "-g",
+        "-O0",
+        "-o",
+        "/tmp/zscope-tsan-probe-dnia2wn8/probe",
+        "/tmp/zscope-tsan-probe-dnia2wn8/probe.c",
+        "-pthread"
+      ],
+      "cwd": "/tmp/zscope-tsan-probe-dnia2wn8",
+      "exit_code": 0,
+      "stdout": {
+        "path": "/work/raw/005-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/006-direct-stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/tmp/zscope-tsan-probe-dnia2wn8/probe"
+      ],
+      "cwd": "/tmp/zscope-tsan-probe-dnia2wn8",
+      "exit_code": 66,
+      "stdout": {
+        "path": "/work/raw/007-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/008-direct-stderr.log",
+        "bytes": 80,
+        "sha256": "0aed53cbc0e536e726dac0ad76a42f04066fafcda2903ee9c172f5ad3083ba55"
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "availability",
+      "type": "ProviderAvailability",
+      "evidence": {
+        "available": false,
+        "reason": "sanitizer_probe_failed",
+        "details": {
+          "compiler": "/usr/bin/cc",
+          "probe_exit_code": "66"
+        }
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_negative_fixture_is_not_reproduced",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/usr/bin/cc",
+        "-fsanitize=thread",
+        "-g",
+        "-O0",
+        "-o",
+        "/tmp/zscope-tsan-probe-vawkavjh/probe",
+        "/tmp/zscope-tsan-probe-vawkavjh/probe.c",
+        "-pthread"
+      ],
+      "cwd": "/tmp/zscope-tsan-probe-vawkavjh",
+      "exit_code": 0,
+      "stdout": {
+        "path": "/work/raw/009-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/010-direct-stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_negative_fixture_is_not_reproduced",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/tmp/zscope-tsan-probe-vawkavjh/probe"
+      ],
+      "cwd": "/tmp/zscope-tsan-probe-vawkavjh",
+      "exit_code": 66,
+      "stdout": {
+        "path": "/work/raw/011-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/012-direct-stderr.log",
+        "bytes": 80,
+        "sha256": "db7534836ebd059825f13fc2ee3a7bf8c852192d0dfcf3ad6abfbfd625a19f7a"
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_negative_fixture_is_not_reproduced",
+      "event": "availability",
+      "type": "ProviderAvailability",
+      "evidence": {
+        "available": false,
+        "reason": "sanitizer_probe_failed",
+        "details": {
+          "compiler": "/usr/bin/cc",
+          "probe_exit_code": "66"
+        }
+      }
+    }
+  ],
+  "test_observed": {},
+  "observer_errors": [],
+  "raw_files": 12,
+  "raw_bytes": 160
+}

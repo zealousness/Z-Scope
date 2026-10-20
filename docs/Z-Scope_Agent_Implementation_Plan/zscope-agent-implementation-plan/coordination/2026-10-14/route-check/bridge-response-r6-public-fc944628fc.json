@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T12:19:27.957225+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash",
+        "tool_call_id": "0:Bash_0_b6f21309",
+        "kind": "execute",
+        "status": "pending"
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 1,
+  "next_offset": 1,
+  "has_more": true,
+  "total_matching": 86678
+}

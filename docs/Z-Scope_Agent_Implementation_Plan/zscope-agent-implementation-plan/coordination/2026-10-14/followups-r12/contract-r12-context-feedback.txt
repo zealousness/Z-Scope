@@ -1,0 +1,15 @@
+继续现有 ZCode / glm-5.3 会话的契约身份返修。此前 task_04ef519648 于2026-10-15 15:33:22结束、观察模型正确、producer进程清空，交付v4停写。根仍R16 1207/0加六命令0，未导入本交付。
+
+协调者独立冻结原4探针实际收集16项，16/0（15:35:28），并非DELIVERY声称的29项；自测947/936过/11失败仍未通过，不得将其解释成完整绿。收据 artifacts/coordinator-contract-r12-r4-boundary-probes-20261015/review.json。
+新增独立文件 followups-r12/test_contract_context_receipt_boundary.py 在同一稳定1004输入上连同原探针实际22项、17过5失败、0error/skip，15:37:17。收据 artifacts/coordinator-contract-r12-r4-context-probes-20261015/review.json。
+失败分别为 incomplete_body / stale_reason / context_build_conflict / identity_usr_conflict / identity_build_conflict。compiled() 仍经过真实compiler publication API，但输入是明示合成隔离fixture，不能称native提取证据。正常上下文正例通过；损坏上下文 bind_build_scope 后省略USR仍以入口owner.USR授予已发布pinned契约；嵌套恢复也必须保持。_context_entry_symbol只读owner、漏掉body.complete、当前性及function_identity冲突，是新的真实产品缺口。统一核对context_symbol_usr、context入口绑定与callee解析的当前性，未知/不完整/过期/冲突不得由另一个helper重新授权。补充缺失body.complete反例也要保守。不要弱化原native事实/AST/CFG/标准builtin核验。不要把工作簿自报USR或契约自身USR当选择来源。
+
+11个旧失败的逐项核对：四份旧测试由协调者在独立coordinator-contract-migration-r17副本负责迁移（test_contract_build_scope.py、test_native_wrapper_inference.py、test_single_slot_pool.py、test_retention_protocols.py），只读；保留原义务，补精确caller/entry身份与缺失/错误USR反例。正在进行真实Linux测试和质量检查。迁移通过后协调者会复制这四份只读依赖到你的副本并写 followups-r12/contract-test-migration-ready-r17.json；你只读取该ready收据和dependency hash，不改这些测试。最终全量必须在ready收据存在后、刷新字节上运行。你先做自有产品修复和自有测试；不要同时跑旧版完整回归导致无效失败，不要以等待为由伪造完成。
+
+另外3例是实际产品链路问题，不能通过接受额外LLM调用或把coverage断言改为unsupported解决：
+1. 两个test_pool_protocol_modeling实际native端到端case必须恢复outer/drop确定性组合而无需LLM，保留a/b逻辑效果差异。不要照搬“早期phase无收据”推测：协调者源码已见semantic_modeling._prepare_contexts在713行附program_facts，_model深拷贝该context。contract_compiler._derive_source_contracts虽然构建callee_usr_map，却仍在1034附近 for base in registry.find_for_call(call.name) 以及1087/1238等处、_source_pair_compatible/函数内嵌套call解析中未传真实callee身份。检查实际调用栈，修自有compiler遗漏接线/内部helper传参；不要猜测性多查name、扩大全局上下文或盲改semantic_modeling。若确有它的额外必要改动，先交具体调用点/最小补丁建议给协调者，不私改。
+2. resource_coverage.inference_coverage在122附近已有当前context但对context.func_name做未绑定find_for_call，导致native_model_cache source_verified被错误记为unsupported。现正式交接最小新增写路径 zscope/semantics/resource_coverage.py（14总写路径，13原文件含自有2测试加此文件），见ownership-extension-r5.json；从当前真实context_symbol_usr传确切身份并保持不完整/冲突unknown。该文件其他worker均只读，root未改。
+
+原37文件union额外checker/协议/consumer回归全部保留，最终39及已增加neighbors由协调者再次独验；加入现在5份独立探针，不能只跑22项。已有single_slot_pool/retention直测也保留。所有失败原样保留，不skip/xfail/删测试/改timeout，不恢复S06-R02会话。统一validation内部线程及EvidenceCompletionQueue的剩余绑定边界如仍未接通继续明示，不夸成完整S01。
+
+唯一可写 .coordination/20261014/workspaces/contract-validation-r12；14路径清单由baseline和ownership-extension*.json给定，四份迁移测试及其他产品文件只读，coordinator只写其依赖四测试、不碰你14文件。不能碰Kimi正在写的scan-checkpoint-r17、旧冻结ScanSession、根目录或Astra目录。完整任务原要求不变：原owner80748、不新起Bridge；WSL Ubuntu zeal bash -lc、venv313、根test_slot.py两槽/defaultfd/独立ext4tmp；真实native工具SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399只读不重建；最终stable SHA、JUnit、日志、compileall/mypy/必要Black、UTC+8时间、DELIVERY停写。无凭据/provider/审批修改、commit/push/reset/clean；平台/审批/额度限制不能改路由规避。普通API超时由协调者保留证据按授权处理。

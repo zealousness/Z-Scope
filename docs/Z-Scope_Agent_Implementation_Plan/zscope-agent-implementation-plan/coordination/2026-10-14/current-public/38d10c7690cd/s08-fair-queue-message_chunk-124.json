@@ -1,0 +1,154 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:28:30.959603+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "批次 + 最久未动排序不饥饿，退避指数增长封顶，attempt/批次"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:31.252410+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "双重有界防无限递归；lease 持久"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:31.534828+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "化、owner 崩溃不伪 completed、lease 到期重 claim 并拒绝陈旧 token；输入变化 recover"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:31.800133+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 将 completed/failed/deferred/active 全部重新待核，不授予旧 completion；"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:32.065789+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "snapshot 提供真实五态计数与剩余项身份/原因。item 只接受四个结构"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:32.349205+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "化字段，不存储/执行 argv、动态收据或密钥。\n\n**如实报告一点"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:32.652359+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "偏差**：pytest 共执行了 2 次而非 1 次。第一次 shakeout 暴露 1"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:32.923596+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 个真实边界缺陷（`open_for_recovery` 对不存在的 DB 返回 503 而非 404）和 "
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:33.176566+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "1 个测试自身逻辑错误，修复后先经非 pytest 直调验证 20/20，再跑最终"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:33.451391+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " pytest 形成记录——两次结果均已写入 DELIVERY.md。\n\n**明确未接线**：本队列未接入"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:33.711873+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " `scan_session`/`ParallelAnalyzer`/owner/Web 路由，不启动、取消或杀死任何 scanner"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:33.982244+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "/LLM 工作，旧 report/current-v3 `stop_at` consumer 仍 pending——这些"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:34.233132+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "由协调者统一接线后 JOB04/JOB06 "
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:34.528653+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "才在共享会话层面闭环。未做真实模型扫描、formal/Range 或 native 重建（合同范围外）。另"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:34.786104+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "注：根工作区与快照之间存在其他协作者的漂移（如 `test_agent_work"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:35.096516+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "bench_ui.py`、部分 docs），与本切片无关；本切片依赖的 `zscope/orchestration/jobs/` 输入源码已"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:35.156767+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " diff 验证逐字节一致。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:28:35.203320+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "✓ completed · cache 113/114 messages · 155.7k cache-read tokens"
+      }
+    }
+  ],
+  "offset": 124,
+  "count": 18,
+  "next_offset": 142,
+  "has_more": false,
+  "total_matching": 142
+}

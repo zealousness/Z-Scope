@@ -1,0 +1,31 @@
+{
+  "at": "2026-10-14T10:16:56.040009+00:00",
+  "branch": "s08-scheduling",
+  "independent_junit": "s08-queue-fixed-independent.xml",
+  "tests": [
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "22",
+      "time": "3.925",
+      "timestamp": "2026-10-14T18:09:46.090652+08:00",
+      "hostname": "Cindala"
+    }
+  ],
+  "baseline_inputs_unchanged": 965,
+  "files": [
+    {
+      "path": "zscope/orchestration/jobs/work_queue.py",
+      "sha256": "915ed0953eb9a30f692f70a1ca5b8659c8d6943bd0b36f856453a0719dfbbd41",
+      "old_sha256": null
+    },
+    {
+      "path": "tests/test_scan_job_work_queue.py",
+      "sha256": "721160a837f5ea21345492e73a87967f193b4ece676d4814c0e15c6374ab6e28",
+      "old_sha256": null
+    }
+  ],
+  "scope": "accepted backend slice; not whole package"
+}

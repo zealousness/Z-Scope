@@ -1,0 +1,14 @@
+原 task_315195c1a1 已有最终DELIVERY、879自验+质量，但协调者独立边界诊断不通过，尚未集成。保留原DELIVERY及全部结果。继续同一sess_a0adb99b15、GLM5.3、原contract-validation-r12隔离目录，修复已复现缺陷，不重做任务，不启动服务，不改所有权外文件。
+
+最终有效诊断 artifacts/coordinator-contract-r12-final-boundary-20261015/review.json、results.xml、command-0.log：11例，4通过、7失败、0error/skip，源1004文件前后稳定且与你最终字节一致。最新探针在根coordination/2026-10-14/followups-r12/test_validation_thread_context.py、test_contract_usr_boundary.py，直接通过root test_slot --workspace本副本执行这两份绝对路径探针，不复制或改探针。早期boundary-probes/corrected/published三轮有协调者夹具问题，原样保留，不据这些错误要求修产品；以final-boundary为准。当前精确USR正例已通过，线程并发executor/scheduler两例通过，foreign候选拒绝通过，以下7例实际失败：
+1. scoped Runner接受完全缺失candidate/evidence build，真实Validator调用带了当前scoped build。所谓“无身份候选正常验证但不借scope”不成立，run/worker始终绑定scope。未知不得补标签借授权；保守待复核且不执行此变体Validator。
+2. issue顶层build=A但evidence_pack.build=B，issue_build_context_id只取顶层掩盖冲突，仍进入A Validator。需核对所有实际输入身份，未知/冲突不授权；不要只优先一个字段。
+3. 精确已发布source contract，match_call usr=''仍授deallocator效果；未知查询不是精确符号通配。
+4. 把该已发布source contract.symbol.usr置空后，用当前确切USR查询仍授效果；缺USR旧source记录不能通配。builtin真正标准根的核验保留；不能全禁builtin来变绿。
+5. contract_rows snapshot.usr是当前native own，raw.symbol.usr外来，declared.usr or snapshot.usr偏信外来声明，发布为foreign。应按真实owner收据核对，拒绝/隔离冲突，不能让声明覆盖当前native。
+6. context_symbol_usr对两个complete、不同owner USR的body取第一个；歧义应unknown，不任取首个。
+7. facts.build=A，function_identity.build=B/USRforeign，context_symbol_usr仍返回foreign；要核对当前构建/owner收据，不借错变体身份。
+
+保持原实际native重载/双TU/条件callee、全部现有protocol/native/validation/identity回归及质量。原7个owned文件外如需接线请提出最小精确建议，不自行修改别人的文件。USR边界按真实可验证source编译链落实，普通manual/workbook不能凭字符串自称native；无精度应真实gap。不能改只读旧测试、skip/xfail/排除失败、降低通过标准；如果旧例的契约与新安全身份要求有真实冲突，请交具体调用点给协调者核对，不能随意放宽。
+
+完成新修复版本DELIVERY（原收据另存不覆盖历史），稳定SHA、全部命令/JUnit/日志/时刻，停止所有后台命令和源码写入后再最终回复。Bridge完成标记早于实际WSL测试结束的情况已经发生，最终交付务必可核查。

@@ -1,0 +1,14 @@
+{
+  "id": "u01-entrypoints-r6",
+  "branch": "u01-entrypoints-r6",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "U01-ENTRYPOINTS",
+    "message": "实施 U01-ENTRYPOINTS：当前严格 v3 模型已有，但 CLI prepare/validate、初始化器和语言模板未统一；不做任何前端。\n独占新 config/editor.py、cli/config_cli.py、cli/init.py、两份 zscope.c_cpp.yaml/zscope.java.yaml、tests/test_cli_config_v2.py、tests/test_reference_configs.py、新 tests/test_config_v3_entrypoints.py。\nconfig/v3.py、v3_preparation.py、config.py/v2.py、Web/MCP/README/模块/21、static 和 UI tests 全部只读。协调者接 Web/MCP/文档，Astra独占 UI。\nCLI prepare 必须与 Web 同用 prepare_saved_config，v3 多 target 保留并禁启，不因 EffectiveConfig 单目标组合而无法检查全部 target。validate 显示实际版本，不把 v3 输出写成 v2；验证与执行区分。\n初始化器/两语言模板以当前严格 v3 模型为准，root 相对配置文件目录、target/compile_commands 相对工程；从不同 cwd 的实际 CLI round-trip 正反例。模型 profile/env 引用及人工资料不丢；不展示绝对工具路径或私有 endpoint。preset 映射与未消费的 focus/reproduction/workers/platform/stop_at 不能伪装启用，实验默认不改。\n为协调者提供小型 config/editor.py 服务：在同一配置目录解析/验证待保存文件，v3 调用现有 parse_user_config_v3 而不强迫多 target 组合执行；v2仍走当前 loader。提供结构化编辑读取投影，保持原始 document（含所有 llms profiles/相对路径/环境变量引用）与实际版本；多 target 可以合法编辑保存但执行仍禁启。全部约束重用当前 parser/schema，不能另造近似解析器或修改模型来迁就 UI。\nWeb 接线约定保持现有 GET /api/config/structured 的 config/config_version/language 和 POST {config:document}，新 helper 由协调者接入 ConfigService；无需你修改 routes/services。保存仍原子且验证失败不覆盖原文件。\n相关测试用实际 CLI/文件/解析器，多目标、不同 cwd、错误配置不覆盖、profiles/相对路径往返、Java无编译数据库；运行 Linux pytest/compileall/mypy/Black 并交付 SHA。不要声称完整 U01 画像、MCP 作业控制或所有配置意图已消费。\n当前根目录联合回归与6项质量命令已通过，真实收据 artifacts/coordinator-r6-integrated-20261014。本任务仅在 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u01-entrypoints-r6（WSL /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/u01-entrypoints-r6）修改独占文件。\n先读快照 AGENTS/architecture、计划11/16/21及当前源码，不把历史切片等同整包。所有产品质量在WSL Ubuntu /home/zeal/venv313/bin/python，PYTHONPATH必须为本隔离目录。\n每次 pytest/native/质量命令通过根目录协调 test_slot.py --workspace <本隔离目录Linux绝对路径> -- <argv> 执行，最多两个并发检查；临时文件已自动放独立ext4 /tmp，不使用/mnt/c TMPDIR。native测试设置 Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer。Astra浏览器设置 ZSCOPE_UI_PLAYWRIGHT_MODULE=/mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright，ZSCOPE_UI_CHROMIUM=/home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome；ZSCOPE_UI_EVIDENCE 指向本分支 artifacts。native只读 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，不重建。\n共享root、其他分支、凭据/provider/权限、旧S06会话不操作；不commit/push/reset/clean。允许本分支DELIVERY.md/artifacts；交付逐文件SHA、JUnit/实际命令/时间/未测和需协调接线范围。工具按当前公开参数schema，不重放旧错误调用。\n",
+    "request_id": "aa5c9d23-d577-421c-8ed3-5d9da4f9e860",
+    "user_requested": true
+  }
+}

@@ -122,37 +122,60 @@ def test_mcp_lists_and_accepts_only_namespaced_tools(tmp_path: Path) -> None:
     assert "Knowledge DB not found" in result["error"]
 
 
-def test_mcp_scan_tool_forwards_only_depth_override(tmp_path: Path) -> None:
-    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.scan.run"}))
+def test_mcp_scan_tools_forward_strict_arguments_to_the_jobs_adapter(tmp_path: Path) -> None:
+    # Boundary test only: it verifies the provider forwards the strict MCP
+    # arguments to the shared jobs adapter verbatim.  The adapter itself is
+    # exercised against the real persistent service in test_mcp_jobs.py.
+    code_index = FakeCodeIndex()
+    snapshots = FakeSnapshotStore()
+    policy = ToolPolicy(allowed_tools={"zscope.scan.run", "zscope.scan.status"})
+    runtime = ToolsRuntime(code_index, snapshots, tool_policy=policy)
     calls = []
-    provider.scan_request_service = type(
-        "Service",
-        (),
-        {
-            "start": staticmethod(
-                lambda **kwargs: calls.append(kwargs)
-                or {
-                    "scan_id": "scan-1",
-                    "status": "running",
-                    "effective_scan": {
-                        "depth": "balanced",
-                    },
-                    "llm_usage": {"consumed_tokens": 0},
-                }
-            )
-        },
-    )()
 
-    names = {tool["name"] for tool in provider.list_tools()}
-    result = provider.call_tool(
-        "zscope.scan.run",
-        {"scan_depth": "balanced"},
+    class RecordingAdapter:
+        def start(self, arguments):
+            calls.append(("start", arguments))
+            return {
+                "success": True,
+                "data": {
+                    "schema": "zscope.scan-jobs.v1",
+                    "job": {
+                        "job_id": "job_1",
+                        "run_id": "run_1",
+                        "revision": 1,
+                        "input_revision": "ab" * 32,
+                    },
+                },
+            }
+
+        def status(self, arguments):
+            calls.append(("status", arguments))
+            return {
+                "success": True,
+                "data": {"schema": "zscope.scan-jobs.v1", "job": {"job_id": "job_1"}},
+            }
+
+    provider = ZScopeMcpProvider(
+        _config(tmp_path),
+        code_index=code_index,
+        snapshot_store=snapshots,
+        tools_runtime=runtime,
+        tool_policy=policy,
+        jobs_adapter=RecordingAdapter(),
     )
 
-    assert "zscope.scan.run" in names
-    assert calls == [{"scan_depth": "balanced"}]
-    assert result["success"] is True
-    assert result["data"]["effective_scan"]["depth"] == "balanced"
+    names = {tool["name"] for tool in provider.list_tools()}
+    run = provider.call_tool("zscope.scan.run", {"request_id": "req-1", "scan_depth": "balanced"})
+    status = provider.call_tool("zscope.scan.status", {"job_id": "job_1"})
+
+    assert {"zscope.scan.run", "zscope.scan.status"} <= names
+    assert calls == [
+        ("start", {"request_id": "req-1", "scan_depth": "balanced"}),
+        ("status", {"job_id": "job_1"}),
+    ]
+    assert run["success"] is True
+    assert run["data"]["job"]["input_revision"] == "ab" * 32
+    assert status["data"]["job"]["job_id"] == "job_1"
 
 
 def test_mcp_exposes_only_readonly_wiki_status_and_query(tmp_path: Path, monkeypatch) -> None:

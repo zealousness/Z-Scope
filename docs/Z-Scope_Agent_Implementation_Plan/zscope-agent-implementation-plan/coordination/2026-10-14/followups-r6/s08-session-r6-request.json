@@ -1,0 +1,14 @@
+{
+  "id": "s08-session-r6",
+  "branch": "s08-session-r6",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S08-SESSION-SCHEDULER",
+    "message": "实施 S08-SESSION-SCHEDULER：消费已验收 WorkQueue 和 JobWindowHook，支持真实扫描工作边界、有限收尾、批次公平与 remaining。\n独占新 jobs/session_scheduler.py、jobs/scheduler_hook.py、jobs/owner.py、新 tests/test_job_session_scheduler.py。现有 store/service/work_queue/scheduler.py、parallel_analyzer.py、scan_session.py 只读，协调者独占接线。owner 已含本轮 job/attempt 同事务终态修复，必须保留。\n提供真实持久队列的 session 调度消费器，声明工作键包含 kind+稳定 scope+精确 build，绑定 job/input/run/owner。claim_token 完成/延期必需；旧 claim、旧 run、旧输入不能消费新工作。工作回调由当前进程/源码重新登记，不从 JSON 恢复命令、证明或执行权限。\n截止停止新 claim，允许已领取工作有界收尾，真实剩余队列持久化；有新增根因进入下一批、重复去重、有界尝试/延期与长期未决轮转，业务未知记问题/延期而非 waiting_user。恢复重新核对输入和当前回调，仅有效完成可复用；不能把 resume 重新全扫冒充 remaining。\nowner 需向真实 scanner 传递当前 hook 所需标识，合作截止优先于 watchdog；watchdog 是有限收尾的后备。保存真实 pending 时不能被 owner 的空占位覆盖；没有已测剩余分母时保持 unknown。所有 job/run/token 必须核对，不向日志泄露 token。\n测试使用真实 SQLite、实际 hook/调度器及独立子进程，覆盖截止前后 claim、在途收尾、watchdog、取消、重开/输入失效、旧 token 与新根/难例公平。可用明确受控工作回调，但不可 mock job/DB/owner 成功。\n明确独立消费器尚需 ScanSession/ParallelAnalyzer 接入，不能仅本模块通过就关闭 JOB04/JOB06/S08。交付接线 API、必要 owner/env 合同、真实 Linux JUnit/质量/SHA 和剩余缺口；不改共享文件或实验默认值。\n当前根目录联合回归与6项质量命令已通过，真实收据 artifacts/coordinator-r6-integrated-20261014。本任务仅在 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-session-r6（WSL /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-session-r6）修改独占文件。\n先读快照 AGENTS/architecture、计划11/16/21及当前源码，不把历史切片等同整包。所有产品质量在WSL Ubuntu /home/zeal/venv313/bin/python，PYTHONPATH必须为本隔离目录。\n每次 pytest/native/质量命令通过根目录协调 test_slot.py --workspace <本隔离目录Linux绝对路径> -- <argv> 执行，最多两个并发检查；临时文件已自动放独立ext4 /tmp，不使用/mnt/c TMPDIR。native测试设置 Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer。Astra浏览器设置 ZSCOPE_UI_PLAYWRIGHT_MODULE=/mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright，ZSCOPE_UI_CHROMIUM=/home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome；ZSCOPE_UI_EVIDENCE 指向本分支 artifacts。native只读 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，不重建。\n共享root、其他分支、凭据/provider/权限、旧S06会话不操作；不commit/push/reset/clean。允许本分支DELIVERY.md/artifacts；交付逐文件SHA、JUnit/实际命令/时间/未测和需协调接线范围。工具按当前公开参数schema，不重放旧错误调用。\n",
+    "request_id": "11940066-bad8-4ec9-8520-b6e9df15e49f",
+    "user_requested": true
+  }
+}

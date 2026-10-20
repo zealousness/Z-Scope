@@ -1,0 +1,22 @@
+{
+  "at": "2026-10-15T04:08:10.946557+08:00",
+  "coordinator_authorized": true,
+  "write_paths": [
+    "zscope/core/candidates/cpp_domains/lifecycle_paths.py",
+    "zscope/core/candidates/cpp_domains/retained_slots.py",
+    "zscope/semantics/single_slot_pool.py",
+    "zscope/semantics/refcount_protocols.py",
+    "zscope/semantics/handle_protocols.py"
+  ],
+  "previous_sha256": {
+    "zscope/core/candidates/cpp_domains/lifecycle_paths.py": "e179fc48c5618c4f35dca71a9509bed3a758c1b26c62e017a6a8c62b994a7e53",
+    "zscope/core/candidates/cpp_domains/retained_slots.py": "d957c142816615996f8d1ca3f1fe82adc29b5edbe290a317a5841ab7be0812ae",
+    "zscope/semantics/single_slot_pool.py": "014c0334048e252aa41f40c2b64a32b94ed7a4d003ce123a6feaf1a60f3ad6ce",
+    "zscope/semantics/refcount_protocols.py": "d47db6ef2df6ce4f5ce33f2664fa5b8642e60e7267ed15280cba9e177b89da48",
+    "zscope/semantics/handle_protocols.py": "842767487c9283740919e9f12cae13b1307c887168558fcc63dfc36533dada2c"
+  },
+  "reason": "Actual native compile/publication/reload to LifecyclePaths consumer accepts unknown/foreign contract USRs; protocol checkers also omit actual owner USR. Explicit single writer transfer; original baseline retained.",
+  "evidence": "artifacts/coordinator-contract-r12-final2-published-protocol-20261015/review.json",
+  "shared_root_integration_owner": "coordinator",
+  "original_baseline_preserved": true
+}

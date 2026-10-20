@@ -1,0 +1,68 @@
+{
+  "snapshots": [
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/WORK_PACKAGES.md",
+      "start": 160,
+      "end": 177,
+      "sha256": "86a7c5923f03666fcacf8c4385e4c480747d37cb66cb99d4819adca384dd7b10",
+      "text": "160:## V01 — ASAN 可执行验证最小闭环\n161:\n162:批次 `M3` · 优先级 `P1` · 类型 `delivery`  \n163:依赖：D01  \n164:代码地图：CM06, CM09  \n165:验收项：AC06, AC10, AC11, AC17, AC18\n166:\n167:**目标**：把一个内存缺陷候选转为可独立复跑的 witness，而非只增加模型复核。\n168:\n169:先设计 provider 协议与 fake runner，再实现一个 ASAN runner。新建单独的正例／反例 fixture，不修改 test/range 中的植入缺陷。真实执行限定获准本地 fixture；未知项目脚本、任意模型命令不得自动执行。\n170:\n171:验证计划绑定源版本、候选对象、构建配置、工具链、输入／harness 和允许执行范围。执行器用 argv 参数、固定工作目录、环境变量 allowlist、临时可写目录、超时、资源限制及进程组取消；是否具备真正 sandbox 需如实记录，subprocess 不等于安全沙箱。没有获准隔离环境时只运行 fake tests。\n172:\n173:结果保存命令身份、构建／二进制摘要、输入、stdout/stderr、退出码、sanitizer 分类、调用栈、source mapping、重放次数及限制。支持 `witness_observed / not_reproduced / inconclusive / engine_failed / unsupported` 等 provider 层结果（最终名称按现有模型映射），不新增或偷换产品 disposition。\n174:\n175:ASAN 告警必须匹配候选对象／站点／缺陷族；同进程发生另一个 crash 不是原候选已证实。Agent 生成结果由独立 runner 重跑；修复版验证可作为回归证据，不能据此宣称全程序安全。\n176:\n177:**验收**：真实正例能产生可匹配报告，反例不产生同类 witness；超时／OOM／构建失败不拒绝候选；源码或二进制变化拒绝旧证据；复跑产物完整。无 ASAN 环境则实现测试可过，但 real-execution 项保持 not_run，V01 不应被标完整验证完成。"
+    },
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/WORK_PACKAGES.md",
+      "start": 264,
+      "end": 277,
+      "sha256": "86a7c5923f03666fcacf8c4385e4c480747d37cb66cb99d4819adca384dd7b10",
+      "text": "264:## V02 — 扩展 TSAN／CBMC 验证适配\n265:\n266:批次 `M4` · 优先级 `P2` · 类型 `optional_integration`  \n267:依赖：V01  \n268:代码地图：CM06, CM09  \n269:验收项：AC06, AC11, AC15, AC18\n270:\n271:**目标**：沿用 V01 runner/receipt，而不是另建执行系统。\n272:\n273:先选择 TSAN 或 CBMC 之一，不同时铺开。TSAN 用受控线程 fixture，保留线程入口、对象、锁与访问栈，区分 data race、非确定触发和工具不支持。CBMC 保存 harness、外部函数模型、循环／递归边界、属性、求解状态与 unwinding 相关结果，不把受限安全推广成全程序安全。\n274:\n275:使用兼容的独立构建配置，不能假设 ASAN 与 TSAN 可在一个二进制中一起启用。测试未复现／solver unknown／超时／模型缺失全部保留未决。\n276:\n277:**验收**：正反例和不完整模型例；错误资源／错误版本结果不能绑定原候选。新工具缺失只影响本 provider，且真实执行项单独记录。"
+    },
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/WORK_PACKAGES.md",
+      "start": 230,
+      "end": 243,
+      "sha256": "86a7c5923f03666fcacf8c4385e4c480747d37cb66cb99d4819adca384dd7b10",
+      "text": "230:## A01 — 外部 Coding Agent 的受限调查适配器\n231:\n232:批次 `M4` · 优先级 `P2` · 类型 `optional_integration`  \n233:依赖：T03, D01, D02  \n234:代码地图：CM02, CM03, CM07  \n235:验收项：AC06, AC07, AC08, AC15, AC18\n236:\n237:**目标**：需要跨代码／文档／构建材料自主调查时，允许选择外部执行器；普通检索仍直接使用确定性工具。\n238:\n239:先实现窄接口、fake adapter 和离线结果导入，再对已获准的一个供应商做 smoke。任务包包含代码版本、审计命题、允许路径／工具、缺失事实、可写范围、网络权限和取消边界；返回结构化证据引用与 artifact，不接受自报 proof。\n240:\n241:只读调查默认无 shell、无外网、无 scan.run；实际 SDK 无法强制权限时判 unsupported，不能仅靠 system prompt。生成 harness 属于另一权限 profile，不能悄悄扩大只读任务的能力。工作区使用批准的隔离快照／工作树，不覆盖原源码；credentials 由用户的独立运行环境提供，不复制宿主全部变量或 ~/.codex 内容。\n242:\n243:限制父子深度，禁止嵌套再次启动同一外部 adapter。会话断开／超时要终止拥有的工作，不影响其他借用客户端；无法取实际 usage 时标 unknown。"
+    },
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/ACCEPTANCE.md",
+      "start": 3,
+      "end": 9,
+      "sha256": "b542a9599192456c5311459325a6311abf8df7a889eb468096c1c107a811de84",
+      "text": "3:## 1. 状态含义\n4:\n5:`passed`：实际执行且满足明确断言。`failed`：执行后断言或程序失败。`skipped`：测试框架跳过。`not_run`：未执行。`blocked`：缺失必要环境／权限／依赖。后二者不能转述成通过。\n6:\n7:任务可以完成实现但仍未完成真实集成验收；此时在 records 中分别写 implementation_status 和 verification_status，任务保持 in_progress／blocked，而非靠 fixture 或旧提交记录宣布全部完成。\n8:\n9:不要求所有任务都运行全仓统一后端；按变更风险选择测试。新增核心能力应有 deterministic fake tests，真实模型和重型引擎结果单列。"
+    },
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/ACCEPTANCE.md",
+      "start": 55,
+      "end": 59,
+      "sha256": "b542a9599192456c5311459325a6311abf8df7a889eb468096c1c107a811de84",
+      "text": "55:### AC06 — 新证据身份与绑定\n56:\n57:只有程序登记的 ref 可被模型引用。拒绝过期代码／构建／规则版本、同名不同 TU、跨项目对象、未授权扩展、未登记路径、篡改 artifact、工具输出自报 proof。\n58:\n59:may alias／may flow、文本命中、编译器结构事实、模型推理和动态 witness 类型不可混淆。保存序列化结果不恢复进程内证明权限。查询后源码变化时，不将新旧事实拼成一个已闭合命题。"
+    },
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/ACCEPTANCE.md",
+      "start": 79,
+      "end": 91,
+      "sha256": "b542a9599192456c5311459325a6311abf8df7a889eb468096c1c107a811de84",
+      "text": "79:### AC10 — Ledger 与安全终态\n80:\n81:主 freeze 后新增候选身份或集合修改必须失败。V3／验证器相关发现复用 append Ledger，最多代际规则保持。pending、engine_failed、interrupted 和需要人工复核的候选不能静默消失。\n82:\n83:新增 evidence/provider 不改变原有 disposition 枚举、rule/backend/LLM 归因和 baseline／suppression 边界。不通过模型 confidence 或多数投票伪造程序证明。\n84:\n85:### AC11 — 可执行验证\n86:\n87:必测：真实正例、相似正确反例、错误候选 crash、构建失败、无 sanitizer 输出、超时、工具缺失、源码／二进制变化、含空格参数、非零退出、取消子进程树、伪造 Agent 执行日志。\n88:\n89:独立 runner 必须能重放 witness，且 witness 与对象／站点／性质相符。not_reproduced 不形成拒绝证明。隔离条件及运行次数记录在 receipt；一段 subprocess 代码不能宣称具备容器级隔离。\n90:\n91:TSAN／CBMC 后续验收包含模型边界、调度非确定性、外部函数假设和展开限制。不具备真实工具环境时，相关验收保持 not_run，不能用 mock 的 sanitizer 字符串代替。"
+    },
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/ACCEPTANCE.md",
+      "start": 113,
+      "end": 117,
+      "sha256": "b542a9599192456c5311459325a6311abf8df7a889eb468096c1c107a811de84",
+      "text": "113:### AC15 — 外部依赖、权限与退化\n114:\n115:固定供应商版本、许可证与接口；核对实际认证和运行条件。没有外部工具、没有网络、没有凭据、没有访问资格不使原生路径失败。依赖缺失返回 unavailable／blocked，而不是自动安装／降级后冒充完整结果。\n116:\n117:绝不自动向 GitHub、Linear 或其他服务发布结果。外部扫描阶段相互隔离，不传 ground truth；导入保留来源与 coverage，拒绝越界 path 和过期引用。外部 verdict 不自带 Z-Scope proof 权限。"
+    },
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/ACCEPTANCE.md",
+      "start": 139,
+      "end": 149,
+      "sha256": "b542a9599192456c5311459325a6311abf8df7a889eb468096c1c107a811de84",
+      "text": "139:### AC17 — Benchmark 与答案隔离\n140:\n141:遵循仓库根 Range 路线。GROUND_TRUTH 只用于允许的入口覆盖预检和扫描结束后独立评分；不得进入扫描／工具证据／Wiki。不要修复故意漏洞，不修改 truth 迎合结果。\n142:\n143:新动态测试 fixture 独立创建，含明示安全与缺陷样本；运行前遵守权限和隔离要求。补丁驱动规则生成与评测按项目／缺陷家族分割，防止近重复泄漏。\n144:\n145:### AC18 — 关闭、回滚与共享资源\n146:\n147:新增实验关闭后旧扫描默认、报告读取、语义缓存及工具行为保持。新缓存 schema 如需迁移，明确兼容／失效策略，不能删除用户产物。取消与关闭不留下后端／外部 worker、不损坏已发布 DB，不错误关闭借用客户端。\n148:\n149:变更应可分小批次回滚；无须为了“回滚简单”先引入整个新架构。"
+    },
+    {
+      "file": "docs/handoffs/2026-10-08-zscope/HANDOFF.md",
+      "start": 112,
+      "end": 118,
+      "sha256": "3d07a8c647e3fd066d06a27655d8cdfda7b6cea77ee7d5d67544319b3cddb806",
+      "text": "112:### 4.5 证据后续：从复核文字走向独立复跑\n113:\n114:V01 先做一个小模块的 ASAN 验证闭环：候选 → 验证计划 → harness／输入 → 独立 runner → 原始日志与构建身份 → 证据适配。结果必须明确是受控 witness、未复现、执行失败或不适用，而非只输出 true/false。\n115:\n116:V02 再扩展 TSAN／CBMC。TSAN 无告警不等于无竞争；CBMC 的有效结论绑定模型、外部函数假设和展开边界；ASAN witness 不自动等于可利用性证明。\n117:\n118:不更改现有 disposition 枚举。新增执行结果是 provider 元数据，经原有资格检查后才影响结论。不能把外部工具的“confirmed”原样升级成内部程序 proof。"
+    }
+  ],
+  "interpretation": "Mandatory clauses derive from original standards; G1/G2/G3 are later record shorthand, not additional invented requirements."
+}

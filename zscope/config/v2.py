@@ -44,9 +44,26 @@ from .config import (
 )
 
 PUBLIC_CONFIG_VERSION = 2
+# Version 3 documents dispatch to zscope/config/v3.py.  The constant lives
+# here so the version check needs no import cycle with that module.
+PUBLIC_CONFIG_VERSION_V3 = 3
 RUNTIME_SPEC_VERSION = 1
 ENV_PATTERN = re.compile(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 SCAN_DEPTHS = frozenset({"fast", "balanced", "deep"})
+# Shared LLM profile field table: consumed by _parse_llms and reused by the
+# v3 formal model as the single source for its generated JSON schema.
+LLM_PROFILE_KEYS = (
+    "base_urls",
+    "models",
+    "api_key",
+    "base_url_rate_limit_per_minute",
+    "base_url_max_concurrent_requests",
+    "max_tokens",
+    "timeout",
+    "max_retries",
+    "retry_until_available",
+    "supports_structured_output",
+)
 SCAN_DEPTHS_BY_LANGUAGE = {
     "c_cpp": SCAN_DEPTHS,
     # Java balanced/deep require a separate quality gate.  Keeping the
@@ -274,6 +291,19 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
             "llm_decision_explanation_budget",
             "enable_subagent_workers",
             "security_semantic_enrichment_mode",
+            "active_investigation_mode",
+            "active_investigation_max_rounds",
+            "active_investigation_timeout_seconds",
+            "active_investigation_max_scope_extensions",
+            "semantic_snapshot_candidate_mode",
+            "semantic_model_demand_mode",
+            "dynamic_reproduction_mode",
+            "dynamic_reproduction_required_replays",
+            "dynamic_reproduction_max_replays",
+            "dynamic_reproduction_timeout_seconds",
+            "dynamic_reproduction_deadline_seconds",
+            "dynamic_reproduction_memory_limit_mb",
+            "dynamic_reproduction_isolation",
             "max_subagent_tickets",
             "subagent_max_turns",
             "request_deadline_seconds",
@@ -376,6 +406,44 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
         security_semantic_enrichment_mode=_string(
             data.get("security_semantic_enrichment_mode", "shadow"),
             "runtime.analysis.security_semantic_enrichment_mode",
+        ),
+        active_investigation_mode=_string(
+            data.get("active_investigation_mode", "off"),
+            "runtime.analysis.active_investigation_mode",
+        ),
+        semantic_snapshot_candidate_mode=_string(
+            data.get("semantic_snapshot_candidate_mode", "off"),
+            "runtime.analysis.semantic_snapshot_candidate_mode",
+        ),
+        semantic_model_demand_mode=_string(
+            data.get("semantic_model_demand_mode", "off"),
+            "runtime.analysis.semantic_model_demand_mode",
+        ),
+        dynamic_reproduction_mode=_string(
+            data.get("dynamic_reproduction_mode", "off"),
+            "runtime.analysis.dynamic_reproduction_mode",
+        ),
+        dynamic_reproduction_required_replays=integer(
+            "dynamic_reproduction_required_replays", 2
+        ),
+        dynamic_reproduction_max_replays=integer("dynamic_reproduction_max_replays", 3),
+        dynamic_reproduction_timeout_seconds=integer(
+            "dynamic_reproduction_timeout_seconds", 30
+        ),
+        dynamic_reproduction_deadline_seconds=integer(
+            "dynamic_reproduction_deadline_seconds", 900
+        ),
+        dynamic_reproduction_memory_limit_mb=integer(
+            "dynamic_reproduction_memory_limit_mb", 512, non_negative=True
+        ),
+        dynamic_reproduction_isolation=_string(
+            data.get("dynamic_reproduction_isolation", "process"),
+            "runtime.analysis.dynamic_reproduction_isolation",
+        ),
+        active_investigation_max_rounds=integer("active_investigation_max_rounds", 4),
+        active_investigation_timeout_seconds=data.get("active_investigation_timeout_seconds", 120.0),
+        active_investigation_max_scope_extensions=integer(
+            "active_investigation_max_scope_extensions", 1, non_negative=True
         ),
         max_subagent_tickets=integer("max_subagent_tickets", 4, non_negative=True),
         subagent_max_turns=integer("subagent_max_turns", 20),
@@ -529,18 +597,7 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
     if "default" not in data:
         raise ValueError("llms.default is required")
     result: Dict[str, LLMConfig] = {}
-    allowed = {
-        "base_urls",
-        "models",
-        "api_key",
-        "base_url_rate_limit_per_minute",
-        "base_url_max_concurrent_requests",
-        "max_tokens",
-        "timeout",
-        "max_retries",
-        "retry_until_available",
-        "supports_structured_output",
-    }
+    allowed = set(LLM_PROFILE_KEYS)
     for name, value in data.items():
         if not isinstance(name, str) or not name.strip():
             raise ValueError("llms profile names must be non-empty strings")
@@ -1164,16 +1221,26 @@ def _agents_from_runtime(runtime: RuntimeSpec, scan: ScanConfig) -> List[AgentCo
 def load_user_config_v2(config_path: Optional[str] = None) -> EffectiveConfig:
     path = _resolve_config_path(config_path)
     raw = _expand_env(load_yaml_unique(path))
+    # The version gate comes before shape validation so a document that
+    # declares version 3 dispatches to its own key tables, and a malformed
+    # or legacy document reports its version problem first.
+    version = raw.get("config_version")
+    if version == PUBLIC_CONFIG_VERSION_V3:
+        # v3 is the one-user-entry document; parsing and composition live in
+        # zscope/config/v3.py so the v2 surface below stays unchanged.
+        from .v3 import load_user_config_v3
+
+        return load_user_config_v3(path, raw)
+    if version != PUBLIC_CONFIG_VERSION:
+        raise ValueError(
+            "config.config_version must be 2 or 3; run "
+            "'zscope-config migrate --input OLD --output NEW' for legacy YAML"
+        )
     _check_keys(
         raw,
         {"config_version", "llms", "project", "scan", "indexing", "concurrency", "rules"},
         "config",
     )
-    if raw.get("config_version") != PUBLIC_CONFIG_VERSION:
-        raise ValueError(
-            "config.config_version must be 2; run "
-            "'zscope-config migrate --input OLD --output NEW' for legacy YAML"
-        )
 
     project_data = _mapping(raw.get("project"), "project", required=True)
     language = project_data.get("language")

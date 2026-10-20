@@ -1,0 +1,215 @@
+{
+  "startedAt": "2026-10-10T05:13:30.432Z",
+  "profile": "headless",
+  "provider": "deepseek",
+  "model": "deepseek-v4.1-flash",
+  "baseURL": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
+  "overlay": "C:\\Users\\10273\\Documents\\Codex\\2026-10-09\\task-3\\gateway-resource-repair-20261010\\process.patch.yml",
+  "sourceDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "promptDigest": "aee9134833f696a600a714010bb5b76510dd5944bf581abd52763b21d0357dd6",
+  "promptBytes": 34007,
+  "events": [
+    "gateway-credential-presence",
+    "session",
+    "status",
+    "status",
+    "gateway-request-controls",
+    "gateway-model-status",
+    "thinking",
+    "text",
+    "status",
+    "gateway-model-status",
+    "status",
+    "final"
+  ],
+  "statuses": [
+    {
+      "phase": "turn_start"
+    },
+    {
+      "phase": "step_start"
+    },
+    {
+      "phase": "step_end",
+      "usage": {
+        "inputTokens": 9168,
+        "outputTokens": 36873,
+        "totalTokens": 46041
+      }
+    },
+    {
+      "phase": "turn_end",
+      "reason": {
+        "kind": "completed"
+      }
+    }
+  ],
+  "modelStatuses": [
+    {
+      "eventType": "assistant/message",
+      "facts": [
+        {
+          "key": "inputTokens",
+          "value": 9168
+        },
+        {
+          "key": "outputTokens",
+          "value": 36873
+        },
+        {
+          "key": "totalTokens",
+          "value": 46041
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-start"
+        },
+        {
+          "key": "type",
+          "value": "reasoning-chunks"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-start"
+        },
+        {
+          "key": "type",
+          "value": "text-chunks"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-end"
+        },
+        {
+          "key": "type",
+          "value": "reasoning"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-end"
+        },
+        {
+          "key": "type",
+          "value": "text"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "usage"
+        },
+        {
+          "key": "inputTokens",
+          "value": 9168
+        },
+        {
+          "key": "outputTokens",
+          "value": 36873
+        },
+        {
+          "key": "totalTokens",
+          "value": 46041
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "finish"
+        },
+        {
+          "key": "kind",
+          "value": "stop"
+        },
+        {
+          "key": "kind",
+          "value": "pi-ai"
+        },
+        {
+          "key": "responseId",
+          "value": "021791609210707c4f5c28852663280b8d0aa399a480100842117"
+        },
+        {
+          "key": "stopReason",
+          "value": "stop"
+        },
+        {
+          "key": "type",
+          "value": "reasoning"
+        },
+        {
+          "key": "type",
+          "value": "text"
+        },
+        {
+          "key": "kind",
+          "value": "pi-ai"
+        },
+        {
+          "key": "responseId",
+          "value": "021791609210707c4f5c28852663280b8d0aa399a480100842117"
+        },
+        {
+          "key": "stopReason",
+          "value": "stop"
+        }
+      ]
+    },
+    {
+      "eventType": "turn/end",
+      "facts": [
+        {
+          "key": "kind",
+          "value": "completed"
+        }
+      ]
+    }
+  ],
+  "requestId": null,
+  "rawDiagnosticsDiscarded": true,
+  "privateReasoningDiscarded": true,
+  "credentialValuesExcluded": true,
+  "modelToolsDisabled": true,
+  "persistentSessionsDisabled": true,
+  "routeVerified": {
+    "configured": true,
+    "source": "file",
+    "selectionMatches": true,
+    "endpointMatches": true
+  },
+  "sessionId": "session-c195ca4e-c8fd-4c3f-a91d-eaeeb65f05ec",
+  "requestControls": {
+    "provider": "deepseek",
+    "model": "deepseek-v4.1-flash",
+    "maxTokens": 65536,
+    "reasoningEffort": null
+  },
+  "completedAt": "2026-10-10T05:16:26.680Z",
+  "exitCode": 0,
+  "signal": null,
+  "stdoutBytes": 34712,
+  "stderrBytes": 263,
+  "answerBytes": 15164,
+  "answerDigest": "5d2204d2929eeab96be9990c1560b003e40935bd45e8c6ed412e60ceba83b256",
+  "modelReturnedAnswer": true,
+  "productSourceUnchanged": true
+}

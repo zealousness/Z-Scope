@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "task_id": "task_c5ebd65572",
+  "session_id": "sess_261a55289f",
+  "agent": "kimi",
+  "model": "volceapi/kimi-k3",
+  "effort": null,
+  "persisted": true,
+  "request_id": "076e4f3d-f5d1-4a51-93aa-94aa3c95e271",
+  "reused": false
+}

@@ -1,0 +1,48 @@
+{
+  "cwd": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+  "python": "/home/zeal/venv313/bin/python",
+  "version": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+  "path": "/home/zeal/venv313/bin:/home/zeal/go/bin:/usr/lib/llvm-18/bin:/home/zeal/.local/svf/SVF-linux-x86_64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  "tool_paths": {
+    "cmake": "/usr/bin/cmake",
+    "gcc": "/usr/bin/gcc",
+    "clang": "/usr/lib/llvm-18/bin/clang",
+    "clangd": "/usr/lib/llvm-18/bin/clangd",
+    "gclang": "/home/zeal/go/bin/gclang",
+    "get-bc": "/home/zeal/go/bin/get-bc",
+    "llvm-link": "/usr/lib/llvm-18/bin/llvm-link",
+    "llvm-nm": "/usr/lib/llvm-18/bin/llvm-nm",
+    "wpa": "/home/zeal/.local/svf/SVF-linux-x86_64/bin/wpa",
+    "saber": "/home/zeal/.local/svf/SVF-linux-x86_64/bin/saber"
+  },
+  "shared_libraries": {
+    "wpa": {
+      "exit_code": 0,
+      "missing": []
+    },
+    "saber": {
+      "exit_code": 0,
+      "missing": []
+    }
+  },
+  "clang_version": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+  "indexer": {
+    "path": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/build/clang-indexer/zscope-clang-indexer",
+    "sha256": "8b8014fa8b405c40478d335ea45435c990c9104e5a6b9fb2f971704d0b4d69ba"
+  },
+  "llm_environment_present": {
+    "Z_SCOPE_LLM_BASE_URL": false,
+    "Z_SCOPE_LLM_MODEL": false,
+    "Z_SCOPE_API_KEY": false
+  },
+  "ld_library_path": "/home/zeal/.local/svf/SVF-linux-x86_64/lib:/home/zeal/.local/svf/llvm-18.1.0.obj/lib",
+  "editable_install": [
+    {
+      "dir_info": {
+        "editable": true
+      },
+      "url": "file:///mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope"
+    }
+  ],
+  "prior_collection_error": "direct_url.json missing on local egg-info; initial collector exit 1, resolved by inspecting installed dist-info without installing"
+}

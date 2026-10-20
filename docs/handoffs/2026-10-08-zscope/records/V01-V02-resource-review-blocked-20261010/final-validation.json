@@ -1,0 +1,116 @@
+{
+  "at": "2026-10-10T05:23:24.813369+00:00",
+  "status": "resource_candidate_rejected; revised_payload_auto_review_blocked",
+  "completed_model_requests_this_turn": 1,
+  "active_model_requests": 0,
+  "completed_session": "session-c195ca4e-c8fd-4c3f-a91d-eaeeb65f05ec",
+  "completed_session_exit": 0,
+  "revised_payload_started": false,
+  "revised_payload_transmitted": false,
+  "revised_payload_bytes": 54628,
+  "archive_operation_model_requests": 0,
+  "archive_metadata_clarification": "archive-validation.json DeepSeek_requests=0 records only the archive operation; it does not negate the one completed model request above.",
+  "candidate_checks": {
+    "passed": 7,
+    "failed": 1,
+    "skipped": 0
+  },
+  "candidate_applied": false,
+  "docs_checks": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "existing_input_count": 406,
+  "existing_inputs_changed": [],
+  "product_sha256": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "product_modified": false,
+  "shared_status_modified": false,
+  "rule_text_persisted": false,
+  "custom_rules_tool_available": false,
+  "original_evidence_files_verified": 14,
+  "exact_call_and_rejection_file": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-resource-review-blocked-20261010/result-and-exact-rejection.json",
+  "all_archive_files": {
+    "archive-validation.json": {
+      "sha256": "2f99331afdef36e1968a30eab7130bd7fdd9a9b7ef9eff689262f4295f673a61",
+      "bytes": 625
+    },
+    "evidence-manifest.json": {
+      "sha256": "1427e96e51fff49d936c549c4c10cae7d562c8b27e31d09f34e89d560553fe67",
+      "bytes": 2627
+    },
+    "result-and-exact-rejection.json": {
+      "sha256": "4dcd1978b698e72de48ae84a607540a5489cd609d5c0398bb58c0c402c564ad4",
+      "bytes": 3254
+    },
+    "test_v01_v02_resource_bounds.py": {
+      "sha256": "73afe4850d485a2b8ddeca3f53be31972ab4dcbdfed1e1f7edd14c4543f834db",
+      "bytes": 4310
+    },
+    "test_v01_v02_resource_controls.py": {
+      "sha256": "a3c711194ef4f44b4ea7f528a675fdcb47b657d2f6283d5a079d7876faa148ee",
+      "bytes": 2570
+    },
+    "V01-V02-resource-review-blocked-docs-20261010.json": {
+      "sha256": "fb254673f4807c71b316e0ece6321414f0bd1fa5104b0ba701fe26998ae4f5f1",
+      "bytes": 1211
+    },
+    "V01-V02-resource-review-blocked-docs-20261010.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "V01-V02-resource-review-blocked-docs-20261010.stdout.log": {
+      "sha256": "3fbc54f30b4afa299814cecc428ca188a2dd28af23535cda236e88c3cd59add3",
+      "bytes": 98
+    },
+    "V01-V02-resource-review-blocked-docs-20261010.xml": {
+      "sha256": "88e6b7bf7d6fb94fa0cfaf092fd2ead4b8de40438ff22092e52e78b781e18e03",
+      "bytes": 956
+    },
+    "gateway-resource-repair-20261010/candidate-regressions.json": {
+      "sha256": "16d10d56330d401a44d7572ff8d7c24784f800c5275c37201dfb7b04f0092a8e",
+      "bytes": 2038
+    },
+    "gateway-resource-repair-20261010/candidate-regressions.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "gateway-resource-repair-20261010/candidate-regressions.stdout.log": {
+      "sha256": "600fd69c59dbb83d787cb55a72c98f15e21c6d5552fcf3aee2ece59433b1b338",
+      "bytes": 833
+    },
+    "gateway-resource-repair-20261010/candidate-regressions.xml": {
+      "sha256": "e104d39155b6ebbf6fc266ea3235cc96366de019cab90879cba1d8cf530e9f20",
+      "bytes": 1770
+    },
+    "gateway-resource-repair-20261010/candidate-review.json": {
+      "sha256": "95489f10195f6e5cbc344100511df56b41d1a61bed56e35acdd0bef7eedb1c8b",
+      "bytes": 1589
+    },
+    "gateway-resource-repair-20261010/independent-review-rejected.json": {
+      "sha256": "9877fa2acf839d7d0209c89cdcba93224cd17d9e62c5f7fdf848cb47d116fdf3",
+      "bytes": 685
+    },
+    "gateway-resource-repair-20261010/model-answer.txt": {
+      "sha256": "5d2204d2929eeab96be9990c1560b003e40935bd45e8c6ed412e60ceba83b256",
+      "bytes": 15164
+    },
+    "gateway-resource-repair-20261010/packet-manifest.json": {
+      "sha256": "ed2c76dff5220d8798fd3bf09555c24a772822cefffd8390b193651da264e1cc",
+      "bytes": 858
+    },
+    "gateway-resource-repair-20261010/submission-result.json": {
+      "sha256": "ccdb17731a9e6346c907821a6648720fdf808cd8a86bc24176b1121686bf3f9b",
+      "bytes": 4674
+    },
+    "gateway-resource-repair2-20261010/packet-manifest.json": {
+      "sha256": "e1b06a96f1dbe79c2e037e79537eb7ac7fa52f091d90e5917d4b459368f2571b",
+      "bytes": 779
+    },
+    "gateway-resource-repair2-20261010/repair-prompt.txt": {
+      "sha256": "2522e048dcdac6235daacb38eeba0e69ee3efee05f94693ef7f26194e5f8ac97",
+      "bytes": 54628
+    }
+  }
+}

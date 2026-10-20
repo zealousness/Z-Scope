@@ -1,0 +1,37 @@
+{
+  "at": "2026-10-16T01:17:35.800464+08:00",
+  "existing_owner_only": true,
+  "dispatch_or_session_resume": false,
+  "archived_sessions_requested": false,
+  "active_sessions": [
+    {
+      "session_id": "sess_85c532abde",
+      "agent": "zcode",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "proc_state": "busy",
+      "current_task_id": null,
+      "last_task_id": null,
+      "branch": null
+    },
+    {
+      "session_id": "sess_9f1956ea27",
+      "agent": "zcode",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "proc_state": "busy",
+      "current_task_id": null,
+      "last_task_id": null,
+      "branch": null
+    }
+  ],
+  "coordinator": {
+    "mode": "manual",
+    "hint": "dispatch only when the user explicitly asked for a worker; dispatch_task is blocked unless user_requested=true",
+    "instructions": null,
+    "runtime_context": "coordinator",
+    "dispatch_enabled": true
+  },
+  "response_paths": {
+    "list_sessions": "route-check/bridge-response-r21-readonly-list_sessions-b354d26d7183.json",
+    "list_agents": "route-check/bridge-response-r21-readonly-list_agents-b354d26d7183.json"
+  }
+}

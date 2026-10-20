@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-15T06:36:47.632069+00:00",
+  "session_state": "idle_unloaded",
+  "processes": {
+    "workspace": "contract-validation-r12",
+    "processes": []
+  },
+  "source_matches_diagnostic": true,
+  "diagnostic": "coordinator-contract-r12-r3-omission-probes-20261015"
+}

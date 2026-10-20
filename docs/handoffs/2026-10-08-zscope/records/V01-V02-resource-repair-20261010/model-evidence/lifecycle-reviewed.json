@@ -1,0 +1,42 @@
+{
+  "exit_code": 0,
+  "counts": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "failures": [],
+  "test_sha256": "ac88fdb0462ff4383539df42f9292dfe7e85366f42bdd21bc7f627f9fc24710a",
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/zscope-resource-candidate-20261010-4u9ycwki/lifecycle-reviewed",
+    "--junitxml=/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/lifecycle-reviewed.xml",
+    "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/test_resource_lifecycle.py"
+  ],
+  "stage_digest": "8e3fc987a2cd939451c2364238cbec35e1bc4ac67380b912569d516fb472e694",
+  "product_modified": false,
+  "sanitizer_execution": false,
+  "pressure": false,
+  "max_fixture_output_bytes": 64,
+  "artifacts": {
+    "lifecycle-reviewed.xml": {
+      "sha256": "a8822a956dee988bd353aa9de4eb5942e6190300e02ccead73896ce55c84342e",
+      "bytes": 844
+    },
+    "lifecycle-reviewed.stdout.log": {
+      "sha256": "91907e6098922157aed0fcc02273b6d90959214c7c1e747213dfe43d7adbb9ae",
+      "bytes": 98
+    },
+    "lifecycle-reviewed.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  }
+}

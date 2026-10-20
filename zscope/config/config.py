@@ -5,12 +5,18 @@ Configuration management for Z-SCOPE.
 from __future__ import annotations
 
 import os
+import math
 import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 import logging
+
+if TYPE_CHECKING:
+    # Import cycle guard: v3 imports this module at runtime; this import only
+    # exists for the ``user_config_v3`` annotation below.
+    from .v3 import UserConfigV3
 
 _yaml: Any
 try:
@@ -524,6 +530,28 @@ class AnalysisConfig:
     # deltas without allowing them to influence coverage-gap planning;
     # ``active`` applies those deltas to the read-only Security Semantic Map.
     security_semantic_enrichment_mode: str = "shadow"
+    # Bounded source investigation is an internal experiment. It supplements
+    # one-shot discovery and cannot be promoted through public project YAML.
+    active_investigation_mode: str = "off"
+    active_investigation_max_rounds: int = 4
+    active_investigation_timeout_seconds: float = 120.0
+    active_investigation_max_scope_extensions: int = 1
+    semantic_snapshot_candidate_mode: str = "off"
+    semantic_model_demand_mode: str = "off"
+    # V01 controlled dynamic reproduction (ASAN/TSAN harness execution).  Internal
+    # experiment: it is never exposed through public project YAML.  ``off`` keeps
+    # the shipped scan inert, ``shadow`` records provider metadata without
+    # granting confirmation authority, ``on`` lets a fully qualified witness
+    # reach the shared adjudication.
+    dynamic_reproduction_mode: str = "off"
+    dynamic_reproduction_required_replays: int = 2
+    dynamic_reproduction_max_replays: int = 3
+    dynamic_reproduction_timeout_seconds: int = 30
+    # One wall-clock deadline for the whole verification (authorized build plus
+    # every run); per-process timeouts cannot stretch the authorization.
+    dynamic_reproduction_deadline_seconds: int = 900
+    dynamic_reproduction_memory_limit_mb: int = 512
+    dynamic_reproduction_isolation: str = "process"
     max_subagent_tickets: int = 4
     subagent_max_turns: int = 20  # Per-ticket tool/LLM turn budget for focused workers.
     request_deadline_seconds: Optional[float] = 120.0
@@ -598,6 +626,69 @@ class AnalysisConfig:
         )
         if self.security_semantic_enrichment_mode not in {"shadow", "active"}:
             raise ValueError("security_semantic_enrichment_mode must be 'shadow' or 'active'")
+        if self.active_investigation_mode not in {"off", "shadow"}:
+            raise ValueError("active_investigation_mode must be 'off' or 'shadow'")
+        if (
+            type(self.active_investigation_max_rounds) is not int
+            or not 1 <= self.active_investigation_max_rounds <= 4
+        ):
+            raise ValueError("active_investigation_max_rounds must be an integer from 1 to 4")
+        if (
+            type(self.active_investigation_max_scope_extensions) is not int
+            or not 0 <= self.active_investigation_max_scope_extensions <= 1
+        ):
+            raise ValueError("active_investigation_max_scope_extensions must be 0 or 1")
+        if (
+            isinstance(self.active_investigation_timeout_seconds, bool)
+            or not isinstance(self.active_investigation_timeout_seconds, (int, float))
+            or not math.isfinite(self.active_investigation_timeout_seconds)
+            or self.active_investigation_timeout_seconds <= 0
+        ):
+            raise ValueError("active_investigation_timeout_seconds must be finite and positive")
+        self.active_investigation_timeout_seconds = float(self.active_investigation_timeout_seconds)
+        for name in ("semantic_snapshot_candidate_mode", "semantic_model_demand_mode"):
+            mode = getattr(self, name)
+            if not isinstance(mode, str) or mode not in {"off", "shadow"}:
+                raise ValueError(f"{name} must be 'off' or 'shadow'")
+        dynamic_reproduction_mode = self.dynamic_reproduction_mode
+        if (
+            not isinstance(dynamic_reproduction_mode, str)
+            or dynamic_reproduction_mode not in {"off", "shadow", "on"}
+        ):
+            raise ValueError("dynamic_reproduction_mode must be 'off', 'shadow' or 'on'")
+        for name in (
+            "dynamic_reproduction_required_replays",
+            "dynamic_reproduction_max_replays",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not 1 <= value <= 16:
+                raise ValueError(f"{name} must be an integer from 1 to 16")
+        if self.dynamic_reproduction_max_replays < self.dynamic_reproduction_required_replays:
+            raise ValueError(
+                "dynamic_reproduction_max_replays must be >= dynamic_reproduction_required_replays"
+            )
+        if (
+            type(self.dynamic_reproduction_timeout_seconds) is not int
+            or not 1 <= self.dynamic_reproduction_timeout_seconds <= 3600
+        ):
+            raise ValueError(
+                "dynamic_reproduction_timeout_seconds must be an integer from 1 to 3600"
+            )
+        if (
+            type(self.dynamic_reproduction_deadline_seconds) is not int
+            or not 1 <= self.dynamic_reproduction_deadline_seconds <= 86400
+        ):
+            raise ValueError(
+                "dynamic_reproduction_deadline_seconds must be an integer from 1 to 86400"
+            )
+        dynamic_reproduction_isolation = self.dynamic_reproduction_isolation
+        if (
+            not isinstance(dynamic_reproduction_isolation, str)
+            or dynamic_reproduction_isolation not in {"process", "user_net_namespace"}
+        ):
+            raise ValueError(
+                "dynamic_reproduction_isolation must be 'process' or 'user_net_namespace'"
+            )
         self.llm_decision_explanation = bool(self.llm_decision_explanation)
         try:
             self.llm_decision_explanation_budget = max(0, int(self.llm_decision_explanation_budget))
@@ -767,6 +858,10 @@ class ZScopeConfig:
     rules: RulesConfig = field(default_factory=RulesConfig)
     runtime_provenance: RuntimeSpecProvenance = field(default_factory=RuntimeSpecProvenance)
     user_config_version: int = 2
+    # Formal v3 model (``zscope.config.v3.UserConfigV3``) attached when the
+    # document declares config_version 3; v2 loads leave it None.  Excluded
+    # from repr/equality because it carries the full LLM profile table.
+    user_config_v3: Optional[UserConfigV3] = field(default=None, repr=False, compare=False)
     # Populated by the shared rule preflight before any indexer, external tool,
     # or LLM is started.  These are internal runtime objects rather than public
     # v2 YAML fields, so they intentionally do not appear on ``UserConfigV2``.
@@ -816,6 +911,7 @@ class ConfigLoader:
         config_path: Optional[str] = None,
         *,
         scan_depth: Optional[str] = None,
+        read_only: bool = False,
     ) -> ZScopeConfig:
         from .v2 import apply_scan_overrides, load_user_config_v2
         from ..framework.llm_usage import ScanTokenUsageLedger
@@ -827,6 +923,10 @@ class ConfigLoader:
             config,
             scan_depth=scan_depth,
         )
+        if read_only:
+            # Cached MCP does not execute providers, apply rollout control, or
+            # create usage state. Public Config v2 parsing remains strict.
+            return config
         apply_persisted_rollout_policy(config)
         usage_event_path = Path(config.analysis.snapshot_dir) / (
             f"llm_usage_events_{uuid.uuid4().hex}.jsonl"

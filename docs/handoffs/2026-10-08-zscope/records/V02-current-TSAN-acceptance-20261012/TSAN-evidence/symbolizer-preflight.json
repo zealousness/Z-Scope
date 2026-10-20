@@ -1,0 +1,7 @@
+{
+  "path": "/usr/bin/llvm-symbolizer-18",
+  "exit_code": 0,
+  "stdout": "llvm-symbolizer\nUbuntu LLVM version 18.1.3\n  Optimized build.\n",
+  "stderr": "",
+  "wrapper_sha256": "e658766da63d258579dc5f1a8eb9ebb28f17b9d30fe18e4e5e51bcc7f04e83b8"
+}

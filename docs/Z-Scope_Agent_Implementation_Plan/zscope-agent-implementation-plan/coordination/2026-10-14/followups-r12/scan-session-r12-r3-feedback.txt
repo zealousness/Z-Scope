@@ -1,0 +1,13 @@
+继续原Kimi K3会话、原scan-session-r12副本和原5文件，返修真实独立失败。上一task_658717aaa6于03:47:00结束并停写；协调者03:58:24给本副本刷新8个已验收只读依赖，收据followups-r12/scan-session-r12-dependencies.json，含CodeIndex真实source_root修复、owner当前run队列收据读取、store/work_queue及只读测试。你不得改这些共享文件。根R15已1206/0fail/error/skip、六命令0、1009输入稳定，03:57:29完成，当前根不包含你的未验收5文件。
+
+有效独立冻结证据 artifacts/coordinator-scan-session-r12-r2-refreshed-final-probes-20261015/review.json：8测试、6pass/2fail/0error/skip，04:03:01完成，冻结1008?以review实际before计数为准，stable_frozen_inputs=true且producer_current_matches_frozen=true。之前refreshed-probes版本在刷新中冻结，producer_current_matches_frozen=false，不作为拒收依据；此final版本是新稳定字节，不能再归因旧准备问题。
+
+真实两项产品失败见command-0.log/JUnit：
+1. test_scan_session_native_boundary.py::test_native_scan_session_never_borrows_global_semantics[True-True]：实际native双编译变体+批量entries.json+实际workflow_name='resume'，_handle_plan_resume_entries仍调用_load_current_saved_report。原任务明确不许C/C++名称报告授权实例完成；删除此路径的C/C++ skip/merge授权，必须按精确当前实例计划执行/从真实可信实例完成收据恢复。Java保留自己的行为。原4个旧回归若测试的是被用户明确替换的名称resume行为，给出确切用例/原断言/新实际实例行为的迁移建议，由协调者修改旧测试；不能为了旧断言保留已禁止行为，也不能自己删旧测试。你的owned两测试须补真实native单/批量resume反例与各变体结果完整。
+2. test_scan_session_queue_fencing.py::test_foreign_owner_cannot_delete_an_existing_bound_instance_queue：真实native计划、真实ScanJobService.start及合法SQL队列，只把环境owner token置foreign。实际run虽然最终raiseJobError，但先_reset_stale_instance_queue删除了合法work-queue.db。必须先验证当前job/run/owner/input/路径，再有任何队列、checkpoint、sidecar或报告写入/删除。invalid binding直接抛错，不能把load_checkpoint返回None当删除许可。禁止删除其它owner/旧owner仍活跃的queue，不以JSON或文件名授权。
+
+新版另6项实际通过：真实单入口冷/恢复native两个变体，真实owner/SQL分析settle后os._exit崩溃再恢复，真实头文件改变撤回旧DF，foreignJSON拒收，实际在途Analyzer合作取消且owner teardown already_exited、无watchdog、pending真实。探针现在实际source_root=src、先真实prepare_compile_commands再绑定input、cancel200，与你当前依赖兼容。可以只读执行root followups-r12最新三份探针；不要用副本冻结的旧探针。默认fd/ext4/tmp/WSL两槽不变。
+
+仍需如实完成/说明原任务：当前checkpoint仅接受同run，合法resume生成新run后永不能复用旧可信完成；整体重分析是安全有界切片但不是逐实例durable恢复完成。不可删除持久剩余冒充恢复。若实现需要WorkQueue re-pend/可信append_bound_event等共享API，请交最小签名、操作前提/事务字段、具体调用点与正反例，协调者负责共享实现；不要私改store/owner/queue。未确定共享接口前优先修复上述两已复现问题与原在途停止，在DELIVERY分别标示已解决和实际阻塞，不能把整S01/S08关闭。
+
+保持原5文件所有权及全部原相关测试/质量，不降标准、不屏蔽/skip/放宽timeout。Black最终5文件完整通过，compileall/mypy通过，最终稳定SHA+UTC+8时间+日志/JUnit和新DELIVERY，后台结束才交付。不要恢复旧S06、启动服务、改根/别人副本、权限/provider/凭据，或更换模型规避审核。

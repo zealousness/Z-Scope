@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 
+import pytest
+
 from test_security_semantic_map import FakeSecurityIndex
 from test_wrapper_contract_compiler import compile_all, context, publish
 from zscope.config.function_entry import FunctionEntry
@@ -142,3 +144,75 @@ def test_inferred_overlay_contract_and_legacy_intent_do_not_become_user_claims()
     relevant = [c for c in result.claims if "api_contract" in c.value or "description" in c.value]
     assert len(relevant) == 2
     assert all(c.origin == "llm" and c.status == "unknown" for c in relevant)
+
+
+def test_retention_call_is_resource_observation_without_ownership_claim():
+    contract = ApiContract(
+        SymbolIdentity("retain"),
+        "reference_retention",
+        ObjectBinding("argument", 1),
+        resource_domain=ObjectBinding("argument", 0),
+    )
+    result = build("retain(queue, node);", [contract])
+    (claim,) = call_claims(result)
+    assert claim.kind == "resource_transition"
+    assert claim.value["call_semantics"]["role"] == "reference_retention"
+    assert claim.value["call_semantics"]["object"] == "node"
+    assert claim.value["call_semantics"]["resource_domain"] == "queue"
+    assert not any(c.kind == "ownership_transfer" for c in result.claims)
+    SecuritySemanticMap.from_dict(result.to_dict())
+
+
+@pytest.mark.parametrize(
+    "scope,problem,visible",
+    [
+        ("a", "", True),
+        ("b", "", False),
+        ("a", "stale_build_dependencies", False),
+        ("a", "incomplete_compilation_instance", False),
+        ("", "ambiguous_build_context", False),
+    ],
+)
+def test_discovery_consumes_only_current_scoped_contracts(scope, problem, visible):
+    index = FakeSecurityIndex()
+    index.impls["entry"]["code"] = "int entry(char *input) { retain(queue, node); return 0; }"
+    index.get_callees = lambda *a, **k: []
+    index.get_function_program_facts = lambda *a, **k: {
+        "complete": not problem,
+        "build_context_id": scope,
+        "reason": problem,
+    }
+    contract = ApiContract(
+        SymbolIdentity("retain", build_context_id="a"),
+        "reference_retention",
+        ObjectBinding("argument", 1),
+    )
+    own = replace(contract, symbol=replace(contract.symbol, name="entry"))
+    result = ZeroLLMSecurityMapBuilder(
+        index,
+        project_id="scoped",
+        revision="rev",
+        profile="balanced",
+        semantic_overlay={"api_contracts": [c.to_dict() for c in (contract, own)]},
+    ).build([FunctionEntry("entry", file_path="src/demo.c")])
+    assert bool(call_claims(result)) is visible
+    assert bool([c for c in result.claims if "api_contract" in c.value]) is visible
+    assert result.functions[0].backend_coverage["build_context_id"] == (
+        scope if not problem else ""
+    )
+
+
+def test_discovery_function_identity_separates_builds():
+    index = FakeSecurityIndex()
+    index.get_callees = lambda *a, **k: []
+    identifiers = []
+    for scope in ("a", "b"):
+        index.get_function_program_facts = lambda *a, **k: {
+            "complete": True,
+            "build_context_id": scope,
+        }
+        result = ZeroLLMSecurityMapBuilder(
+            index, project_id="scoped", revision="rev", profile="balanced"
+        ).build([FunctionEntry("entry", file_path="src/demo.c")])
+        identifiers.append(result.functions[0].function_uid)
+    assert identifiers[0] != identifiers[1]

@@ -15,13 +15,29 @@ import uuid
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    TYPE_CHECKING,
+    cast,
+)
+
+if TYPE_CHECKING:
+    from ...semantics.instance_semantics import InstanceSemanticsSnapshot
 
 from ...config.config import ZScopeConfig, minimum_optional_positive_seconds
 from ...config.function_entry import FunctionEntry
 from ...config.user_config_store import UserConfigStore
 from ...common.utils import normalize_path
 from ...retrieval.code_index import CodeIndex
+from ...retrieval.instance_index import InstanceScope, wrap_scoped_code_index
 from ...snapshots.store import SnapshotStore
 from ...snapshots.modeling_input import (
     SemanticModelInputError,
@@ -145,12 +161,17 @@ from ...common.issue_identity import (
     merge_duplicate_issue,
 )
 from ...reporting.assembler import ReportAssembler
-from ...common.cancellation import CancellationToken, bind_cancellation_token
+from ...common.cancellation import CancellationError, CancellationToken, bind_cancellation_token
 from ...orchestration.workflow_runner import WorkflowRunner
+from ...orchestration.bounded_investigation import make_investigation_runner
 from ...common.utils import extract_json_blocks
 from ..._version import __version__
 from ...orchestration.specs import SpecRegistry, WorkflowStep
-from ...orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
+from ...orchestration.workflow_executor import (
+    WorkflowExecutor,
+    WorkflowStepHandler,
+    workflow_steps_for_scope,
+)
 from ...orchestration.subagents import SubAgentOrchestrator, SubAgentTicket
 from ...orchestration.active_discovery import (
     ActiveDiscoveryAgent,
@@ -254,9 +275,20 @@ class Analyzer:
         project_knowledge_service: Any = _PROJECT_KNOWLEDGE_UNSET,
         owns_project_knowledge_service: bool = False,
         semantic_result: Any = None,
+        reproduction_service: Any = None,
+        instance_scope: Optional[InstanceScope] = None,
+        instance_semantics_snapshot: Optional["InstanceSemanticsSnapshot"] = None,
+        instance_semantics_current: Optional[Callable[["InstanceSemanticsSnapshot"], bool]] = None,
     ):
         self.config = config
         self.semantic_result = semantic_result
+        self._instance_semantics_snapshot = instance_semantics_snapshot
+        self._instance_semantics_current = instance_semantics_current
+        if instance_semantics_snapshot is not None:
+            if instance_scope is None or instance_semantics_snapshot.scope != instance_scope:
+                raise ValueError("instance_semantics_scope_mismatch")
+            if semantic_result is not None:
+                raise ValueError("instance_semantics_cannot_consume_global_model")
         # Defensive preflight for third-party callers that construct an
         # Analyzer from an in-memory config instead of going through
         # ConfigLoader.  It is intentionally before CodeIndex/external tools.
@@ -301,7 +333,25 @@ class Analyzer:
                 config.concurrency.svf_workers or config.concurrency.index_workers
             ),
         )
+        # A scoped Analyzer consumes only the program facts of one exact
+        # compilation instance.  The facade pins every program-facts query to
+        # that build context; navigation consumers that cannot preserve scope
+        # are recorded, never silently trusted for build identity.
+        self.instance_scope = instance_scope
+        if instance_scope is not None:
+            self.code_index = wrap_scoped_code_index(self.code_index, instance_scope)
+        self._require_instance_semantics_current()
         self.snapshot_store = snapshot_store or SnapshotStore.from_config(config)
+        from ..validation.reproduction_planner import SessionReproductionPlanner
+
+        self.reproduction_service = reproduction_service or SessionReproductionPlanner(config)
+        # The reproduction service is scan-scoped and shared across instances; it
+        # must bind to the owning (unscoped) index, not to one instance's facade.
+        reproduction_index = self.code_index
+        base_index_getter = getattr(self.code_index, "base_index", None)
+        if callable(base_index_getter):
+            reproduction_index = base_index_getter()
+        self.reproduction_service.attach_index(reproduction_index)
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
         self.history_reconciler = HistoryReconciler(
@@ -322,12 +372,22 @@ class Analyzer:
             ),
         )
         self.candidate_pipeline = CandidatePipeline(
-            local_detector=self._detect_local_rule_candidates,
-            graph_detector=self._detect_graph_rule_candidates,
-            backend_detector=self._detect_backend_signal_candidates,
-            unified_merger=self._merge_unified_evidence_candidates,
+            local_detector=lambda state: self._observe_instance_collection(
+                "local", lambda: self._detect_local_rule_candidates(state)
+            ),
+            graph_detector=lambda state: self._observe_instance_collection(
+                "graph", lambda: self._detect_graph_rule_candidates(state)
+            ),
+            backend_detector=lambda state: self._observe_instance_collection(
+                "backend", lambda: self._detect_backend_signal_candidates(state)
+            ),
+            unified_merger=lambda issues: self._observe_instance_collection(
+                "merge", lambda: self._merge_unified_evidence_candidates(issues)
+            ),
             budget_refresher=self._refresh_effective_budget,
-            candidate_persister=self._persist_candidate_ir_records,
+            candidate_persister=lambda issues: self._observe_instance_collection(
+                "persist", lambda: self._persist_candidate_ir_records(issues)
+            ),
         )
         self._owns_llm_clients = llm_clients is None
         self._interface_probe_used = 0
@@ -427,6 +487,13 @@ class Analyzer:
         self._semantic_overlay: Optional[Dict[str, Any]] = (
             deepcopy(shared_semantic_overlay) if shared_semantic_overlay is not None else None
         )
+        if instance_semantics_snapshot is not None:
+            from ...semantics.instance_semantics import materialize_effect_semantics
+
+            self._require_instance_semantics_current()
+            self._local_pattern_semantics, self._semantic_overlay = materialize_effect_semantics(
+                instance_semantics_snapshot
+            )
         self._clang_tooling_provider: Optional[ClangToolingEvidenceProvider] = None
         self._clang_tooling_evidence_cache: Dict[tuple[str, str, int, int], Dict[str, Any]] = {}
         self._runtime_engine_capabilities: Dict[str, Dict[str, Any]] = {}
@@ -467,16 +534,212 @@ class Analyzer:
 
     def run(self) -> Dict[str, Any]:
         """Run the selected workflow as executable orchestration steps."""
+        self._require_instance_semantics_current()
+        scope = getattr(self, "instance_scope", None)
+        if scope is None:
+            return self._run_workflow()
+        from ...semantics.build_scope import bind_build_scope
+
+        with bind_build_scope({"build_context_id": scope.build_context_id}):
+            report = self._run_workflow()
+        self._require_instance_semantics_current()
+        self._annotate_instance_scope(report)
+        return report
+
+    def _require_instance_semantics_current(self) -> None:
+        """Recheck the coordinator's live dependencies before scoped consumption."""
+        snapshot = getattr(self, "_instance_semantics_snapshot", None)
+        if snapshot is None:
+            return
+        if snapshot.scope != getattr(self, "instance_scope", None):
+            raise ValueError("instance_semantics_scope_mismatch")
+        check = getattr(self, "_instance_semantics_current", None)
+        if not callable(check):
+            raise ValueError("instance_semantics_currentness_unverifiable")
+        try:
+            current = check(snapshot)
+        except Exception as exc:
+            raise ValueError("instance_semantics_currentness_unverifiable") from exc
+        if current is not True:
+            raise ValueError("instance_semantics_not_current")
+
+    def _user_semantic_context(self, function_name: str, source_text: str, file_path: str) -> str:
+        snapshot = getattr(self, "_instance_semantics_snapshot", None)
+        if snapshot is not None:
+            from ...semantics.instance_semantics import advisory_context
+
+            self._require_instance_semantics_current()
+            context_text = advisory_context(
+                snapshot, function_name=function_name, source_text=source_text, file_path=file_path
+            )
+            if not isinstance(context_text, str):
+                raise ValueError("instance_semantics_advisory_context_not_text")
+            return context_text
+        return relevant_user_config_context(self.user_config, function_name, source_text, file_path)
+
+    def _run_workflow(self) -> Dict[str, Any]:
+        self._begin_instance_collection()
         with bind_cancellation_token(self.cancellation_token):
             if self.cancellation_token is not None:
                 self.cancellation_token.raise_if_cancelled()
             self.prepare_semantics()
             return self.workflow_runner.run()
 
+    def _begin_instance_collection(self) -> None:
+        snapshot = getattr(self, "_instance_semantics_snapshot", None)
+        self._instance_collection: Optional[Dict[str, Any]] = None
+        if snapshot is None:
+            return
+        selected = [
+            step.id for step in workflow_steps_for_scope(self._selected_workflow_steps(), "entry")
+        ]
+        supported = bool(
+            getattr(self, "defer_validation_to_scan", False)
+            and selected == list(DEFAULT_SCAN_STEP_IDS)
+        )
+        self._instance_collection = {
+            "schema": "zscope.instance-collection-closure.v1",
+            "supported": supported,
+            "selected_workflow": selected,
+            "selected_stages": ["local", "graph", "backend", "merge", "persist", "registration"],
+            "semantics_digest": snapshot.digest,
+            "scope": snapshot.scope.to_payload(),
+            "stages": {},
+            "collection_closed": False,
+            "input_current": False,
+            "active_stage_errors": [],
+            # Raw KnowledgeDB access is explicitly denied by ScopedCodeIndex;
+            # this optional inspection projection is predeclared unsupported.
+            "unsupported_stages": {"persist": "scoped_raw_knowledge_db_unavailable"},
+            "excluded_capabilities": {
+                "semantic_modeling": "instance_scoped_builtin_manual_advisory_no_inferred",
+                # The scoped signal accessor can refuse for a particular instance
+                # (no scoped handle, stale rows, a command shared by several
+                # contexts). A refusal is a *declared* exclusion, so the closure
+                # check compares this fixed reason; the precise attribution
+                # verdict travels in the capability's ``detail`` field instead.
+                "svf_taint_query": "scoped_raw_knowledge_db_unavailable",
+            },
+            "excluded_subchannels": (
+                {
+                    "clang_knowledge_db": "scoped_raw_knowledge_db_unavailable",
+                }
+                if hasattr(self.code_index, "get_instance_backend_signals")
+                else {
+                    "svf_taint_query": "scoped_raw_knowledge_db_unavailable",
+                    "clang_knowledge_db": "scoped_raw_knowledge_db_unavailable",
+                }
+            ),
+        }
+
+    def _observe_instance_collection(self, stage: str, operation: Callable[[], Any]) -> Any:
+        tracker = getattr(self, "_instance_collection", None)
+        if tracker is None:
+            return operation()
+        stages = tracker["stages"]
+        stages[stage] = {"disposition": "running", "reason": ""}
+        try:
+            self._require_instance_semantics_current()
+            result = operation()
+            self._require_instance_semantics_current()
+            if stage in {"local", "graph", "backend", "merge"} and (
+                not isinstance(result, list) or any(not isinstance(item, dict) for item in result)
+            ):
+                raise ValueError("instance_collection_invalid_detector_output")
+        except BaseException as exc:
+            stages[stage] = {
+                "disposition": "cancelled" if isinstance(exc, CancellationError) else "error",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            raise
+        unsupported = tracker["unsupported_stages"].get(stage)
+        stages[stage] = {
+            "disposition": "unsupported" if unsupported else "complete",
+            "reason": unsupported or "",
+        }
+        return result
+
+    def _close_instance_collection(self, state: Dict[str, Any]) -> None:
+        tracker = getattr(self, "_instance_collection", None)
+        if tracker is None:
+            return
+        errors: list[str] = []
+        if tracker["supported"] is not True:
+            errors.append("instance_collection_workflow_not_supported")
+        for stage in tracker["selected_stages"]:
+            disposition = tracker["stages"].get(stage, {}).get("disposition")
+            if disposition == "complete":
+                continue
+            if disposition == "unsupported" and stage in tracker["unsupported_stages"]:
+                continue
+            errors.append(f"instance_collection_stage_not_complete:{stage}")
+        capabilities = getattr(self, "_runtime_engine_capabilities", {})
+        for name, capability in capabilities.items():
+            if (
+                name in tracker["excluded_capabilities"]
+                and capability.get("status") == "excluded"
+                and capability.get("active") is False
+                and capability.get("reason") == tracker["excluded_capabilities"][name]
+            ):
+                continue
+            if capability.get("status") != "complete":
+                errors.append(f"{name}:{capability.get('reason') or capability.get('status')}")
+        if state.get("error") or _as_dict(state.get("impl_result")).get("truncated"):
+            errors.append("instance_collection_source_or_workflow_incomplete")
+        self._require_instance_semantics_current()
+        tracker["entry_identity"] = str(state.get("entry_identity") or "")
+        tracker["input_current"] = True
+        tracker["active_stage_errors"] = sorted(set(errors))
+        tracker["collection_closed"] = not errors
+        state["instance_collection"] = deepcopy(tracker)
+
+    def _annotate_instance_scope(self, report: Any) -> None:
+        """Record the consumed instance scope on the entry report metadata."""
+
+        if not isinstance(report, dict):
+            return
+        scope = getattr(self, "instance_scope", None)
+        if scope is None:
+            return
+        metadata = report.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            report["metadata"] = metadata
+        metadata["instance_scope"] = scope.to_payload()
+        metadata["build_context_id"] = str(scope.build_context_id or "")
+        snapshot = getattr(self, "_instance_semantics_snapshot", None)
+        if snapshot is not None:
+            self._require_instance_semantics_current()
+            metadata["instance_semantics"] = snapshot.authority_policy
+            metadata["instance_semantics_digest"] = snapshot.digest
+            metadata["instance_semantics_schema"] = snapshot.schema
+        scope_report = getattr(self.code_index, "scope_report", None)
+        if callable(scope_report):
+            metadata["instance_scope_report"] = scope_report()
+
     def prepare_semantics(self, entries: Optional[List[FunctionEntry]] = None) -> Any:
         """Shared pre-rule barrier, also used by direct Analyzer callers."""
         if self.config.project.language == "java":
             return None
+        if getattr(self, "instance_scope", None) is not None:
+            # Instance analysis never runs the project-wide semantic model on an
+            # unwrapped index.  Contracts stay at the generator's standard
+            # roots; the omission is a declared capability gap, not authorization.
+            self._record_engine_capability(
+                "semantic_modeling",
+                status=(
+                    "excluded"
+                    if getattr(self, "_instance_semantics_snapshot", None) is not None
+                    else "skipped"
+                ),
+                active=False,
+                reason=(
+                    "instance_scoped_builtin_manual_advisory_no_inferred"
+                    if getattr(self, "_instance_semantics_snapshot", None) is not None
+                    else "instance_scoped_defaults_only"
+                ),
+            )
+            return self.semantic_result
         if self.semantic_result is None:
             from ...orchestration.global_modeler import GlobalModeler
 
@@ -835,8 +1098,7 @@ class Analyzer:
             "location": f"{impl_result['file']}:{impl_result['start_line']}",
         }
 
-        user_config_context = relevant_user_config_context(
-            self.user_config,
+        user_config_context = self._user_semantic_context(
             semantic_model_input["func_name"],
             semantic_model_input["code"],
             semantic_model_input["file_path"],
@@ -1102,9 +1364,16 @@ class Analyzer:
             self._load_history_state(state)
 
         historical_report = state.get("historical_report")
+        from ...snapshots.policy import semantic_experiment_requires_scan
+
+        if semantic_experiment_requires_scan(
+            self.config.analysis, (historical_report or {}).get("metadata")
+        ):
+            return False
         if self.maintain_mode and state.get("is_code_unchanged") and historical_report:
             blockers = report_reuse_blockers(
                 historical_report,
+                business_answer_store=self.user_config,
                 expected_manifest={
                     "source_revision": self._git_commit_sha(self.config.project.project_root),
                     "config_hash": self._config_hash(),
@@ -1139,6 +1408,30 @@ class Analyzer:
             self._load_history_state(state)
 
         valid_hist_issues = state.get("valid_hist_issues", [])
+        from ...semantics.business_assumptions import feedback_reuse_problem
+
+        current_history = []
+        for historical_issue in valid_hist_issues:
+            if feedback_reuse_problem(historical_issue, self.user_config):
+                reopened = deepcopy(historical_issue)
+                for key in (
+                    "decision_proof",
+                    "proof_provider",
+                    "proof_coverage",
+                    "promotion_reason",
+                    "needs_review_sub_state",
+                ):
+                    reopened.pop(key, None)
+                reopened.update(validation_status="pending", candidate_disposition="pending")
+                self._register_candidate_issues(state, [reopened], source="business_feedback")
+                state.setdefault("pending_new_issues", []).append(reopened)
+                state.setdefault("notes", []).append(
+                    "Business premise changed; revalidating " + str(reopened.get("id", ""))
+                )
+            else:
+                current_history.append(historical_issue)
+        valid_hist_issues = current_history
+        state["valid_hist_issues"] = current_history
         if not state.get("is_code_unchanged") and valid_hist_issues:
             entry_func = state["entry_func"]
             logger.info(
@@ -1460,10 +1753,11 @@ class Analyzer:
             # sends structured deterministic candidates directly to the shared
             # validator.  Focused deep workers remain available for the small
             # set of high-risk contradictory tickets planned above.
-            self._register_candidate_issues(
-                state,
-                candidate_signals,
-                source="deterministic_candidate_discovery",
+            self._observe_instance_collection(
+                "registration",
+                lambda: self._register_candidate_issues(
+                    state, candidate_signals, source="deterministic_candidate_discovery"
+                ),
             )
             new_issues = self._deduplicate_against_history(
                 list(candidate_signals),
@@ -1483,10 +1777,43 @@ class Analyzer:
             )
             continue
 
-        # Snapshot observations remain validator context, not independent
-        # validation obligations. Deterministic rule priority groups are unrelated.
         if not getattr(self, "defer_validation_to_scan", False):
             self._run_single_entry_active_discovery(state)
+            self._register_snapshot_shadow_candidates(state)
+
+    def _register_snapshot_shadow_candidates(self, state: Dict[str, Any]) -> None:
+        """Register opt-in observations only after candidate-blind discovery."""
+        mode = getattr(self.config.analysis, "semantic_snapshot_candidate_mode", "off")
+        if mode != "shadow" or state.get("snapshot_shadow_attempted"):
+            return
+        state["snapshot_shadow_attempted"] = True
+        result = getattr(self, "semantic_result", None)
+        ledger = state.get("candidate_ledger")
+        if result is None or not isinstance(ledger, CandidateLedger):
+            return
+        token = getattr(self, "cancellation_token", None)
+        if token is not None:
+            token.raise_if_cancelled()
+        from ...orchestration.snapshot_candidates import register_conditional_snapshot_candidates
+
+        registrar = CandidateRegistrar(
+            ledger,
+            project_id=str(getattr(self.config.project, "project_id", "") or ""),
+            project_root=str(self.config.project.project_root),
+            revision=str(ledger.revision or ""),
+            run_id=str(state.get("run_id") or ""),
+            decision_fact_cache=getattr(self, "decision_fact_cache", None),
+        )
+        issues = register_conditional_snapshot_candidates(
+            result,
+            registrar,
+            mode=mode,
+            project_root=self.config.project.project_root,
+            entry=str(state.get("entry_func") or ""),
+            entry_file=str(state.get("entry_file_path") or ""),
+            entry_signature=str(state.get("entry_signature") or ""),
+        )
+        state.setdefault("pending_new_issues", []).extend(issues)
 
     def _run_single_entry_active_discovery(self, state: Dict[str, Any]) -> None:
         """Run the shared map/discovery stage before local validation."""
@@ -1598,12 +1925,18 @@ class Analyzer:
                 store=store,
                 registrar=registrar,
                 report_runner=report_runner,
+                investigation_runner=make_investigation_runner(
+                    self.config,
+                    semantic_map,
+                    discovery_llm_client,
+                    cancellation=getattr(self, "cancellation_token", None),
+                ),
                 semantic_enricher=semantic_enricher,
                 visibility_mode=discovery_mode,
                 rollout_stage=str(rollout_runtime_policy(self.config).get("stage") or "unmanaged"),
             ).run(
                 semantic_map,
-                covered_keys=candidate_coverage_keys(ledger),
+                covered_keys=candidate_coverage_keys(ledger, semantic_map=semantic_map),
                 known_variant_keys=historical_variant_keys(
                     (
                         state.get("historical_report", {}).get("issues", [])
@@ -1933,6 +2266,7 @@ class Analyzer:
                 program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
                 semantics=self._get_local_pattern_semantics(),
                 rule_policy=getattr(self, "rule_policy", None),
+                restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
             )
             issues.extend(regex_generator.generate_issues(entry_func, code, file_path))
             issues.extend(
@@ -1953,6 +2287,7 @@ class Analyzer:
                 semantic_overlay=self._get_semantic_overlay(),
                 tooling_evidence_provider=self._clang_tooling_evidence_for,
                 rule_policy=getattr(self, "rule_policy", None),
+                restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
             )
             issues.extend(clang_generator.generate_issues(entry_func, code, file_path))
             issues.extend(
@@ -2082,6 +2417,7 @@ class Analyzer:
             self._get_local_pattern_semantics(),
             semantic_overlay=self._get_semantic_overlay(),
             rule_policy=getattr(self, "rule_policy", None),
+            restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
         )
         issues = generator.generate_for_entry(
             entry_func,
@@ -2163,6 +2499,7 @@ class Analyzer:
             self._get_local_pattern_semantics(),
             semantic_overlay=self._get_semantic_overlay(),
             rule_policy=getattr(self, "rule_policy", None),
+            restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
         )
         issues = self._detect_graph_rule_candidates(state)
         state.setdefault("_candidate_signal_cache", {})["graph"] = issues
@@ -2191,6 +2528,7 @@ class Analyzer:
                 program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
                 semantics=self._get_local_pattern_semantics(),
                 rule_policy=getattr(self, "rule_policy", None),
+                restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
             )
         if self._project_language() != "java" and profile in {"clang", "unified"}:
             clang_generator = ClangAstCfgCandidateGenerator(
@@ -2199,6 +2537,7 @@ class Analyzer:
                 semantic_overlay=self._get_semantic_overlay(),
                 tooling_evidence_provider=self._clang_tooling_evidence_for,
                 rule_policy=getattr(self, "rule_policy", None),
+                restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
             )
         issues = self._detect_local_rule_candidates(state)
         state.setdefault("_candidate_signal_cache", {})["local"] = issues
@@ -2217,6 +2556,7 @@ class Analyzer:
                         or RegexCandidateGenerator(
                             self._get_local_pattern_semantics(),
                             rule_policy=getattr(self, "rule_policy", None),
+                            restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
                         )
                     ).issue_to_ticket(issue)
                 )
@@ -3136,6 +3476,99 @@ class Analyzer:
     def _merge_rule_candidate_duplicate(primary: Dict[str, Any], duplicate: Dict[str, Any]) -> None:
         merge_rule_candidate_duplicate(primary, duplicate)
 
+    def _detect_instance_backend_signals(
+        self,
+        state: Dict[str, Any],
+        *,
+        entry_func: str,
+        reachable_funcs: Set[str],
+    ) -> List[Dict[str, Any]]:
+        """Saber signals the producer attributed to this instance's command.
+
+        Under instance scope the raw KnowledgeDB handle is refused, so the plain
+        taint query cannot run. The scoped accessor answers a narrower question —
+        which stored signals carry *this* compile command's identity — and refuses
+        when the command is shared by several contexts. A refusal is recorded as an
+        excluded capability with its reason; it is never reported as "SVF found
+        nothing".
+        """
+
+        accessor = getattr(self.code_index, "get_instance_backend_signals", None)
+        if not callable(accessor):
+            return []
+        scope = getattr(self, "instance_scope", None)
+        build_context_id = str(getattr(scope, "build_context_id", "") or "")
+        try:
+            signals = accessor(
+                build_context_id=build_context_id,
+                func_names=sorted(reachable_funcs),
+            )
+        except Exception as exc:
+            logger.warning("Instance backend signal query failed: %s", exc)
+            self._record_engine_capability(
+                "svf_taint_query",
+                status="failed",
+                active=False,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+            self._record_engine_failed_work(
+                state,
+                engine="svf_taint_query",
+                function_name=entry_func,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+            return []
+        signals = signals if isinstance(signals, dict) else {}
+        status = str(signals.get("status") or "unavailable")
+        if status != "complete":
+            # Declared exclusion (see ``_begin_instance_collection``): the fixed
+            # reason keeps the collection closure comparable, and ``detail``
+            # carries which refusal happened and why.
+            self._record_engine_capability(
+                "svf_taint_query",
+                status="excluded",
+                active=False,
+                reason="scoped_raw_knowledge_db_unavailable",
+                detail=f"{status}:{signals.get('reason') or ''}",
+                build_context_id=build_context_id,
+            )
+            return []
+        bugs: List[Dict[str, Any]] = []
+        for row in signals.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            bug = dict(row)
+            bug["build_context_id"] = build_context_id
+            bugs.append(bug)
+        self._record_engine_capability(
+            "svf_taint_query",
+            status="complete",
+            active=True,
+            reason=(
+                "instance_scoped:"
+                f"command={signals.get('command_id') or ''}"
+                f";exact={int(signals.get('exact_rows') or 0)}"
+                f";ambiguous={int(signals.get('ambiguous_rows') or 0)}"
+                f";unattributed={int(signals.get('unattributed_rows') or 0)}"
+            ),
+            candidate_count=len(bugs),
+        )
+        issues = SvfValueFlowCandidateGenerator(
+            source_path_resolver=self._reconstruct_svf_source_path,
+        ).generate_issues(
+            bugs,
+            entry_func=entry_func,
+        )
+        if issues:
+            logger.info(
+                "Instance-scoped Saber signals for entry '%s': command=%s bugs=%d candidates=%d",
+                entry_func,
+                signals.get("command_id"),
+                len(bugs),
+                len(issues),
+            )
+        return issues
+
     def _detect_backend_signal_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Convert KnowledgeDB/SVF/Saber findings into normal candidates."""
         scan_started = time.time()
@@ -3202,6 +3635,14 @@ class Analyzer:
                     len(svf_candidates),
                 )
             candidates.extend(svf_candidates)
+        else:
+            candidates.extend(
+                self._detect_instance_backend_signals(
+                    state,
+                    entry_func=entry_func,
+                    reachable_funcs=reachable_funcs,
+                )
+            )
         candidates.extend(
             self._detect_clang_knowledgedb_candidates(
                 state,
@@ -4358,6 +4799,7 @@ class Analyzer:
         return "java" if language in {"java", "java_src", "javasrc"} else "c_cpp"
 
     def _get_semantic_overlay(self) -> Dict[str, Any]:
+        self._require_instance_semantics_current()
         if self._semantic_overlay is None:
             self._semantic_overlay = SemanticOverlayCompiler(self.user_config).compile()
         return self._semantic_overlay
@@ -4618,6 +5060,21 @@ class Analyzer:
                     record_role="validation_obligation",
                     entry_identity=entry_identity,
                 )
+        tracker = getattr(self, "_instance_collection", None)
+        if tracker is not None and source == "deterministic_candidate_discovery":
+            with ledger._lock:
+                for issue in issues:
+                    key = issue.get("validation_cluster_uid")
+                    record = ledger._records.get(str(key or ""))
+                    if (
+                        record is None
+                        or record.candidate_uid != issue.get("candidate_uid")
+                        or record.obligation_uid != issue.get("obligation_uid")
+                        or not any(
+                            item.entry_identity == entry_identity for item in record.occurrences
+                        )
+                    ):
+                        raise ValueError("instance_collection_candidate_not_registered")
         state["candidate_ledger_context"] = ledger.to_context()
         state["candidate_ledger_summary"] = ledger.summary()
 
@@ -4669,7 +5126,10 @@ class Analyzer:
         state: Dict[str, Any],
         allowed_skills: Optional[List[str]] = None,
     ) -> List[Any]:
-        generator = RegexCandidateGenerator(self._get_local_pattern_semantics())
+        generator = RegexCandidateGenerator(
+            self._get_local_pattern_semantics(),
+            restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
+        )
         issues = self._detect_backend_signal_candidates(state)
         state.setdefault("_candidate_signal_cache", {})["backend"] = issues
         tickets = [generator.issue_to_ticket(issue) for issue in issues]
@@ -4680,6 +5140,7 @@ class Analyzer:
 
     def _get_local_pattern_semantics(self) -> LocalPatternSemantics:
         """Build once-per-run local-pattern aliases and project API semantics."""
+        self._require_instance_semantics_current()
         if self._local_pattern_semantics is None:
             self._local_pattern_semantics = LocalPatternSemanticBuilder(
                 self.code_index,
@@ -4920,6 +5381,7 @@ class Analyzer:
         # Preserve compatibility for focused callers/tests that construct the
         # legacy facade without running ``__init__``.
         if getattr(self, "defer_validation_to_scan", False):
+            self._close_instance_collection(state)
             pending = len(state.get("pending_new_issues") or [])
             if pending:
                 state.setdefault("notes", []).append(
@@ -4933,8 +5395,8 @@ class Analyzer:
             return
         ledger = state.get("candidate_ledger")
         if isinstance(ledger, CandidateLedger):
-            # Candidate-blind discovery is the final producer for a
-            # single-entry scan.  Seal the obligation set before V0-V3 starts
+            # Discovery and opt-in snapshot observations have finished.
+            # Seal the obligation set before V0-V3 starts
             # so late producers cannot evade this validation pass.
             ledger.freeze()
         runner = getattr(self, "validation_runner", None)
@@ -5006,10 +5468,17 @@ class Analyzer:
             scheduler=getattr(self, "scheduler", None),
             project_knowledge_service=getattr(self, "project_knowledge_service", None),
             get_contract_registry=lambda: self._get_local_pattern_semantics().contracts,
+            reproduction_service=getattr(self, "reproduction_service", None),
+            instance_scope=getattr(self, "instance_scope", None),
+            input_current_guard=self._require_instance_semantics_current,
+            instance_semantics_digest=str(
+                getattr(getattr(self, "_instance_semantics_snapshot", None), "digest", "")
+            ),
         )
 
     def _remember_validation_result(self, issue: Dict[str, Any], status: str) -> None:
         """Persist validator disposition as review memory for later scans."""
+        self._require_instance_semantics_current()
         dedup_key = str(issue.get("dedup_key") or self._canonical_issue_key(issue))
         if not dedup_key:
             return
@@ -5574,6 +6043,8 @@ class Analyzer:
         self.report_assembler.build(state)
 
     def _build_workflow_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        from ...retrieval.build_context import scan_build_coverage
+
         if getattr(self, "semantic_result", None) is not None:
             state["semantic_contract_version"] = self.semantic_result.contract_version
         engine_capabilities = self._engine_capabilities()
@@ -5608,8 +6079,13 @@ class Analyzer:
             }
         )
         state["wiki_telemetry"] = wiki_telemetry
+        build_coverage = scan_build_coverage(getattr(self, "code_index", None))
+        # A per-entry scan runs one instance facade; record which view produced
+        # the counts so report/acceptance cannot present it as scan coverage.
+        state["build_coverage_view"] = str(build_coverage.get("view") or "")
         return {
             "timestamp": datetime.datetime.now().isoformat(),
+            "build_coverage": build_coverage,
             "snapshot_candidate_policy": SNAPSHOT_CANDIDATE_POLICY_VERSION,
             "semantic_contract_version": (
                 self.semantic_result.contract_version if self.semantic_result else ""
@@ -5620,7 +6096,13 @@ class Analyzer:
             "semantic_snapshot_candidates": (
                 self.semantic_result.suspicious_metrics if self.semantic_result else {}
             ),
+            **(
+                {"semantic_model_demand": deepcopy(self.semantic_result.demand_plan)}
+                if getattr(getattr(self, "semantic_result", None), "demand_plan", None)
+                else {}
+            ),
             "run_id": state.get("run_id", ""),
+            "instance_collection": deepcopy(state.get("instance_collection")),
             "entry_identity": state.get("entry_identity", state.get("entry_func", "")),
             "entry_file_path": state.get("entry_file_path", ""),
             "entry_signature": state.get("entry_signature", ""),
@@ -5907,10 +6389,18 @@ class Analyzer:
         **details: Any,
     ) -> None:
         normalized = str(status or "failed").lower()
-        if normalized not in {"complete", "partial", "degraded", "failed", "interrupted"}:
+        if normalized not in {
+            "complete",
+            "excluded",
+            "partial",
+            "degraded",
+            "failed",
+            "interrupted",
+        }:
             normalized = "failed"
         severity = {
             "complete": 0,
+            "excluded": 0,
             "partial": 1,
             "degraded": 2,
             "failed": 3,

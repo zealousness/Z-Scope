@@ -1,0 +1,11 @@
+{
+  "available": true,
+  "reason": "",
+  "details": {
+    "compiler": "/usr/bin/cc",
+    "probe_exit_code": "0"
+  },
+  "fixture_executions": 0,
+  "finished_utc": "2026-10-10T04:52:39.356068+00:00",
+  "observer_errors": []
+}

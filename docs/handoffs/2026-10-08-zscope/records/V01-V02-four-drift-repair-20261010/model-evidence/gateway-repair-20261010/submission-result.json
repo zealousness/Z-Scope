@@ -1,0 +1,40 @@
+{
+  "startedAt": "2026-10-10T03:56:34.497Z",
+  "profile": "headless",
+  "provider": "deepseek",
+  "model": "deepseek-v4.1-flash",
+  "baseURL": "user-approved gateway (private endpoint redacted)",
+  "sourceDigest": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+  "promptDigest": "dcb23273d5d6a68df4dd39eb612154fcc8250b313145b44c36f327d3e14dda71",
+  "promptBytes": 86726,
+  "events": [
+    "gateway-credential-presence",
+    "session",
+    "status",
+    "status",
+    "thinking",
+    "status",
+    "status",
+    "final"
+  ],
+  "rawDiagnosticsDiscarded": true,
+  "credentialValuesExcluded": true,
+  "modelToolsDisabled": true,
+  "persistentSessionsDisabled": true,
+  "routeVerified": {
+    "configured": true,
+    "source": "file",
+    "selectionMatches": true,
+    "endpointMatches": true
+  },
+  "sessionId": "session-f557545d-c5b7-418f-8a37-948284dbfb33",
+  "completedAt": "2026-10-10T03:59:55.194Z",
+  "exitCode": 1,
+  "signal": null,
+  "stdoutBytes": 9009,
+  "stderrBytes": 263,
+  "answerBytes": 0,
+  "answerDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "modelReturnedAnswer": false,
+  "productSourceUnchanged": true
+}

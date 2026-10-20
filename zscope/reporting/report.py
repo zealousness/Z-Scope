@@ -35,6 +35,8 @@ class Issue:
     validation_reasoning: Optional[str] = None
     llm_explanation: Optional[str] = None
     promotion_review_reason: Optional[str] = None
+    protocol_assessment: Optional[Dict[str, Any]] = None
+    needs_review_sub_state: Optional[str] = None
     review_disposition_reason: Optional[str] = None
     review_adjudication: Optional[Dict[str, Any]] = None
     review_fact_store: Optional[Dict[str, Any]] = None
@@ -431,6 +433,18 @@ class ReportGenerator:
                         f"{self._normalize_md_text(issue.promotion_review_reason)}\n"
                     )
 
+                if issue.protocol_assessment:
+                    md_content += "\n**对象协议确认的业务范围（扫描时）**:\n"
+                    for assumption in issue.protocol_assessment.get("assumptions", []):
+                        answer = assumption.get("answer") or {}
+                        md_content += (
+                            "- "
+                            + self._normalize_md_text(assumption.get("statement", ""))
+                            + "；来源："
+                            + self._normalize_md_text(answer.get("source_note", "未确认"))
+                            + "\n"
+                        )
+
                 if issue.user_rebuttal:
                     md_content += (
                         "\n**👤 用户反驳 / 复核说明**:\n"
@@ -445,6 +459,8 @@ class ReportGenerator:
                 "model_uncertain": "模型未能判定",
                 "model_rejected_unproven": "模型否决但未获确定性证明",
                 "policy_pending_promotion": "证据完整，等待策略提升",
+                "business_conditional": "条件性风险：业务前提待核实",
+                "protocol_pending": "待补证：技术证据未闭合",
             }
             for issue, raw_review in review_issues:
                 icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(
@@ -494,6 +510,14 @@ class ReportGenerator:
                         f"{self._normalize_md_text(issue.promotion_review_reason)}\n"
                     )
                 if isinstance(review_presentation, dict):
+                    for assumption in review_presentation.get("business_assumptions", []):
+                        md_content += (
+                            "\n- **业务前提（未确认）**: "
+                            + self._normalize_md_text(assumption.get("statement", ""))
+                            + "\n"
+                        )
+                    for gap in review_presentation.get("technical_gaps", []):
+                        md_content += "- **技术缺口**: " + self._normalize_md_text(gap) + "\n"
                     missing_kinds = review_presentation.get("missing_fact_kinds") or []
                     if missing_kinds:
                         md_content += (

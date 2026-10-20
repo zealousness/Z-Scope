@@ -1,0 +1,17 @@
+{
+  "coordinator_authorized": true,
+  "write_paths": [
+    "zscope/orchestration/jobs/instance_results.py",
+    "tests/test_instance_result_recovery.py"
+  ],
+  "source_sha256": {
+    "zscope/orchestration/jobs/instance_results.py": "9de13639e71fde76bad742dd3aa90f1cc9fb51b7c37b758291ca504be94b1a80",
+    "tests/test_instance_result_recovery.py": "b33dc8a8029456f1fae9261833a967206dc66cead0f26023967be25f7bd47a31"
+  },
+  "actual_producer_task_id": "task_0d7256802a",
+  "source_review": "artifacts/s08-module-source-review-r26-20261016/review.json",
+  "source_review_sha256": "289f159174e79b644b64b3280b9f4ee7afe911308743a964c683fc3cc8b0baa8",
+  "independent_review": "artifacts/coordinator-s08-module-dependency-r26-20261016/review.json",
+  "independent_review_sha256": "67433235a2a8be80a5a3eb15a208945996a7fd90e613e48ebade6647e1f1e965",
+  "reason": "Copy only the independently accepted MIN codec into coordinator isolation for consumer integration. Root writes forbidden; no failed S01 file copied; producer ownership unchanged."
+}

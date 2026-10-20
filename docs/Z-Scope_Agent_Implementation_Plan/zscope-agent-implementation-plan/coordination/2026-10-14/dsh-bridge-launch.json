@@ -1,0 +1,16 @@
+{
+  "pid": 89400,
+  "command": [
+    "C:\\Windows\\System32\\cmd.exe",
+    "/d",
+    "/c",
+    "call",
+    "C:\\Users\\10273\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+    "--profile",
+    "acp"
+  ],
+  "mode": "bundled native ACP route",
+  "kimi_bridge_restarted": false,
+  "credentials_copied": false,
+  "persistent_external_config_changed": false
+}

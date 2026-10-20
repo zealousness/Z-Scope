@@ -1,0 +1,115 @@
+{
+  "refreshed_at": "2026-10-15T07:43:44.227375+00:00",
+  "files": [
+    {
+      "path": "tests/test_contract_build_scope.py",
+      "previous_sha256": "7d05efd1bd377a9de8e2864c523f5b47b2e0da243dee26bab19dc3c0de2f889a",
+      "sha256": "8f69d9f7ad75e66b2b3bd68ef35148780d1ef641be78765e58c2c321098c3405",
+      "readonly": true,
+      "authority": "artifacts/coordinator-contract-migration-r17-20261015/review.json",
+      "authority_scope": "Coordinator-prepared migration: 104 passed / 1 genuine product regression remains. No acceptance or root intake."
+    },
+    {
+      "path": "tests/test_native_wrapper_inference.py",
+      "previous_sha256": "a4b58e27794d41efaba0212d57e722dacd6f7fb881d37fa4d9ef7d7f68ab4e7f",
+      "sha256": "9c2072727da63c7e87f95d2c1effa5802795be556bce6a52212fe67d31185c87",
+      "readonly": true,
+      "authority": "artifacts/coordinator-contract-migration-r17-20261015/review.json",
+      "authority_scope": "Coordinator-prepared migration: 104 passed / 1 genuine product regression remains. No acceptance or root intake."
+    },
+    {
+      "path": "tests/test_single_slot_pool.py",
+      "previous_sha256": "47b477c5d3e330fd7e730e729334e4266e17f775343b166e9be3bcfd842fdda9",
+      "sha256": "45a069bbe533511859239946095f0afae805951251daef903bdc1ba8f5fa151b",
+      "readonly": true,
+      "authority": "artifacts/coordinator-contract-migration-r17-20261015/review.json",
+      "authority_scope": "Coordinator-prepared migration: 104 passed / 1 genuine product regression remains. No acceptance or root intake."
+    },
+    {
+      "path": "tests/test_retention_protocols.py",
+      "previous_sha256": "8467d257cea80699a6ce478cca5dd501fb23a7820bdb1e2162b4987b76665d3d",
+      "sha256": "846088f438018b98052da1729757ae0786e984b1d1c8d37abb23411892264385",
+      "readonly": true,
+      "authority": "artifacts/coordinator-contract-migration-r17-20261015/review.json",
+      "authority_scope": "Coordinator-prepared migration: 104 passed / 1 genuine product regression remains. No acceptance or root intake."
+    }
+  ],
+  "source_tests": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "1",
+    "skipped": "0",
+    "tests": "105",
+    "time": "41.931",
+    "timestamp": "2026-10-15T15:40:12.279065+08:00",
+    "hostname": "Cindala"
+  },
+  "quality": [
+    {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/test_slot.py",
+        "--workspace",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/coordinator-contract-migration-r17",
+        "--",
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "compileall",
+        "-f",
+        "-q",
+        "zscope",
+        "scripts",
+        "test",
+        "tests"
+      ],
+      "returncode": 0,
+      "started_at": "2026-10-15T07:42:29.128551+00:00",
+      "finished_at": "2026-10-15T07:43:07.425446+00:00"
+    },
+    {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/test_slot.py",
+        "--workspace",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/coordinator-contract-migration-r17",
+        "--",
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "mypy",
+        "zscope"
+      ],
+      "returncode": 0,
+      "started_at": "2026-10-15T07:43:07.425683+00:00",
+      "finished_at": "2026-10-15T07:43:40.001036+00:00"
+    },
+    {
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/test_slot.py",
+        "--workspace",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/coordinator-contract-migration-r17",
+        "--",
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "black",
+        "--check",
+        "tests/test_contract_build_scope.py",
+        "tests/test_native_wrapper_inference.py",
+        "tests/test_single_slot_pool.py",
+        "tests/test_retention_protocols.py"
+      ],
+      "returncode": 0,
+      "started_at": "2026-10-15T07:43:40.001329+00:00",
+      "finished_at": "2026-10-15T07:43:40.354621+00:00"
+    }
+  ],
+  "quality_passed": true,
+  "coordinator_authored": true,
+  "migration_full_passed": false,
+  "independent_acceptance": false,
+  "root_changed": false,
+  "integrated": false,
+  "whole_package_complete": false,
+  "remaining_failure": "test_wrapped_guard_keeps_slot_address_and_parameter_mapping",
+  "instruction": "Four readonly test dependencies are ready for the producer's final full regression. One test intentionally still exposes the real compiler product gap: deterministic_contract_snapshot(ctx, registry) with complete synthetic native wrapper/callee identities returns None; do not alter or wrap this test to hide the missing identity propagation. Inspect contract_compiler known-callee loops, especially unbound find_for_call at1034/1087/1238. Fix product; all105 and original full regression plus all independent probes must pass. Do not wait for a falsely green migration receipt."
+}

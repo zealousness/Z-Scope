@@ -1,0 +1,108 @@
+{
+  "at": "2026-10-10T04:57:58.338Z",
+  "project_root": "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope",
+  "product_sha256": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "gates": [
+    {
+      "gate": "V01 plan/provider and controlled harness/input binding",
+      "required": "mandatory",
+      "basis": "WP V01:169-173; AC06/AC11",
+      "status": "passed in current controlled scope",
+      "evidence": "126 unit + 25 original negatives + 16 R01-R09 negatives; independent real build/ASAN chain passed",
+      "limitation": "Supplied approved plans/fixtures only; no arbitrary project end-to-end claim"
+    },
+    {
+      "gate": "V01 ASAN positive / similar safe negative / unrelated crash / build failure",
+      "required": "mandatory real execution",
+      "basis": "WP V01:175-177; AC11",
+      "status": "passed",
+      "evidence": "Postrepair isolated 5 passed, 0 failed, 0 skipped; original raw execution/replay logs retained",
+      "limitation": "Five-node scope only; no pressure/range/truth tests"
+    },
+    {
+      "gate": "V01 source/binary mutation and deletion revoke authority",
+      "required": "mandatory",
+      "basis": "WP V01:177; AC06/AC11",
+      "status": "passed",
+      "evidence": "4 independent unchanged drift regressions and production positive controls; current source SHA 511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e"
+    },
+    {
+      "gate": "AC11 timeout, cancellation tree, absent tools, spaced argv, undecided outcomes, fake logs",
+      "required": "mandatory",
+      "basis": "AC11:87-91",
+      "status": "covered by current deterministic/benign-process tests",
+      "evidence": "unit.xml 126 passed includes timeout/cancel, nonexistent tool, handwritten/serialized logs, independent replay; argv /bin/sh,-c,space-containing command is actually used. Real ASAN records also retain nonzero witness/build exits and negative no-report outcome.",
+      "limitation": "A fake sanitizer report is not counted as real sanitizer execution; no additional requirement for a filename-with-spaces is invented"
+    },
+    {
+      "gate": "V01 bounded run/build resource controls",
+      "required": "mandatory",
+      "basis": "WP V01:171; established F06 resource requirement",
+      "status": "not passed",
+      "evidence": "RG01 build memory bound absent; RG02 output spool is only polled",
+      "limitation": "Run RSS watchdog exists and is disclosed as sampled; actual over-limit RSS test is in heavy execution file, not the ordinary 126. No new pressure test this turn."
+    },
+    {
+      "gate": "Truthful isolation and authorization",
+      "required": "mandatory",
+      "basis": "WP V01:169-171; AC17",
+      "status": "passed for this acceptance boundary",
+      "evidence": "Fixed local image; network none; nonroot; read-only input/root; capabilities dropped; no-new-privileges; verified cgroups/tmpfs; unavailable requested namespace refuses launch in unit tests",
+      "limitation": "Container limits belong to acceptance infrastructure; original standard does not require a built-in product container provisioner"
+    },
+    {
+      "gate": "Default off, shared adjudication, Ledger and lifecycle compatibility",
+      "required": "mandatory",
+      "basis": "AC10/AC18",
+      "status": "passed for tested scope",
+      "evidence": "1543 compatibility + current unit/integration; 1715 ordinary total, compileall and mypy exit 0",
+      "limitation": "No additional formal benchmark/native-Windows acceptance claim"
+    },
+    {
+      "gate": "V02 chosen TSAN real positive and safe negative",
+      "required": "mandatory for chosen TSAN branch",
+      "basis": "WP V02:271-277; AC11/AC15",
+      "status": "blocked / real not_run",
+      "evidence": "First no-defect probe exit 0; two test precondition probes exit 66 unexpected memory mapping; 0 fixtures compiled/executed; 2 skipped",
+      "limitation": "Do not substitute historical host WSL passes or weaken isolation"
+    },
+    {
+      "gate": "V02 unknown, mismatch, incomplete evidence and nondeterminism remain undecided",
+      "required": "mandatory semantic handling in selected branch",
+      "basis": "WP V02:273-277; AC06/AC11",
+      "status": "deterministic handling passed; real branch acceptance pending",
+      "evidence": "Mixed replay/wrong object/version/outcome mapping tests passed; no actual flaky fixture this turn",
+      "limitation": "Original text mandates correct handling, not an invented 58-execution threshold or pressure campaign"
+    },
+    {
+      "gate": "CBMC implementation/model harness/bounds",
+      "required": "alternative optional branch",
+      "basis": "WP V02:266/273 choose TSAN OR CBMC",
+      "status": "not implemented / not_run",
+      "evidence": "TSAN selected; no installation",
+      "limitation": "CBMC absence is not an independent blocker for completion of the selected TSAN branch"
+    },
+    {
+      "gate": "Automatic plan/harness/input generator and serialized request activation",
+      "required": "not explicitly required by V01 controlled minimum; follow-up capability",
+      "basis": "WP V01:167-177; HANDOFF:114; A01 profile boundary:241",
+      "status": "not delivered",
+      "evidence": "Approved-plan provider seam exists; analysis-pipeline.md:88 declares generator later and serialized request reserved_not_implemented",
+      "limitation": "Plan binding and supplied harness/input are mandatory and implemented; general automatic generation is not added as a new completion gate"
+    }
+  ],
+  "summary": {
+    "V01": "in_progress: resource findings remain",
+    "V02": "blocked: selected TSAN real acceptance and V01 dependency",
+    "newly_verified_failure_count": 0,
+    "static_product_findings": 2,
+    "TSAN_runtime": "blocked",
+    "prior_four_repairs": "passed; not reopened"
+  },
+  "next_steps": [
+    "Parent should authorize only RG01/RG02 ordinary source/test excerpts before any additional DeepSeek payload; no new request was sent this turn.",
+    "Repair resource bounds and independently verify with small bounded benign data, preserving previous positive/negative/drift assertions.",
+    "Use a separately verified pre-existing TSAN-compatible environment with the same approved security boundary, or retain TSAN blocked. No downloads, installs, ASLR/kernel/security changes or repeated retries here.",
+    "Parent should correct old blocking_reason wording: TSAN blocks V02, not V01; automatic generator and CBMC are capability limitations, not newly mandatory gates."
+  ]
+}

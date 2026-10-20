@@ -1,0 +1,7 @@
+{
+  "id": "r20-protocol-recovery-end-failed-session",
+  "tool": "end_session",
+  "arguments": {
+    "session_id": "sess_b91680bb39"
+  }
+}

@@ -1,0 +1,20 @@
+任务 SCAN-CHECKPOINT-R17，由原 Kimi K3/sess_261a55289f 接续已授权计划。旧 task_2ba352c7a1 已结束，协调者独验423/0fail/error/skip+四命令0，旧目录停写保留；不能重新改旧目录。本轮新副本 C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope\.coordination\20261014\workspaces\scan-checkpoint-r17，Linux /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/scan-checkpoint-r17，1013输入的固定baseline见根followups-r12/scan-checkpoint-r17-baseline.json。
+本副本从当前根R16（1207/0fail/error/skip、六命令0、1009当前hash）叠加已独验Main R3五文件、协调者已验证的resume测试迁移，以及共享bound completion API。API在 artifacts/coordinator-bound-events-r17-same-bytes-20261015/review.json：195/0fail/error/skip+四命令0，1010输入稳定，15:06:44完成；是协调者开发/验证，尚未root集成。首次195中1个deadline失败与系统时钟回拨有真实SQL时间线和只读采样，原样保留；同字节完整重跑通过，没有改代码/测试/时长/timeout。切勿调整生产时钟或放宽测试。
+
+本轮唯一可写6文件：zscope/orchestration/scan_session.py、parallel_analyzer.py、jobs/scan_work.py、tests/test_scan_session_instances.py、tests/test_scan_session_jobs.py、新tests/test_scan_checkpoint_resume.py；DELIVERY.md和本副本artifacts可写。所有其它源码/测试/文档/配置/锁/native/store/queue/service/owner/报告/Runner/contracts均只读。ZCode task_04ef519648 仍在USR/验证上下文返修，未复制活跃版本；需要时协调者独验后刷新只读依赖。根和旧目录不写；Astra专属UI不得碰。
+
+接入真实ScanSession checkpoint跨run恢复，解决原R3“只能同run可信完成、合法resume新run只能整体重分析”的缺口。不得仅标签贴复用或把旧work-queue completed当完成授权。新共享API已经位于本副本store.py，严格按实际签名读取源码：
+- append_bound_event(job_id,*,run_id,owner_token,kind,message,data=None,expected_input_revision=None)->dict。在同一BEGIN IMMEDIATE内复核当前绑定并写event+bound_event_receipts。checkpoint kind固定instance_checkpoint_persisted；data最小包含plan_fingerprint、checkpoint_sha256(64位小写hex)、checkpoint_path(该producer当前run_dir内绝对.json路径)，可带匹配input_revision。普通append_event不会创建可信收据；不能回退旧日志事件或JSON自称complete。
+- trusted_completion(job_id,*,run_id,owner_token,input_revision,plan_fingerprint)->dict|None。调用者必须当前run/owner/输入，返回同job/输入/精确plan的最新真实绑定完成收据（可来自旧run），含producer run_id/run_dir、seq/at/data。只核对坐标，不证明文件内容/分析语义。不得在bound_attempt块里从第二连接append事件，会自死锁；新API自己持锁。
+
+恢复前实际构建当前native索引/精确EntryInstancePlan，核对当前真实源/构建输入，不能让磁盘plan或name-only报告代替当前身份。plan指纹至少包括精确实例集合、构建/候选/验证/契约版本及实际可核验的语义/反馈依赖；不能核验的版本或依赖保持miss/待重算。报告、候选、证明从磁盘恢复不恢复进程内确认资格：需要时重新走当前native/Registry/Validator裁决，不能把缓存confirmed旗标当新证明。构建、源码/头文件、配置、契约、业务回答变化撤回旧复用。
+
+checkpoint文件放producer run目录内，用不可变/独立文件名+原子发布+文件摘要；不要多个run重写每job同名checkpoint破坏旧收据。receiver检查SQL收据、实际文件摘要、JSON job/producer-run/input/plan/精确实例、完整性和语义版本，再核对当前binding后消费；不执行磁盘命令，不把owner_token写入报告/JSON/log。foreign owner、旧run、外来job、错误plan/输入、篡改/缺失文件、普通日志伪装都不得跳分析。当前run自己的无收据文件也不授权。
+
+真实阶段完成再保存：分析settle但验证/结果未持久化时不能complete；crash在文件写后SQL前不丢义务，SQL后queue settle前可依据真实已提交结果恢复。保留一次scan范围CandidateLedger、共享缓存、集中验证，不每实例重开整个batch/账本。只跳已实际验证且持久化的完成实例；逐实例partial若需要额外Ledger/queue接口，交具体最小签名和调用点，不能私改其它文件或用整体重分析冒充逐实例durable已完成。先闭合可信已有完成的跨run复用，仍是whole-plan checkpoint时在交付明确，不关闭整S08/S01。
+
+取消/deadline保持同token在途合作停止，无新claim、真实pending/partial/coverage。不要删除canonical队列及sidecar抹掉历史剩余；需要干净尝试用当前run隔离队列，并发session_scheduler_started真实SQL收据让owner选择该队列。cached/reused与本轮实际Analyzer执行分开统计；内容hash相同也不混run。Java保持既有真实路径，C/C++不恢复名称saved-report授权。
+
+测试必须真实native双宏ALT double_free/BASE无候选、真实ScanSession/SQLite/service/owner/resume；仅模型/等待边界可明确受控。至少同输入新run确实复用已持久结果（实际调用计数证据）、真实header edit撤旧、foreign/损坏/无bound收据拒收、crash窗口、取消与真实owner stop_at、残留队列和报告范围；不能只fake Analyzer成功。根followups-r12最新native_boundary/crash_resume/queue_fencing/deadline探针只读保留；原19相关文件与旧回归、已迁移Java10+C++10路由单元断言保留，不删失败/skip/xfail/放宽timeout。真实LLM/项目效果、SVF/link/full modeling未测试的分别列缺口。
+
+读取本副本AGENTS.md、architecture、相关模块与实施11/16/19/20/21，以实际源码为准。测试/质量仅WSL Ubuntu zeal bash -lc、/home/zeal/venv313/bin/python，经根 docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/test_slot.py --workspace <本副本绝对Linux路径> -- <argv>，最多两槽，PYTHONPATH副本、独立ext4 TMPDIR、默认fd。native只读 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，不重建。compileall -f -q zscope scripts test tests、mypy zscope、变更文件Black最终稳定字节通过。最终DELIVERY真实时间/逐文件SHA/JUnit/日志/范围和缺口，后台结束且停写再交付。协调者独验、共享集成、联合回归；不恢复旧S06-R02、不启动Bridge/重复服务、不改provider/权限/凭据、不commit/push/reset/clean。平台/审批/额度阻挡停止受影响操作报告，不能换路由绕过；普通API超时原样保留由协调者按已授权流程处理。

@@ -1,0 +1,10 @@
+{
+  "coordinator_message_received": true,
+  "connection_evidence": "/mnt/c/Users/10273/Documents/Codex/2026-10-10/task-3/e2e-checks/20261010T080545Z/result-summary.json",
+  "process_route_patch_sha256": "c5ba097daaf9e2037852817a8703c2ad609f9e144db7024a99b632b22613021d",
+  "connection_only": true,
+  "project_tools_or_sandbox_qualified": false,
+  "new_dispatch": false,
+  "new_external_payload": false,
+  "long_term_configuration_changed": false
+}

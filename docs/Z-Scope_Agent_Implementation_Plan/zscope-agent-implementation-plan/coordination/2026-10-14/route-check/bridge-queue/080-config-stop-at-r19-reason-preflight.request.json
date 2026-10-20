@@ -1,0 +1,7 @@
+{
+  "id": "config-stop-at-r19-reason-preflight",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": false
+  }
+}

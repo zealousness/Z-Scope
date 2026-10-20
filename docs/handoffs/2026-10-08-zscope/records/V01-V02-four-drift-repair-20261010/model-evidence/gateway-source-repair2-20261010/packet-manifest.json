@@ -1,0 +1,25 @@
+{
+  "sourceDigest": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+  "promptDigest": "b8344c1879ecfa85986f42a283214369b1152bde5d34a65f00555762b70b11f9",
+  "promptBytes": 84679,
+  "scope": "same ordinary source snapshot defect; review feedback + necessary definitions",
+  "additionalSpans": [
+    [
+      2103,
+      2160
+    ],
+    [
+      2230,
+      2326
+    ],
+    [
+      2867,
+      2898
+    ],
+    [
+      3027,
+      3119
+    ]
+  ],
+  "credentialValuesExcluded": true
+}

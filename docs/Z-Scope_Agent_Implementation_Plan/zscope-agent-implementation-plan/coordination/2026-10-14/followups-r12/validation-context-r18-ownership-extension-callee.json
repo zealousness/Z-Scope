@@ -1,0 +1,9 @@
+{
+  "at": "2026-10-15T10:45:55.806324+00:00",
+  "coordinator_authorized": true,
+  "write_paths": [
+    "zscope/semantics/call_context.py"
+  ],
+  "reason": "Two actual native callee rebinding failures; prospective extension only. Prior five files remain owned, all other paths readonly.",
+  "evidence": "artifacts/coordinator-validation-callee-r18-probes-20261015/review.json"
+}

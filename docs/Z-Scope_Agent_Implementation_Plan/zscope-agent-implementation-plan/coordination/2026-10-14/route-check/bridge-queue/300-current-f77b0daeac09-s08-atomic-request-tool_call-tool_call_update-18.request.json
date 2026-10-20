@@ -1,0 +1,1 @@
+{"id": "current-f77b0daeac09-s08-atomic-request-tool_call-tool_call_update-18", "tool": "get_transcript", "arguments": {"session_id": "sess_b2d3c1d8e8", "offset": 18, "limit": 1000, "kinds": "tool_call,tool_call_update"}}

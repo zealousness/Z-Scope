@@ -1,0 +1,1 @@
+{"id": "route-stall-e1f672da-s08-tool_call-tool_call_update-434-17", "tool": "get_transcript", "arguments": {"session_id": "sess_4b386346c6", "offset": 434, "limit": 1000, "kinds": "tool_call,tool_call_update"}}

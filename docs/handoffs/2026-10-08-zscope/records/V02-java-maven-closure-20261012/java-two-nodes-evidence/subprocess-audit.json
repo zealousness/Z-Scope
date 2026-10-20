@@ -1,0 +1,144 @@
+{
+  "calls": [
+    {
+      "command": [
+        "mvn",
+        "-q",
+        "-f",
+        "/repo/tools/java-structure-spoon/pom.xml",
+        "-DskipTests",
+        "package"
+      ],
+      "cwd": "/repo",
+      "started_monotonic": 2278235.320368112,
+      "exit_code": 0,
+      "stdout": {
+        "path": "command-0.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "stderr": {
+        "path": "command-0.stderr.log",
+        "sha256": "2f5f8a7dc382768e23709a45c99febe0765cf6d9a0360fd23d1bb914356dbd7f",
+        "bytes": 128
+      },
+      "elapsed_seconds": 3.427
+    },
+    {
+      "command": [
+        "java",
+        "-jar",
+        "/repo/tools/java-structure-spoon/target/zscope-java-structure-spoon-0.1.0.jar",
+        "--project-root",
+        "/tmp/pytest-java/test_spoon_structure_frontend_0",
+        "--lombok-processor",
+        "on",
+        "/tmp/pytest-java/test_spoon_structure_frontend_0"
+      ],
+      "cwd": "/tmp/pytest-java/test_spoon_structure_frontend_0",
+      "started_monotonic": 2278238.747931137,
+      "jar_before_execution": {
+        "path": "/repo/tools/java-structure-spoon/target/zscope-java-structure-spoon-0.1.0.jar",
+        "sha256": "778a64a4a5072e6b1d043e245a4ec45288ae02472adf4443b6291d25e7be9b47",
+        "bytes": 17580061
+      },
+      "exit_code": 0,
+      "stdout": {
+        "path": "command-1.stdout.log",
+        "sha256": "e453b6cf36158a8b4bfaa9567c0c31f7ca1fe8a17acb51b4483186fbb8ea536e",
+        "bytes": 4524
+      },
+      "stderr": {
+        "path": "command-1.stderr.log",
+        "sha256": "ecaafa199c4a3f8da63242a4e0b5bac5287abe4016cae04e5cf13241b6a179be",
+        "bytes": 314
+      },
+      "elapsed_seconds": 1.576
+    },
+    {
+      "command": [
+        "java",
+        "-jar",
+        "/repo/tools/java-structure-spoon/target/zscope-java-structure-spoon-0.1.0.jar",
+        "--project-root",
+        "/tmp/pytest-java/test_spoon_structure_frontend_0",
+        "--lombok-processor",
+        "off",
+        "/tmp/pytest-java/test_spoon_structure_frontend_0"
+      ],
+      "cwd": "/tmp/pytest-java/test_spoon_structure_frontend_0",
+      "started_monotonic": 2278240.323998285,
+      "jar_before_execution": {
+        "path": "/repo/tools/java-structure-spoon/target/zscope-java-structure-spoon-0.1.0.jar",
+        "sha256": "778a64a4a5072e6b1d043e245a4ec45288ae02472adf4443b6291d25e7be9b47",
+        "bytes": 17580061
+      },
+      "exit_code": 2,
+      "stdout": {
+        "path": "command-2.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "stderr": {
+        "path": "command-2.stderr.log",
+        "sha256": "d9d96e0f277d8b2fb27634ac6a41015eeddb2d935312815fa36545fc30484845",
+        "bytes": 1226
+      },
+      "elapsed_seconds": 1.569
+    },
+    {
+      "command": [
+        "mvn",
+        "-q",
+        "-f",
+        "/repo/tools/java-structure-javaparser/pom.xml",
+        "-DskipTests",
+        "package"
+      ],
+      "cwd": "/repo",
+      "started_monotonic": 2278241.897581657,
+      "exit_code": 0,
+      "stdout": {
+        "path": "command-3.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "stderr": {
+        "path": "command-3.stderr.log",
+        "sha256": "2f5f8a7dc382768e23709a45c99febe0765cf6d9a0360fd23d1bb914356dbd7f",
+        "bytes": 128
+      },
+      "elapsed_seconds": 1.834
+    },
+    {
+      "command": [
+        "java",
+        "-jar",
+        "/repo/tools/java-structure-javaparser/target/zscope-java-structure-javaparser-0.1.0.jar",
+        "--project-root",
+        "/tmp/pytest-java/test_javaparser_structure_fron0",
+        "/tmp/pytest-java/test_javaparser_structure_fron0"
+      ],
+      "cwd": "/tmp/pytest-java/test_javaparser_structure_fron0",
+      "started_monotonic": 2278243.732192347,
+      "jar_before_execution": {
+        "path": "/repo/tools/java-structure-javaparser/target/zscope-java-structure-javaparser-0.1.0.jar",
+        "sha256": "a169e68d3be3b9cad3d4b487e3a188a985e1f868e69bcdf5226ee9e16a3ae497",
+        "bytes": 1464939
+      },
+      "exit_code": 0,
+      "stdout": {
+        "path": "command-4.stdout.log",
+        "sha256": "76912fad82c603d2ba2801940192b38255987f86ea5933414c14d4ddc5c89bc0",
+        "bytes": 3548
+      },
+      "stderr": {
+        "path": "command-4.stderr.log",
+        "sha256": "2f5f8a7dc382768e23709a45c99febe0765cf6d9a0360fd23d1bb914356dbd7f",
+        "bytes": 128
+      },
+      "elapsed_seconds": 0.2
+    }
+  ],
+  "errors": []
+}

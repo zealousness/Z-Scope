@@ -1,0 +1,27 @@
+[
+  {
+    "installation": "DeepSeek Harness",
+    "asar": "C:\\Users\\10273\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\app.asar",
+    "acp_named_files": [
+      "dsh/node_modules/@agentclientprotocol/sdk/dist/acp.js",
+      "dsh/node_modules/@agentclientprotocol/sdk/dist/acp.test.js",
+      "dsh/node_modules/@agentclientprotocol/sdk/dist/v2/acp.js",
+      "dsh/node_modules/@agentclientprotocol/sdk/dist/v2/acp.test.js"
+    ],
+    "package": {
+      "name": "@deepseek-ai/dsh-desktop-host",
+      "version": "0.2.0-rc.2",
+      "bin": null
+    }
+  },
+  {
+    "installation": "ZCode",
+    "asar": "C:\\Users\\10273\\AppData\\Local\\Programs\\ZCode\\resources\\app.asar",
+    "acp_named_files": [],
+    "package": {
+      "name": "@zcode/desktop",
+      "version": "3.11.2",
+      "bin": null
+    }
+  }
+]

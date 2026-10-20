@@ -1,0 +1,202 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:29:35.131043+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "expected_commands`（分母未知则 null，绝不以空集冒充"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:35.385569+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "）、`current/missing/stale/unexpected` 逐命令列出、`gaps[{source"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:35.637571+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ",command_id,build_context_id,reason,detail}]`、`command_coverage_complete`（仅 reconciled 且"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:36.115867+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "零 gap）、`scan_coverage_complete` 恒 false。\n- **身份复用不另造**：期望侧复用 `load"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:36.375570+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "_commands`+`command_identity`+`digest_json`（command_id 即索引 job 摘要），当前性复用 `context_input_status` "
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:36.633281+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "现读现算；另加工具收据检查（manifest 无可用 `tool.binary.sha256` → 保守"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:36.900374+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " gap）。不执行任何 JSON 命令、无写入。\n- **选择范围与索引同"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:37.151252+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "一段代码**：`_SelectionScope` 直接调用 `ClangBackend._collect_source_files`/`_is_path_allowed` 本"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:37.400201+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "体，无规则复制漂移；选择基目录按索引同款去"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:37.654004+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "重后预检存在性，源根消失不会产生“空分母+空 store=完整”的假完整。\n- **"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:37.905296+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "保守规则全部有测试**：等计数错命令不"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:38.185314+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "授权（逐 command_id 核对）、同宏/异宏分开、重复命令显式"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:38.453222+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " dedup、额外/旧 context 不补缺失且作为过滤一致性缺口阻断 complete、CDB 缺失/"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:38.718207+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "损坏/空/选择根不可用→分母 null、CDB 双摘要防对账"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:38.979404+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "中变更。\n- 开发迭代如实记录：首轮 15 failed（选择"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:39.407157+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "作用域缺 `_is_path_allowed`，按设计保守"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:39.669344+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "退化而非崩溃），修复后全绿；所有收据均为最终字节上的运行结果。\n\n## 限制（如实保持未接线）\n\n模块无任何调用"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:39.936445+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "方——`scan_session`/report 公共接线由协调者统一持有。命令级对"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:40.205401+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "账不证明逐实例 Analyzer/Validator、链接归属或 entry 存在；调用需与建索引相同的进程"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:40.456491+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "环境与过滤参数（不一致会显形为 missing/unexpected 缺口"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:40.749845+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "而非静默复用）。未跑其他回归套件、未重编 native（现有工具只读使用）、"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:41.058515+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "未触及 formal/Range/模型扫描，Windows 侧未形成任何测试"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:41.060518+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "结论。"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:29:41.101518+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "✓ completed · cache 130/131 messages · 159.7k cache-read tokens"
+      }
+    }
+  ],
+  "offset": 126,
+  "count": 24,
+  "next_offset": 150,
+  "has_more": false,
+  "total_matching": 150
+}

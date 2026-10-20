@@ -254,6 +254,7 @@ class SymbolCatalog:
         self.user_config = user_config
         self._lock = threading.RLock()
         self._snapshot: Optional[SymbolSnapshot] = None
+        self.permitted_source: Any = None
 
     @property
     def epoch(self) -> int:
@@ -293,6 +294,19 @@ class SymbolCatalog:
     def resolve(self, identifier: str) -> Optional[Dict[str, Any]]:
         record = self.snapshot().by_id.get(str(identifier or ""))
         return dict(record) if record else None
+
+    def resolve_cached(self, identifier: str) -> Optional[Dict[str, Any]]:
+        """Resolve published in-memory function identities without derived queries."""
+        with self._lock:
+            if self._snapshot is not None and self._snapshot.epoch == self.epoch:
+                item = self._snapshot.by_id.get(identifier)
+                return dict(item) if item else None
+            records = self._function_records()
+        for item in records:
+            item["symbol_id"] = symbol_id_for(item)
+            if item["symbol_id"] == identifier:
+                return item
+        return None
 
     def search(
         self,
@@ -387,11 +401,9 @@ class SymbolCatalog:
         result = normalize_project_path(normalized)
         return "" if result and project_relative_path_error(result) else result
 
-    def _collect_records(self) -> Tuple[List[Dict[str, Any]], set[str]]:
+    def _function_records(self) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []
-        providers: set[str] = set()
         origin = self._origin()
-        providers.add(origin)
 
         with getattr(self.code_index, "_cache_lock", self._lock):
             functions = [
@@ -419,7 +431,14 @@ class SymbolCatalog:
                     "raw": item,
                 }
             )
+        return [
+            r for r in records if self.permitted_source is None or self.permitted_source(r["file"])
+        ]
 
+    def _collect_records(self) -> Tuple[List[Dict[str, Any]], set[str]]:
+        records = self._function_records()
+        origin = self._origin()
+        providers: set[str] = {origin}
         db = self._database()
         macros: List[Dict[str, Any]] = []
         if db is not None and callable(getattr(db, "get_all_macro_definitions", None)):
@@ -569,6 +588,8 @@ class SymbolCatalog:
 
         deduped: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
         for item in records:
+            if self.permitted_source is not None and not self.permitted_source(item["file"]):
+                continue
             dedup_key = (
                 item["kind"],
                 item["qualified_name"],

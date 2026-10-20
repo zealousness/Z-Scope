@@ -513,7 +513,7 @@ def test_call_site_without_match_is_unresolved() -> None:
     assert states[0]["held_lock"] == ""
 
 
-def test_caller_lock_context_rejects_unlock_without_matching_lock() -> None:
+def test_lexical_caller_context_cannot_reject_unlock_claim() -> None:
     pack = {
         "function_context": {
             "code": "void _lifecycle_ref_get(void) { UNLOCK(&g_lifecycle.lock); }\n"
@@ -523,12 +523,14 @@ def test_caller_lock_context_rejects_unlock_without_matching_lock() -> None:
                 "caller": "td_a",
                 "call_site_line": 3,
                 "held_lock": "g_lifecycle.lock",
+                "held_lock_mode": "exclusive",
                 "resolved": True,
             },
             {
                 "caller": "td_b",
                 "call_site_line": 7,
                 "held_lock": "g_lifecycle.lock",
+                "held_lock_mode": "exclusive",
                 "resolved": True,
             },
         ],
@@ -536,11 +538,8 @@ def test_caller_lock_context_rejects_unlock_without_matching_lock() -> None:
     issue = _caller_lock_issue()
     resolution = _resolver(_queue())("lockset", issue, pack)
 
-    assert resolution is not None and resolution.proof_added is True
-    decision = deterministic_decision_proof(issue, outcome="reject")
-    assert decision is not None
-    assert decision.proof_kind == "caller_lock_context_dominates"
-    assert decision.producer_engine == "caller_lock_context_v12"
+    assert resolution is not None and not resolution.proof_added
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_caller_lock_context_declines_unguarded_caller() -> None:

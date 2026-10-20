@@ -1,0 +1,102 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T18:16:19.754315+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.765844+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.766366+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.768273+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.769279+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.781751+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.781751+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.784885+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.799661+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T18:16:19.966958+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Running: wsl.exe -d Ubuntu -u zeal -- bash -lc 'cd /mnt/c/U…",
+        "tool_call_id": "7:Bash_567_15f037b7",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    }
+  ],
+  "offset": 177299,
+  "count": 10,
+  "next_offset": 177309,
+  "has_more": false,
+  "total_matching": 177309
+}

@@ -1,0 +1,40 @@
+{
+  "sessionId": "session-802119d3-b9e2-444f-a353-5a00443ed4f6",
+  "sourceDigest": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+  "candidateDigest": "623bafe68a6f8bfb7dcb0d85e3c27be94208edce1fe06743027efb81d9aec060",
+  "modelAnswerDigest": "5b6ceb50b1aa06b6d0b8281ccddcc4b3f091134519223617c5f41e3b9b8d3450",
+  "edits": [
+    {
+      "symbol": "ExecutionRecord",
+      "line": 767,
+      "oldBytes": 121,
+      "newBytes": 478
+    },
+    {
+      "symbol": "ExecutionRecord.to_dict",
+      "line": 837,
+      "oldBytes": 192,
+      "newBytes": 280
+    },
+    {
+      "symbol": "_record",
+      "line": 2745,
+      "oldBytes": 96,
+      "newBytes": 319
+    },
+    {
+      "symbol": "_record",
+      "line": 2815,
+      "oldBytes": 184,
+      "newBytes": 236
+    },
+    {
+      "symbol": "register_dynamic_reproduction",
+      "line": 3568,
+      "oldBytes": 230,
+      "newBytes": 500
+    }
+  ],
+  "explanation": "Freeze the accepted source/harness/input digests into ExecutionRecord when the execution record is created, then register against that execution-time snapshot (comparing it with current files) instead of re-hashing at registration; the existing final-use liveness check re-verifies the same frozen digests, so mutate/delete revokes confirmation.",
+  "productApplied": false
+}

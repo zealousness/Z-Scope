@@ -1,0 +1,54 @@
+{
+  "at": "2026-10-10T05:18:17.917411+00:00",
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/zscope-resource-candidate-20261010-5gl8_u2l/tmp",
+    "--junitxml=/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair-20261010/candidate-regressions.xml",
+    "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/test_v01_v02_resource_bounds.py",
+    "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/test_v01_v02_resource_controls.py"
+  ],
+  "exit_code": 1,
+  "counts": {
+    "passed": 7,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  "failures": [
+    {
+      "name": "test_pipe_capture_keeps_small_late_descendant_bytes",
+      "state": "failed",
+      "detail": [
+        "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/test_v01_v02_resource_controls.py:44: in test_pipe_capture_keeps_small_late_descendant_bytes\n    assert result.stdout_excerpt==b'A'*32 and result.stderr_excerpt==b'B'*32\nE   AssertionError: assert (b'' == b'AAAAAAAAAAA...AAAAAAAAAAAAA'\nE     \nE     Use -v to get more diff)"
+      ]
+    }
+  ],
+  "product_source_digest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "candidate_digest": "fa1e6c0ac43a19e2a65f988633cef4692a537fe254435522c65961e61f32e565",
+  "product_modified": false,
+  "changed_inputs": [],
+  "pressure": false,
+  "memory_pressure": false,
+  "max_fixture_output_bytes_per_stream": 64,
+  "work": "/tmp/zscope-resource-candidate-20261010-5gl8_u2l",
+  "artifacts": {
+    "candidate-regressions.xml": {
+      "sha256": "e104d39155b6ebbf6fc266ea3235cc96366de019cab90879cba1d8cf530e9f20",
+      "bytes": 1770
+    },
+    "candidate-regressions.stdout.log": {
+      "sha256": "600fd69c59dbb83d787cb55a72c98f15e21c6d5552fcf3aee2ece59433b1b338",
+      "bytes": 833
+    },
+    "candidate-regressions.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "synthetic_only": true,
+  "valid": {
+    "schema": "zscope.entry-instance-coverage.v1",
+    "status": "reconciled",
+    "reasons": [],
+    "expected_commands": [
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "4762ad6b3aa5d21e74bfcdfaaf5f60b287d82551aecee7026ae76cfc149b5e3a",
+        "directory": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project"
+      },
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "21b01b6373d3783bc027f8ffcbf18df7ccf5cbef51ed12b3e50f8374591d850c",
+        "directory": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project"
+      }
+    ],
+    "current_commands": [
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "4762ad6b3aa5d21e74bfcdfaaf5f60b287d82551aecee7026ae76cfc149b5e3a",
+        "build_context_id": "a77a79aa62ee1c236c42d5d8869b7f412d6f677f6eb080a687b88c668885cede"
+      },
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "21b01b6373d3783bc027f8ffcbf18df7ccf5cbef51ed12b3e50f8374591d850c",
+        "build_context_id": "dd8e62eeb9df0ff2032ca570e445a77c0c47acbae6118e04a78749256ac50cbf"
+      }
+    ],
+    "missing_commands": [],
+    "stale_contexts": [],
+    "unexpected_contexts": [],
+    "gaps": [],
+    "command_entries": 2,
+    "duplicate_command_entries": 0,
+    "filtered_command_entries": 0,
+    "stored_contexts": 2,
+    "command_coverage_complete": true,
+    "scan_coverage_complete": false,
+    "scan_coverage_reasons": [
+      "command_reconciliation_only"
+    ],
+    "notes": [
+      "Command reconciliation is index-level: it proves that every expected compile command has a current stored compilation context. It does not derive link membership, entry presence, or Analyzer/Validator execution.",
+      "The expected denominator replicates the batch indexer's selection (compile database rows, C/C++ job suffixes, include/exclude path filter) from the parameters given. Stored-versus-expected mismatches are the filter-consistency gaps; a denominator that cannot be established is reported as null, never as an empty complete set."
+    ]
+  },
+  "missing_build_identity": {
+    "schema": "zscope.entry-instance-coverage.v1",
+    "status": "reconciled",
+    "reasons": [],
+    "expected_commands": [
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "4762ad6b3aa5d21e74bfcdfaaf5f60b287d82551aecee7026ae76cfc149b5e3a",
+        "directory": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project"
+      },
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "21b01b6373d3783bc027f8ffcbf18df7ccf5cbef51ed12b3e50f8374591d850c",
+        "directory": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project"
+      }
+    ],
+    "current_commands": [
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "4762ad6b3aa5d21e74bfcdfaaf5f60b287d82551aecee7026ae76cfc149b5e3a",
+        "build_context_id": ""
+      },
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "21b01b6373d3783bc027f8ffcbf18df7ccf5cbef51ed12b3e50f8374591d850c",
+        "build_context_id": ""
+      }
+    ],
+    "missing_commands": [],
+    "stale_contexts": [],
+    "unexpected_contexts": [],
+    "gaps": [],
+    "command_entries": 2,
+    "duplicate_command_entries": 0,
+    "filtered_command_entries": 0,
+    "stored_contexts": 2,
+    "command_coverage_complete": true,
+    "scan_coverage_complete": false,
+    "scan_coverage_reasons": [
+      "command_reconciliation_only"
+    ],
+    "notes": [
+      "Command reconciliation is index-level: it proves that every expected compile command has a current stored compilation context. It does not derive link membership, entry presence, or Analyzer/Validator execution.",
+      "The expected denominator replicates the batch indexer's selection (compile database rows, C/C++ job suffixes, include/exclude path filter) from the parameters given. Stored-versus-expected mismatches are the filter-consistency gaps; a denominator that cannot be established is reported as null, never as an empty complete set."
+    ]
+  },
+  "foreign_build_identity": {
+    "schema": "zscope.entry-instance-coverage.v1",
+    "status": "reconciled",
+    "reasons": [],
+    "expected_commands": [
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "4762ad6b3aa5d21e74bfcdfaaf5f60b287d82551aecee7026ae76cfc149b5e3a",
+        "directory": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project"
+      },
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "21b01b6373d3783bc027f8ffcbf18df7ccf5cbef51ed12b3e50f8374591d850c",
+        "directory": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project"
+      }
+    ],
+    "current_commands": [
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "4762ad6b3aa5d21e74bfcdfaaf5f60b287d82551aecee7026ae76cfc149b5e3a",
+        "build_context_id": "foreign-arbitrary-identity"
+      },
+      {
+        "source": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/producer-identity-s01/a113229e/project/unit.c",
+        "command_id": "21b01b6373d3783bc027f8ffcbf18df7ccf5cbef51ed12b3e50f8374591d850c",
+        "build_context_id": "foreign-arbitrary-identity"
+      }
+    ],
+    "missing_commands": [],
+    "stale_contexts": [],
+    "unexpected_contexts": [],
+    "gaps": [],
+    "command_entries": 2,
+    "duplicate_command_entries": 0,
+    "filtered_command_entries": 0,
+    "stored_contexts": 2,
+    "command_coverage_complete": true,
+    "scan_coverage_complete": false,
+    "scan_coverage_reasons": [
+      "command_reconciliation_only"
+    ],
+    "notes": [
+      "Command reconciliation is index-level: it proves that every expected compile command has a current stored compilation context. It does not derive link membership, entry presence, or Analyzer/Validator execution.",
+      "The expected denominator replicates the batch indexer's selection (compile database rows, C/C++ job suffixes, include/exclude path filter) from the parameters given. Stored-versus-expected mismatches are the filter-consistency gaps; a denominator that cannot be established is reported as null, never as an empty complete set."
+    ]
+  },
+  "source_sha256": "bc3b8bfa2349be15a6801de965ba583bb944d5737476081613b8cfdb034f1a65",
+  "source_unchanged": true,
+  "worker_terminal_not_required_for_readonly_probe": true
+}

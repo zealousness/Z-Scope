@@ -490,6 +490,10 @@ class BitcodeBuilder:
             str(path.resolve()): self._linked_inputs_by_path.get(str(path.resolve()), [])
             for path in results.values()
         }
+        task_identities = {
+            name: self.group_tu_identities(name, completed_inputs[str(path.resolve())])
+            for name, path in results.items()
+        }
         self._manifest["analysis_tasks"] = [
             {
                 "group": name,
@@ -501,6 +505,8 @@ class BitcodeBuilder:
                     for p in completed_inputs[str(path.resolve())]
                     if p.resolve() in self._bc_to_src
                 ],
+                "input_command_ids": list(task_identities[name]["command_ids"]),
+                "variant_sources": dict(task_identities[name]["variant_sources"]),
                 "scope": scope_config.mode if scope_config else "full",
                 "bitcode_hash": self._file_hash(path),
             }
@@ -1425,6 +1431,49 @@ class BitcodeBuilder:
 
         return False
 
+    def group_tu_identities(
+        self,
+        group_name: str,
+        inputs: Optional[Sequence[Path]] = None,
+    ) -> Dict[str, Any]:
+        """Per-TU compile-command identities of one linked group.
+
+        ``command_id`` is ``digest_json(command_identity(...))`` — the same key
+        the batch indexer stores as ``BuildContext.command_id`` — so a signal
+        consumer can resolve a location to real compilation instances instead of
+        guessing from the file name. A source that appears under more than one
+        command id inside the group is reported in ``variant_sources``; callers
+        must treat those as ambiguous rather than pick one.
+        """
+
+        rows: List[Dict[str, Any]] = []
+        for bc in inputs if inputs is not None else self._group_inputs.get(group_name, []):
+            path = Path(bc)
+            entry = self._bitcode_entry(path)
+            command = entry.get("command")
+            source = self._bc_to_src.get(path.resolve())
+            if not isinstance(command, dict) or source is None:
+                continue
+            rows.append(
+                {
+                    "source": self._format_path(source),
+                    "command_id": digest_json(command),
+                    "dependencies_complete": bool(entry.get("dependencies_complete")),
+                }
+            )
+        return {
+            "tus": rows,
+            "command_ids": sorted({row["command_id"] for row in rows}),
+            "variant_sources": self._variant_sources(rows),
+        }
+
+    @staticmethod
+    def _variant_sources(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for row in rows:
+            counts[str(row["source"])] = counts.get(str(row["source"]), 0) + 1
+        return {source: count for source, count in counts.items() if count > 1}
+
     def _record_linked_bitcode_manifest(
         self,
         merged_path: Path,
@@ -1432,6 +1481,10 @@ class BitcodeBuilder:
         fingerprint: str,
     ) -> None:
         resolved_merged = merged_path.resolve()
+        # ``group_tu_identities`` reads the per-TU manifest entry, and that read
+        # takes ``_state_lock`` itself; computing it inside this block would
+        # self-deadlock a non-reentrant lock.
+        identities = self.group_tu_identities(group_name)
         with self._state_lock:
             linked = self._manifest.setdefault("linked", {})
             linked[group_name] = {
@@ -1439,6 +1492,7 @@ class BitcodeBuilder:
                 "bitcode_hash": self._file_hash(resolved_merged),
                 "path": str(resolved_merged),
                 "inputs": [str(p) for p in self._group_inputs.get(group_name, [])],
+                "command_ids": list(identities["command_ids"]),
             }
             self._manifest.setdefault("linked_artifacts", {})[fingerprint] = dict(
                 linked[group_name]
@@ -1472,6 +1526,7 @@ class BitcodeBuilder:
         if self._compile_preparation is None and self.compile_commands_path.is_file():
             from .compile_commands_prepare import prepare_compile_commands
             from .compile_preflight import discover_tools
+
             self._compile_preparation = prepare_compile_commands(
                 self.compile_commands_path,
                 discover_tools(llvm_link=self.llvm_link, gclang=self.gclang),

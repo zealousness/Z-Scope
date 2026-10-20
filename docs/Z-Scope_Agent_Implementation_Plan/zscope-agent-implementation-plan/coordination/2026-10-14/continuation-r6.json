@@ -1,0 +1,879 @@
+{
+  "first_valid_joint_result": {
+    "skipped": 0,
+    "passed": 572,
+    "failed": 2
+  },
+  "current_joint": "artifacts/coordinator-r23-ui-projection-union-20261016",
+  "schema": "zscope.coordination.continuation-r6.v1",
+  "reserved_s06": "no resume, redispatch or old-round operation",
+  "targeted_fixture_failure": "artifacts/coordinator-r6-regressions-20261014.xml",
+  "user_authorized": true,
+  "first_valid_joint": "artifacts/coordinator-r5-producers-fixed-20261014",
+  "bridge_owner_client_pid": 80748,
+  "new_features_dispatched": true,
+  "targeted_atomic_final": "artifacts/coordinator-r6-atomic-final-20261014.xml",
+  "planned": [
+    {
+      "id": "S01-INST-EXEC",
+      "workspace": "s01-analysis-r6",
+      "model": "volceapi/kimi-k3",
+      "owns": [
+        "zscope/core/analysis/analyzer.py",
+        "zscope/orchestration/parallel_analyzer.py",
+        "zscope/orchestration/entry_instances.py",
+        "zscope/retrieval/instance_index.py",
+        "tests/test_all_variant_scan.py",
+        "tests/test_instance_analysis.py"
+      ],
+      "agent": "kimi"
+    },
+    {
+      "id": "S08-SESSION-SCHEDULER",
+      "workspace": "s08-session-r6",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "owns": [
+        "zscope/orchestration/jobs/session_scheduler.py",
+        "zscope/orchestration/jobs/scheduler_hook.py",
+        "zscope/orchestration/jobs/owner.py",
+        "tests/test_job_session_scheduler.py"
+      ],
+      "agent": "zcode"
+    },
+    {
+      "id": "U01-ENTRYPOINTS",
+      "workspace": "u01-entrypoints-r6",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "owns": [
+        "zscope/config/editor.py",
+        "zscope/cli/config_cli.py",
+        "zscope/cli/init.py",
+        "zscope.c_cpp.yaml",
+        "zscope.java.yaml",
+        "tests/test_cli_config_v2.py",
+        "tests/test_reference_configs.py",
+        "tests/test_config_v3_entrypoints.py"
+      ],
+      "agent": "zcode"
+    },
+    {
+      "id": "ASTRA-V3-EDITOR",
+      "owns": [
+        "zscope/web/static/**",
+        "tests/test_agent_workbench_ui.py",
+        "tests/fixtures/agent_workbench_ui.cjs"
+      ],
+      "workspace": "astra-config-r6",
+      "model": "gpt-6-astra",
+      "existing_thread": "01a13811-2ebb-7301-bc19-03e9ddc7e0f1",
+      "agent": "Astra"
+    }
+  ],
+  "probe": "artifacts/coordinator-capture-probe-20261014/120350/review.json",
+  "current_joint_status": "R23 complete selected union six commands passed",
+  "shared_root_owner": "coordinator",
+  "current_joint_result": {
+    "passed": 2551,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "commands_passed": 6
+  },
+  "next_task_rows": [
+    {
+      "id": "S01-SYMBOL",
+      "packages": [
+        "S01"
+      ],
+      "title": "构建作用域贯穿类型/宏/图/调用契约",
+      "depends_on": [
+        "S01-INST",
+        "S01-INST-EXEC",
+        "CURRENT-JOINT-R9"
+      ],
+      "owner": "kimi",
+      "requested_model": "volceapi/kimi-k3",
+      "difficulty": "high",
+      "risk": "high",
+      "status": "independent_passed_integrated_joint_passed_bounded_slice",
+      "write_paths": [
+        "zscope/retrieval/knowledge_db.py",
+        "zscope/retrieval/code_index.py",
+        "zscope/retrieval/instance_index.py",
+        "zscope/semantics/contracts.py",
+        "tests/test_full_symbol_build_scope.py",
+        "tests/test_instance_symbol_native.py"
+      ],
+      "input": "多变体调度及native callee USR",
+      "output": "剩余导航/图/契约消费者不串TU、目标、重载",
+      "acceptance": "ID01-04；全部消费者与unknown链接报告",
+      "estimated_work_hours": [
+        12,
+        24
+      ],
+      "enable_condition": null,
+      "bridge_task_id": "task_0afb819799",
+      "observed_model": "volceapi/kimi-k3",
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-symbol-r10",
+      "baseline_receipt": "followups-r10/s01-symbol-r10-baseline.json",
+      "checked_at": "2026-10-15T02:01:45.763343+08:00",
+      "independent_acceptance": true,
+      "integrated": true,
+      "joint_verification": true,
+      "whole_package_complete": false,
+      "agent_kind": "agent_bridge",
+      "bridge_session_id": "sess_261a55289f",
+      "accepted_model": "volceapi/kimi-k3",
+      "request_id": "f20b924b-0541-4948-bb64-46dd4bce6323",
+      "dispatch_evidence": "route-check\\bridge-response-s01-symbol-r10.json",
+      "actual_execution_at": "2026-10-14T23:04:34.203044+08:00",
+      "execution_evidence": "route-check/bridge-response-r10-current-kimi-5a4213c29c.json",
+      "execution_history": [
+        {
+          "task_id": "task_9579265ee7",
+          "status": "completed_delivery_independent_acceptance_failed",
+          "review": "artifacts/coordinator-s01-symbol-probes-r10-20261015/review.json",
+          "independent_acceptance": false,
+          "integrated": false
+        }
+      ],
+      "latest_failed_review": "artifacts/coordinator-s01-symbol-probes-r10-20261015/review.json",
+      "producer_status": "completed",
+      "worker_finished_at": "2026-10-15T01:44:30.851322+08:00",
+      "artifact_available": true,
+      "acceptance_evidence": "artifacts/coordinator-s01-symbol-r11-acceptance-20261015/review.json",
+      "intake_evidence": "artifacts/intake-s01-symbol-r11-20261015/receipt.json",
+      "independent_result": {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "461",
+        "time": "228.319",
+        "timestamp": "2026-10-15T01:45:19.151001+08:00",
+        "hostname": "Cindala"
+      },
+      "integrated_at": "2026-10-15T01:49:57.77471+08:00",
+      "joint_evidence": "artifacts/coordinator-r11-all-intaken-20261015/source-evidence.json"
+    },
+    {
+      "id": "U01-MCP-JOBS",
+      "packages": [
+        "U01",
+        "S08"
+      ],
+      "title": "U01-MCP-JOBS",
+      "depends_on": [
+        "CURRENT-JOINT-R9"
+      ],
+      "whole_package_complete": false,
+      "owner": "zcode",
+      "requested_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u01-mcp-r10",
+      "write_paths": [
+        "zscope/mcp/provider.py",
+        "zscope/mcp/jobs_adapter.py",
+        "tests/test_mcp_http_server.py",
+        "tests/test_mcp_policy.py",
+        "tests/test_mcp_read_only.py",
+        "tests/test_mcp_security.py",
+        "tests/test_mcp_jobs.py"
+      ],
+      "baseline_receipt": "followups-r10/u01-mcp-r10-baseline.json",
+      "status": "independent_passed_integrated_joint_passed_bounded_slice",
+      "checked_at": "2026-10-15T02:01:45.763343+08:00",
+      "independent_acceptance": true,
+      "integrated": true,
+      "joint_verification": true,
+      "agent_kind": "agent_bridge",
+      "bridge_task_id": "task_feb229984d",
+      "bridge_session_id": "sess_a0adb99b15",
+      "accepted_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "request_id": "c1e87fe7-4afc-4554-8af7-e67c3720f551",
+      "dispatch_evidence": "route-check\\bridge-response-u01-mcp-r10.json",
+      "actual_execution_at": "2026-10-14T23:04:34.248433+08:00",
+      "observed_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "execution_evidence": "route-check/bridge-response-r10-current-zcode-3a1073e2b0.json",
+      "execution_history": [
+        {
+          "task_id": "task_2f3f99db9b",
+          "status": "completed_delivery_independent_acceptance_failed",
+          "review": "artifacts/coordinator-mcp-strict-probe-r10-20261015/review.json",
+          "independent_acceptance": false,
+          "integrated": false
+        }
+      ],
+      "latest_failed_review": "artifacts/coordinator-mcp-strict-probe-r10-20261015/review.json",
+      "producer_status": "completed",
+      "worker_finished_at": "2026-10-15T01:43:29.819824+08:00",
+      "artifact_available": true,
+      "acceptance_evidence": "artifacts/coordinator-mcp-r11-acceptance-20261015/review.json",
+      "intake_evidence": "artifacts/intake-mcp-r11-20261015/receipt.json",
+      "independent_result": {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "262",
+        "time": "209.638",
+        "timestamp": "2026-10-15T01:45:18.950408+08:00",
+        "hostname": "Cindala"
+      },
+      "integrated_at": "2026-10-15T01:49:57.170222+08:00",
+      "joint_evidence": "artifacts/coordinator-r11-all-intaken-20261015/source-evidence.json"
+    },
+    {
+      "id": "ASTRA-UX-R10",
+      "packages": [
+        "U01",
+        "U02"
+      ],
+      "title": "ASTRA-UX-R10",
+      "depends_on": [
+        "CURRENT-JOINT-R9"
+      ],
+      "whole_package_complete": false,
+      "owner": "Astra",
+      "requested_model": "gpt-6-astra",
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\astra-ux-r10",
+      "write_paths": [
+        "zscope/web/static/**",
+        "tests/test_agent_workbench_ui.py",
+        "tests/fixtures/agent_workbench_ui.cjs"
+      ],
+      "baseline_receipt": "followups-r10/astra-ux-r10-baseline.json",
+      "status": "independent_passed_integrated_joint_passed_bounded_slice",
+      "checked_at": "2026-10-15T02:01:45.763343+08:00",
+      "independent_acceptance": true,
+      "integrated": true,
+      "joint_verification": true,
+      "agent_kind": "native_subagent",
+      "agent_task_id": "/root/astra_v3_editor_r6",
+      "requested_at": "2026-10-14T23:04:34+08:00",
+      "execution_evidence": "followups-r10/astra-execution.json",
+      "actual_execution_at": "2026-10-14T23:07:23.618243+08:00",
+      "integrated_at": "2026-10-15T01:29:51.281796+08:00",
+      "acceptance_evidence": "artifacts/coordinator-astra-ux-r10-acceptance2-20261015/review.json",
+      "intake_evidence": "artifacts/intake-astra-ux-r10-20261015/receipt.json",
+      "joint_evidence": "artifacts/coordinator-r11-all-intaken-20261015/source-evidence.json"
+    }
+  ],
+  "updated_at": "2026-10-17T11:42:19.112890+08:00",
+  "preintake_reviews": {
+    "astra_phase1": "artifacts/coordinator-astra-r6-phase1-20261014/review.json",
+    "isolation_metadata": "artifacts/coordinator-s01-isolation-metadata-r6-20261014/metadata-final.xml",
+    "s01_consumer": "artifacts/coordinator-s01-consumer-probe-r6-20261014/results.xml",
+    "notes": "followups-r6/provisional-review-notes.md",
+    "s08_guard": "artifacts/coordinator-s08-guard-probe-r6-20261014/results.xml",
+    "u01_paths": "artifacts/coordinator-editor-probe-r6-20261014/init-paths.xml"
+  },
+  "last_verified_root_joint": "artifacts/coordinator-r22-unchanged-union-20261016/source-evidence.json",
+  "active_phase": "isolated_shared_currentness_and_cost_probes_repairs_while_r32_union_finishes",
+  "current_joint_finished_at": "2026-10-16T10:58:44.52815+08:00",
+  "current_round": "R33",
+  "latest_observation": {
+    "observed_at": "2026-10-17T10:40:49.381151+08:00",
+    "actual_task": "/root",
+    "public_bridge_readonly": "artifacts/coordinator-stage-repairs-r33-20261017/bridge-readonly.json",
+    "public_bridge_current_session_dead": true,
+    "no_services_started": true,
+    "no_private_rpc_or_direct_worker_cli": true,
+    "no_platform_denial_in_current_dispatch": true,
+    "preparations_sha256": "fa5a7d283e938cfc0d8cfd721abf28b4e92f39fd517d80254a3aa00b59f5b6fe",
+    "source_review_blocked": "artifacts/stage-integration-source-review-r32-20261017/review.json",
+    "source_review_sha256": "42d19522c9242e869b263d19e8f2379f5836e25b2e4d702c68c8c0b8ad24565f",
+    "active_repairs": [
+      {
+        "id": "STAGE-CURRENTNESS-REPAIR-R33",
+        "owner": "Codex native 6.1-sol/xhigh",
+        "actual_task_id": "/root/stage_currentness_repair_r33",
+        "requested_model": "gpt-6.1-sol",
+        "requested_effort": "xhigh",
+        "transport": "native_collaboration",
+        "bridge_task_id": null,
+        "status": "dispatched_isolated_probe_before_repair_execution_not_yet_confirmed",
+        "depends_on": [
+          "COORD-INSTANCE-INTEGRATION-R24"
+        ],
+        "superseding_shared_finding": "STAGE-R32-P1-01",
+        "workspace": ".coordination/20261014/workspaces/stage-currentness-repair-r33",
+        "write_paths": [
+          "zscope/orchestration/instance_semantics_context.py",
+          "tests/test_instance_currentness_revocation_r33.py"
+        ],
+        "dispatched": true,
+        "execution_confirmed": false,
+        "artifact_delivered": false,
+        "independent_acceptance": false,
+        "stage_intake": false,
+        "integrated": false,
+        "joint_validation_passed": false,
+        "dispatched_at": "2026-10-17T10:40:49.381151+08:00",
+        "actual_failed_deliveries": 0,
+        "prior_s01_failed_deliveries_unchanged": 3,
+        "prior_s01_bounded_module_acceptance_unchanged": true,
+        "root_intake": false
+      },
+      {
+        "id": "STAGE-COST-REPAIR-R33",
+        "owner": "Codex native 6.1-sol/xhigh",
+        "actual_task_id": "/root/stage_cost_repair_r33",
+        "requested_model": "gpt-6.1-sol",
+        "requested_effort": "xhigh",
+        "transport": "native_collaboration",
+        "bridge_task_id": null,
+        "status": "dispatched_isolated_probe_before_repair_execution_not_yet_confirmed",
+        "depends_on": [
+          "COORD-INSTANCE-INTEGRATION-R24"
+        ],
+        "superseding_shared_finding": "STAGE-R32-P2-02 and parallel_analyzer:492 no-any-return",
+        "workspace": ".coordination/20261014/workspaces/stage-cost-repair-r33",
+        "write_paths": [
+          "zscope/orchestration/parallel_analyzer.py",
+          "tests/test_instance_recovery_cost_r33.py"
+        ],
+        "dispatched": true,
+        "execution_confirmed": false,
+        "artifact_delivered": false,
+        "independent_acceptance": false,
+        "stage_intake": false,
+        "integrated": false,
+        "joint_validation_passed": false,
+        "dispatched_at": "2026-10-17T10:40:49.381151+08:00",
+        "actual_failed_deliveries": 0,
+        "prior_s01_failed_deliveries_unchanged": 3,
+        "prior_s01_bounded_module_acceptance_unchanged": true,
+        "root_intake": false
+      }
+    ],
+    "root_intake": false
+  },
+  "whole_packages_complete": false,
+  "latest_joint_attempt": "artifacts/coordinator-r23-ui-projection-union-20261016/review.json",
+  "latest_joint_attempt_passed": true,
+  "current_root_status": "R22 selected full union 2539/six commands passed, including all new SQL/identity/first-cause gates; separate UI wording/projection defects and whole packages/real-project effects open",
+  "prior_pass_is_current_root": true,
+  "active_tasks": [
+    "/root/stage_currentness_repair_r33",
+    "/root/stage_cost_repair_r33"
+  ],
+  "additional_job_cli_gate": {
+    "review": "artifacts/coordinator-current-job-cli-window-r20-corrected-probes-20261015/review.json",
+    "junit": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "2",
+      "skipped": "0",
+      "tests": "2",
+      "time": "17.608",
+      "timestamp": "2026-10-15T21:21:20.143774+08:00",
+      "hostname": "Cindala"
+    },
+    "finished_at": "2026-10-15T21:21:38.913315+08:00",
+    "status": "two valid additional integration failures; isolated task_492e7a7037 dispatched, not accepted or intaken",
+    "included_in_this_union": false
+  },
+  "current_additional_job_cli_gate": {
+    "review": "artifacts/coordinator-current-job-cli-window-identity-corrected-r20-probes-20261015/review.json",
+    "junit": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "8",
+      "skipped": "0",
+      "tests": "8",
+      "time": "46.813",
+      "timestamp": "2026-10-15T21:31:43.403318+08:00",
+      "hostname": "Cindala"
+    },
+    "finished_at": "2026-10-15T21:32:29.73778+08:00",
+    "repair_task_id": "task_492e7a7037",
+    "independent_acceptance": false,
+    "integrated": false
+  },
+  "current_state_note": "CURRENT_STATE_R33.md",
+  "additional_producer_sql_review": [
+    {
+      "review": "artifacts/coordinator-job-cli-live-frozen-r20-probes-20261015/review.json",
+      "junit": {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "8",
+        "time": "48.960",
+        "timestamp": "2026-10-15T21:37:28.137377+08:00",
+        "hostname": "Cindala"
+      },
+      "finished_at": "2026-10-15T21:38:18.496468+08:00",
+      "diagnostic_only": true,
+      "counts_as_glm_actual_delivery_failure": false
+    },
+    {
+      "review": "artifacts/coordinator-job-cli-authority-live-frozen-r20-probes-20261015/review.json",
+      "junit": {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "2",
+        "skipped": "0",
+        "tests": "4",
+        "time": "22.552",
+        "timestamp": "2026-10-15T21:40:18.043311+08:00",
+        "hostname": "Cindala"
+      },
+      "finished_at": "2026-10-15T21:40:44.313785+08:00",
+      "diagnostic_only": true,
+      "counts_as_glm_actual_delivery_failure": false
+    }
+  ],
+  "current_remaining_snapshot": "CURRENT_STATE_R20.md",
+  "native_active_first_cause": {
+    "agent_task_id": "/root/astra_first_cause_r20",
+    "status": "completed_independently_accepted_intaken_current_joint_passed",
+    "review": "artifacts/coordinator-first-cause-r20-final-acceptance-20261015/review.json",
+    "finished_at": "2026-10-15T22:15:01.668884+08:00",
+    "junit": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "397",
+      "time": "313.234",
+      "timestamp": "2026-10-15T22:09:15.440443+08:00",
+      "hostname": "Cindala"
+    },
+    "independent_acceptance": true,
+    "integrated": true,
+    "joint_evidence": "artifacts/coordinator-r22-unchanged-union-20261016/source-evidence.json"
+  },
+  "current_additional_first_cause_gate": {
+    "review": "artifacts/coordinator-current-first-cause-r20-probes-20261015/review.json",
+    "junit": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "2",
+      "skipped": "0",
+      "tests": "2",
+      "time": "0.726",
+      "timestamp": "2026-10-15T21:48:27.099117+08:00",
+      "hostname": "Cindala"
+    },
+    "finished_at": "2026-10-15T21:48:30.664965+08:00"
+  },
+  "native_active_job_cli": {
+    "agent_task_id": "/root/astra_job_cli_sql_r20",
+    "status": "completed_independently_accepted_intaken_current_joint_passed",
+    "finished_at": "2026-10-15T22:40:37+08:00",
+    "workspace": "job-cli-window-r20",
+    "requested_model": "gpt-6-astra",
+    "reasoning_effort": "xhigh",
+    "independent_acceptance": true,
+    "integrated": true,
+    "verification_evidence": "artifacts/coordinator-job-cli-window-r20-final-acceptance-20261015",
+    "joint_evidence": "artifacts/coordinator-r22-unchanged-union-20261016/source-evidence.json"
+  },
+  "latest_fixture_intake": {
+    "task_id": "COORD-ROOT-FIXTURES-R21",
+    "intaken_at": "2026-10-15T23:55:20.333287+08:00",
+    "files": [
+      {
+        "path": "tests/test_job_remaining.py",
+        "before": "49ea701e1387f4ada76e1aa5dcf972a8a94f41b88073325f73d66048da336c09",
+        "after": "745b58d441064887283684c1e19f7cfc855917bb1f3a272e47acb0f34e599add",
+        "backup": "artifacts/intake-root-fixtures-r21-20261015/before/tests/test_job_remaining.py"
+      },
+      {
+        "path": "tests/test_mcp_jobs.py",
+        "before": "618674793a2b918c823ce6c4c64015373ddca05cc32e5c4bc576b506bfa98dfb",
+        "after": "992104b50560938cc3b1338955c615f180be0156f84f3ca950b26ed6ecc75b94",
+        "backup": "artifacts/intake-root-fixtures-r21-20261015/before/tests/test_mcp_jobs.py"
+      }
+    ],
+    "isolated_acceptance_passed": true,
+    "independent_static_review_passed": true,
+    "initial_review": "artifacts/coordinator-root-fixtures-r21-acceptance-20261015/review.json",
+    "final_review": "artifacts/coordinator-root-fixtures-r21-final-acceptance-20261015/review.json",
+    "static_review": "artifacts/root-joint-fixture-review-r21-20261015/final-staged-review.json",
+    "product_changed": false,
+    "old_failed_root_preserved": "artifacts/coordinator-r20-job-cli-intaken-20261015/review.json",
+    "original_window_and_timeouts_retained": true,
+    "shared_slow8_scanner_unchanged": true,
+    "source_inputs": 1049,
+    "launchers": {
+      "test_slot.py": "7fd4e683bb9e7523a3247eb5efd21ff5a130ebc83375933f32290f4007f9c158",
+      "verify_current_root_r21.py": "b551b276e70500d6999ac95cf3b1e2040a8d697f20ff6ed47465cd868603cfd7",
+      "verify_joint_retry_with_clock_r21.py": "5e37248070d19f6b9e433c0e996c46233cfced1fcb8ec94aeb93d26d693cfbf8",
+      "root_runtime_preflight_r21.py": "44473d4049be72cca88a4f78cfd055c613f03833af617a43179a5afc0bf6274a",
+      "publish_joint_r21.py": "ddb4dfa1501085314edf78fd7e75c8e752d1c78b4c80478e64fcfec6a03fb70b"
+    },
+    "quality_commands_required": 6,
+    "joint_verification_passed": false,
+    "clock_problem_resolved": false
+  },
+  "current_joint_execution_evidence": "artifacts/coordinator-r21-verified-environment-20261015/process-observation-2026-10-15T155905.403548_0000.json",
+  "native_active_ui": {
+    "logical_task": "ASTRA-STOP-COVERAGE-UX-R21",
+    "actual_task_id": "/root/astra_instance_ui_r18",
+    "actual_execution_at": "2026-10-16T01:30:05.8752216+08:00",
+    "execution_evidence": ".coordination/20261014/workspaces/astra-stop-coverage-ux-r21/artifacts/stop-coverage-ux-r21/execution-start.json"
+  },
+  "readonly_design_reviews": [
+    {
+      "logical_task": "S01-INSTANCE-MODELING-DESIGN-R21",
+      "original_task_id": "task_ba5695e560",
+      "producer_finished_at": "2026-10-16T01:24:06.425381+08:00",
+      "artifact_available": true,
+      "independent_acceptance": false,
+      "review_status": "changes_requested",
+      "revision_dispatched": false
+    },
+    {
+      "logical_task": "S08-PARTIAL-RECOVERY-DESIGN-R21",
+      "original_task_id": "task_32a0c9ef87",
+      "producer_finished_at": "2026-10-16T01:22:27.664249+08:00",
+      "artifact_available": true,
+      "independent_acceptance": false,
+      "review_status": "changes_requested",
+      "revision_dispatched": false
+    }
+  ],
+  "active_next_stage_tasks": [
+    {
+      "logical_task": "S01-INSTANCE-MODELING-DESIGN-R21",
+      "task_id": "task_4d76d1be39",
+      "session_id": "sess_85c532abde",
+      "status": "dispatched_worker_process_observed_tool_execution_unconfirmed",
+      "producer_status": "running",
+      "worker_process_started_at": "2026-10-16T01:34:26.804657+08:00",
+      "actual_tool_execution_observed_at": null,
+      "actual_execution_at": null,
+      "current_revision_artifact_available": false,
+      "original_design_task_id": "task_ba5695e560",
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "evidence": "route-check/bridge-response-r21-design-status-s01-instance-modeling-design-r21-de7303474658.json"
+    },
+    {
+      "logical_task": "S08-PARTIAL-RECOVERY-DESIGN-R21",
+      "task_id": "task_6416e33454",
+      "session_id": "sess_9f1956ea27",
+      "status": "dispatched_worker_process_observed_tool_execution_unconfirmed",
+      "producer_status": "running",
+      "worker_process_started_at": "2026-10-16T01:34:30.588566+08:00",
+      "actual_tool_execution_observed_at": null,
+      "actual_execution_at": null,
+      "current_revision_artifact_available": false,
+      "original_design_task_id": "task_32a0c9ef87",
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "evidence": "route-check/bridge-response-r21-design-status-s08-partial-recovery-design-r21-de7303474658.json"
+    },
+    {
+      "logical_task": "ASTRA-STOP-COVERAGE-UX-R21",
+      "task_id": "/root/astra_instance_ui_r18",
+      "session_id": null,
+      "status": "actual_ui_execution_readonly_dependencies_verified_delivery_pending",
+      "producer_status": "running",
+      "worker_process_started_at": null,
+      "actual_tool_execution_observed_at": null,
+      "actual_execution_at": "2026-10-16T01:30:05.8752216+08:00",
+      "current_revision_artifact_available": false,
+      "original_design_task_id": null,
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "evidence": ".coordination/20261014/workspaces/astra-stop-coverage-ux-r21/artifacts/stop-coverage-ux-r21/execution-start.json"
+    }
+  ],
+  "latest_parallel_snapshot": {
+    "observed_at": "2026-10-17T10:54:53.853505+08:00",
+    "actual_task": "/root",
+    "probe_counts": {
+      ".coordination/20261014/workspaces/stage-currentness-repair-r33/artifacts/stage-currentness-r33/red-20261017T024343.006572Z/pytest.xml": {
+        "tests": 38,
+        "failures": 34,
+        "errors": 0,
+        "skipped": 0
+      },
+      ".coordination/20261014/workspaces/stage-currentness-repair-r33/artifacts/stage-currentness-r33/red-20261017T024820.183258Z/pytest.xml": {
+        "tests": 45,
+        "failures": 39,
+        "errors": 0,
+        "skipped": 0
+      },
+      ".coordination/20261014/workspaces/stage-cost-repair-r33/artifacts/stage-cost-r33/red/pytest.xml": {
+        "tests": 3,
+        "failures": 0,
+        "errors": 3,
+        "skipped": 0
+      },
+      ".coordination/20261014/workspaces/stage-cost-repair-r33/artifacts/stage-cost-r33/diagnostic-original/pytest.xml": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 1,
+        "skipped": 0
+      },
+      ".coordination/20261014/workspaces/stage-cost-repair-r33/artifacts/stage-cost-r33/diagnostic-bridge/pytest.xml": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 1,
+        "skipped": 0
+      }
+    },
+    "evidence_sha256": {
+      ".coordination/20261014/workspaces/stage-currentness-repair-r33/artifacts/stage-currentness-r33/red-20261017T024343.006572Z/pytest.xml": "511cd7c1eebb45cbc463cd6c494fe7d8cd4699da220c582a45ddc75d42646740",
+      ".coordination/20261014/workspaces/stage-currentness-repair-r33/artifacts/stage-currentness-r33/red-20261017T024820.183258Z/pytest.xml": "8401bc5c831312df3c1c2341c0df844036e9f08fdfe50cb7425d9bd029c60b53",
+      ".coordination/20261014/workspaces/stage-cost-repair-r33/artifacts/stage-cost-r33/red/pytest.xml": "f12388d76b21f2ba075587b1b262e09c9128a792c591739788fab5d015ee32a6",
+      ".coordination/20261014/workspaces/stage-cost-repair-r33/artifacts/stage-cost-r33/diagnostic-original/pytest.xml": "363b613ea7d14418108785d2982f86d2c89f5d7e82f70303a8780686b53d41da",
+      ".coordination/20261014/workspaces/stage-cost-repair-r33/artifacts/stage-cost-r33/diagnostic-bridge/pytest.xml": "c003fb2e8cec840c440ebe69001bc6c7b5308270d111792e5315a0698ed7acde",
+      "artifacts/coordinator-stage-repairs-r33-20261017/supplemental-inputs.json": "671ae6805159007f5a0674a507ba1b682b15c54c93b261de35eb74ee51afa342",
+      "artifacts/stage-repair-probe-source-review-r33-20261017/initial-currentness-red-causal-audit.json": "30ab729aa2436ead188a16b991dc6074c947ed0751e15183c3e9df58f6918d7f",
+      "artifacts/stage-repair-probe-source-review-r33-20261017/supplemental-input-audit.json": "8a1448106c2d0717ce90f0e6fafa3cef667c4080f0b3810ee87eb600e12ea7db"
+    },
+    "currentness_initial_red_causal_split": {
+      "valid_target_failures": 27,
+      "readonly_view_exceptions": 4,
+      "consumer_baseline_failures": 3,
+      "passed_controls": 4
+    },
+    "corrected_currentness_red_producer_split": {
+      "valid_exact_target_failures": 29,
+      "analyzer_recovery_store_guard_failures": 7,
+      "consumer_baseline_failures": 3,
+      "passed_controls": 6,
+      "independently_rechecked": false
+    },
+    "cost_target_reproduction_confirmed": false,
+    "original_native_without_metric_injection_failed": true,
+    "lookup_bridge_original_function_info_error_removed_but_collection_still_blocked": true,
+    "complete_readonly_material_baseline": 1077,
+    "supplemental_set": 108,
+    "already_guarded_pyproject": 1,
+    "missing_stage_execution_guard_count": 107,
+    "supplemental_copied_each": 106,
+    "joint_r32_still_running": true,
+    "root_intake": false,
+    "stage_repair_intake": false,
+    "current_shared_blockers": [
+      "tool/loader/header trust currentness",
+      "restored historical cost attribution",
+      "native full-signature query to physical entry lookup and collection closure",
+      "parallel_analyzer:492 full-mypy no-any-return",
+      "R32 Stage actual supplemental input guard incomplete"
+    ],
+    "prior_s01_actual_failed_deliveries": 3,
+    "prior_s01_bounded_module_accepted": true,
+    "new_producer_failed_deliveries": 0
+  },
+  "next_root_intake_performed": false,
+  "next_module_tasks": [
+    {
+      "id": "S01-INSTANCE-SEMANTICS-MIN-R23",
+      "actual_task": "/root/s01_origin_repair_r31",
+      "bridge_task_id": null,
+      "bridge_session_id": null,
+      "status": "fourth_native_delivery_independently_accepted_bounded_module_intaken_stage_r32_full_stage_validation_pending",
+      "producer_status": "completed_frozen_independently_accepted_bounded_module",
+      "artifact_available": true,
+      "independent_acceptance": true,
+      "integrated": false,
+      "joint_verification": false,
+      "consecutive_failed_actual_deliveries": 0,
+      "fourth_dispatched": true,
+      "agent_kind": "native_collaboration"
+    },
+    {
+      "id": "S08-INSTANCE-RECOVERY-MIN-R23",
+      "actual_task": null,
+      "bridge_task_id": "task_0d7256802a",
+      "bridge_session_id": "sess_d9cfbf4113",
+      "status": "isolated_codec_independently_accepted_copied_to_coordinator_stage_only",
+      "producer_status": "completed",
+      "artifact_available": true,
+      "independent_acceptance": true,
+      "integrated": false,
+      "joint_verification": false,
+      "consecutive_failed_actual_deliveries": 0,
+      "independent_acceptance_scope": "isolated MIN codec; excludes current Store/Queue/Ledger consumers, complete S08, Root intake and joint recovery",
+      "coordinator_stage_intake": true,
+      "prior_failed_actual_deliveries_before_acceptance": 2
+    },
+    {
+      "id": "ASTRA-INSTANCE-CONSUMERS-R25",
+      "actual_task": "/root/astra_design_contract_r23",
+      "bridge_task_id": null,
+      "bridge_session_id": null,
+      "status": "accepted_repaired_consumer_integrated_stage_r30_bounded1147_verified_full_mypy_four_s01_errors_no_root_intake",
+      "producer_status": "completed",
+      "artifact_available": true,
+      "independent_acceptance": true,
+      "integrated": false,
+      "joint_verification": false,
+      "consecutive_failed_actual_deliveries": 0,
+      "accepted_repair_task": "CONSUMER-EXACT-REPAIR-R29",
+      "original_delivery_independent_acceptance": false,
+      "independent_acceptance_scope": "Frozen exact consumer boundary slice only: two repaired literal authority seams, retained legacy behavior, original852 plus new38 and immutable3, compiler/type/style checks. Controlled semantics/public probes and existing native regressions do not accept current S01 factory, full native instance scan, PRE/current Validator, completeS08/U01, real-project effects or whole packages.",
+      "coordinator_stage_intake": true,
+      "prior_failed_actual_deliveries_before_acceptance": 1,
+      "coordinator_stage_intake_receipt": "artifacts/consumer-stage-intake-r30-20261017/receipt.json",
+      "stage_bounded_regression_passed": true,
+      "stage_full_quality_passed": false
+    },
+    {
+      "id": "CONSUMER-EXACT-REPAIR-R29",
+      "actual_task": "/root/consumer_exact_repair_r29",
+      "bridge_task_id": null,
+      "bridge_session_id": null,
+      "status": "accepted_repaired_consumer_integrated_stage_r30_bounded1147_verified_full_mypy_four_s01_errors_no_root_intake",
+      "producer_status": "completed",
+      "artifact_available": true,
+      "independent_acceptance": true,
+      "integrated": false,
+      "joint_verification": false,
+      "consecutive_failed_actual_deliveries": null,
+      "independent_acceptance_scope": "Frozen exact consumer boundary slice only: two repaired literal authority seams, retained legacy behavior, original852 plus new38 and immutable3, compiler/type/style checks. Controlled semantics/public probes and existing native regressions do not accept current S01 factory, full native instance scan, PRE/current Validator, completeS08/U01, real-project effects or whole packages.",
+      "coordinator_stage_intake": true,
+      "coordinator_stage_intake_receipt": "artifacts/consumer-stage-intake-r30-20261017/receipt.json",
+      "stage_bounded_regression_passed": true,
+      "stage_full_quality_passed": false
+    },
+    {
+      "id": "COORD-INSTANCE-INTEGRATION-R24",
+      "actual_task": null,
+      "bridge_task_id": null,
+      "bridge_session_id": null,
+      "status": "s01_exact_module_intaken_stage_r32_current_joint_and_full_quality_pending",
+      "producer_status": null,
+      "artifact_available": false,
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "consecutive_failed_actual_deliveries": null,
+      "store_bounds_repair_verified": true,
+      "store_bounded_acceptance": "artifacts/coordinator-current-verification-r29-20261017/store-bounded-acceptance.json",
+      "full_stage_mypy_accepted": false,
+      "fresh_mypy_remaining_error_count": 4,
+      "stage_full_quality_passed": false,
+      "bounded_stage_regression_passed": false
+    }
+  ],
+  "latest_handoff": "artifacts/coordinator-stage-repairs-r33-20261017/dispatch-receipt.json",
+  "original_bridge_owner_available": false,
+  "service_restart_forbidden": true,
+  "bridge_maintenance_request": {
+    "recorded_at": "2026-10-16T15:48:17.054775+08:00",
+    "authorized_by_human": true,
+    "direct_human_answer": "由维护会话恢复原任务公开访问",
+    "question_call_id": "call_3bdf12a351774db4acfe4f6f03f20e66",
+    "destination_thread_id": "01a1387a-0b36-750e-94ef-b034942e3017",
+    "destination_title": "定位代理路由协议故障",
+    "original_bridge_home": ".coordination/20261014/bridge-route-check",
+    "original_tasks": [
+      {
+        "task_id": "task_f702313db8",
+        "session_id": "sess_6ecde27723"
+      },
+      {
+        "task_id": "task_0d7256802a",
+        "session_id": "sess_d9cfbf4113"
+      }
+    ],
+    "official_send_attempts": [
+      {
+        "host_id": "durable",
+        "result": "invalid turn/start params: AbsolutePathBuf deserialized without a base path",
+        "accepted": false
+      },
+      {
+        "host_id": "omitted optional hostId",
+        "result": "invalid turn/start params: AbsolutePathBuf deserialized without a base path",
+        "accepted": false
+      }
+    ],
+    "current_public_check_results": {
+      "task_f702313db8": "KeyError: 'unknown task task_f702313db8'",
+      "task_0d7256802a": "KeyError: 'unknown task task_0d7256802a'"
+    },
+    "last_public_check_observed_plus08": "2026-10-16T15:45+08:00 (minute precision)",
+    "delivered": false,
+    "public_access_restored": false,
+    "coordinator_services_started_or_restarted": 0,
+    "replacement_workers_started": 0,
+    "private_routes_used": 0,
+    "scope": "Only restore original public task/session access through supported maintenance procedures, avoiding duplicate owners. Do not resume code work blocked by platform review, dispatch worker turns or touch archived S06-R02."
+  },
+  "platform_interruption": {
+    "source": "Official read_thread for current chat, previous turn01a14367-0336-7ba1-ba50-9ceb93ef01a3",
+    "observed_at": "2026-10-16T15:48:17.054775+08:00",
+    "previous_turn_status": "failed",
+    "previous_turn_ended_at": "2026-10-16T15:20:52+08:00",
+    "error": "This content was flagged for possible cybersecurity risk.",
+    "current_turn_scope": "User-authorized maintenance request and administrative preservation/model-policy sync",
+    "blocked_code_actions_retried": false,
+    "code_actions_transferred_to_other_agent": false,
+    "platform_restriction_lifted": false,
+    "worker_route_changed_to_bypass": false
+  },
+  "model_preference_update": {
+    "recorded_at": "2026-10-16T15:48:17.054775+08:00",
+    "non_ui_development_and_repairs": "ZCode glm-5.3",
+    "kimi_new_dispatch": false,
+    "ui": "Astra",
+    "evidence": "Trusted source-thread delegation conveying the human's 2026-10-16 exact preference: even particularly complex tasks first use6.1-sol, xhigh; no development continuation or blocked-action retry authorized by that preference.",
+    "simple_deterministic_work": "Verified bundled DSH 0.2.0-rc.2, deepseek/deepseek-v4.1-flash; DOC-IDENTITY-R18 accepted task_b579d5cd4e",
+    "parallel_isolated_same_agent_allowed": true,
+    "scope": "current Z-Scope project only",
+    "policy_document": "DISPATCH_POLICY.md",
+    "glm_failed_delivery_threshold": 4,
+    "track_across_task_ids": true,
+    "upgrade_model": "gpt-6.1-sol",
+    "especially_complex_model": "gpt-6.1-sol",
+    "upgrade_reasoning_effort": "xhigh",
+    "exclude_network_auth_dispatch_failures": true,
+    "no_route_change_to_bypass_platform_restrictions": true,
+    "keep_current_three_accepted_slices": true,
+    "complex_tasks_first_model": "gpt-6.1-sol",
+    "complex_tasks_reasoning_effort": "xhigh",
+    "complexity_alone_routes_to_astra": false,
+    "existing_tasks_not_redispatched": true,
+    "previous_glm_failure_counts_and_threshold_preserved": true,
+    "model_preference_is_not_permission_to_retry_platform_block": true
+  },
+  "bridge_public_access_observation": "artifacts/coordinator-s01-replacement-r31-20261017/public-preflight.json",
+  "store_bounded_acceptance": "artifacts/coordinator-current-verification-r29-20261017/store-bounded-acceptance.json",
+  "consumer_frozen_status": "artifacts/coordinator-current-verification-r29-20261017/consumer-repair-frozen-status.json",
+  "next_actions": "artifacts/coordinator-consumer-acceptance-r29-20261017/next-actions.json",
+  "latest_next_actions": "artifacts/coordinator-s01-replacement-r31-20261017/next-actions.json",
+  "latest_probe_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/probe-checkpoint.json",
+  "latest_completed_joint_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/joint-complete-checkpoint.json",
+  "current_stage_joint_running": false,
+  "current_stage_joint_validation_passed": false,
+  "latest_composite_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/composite-and-blockers-checkpoint.json",
+  "current_shared_blockers": [
+    "new ordinary native lookup receipt and exact runtime output filter need fixed regressions, implementation, separate-prefix rebuild and independent acceptance",
+    "final current-tool Stage joint including original 3829 identities and additional tests pending",
+    "Root intake and fresh Root current-version joint pending"
+  ],
+  "latest_phase2_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase2-checkpoint.json",
+  "latest_checked_at": "2026-10-17T15:54:27.615853+08:00",
+  "latest_phase3_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase3-checkpoint.json",
+  "latest_phase4_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase4-checkpoint.json",
+  "latest_phase5_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase5-checkpoint.json",
+  "current_stage_inputs": 1082,
+  "latest_phase6_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase6-checkpoint.json",
+  "latest_phase7_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase7-checkpoint.json",
+  "latest_phase8_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase8-checkpoint.json",
+  "latest_phase9_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase9-checkpoint.json",
+  "latest_phase10_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase10-checkpoint.json",
+  "latest_phase11_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase11-checkpoint.json",
+  "store_current_independent_passed": true,
+  "job_valid_red53_audited": true,
+  "latest_phase12_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase12-checkpoint.json",
+  "job_positive2_current_passed": true,
+  "job_risk_red_executed": true,
+  "latest_phase13_checkpoint": "artifacts/coordinator-stage-repairs-r33-20261017/phase13-checkpoint.json",
+  "job_risk7_causality_independently_confirmed": true,
+  "third_unfixed_external_copy_prepared": true,
+  "third_probe_actual_tests": 0
+}

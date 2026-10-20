@@ -1,0 +1,53 @@
+{
+  "synthetic_only": true,
+  "requested_file": "../unit.c",
+  "definition_file": "unit.c",
+  "plan": {
+    "schema": "zscope.entry-instances.v1",
+    "status": "planned",
+    "reasons": [],
+    "entries": 1,
+    "variant_entries": 0,
+    "planned_instances": 1,
+    "scheduled_instances": null,
+    "instances": [
+      {
+        "identity": "de26549c3d7d17085ed784db11bcf775c5a38eb8fc28541e045ad678d02ed98c",
+        "build_context_id": "bc-a",
+        "usr": "c:@F@f",
+        "source": "unit.c",
+        "definition_file": "unit.c",
+        "selected_by": "entry_file",
+        "function_names": [
+          "f"
+        ]
+      }
+    ],
+    "gaps": [],
+    "entry_records": [
+      {
+        "function_name": "f",
+        "file_path": "../unit.c",
+        "signature": "",
+        "variants": 1,
+        "instances": [
+          "de26549c3d7d17085ed784db11bcf775c5a38eb8fc28541e045ad678d02ed98c"
+        ],
+        "gaps": 0,
+        "coverage_complete": false,
+        "note": "entry_source_not_compiled"
+      }
+    ],
+    "fact_queries": 1,
+    "boundary_coverage_complete": false,
+    "scan_coverage_complete": false,
+    "scan_coverage_reasons": [
+      "entry_analysis_not_instance_scoped"
+    ],
+    "compile_database": null,
+    "notes": [
+      "Instance scheduling is boundary-level: entry analysis still consumes the file navigation projection; per-instance Analyzer/Validator scope threading is remaining S01 wiring."
+    ]
+  },
+  "source_sha256": "f849542132df50ac4ee151d81fab66d77e3f0d3b4e804694dbed7dc36a7a455b"
+}

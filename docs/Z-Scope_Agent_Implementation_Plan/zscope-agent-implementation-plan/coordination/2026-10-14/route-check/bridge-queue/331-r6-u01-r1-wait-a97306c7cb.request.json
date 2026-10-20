@@ -1,0 +1,8 @@
+{
+  "tool": "wait_task",
+  "arguments": {
+    "task_id": "task_8e1ce5c8cc",
+    "timeout_sec": 40
+  },
+  "id": "r6-u01-r1-wait-a97306c7cb"
+}

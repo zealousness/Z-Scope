@@ -1,0 +1,100 @@
+{
+  "schema_version": "zscope.agent-plan-evaluation-run.v1",
+  "record_id": "run-a3a4f3a81edd2d8b",
+  "created_at": "2026-10-14T04:59:29+00:00",
+  "label": "cold",
+  "mode": "cold",
+  "plan_id": null,
+  "variant_id": null,
+  "identity": {
+    "schema_version": "zscope.agent-plan-evaluation-identity.v1",
+    "source_tree_hash": "abababababababababababababababababababababababababababababababab",
+    "source_revision": "rev-1",
+    "project_id": "dev-fixture",
+    "entry_functions": [
+      "main"
+    ],
+    "build_context_ids": [
+      "bc-1"
+    ],
+    "scanner_identity": "git:010f402",
+    "config_hash": "cfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcf",
+    "model_manifest_hash": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+    "model_provider": "hw",
+    "model_name": "glm-5.3",
+    "tool_sha256": {
+      "clang_indexer": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+    },
+    "candidate_schema_version": "v3.5",
+    "validation_policy_version": "v3",
+    "report_schema_version": 2
+  },
+  "identity_binding": {
+    "declared_identity": {
+      "path": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/s09-record-integrity/a/identity.json",
+      "sha256": "1e21af9d0bee2e58e8fe8d79b6f0abb4aabc4271dca9f54744af26bea3136252"
+    },
+    "report_manifest": "bound",
+    "report_bound_fields": [
+      "candidate_schema_version",
+      "config_hash",
+      "entry_functions",
+      "model_manifest_hash",
+      "project_id",
+      "report_schema_version",
+      "source_tree_hash",
+      "validation_policy_version"
+    ]
+  },
+  "run_status": {
+    "status": "complete",
+    "completeness": "complete",
+    "scan_outcome": "issues_found",
+    "operator_declared": false,
+    "reason": ""
+  },
+  "counts": {
+    "source": "run_manifest_fallback",
+    "candidate_count": null,
+    "confirmed_count": 2,
+    "with_review_count": 2,
+    "pending_count": 0,
+    "ruled_out_count": null,
+    "deduplicated_alias_count": null,
+    "operational_incomplete_count": null,
+    "shadow_observation_count": null,
+    "terminal_disposition_counts": {},
+    "needs_review_sub_states": {},
+    "pending_validation_count": 0
+  },
+  "coverage": null,
+  "governance_projection": {
+    "raw_occurrence_count": 9,
+    "raw_projection_count": 6,
+    "pending_validation_count": 0
+  },
+  "resources": {
+    "wall_seconds": null,
+    "end_to_end_wall_seconds": null,
+    "report_llm_usage": {
+      "total_tokens": 230,
+      "request_count": 3
+    },
+    "usage_ledger": null
+  },
+  "projections": {},
+  "inputs": {
+    "report": {
+      "path": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/review-repro/s09-record-integrity/a/report.json",
+      "sha256": "a49316f13c51817502a17a9d5891b3db74f3f80594b2f4269acd191d2026e7c4",
+      "missing": false
+    },
+    "usage_ledger": null,
+    "projections": {},
+    "plan": null
+  },
+  "operator_note": "",
+  "benchmark_scope": "development_only",
+  "formal_eligible": false,
+  "release_eligible": false
+}

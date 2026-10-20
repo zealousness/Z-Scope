@@ -1,0 +1,17 @@
+{
+  "sourceDigest": "d78417fb96b22380f43e3611e841fa75a15f39a8b0af41057cbc6e7f230775ca",
+  "promptDigest": "18d4d16e5b6696f905e67c18a577cc3c2a45c496fd1cd1971e8a720410f77951",
+  "promptBytes": 39755,
+  "scope": "remaining binary mutate/delete liveness; previously approved four-defect scope",
+  "symbols": [
+    "_ExecutionEntry",
+    "_ExecutionAuthority",
+    "_ConfirmationEntry",
+    "_ConfirmationAuthority",
+    "dynamic_witness_proof_is_live",
+    "source_digests_hold",
+    "FakeDynamicReproductionRunner",
+    "register_dynamic_reproduction"
+  ],
+  "credentialValuesExcluded": true
+}

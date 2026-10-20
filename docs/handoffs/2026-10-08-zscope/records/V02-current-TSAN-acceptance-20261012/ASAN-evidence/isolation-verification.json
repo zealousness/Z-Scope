@@ -1,0 +1,112 @@
+{
+  "checked_utc": "2026-10-11T20:55:35.514767+00:00",
+  "uid": 1000,
+  "gid": 1000,
+  "mounts": {
+    "/": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "overlay",
+      "super_options": [
+        "rw",
+        "lowerdir=/home/zeal/.local/share/containers/storage/overlay/l/L7VIUI5Z6DF3R3J2YC3CPADR2O:/home/zeal/.local/share/containers/storage/overlay/l/L7VIUI5Z6DF3R3J2YC3CPADR2O/../diff1:/home/zeal/.local/share/containers/storage/overlay/l/VYDUKROMZNZORVKVACXDV6YNMA:/home/zeal/.local/share/containers/storage/overlay/l/GUOH3YU6EZ424CGVYPSHFTSV3G:/home/zeal/.local/share/containers/storage/overlay/l/6MGTPPOMNRBPRJXUEQSILFZ765:/home/zeal/.local/share/containers/storage/overlay/l/YT3KNF2QEIPE7Q77HBJJZJR4QN:/home/zeal/.local/share/containers/storage/overlay/l/Y6OEU7LA2NPYOWE6YCGQZ5KKNF:/home/zeal/.local/share/containers/storage/overlay/l/MYN4XNJ6DEA67EVZ7U2F2ZBOEP:/home/zeal/.local/share/containers/storage/overlay/l/RIDFKJK6LYU363NLCTI5R7UNI5:/home/zeal/.local/share/containers/storage/overlay/l/ZQDGZTFOFWNTTNXJILSIYJICX4",
+        "upperdir=/home/zeal/.local/share/containers/storage/overlay/599d67eb5bb88cb4f03d682eaa2c54c693b3e1209f69a4833117ea33f729893f/diff",
+        "workdir=/home/zeal/.local/share/containers/storage/overlay/599d67eb5bb88cb4f03d682eaa2c54c693b3e1209f69a4833117ea33f729893f/work",
+        "redirect_dir=nofollow",
+        "uuid=on",
+        "volatile",
+        "userxattr"
+      ]
+    },
+    "/repo": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/venv/lib/python3.13/site-packages": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/work": {
+      "options": [
+        "rw",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/tmp": {
+      "options": [
+        "rw",
+        "nosuid",
+        "nodev",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=524288k",
+        "uid=100000",
+        "gid=100000"
+      ]
+    }
+  },
+  "limits": {
+    "memory.max": "2147483648",
+    "pids.max": "256",
+    "cpu.max": "200000 100000"
+  },
+  "tmpfs_bytes": 536870912,
+  "network_interfaces": [
+    "lo"
+  ],
+  "ipv4_routes": [],
+  "no_new_privileges": "1",
+  "capabilities": {
+    "CapEff": "0000000000000000",
+    "CapPrm": "0000000000000000",
+    "CapBnd": "0000000000000000"
+  },
+  "seccomp": "2",
+  "uid_map": "0          1       1000\n      1000          0          1\n      1001       1001      64536",
+  "checks": {
+    "nonroot": true,
+    "readonly_root": true,
+    "readonly_inputs": true,
+    "owned_evidence_writable": true,
+    "tmpfs_512MiB": true,
+    "tmpfs_executable": true,
+    "network_none": true,
+    "no_new_privileges": true,
+    "all_capabilities_dropped": true,
+    "seccomp_filter": true,
+    "memory_2GiB": true,
+    "pids_256": true,
+    "cpu_2": true
+  },
+  "verified": true
+}

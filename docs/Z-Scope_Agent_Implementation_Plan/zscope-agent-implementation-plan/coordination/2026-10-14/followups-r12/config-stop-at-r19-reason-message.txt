@@ -1,0 +1,9 @@
+ZCode glm-5.3：继续同 config-stop-at-r18 / sess_b91680bb39，task_9565621a54 于19:56:44已交付并取得完整get_result。协调者独立4探针2过2败（19:57:50），源码/native冻结：artifacts/coordinator-stop-budget-reason-r19-probes-20261015/{review.json,results.xml,command-0.log}。原真实共享token与真实HTTP预算2项已过；追加原因优先级2项失败，整体未独验/未集成。
+
+根因：_watch发现_shared_token.is_cancelled()后总cancel(self._reason)，但is_cancelled也包括更早本地deadline或父取消，这两者并未置子token自身event；cancel遂把本来正确的deadline_exceeded/caller_cancel_requested覆盖成后来窗口理由，窗口明明还有10秒却报告已经passed。两探针原文 followups-r12/test_stop_reason_precedence_boundary.py 只读；一项真实ScanSessionRunner已有0.05s更早期限，另一项真实parent/child token及Guard检查继承取消（仅runner属性容器受控）。保留既有更早截止/父取消的原因与状态；自身stop_at确实先到时仍正确报告stop-window，不可把所有原因改成通用deadline_exceeded来过反例。
+
+仍仅七自有文件，无新扩权。先原样复现4探针留新失败收据，再修；保留原2预算HTTP正例、31消费者用例、parent/child/并发收紧/不延长/单调钟/release/异常恢复、3 cancellation旧回归及全部配置/CLI/job/HTTP/MCP/owner回归。新增本地更早期限/父先取消/自身窗口先到及reason准确性正反例。只有精确真实原因才能进入报告，不得吞异常/写假flag/替换token/放宽1.5s或1s探针边界。
+
+CLI Black门必须修：zscope/cli/cli.py 是本任务第一轮就修改过的自有源文件，已明确授权只格式化此选定文件；即使此轮没再改逻辑，也必须对累计七个修改Python完整black --check退出0。不能以漂移块更早存在为由留下已修改文件质量门失败；不格式化别的未修改文件。已知旧config capability两断言仍由协调者等接口稳定后只读迁移，旧tests与探针不改。Native replay由另一个隔离ZCode诊断基线，不扩到retrieval/native、不skip/改旧预期。
+
+失败收据不得覆盖或删除；第一轮覆盖失误与重建对照说明保留。全部script/log/JUnit在artifacts，每轮不同文件名；before/after真实SHA/退出码分开，pipefail不能被tail/tee掩盖。WSL Ubuntu zeal bash -lc /home/zeal/venv313/bin/python，经根test_slot.py两槽/default fd/ext4、不嵌套；native工具只读d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399。compileall zscope scripts test tests / mypy zscope / 累计七修改Python Black真实通过。交付最终SHA/时间/未测/失败与通过收据后停后台停写。Root、其它副本、ScanSession/store/owner/queue/UI/旧S06/工具/凭据/服务只读；无commit/push/reset/clean或审核规避。

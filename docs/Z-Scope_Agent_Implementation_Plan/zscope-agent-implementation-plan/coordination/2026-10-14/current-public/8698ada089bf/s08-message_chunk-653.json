@@ -1,0 +1,138 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:38:03.829742+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "明确"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:03.977815+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "授权对"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:04.229934+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 8 "
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:04.346973+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "个 jobs 模块"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:04.490303+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "做最小必要"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:04.588740+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "修复。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:04.766705+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "先读"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:04.899767+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "评审文件"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:05.067416+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "和产品"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:05.197216+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "报告"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:05.350429+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "存储"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:05.501704+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "格式的"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:05.659743+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "正式"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:05.813427+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "实现，"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:05.959215+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "再动手"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:06.112404+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "。"
+      }
+    }
+  ],
+  "offset": 653,
+  "count": 16,
+  "next_offset": 669,
+  "has_more": false,
+  "total_matching": 669
+}

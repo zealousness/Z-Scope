@@ -1,0 +1,7 @@
+{
+  "id": "r20-network-close-list_sessions-a053a0815f",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": false
+  }
+}

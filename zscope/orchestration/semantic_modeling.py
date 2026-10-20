@@ -64,6 +64,8 @@ class SessionSemanticResult:
     suspicious_metrics: dict[str, Any] = field(default_factory=dict)
     entry_symbols: dict[str, list[str]] = field(default_factory=dict)
     symbol_paths: dict[str, list[list[str]]] = field(default_factory=dict)
+    demand_plan: dict[str, Any] = field(default_factory=dict)
+    observation_bindings: dict[str, Any] = field(default_factory=dict)
 
     @property
     def partial(self) -> bool:
@@ -103,27 +105,45 @@ class IncrementalSemanticModeling:
         self.token = current_cancellation_token() or CancellationToken()
         self.active = 0
         self.guard = threading.Lock()
-        from .global_modeler import GlobalModelStats, modeling_profile
-        from ..semantics.defaults import default_local_pattern_semantics
+        from .global_modeler import GlobalModelStats
 
         self.stats = GlobalModelStats()
+        self.observation_mode = getattr(
+            modeler.config.analysis, "semantic_snapshot_candidate_mode", "off"
+        )
+        self.observation_receipts: dict[Any, dict[str, Any]] = {}
+        self.schema, self.spec = self._modeling_specification()
+        self.manual_rows: dict[str, Any] = {}
+        self.demand_plans: list[dict[str, Any]] = []
+
+    def _modeling_specification(self) -> tuple[dict[str, Any], str]:
+        from .global_modeler import modeling_profile
+        from ..semantics.defaults import default_local_pattern_semantics
+
         prompt = Path(__file__).parents[1] / "agents" / "semantic_modeler" / "AGENT.md"
-        cfg = modeler.config
+        cfg = self.modeler.config
         profile = modeling_profile(cfg)
         llm = cfg.llms.get(profile) or cfg.llms.get("default")
-        self.spec = digest(
+        schema = DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
+        if getattr(cfg.analysis, "semantic_snapshot_candidate_mode", "off") == "shadow":
+            from ..agents.semantic_modeler.agent import _effective_schema
+            from .snapshot_observations import conditional_snapshot_schema
+
+            schema = conditional_snapshot_schema(
+                _effective_schema(None, cfg.project.language), "shadow"
+            )
+        return schema, digest(
             {
                 "version": 2,
                 "contract_compiler": CONTRACT_COMPILER_VERSION,
                 "program_facts": "zscope.program-events.v5",
-                "schema": DEFAULT_FUNCTION_SNAPSHOT_SCHEMA,
+                "schema": schema,
                 "prompt": prompt.read_text(encoding="utf-8"),
                 "model": getattr(llm, "models", None),
                 "profile": profile,
                 "builtins": default_local_pattern_semantics().contracts.version,
             }
         )
-        self.manual_rows: dict[str, Any] = {}
 
     def _check_cancelled(self) -> None:
         if self.token:
@@ -174,6 +194,7 @@ class IncrementalSemanticModeling:
         self.stats.external_model_missing = sorted(
             k.name for k, s in graph.external_models.items() if s == "external_model_missing"
         )
+        self._plan_demand(graph)
         self._schedule(graph)
 
         # Model explicitly referenced counterpart definitions even if no entry
@@ -220,6 +241,7 @@ class IncrementalSemanticModeling:
             graph.aliases.update(extra.aliases)
             self.modeler._canonicalize_graph_edges(graph)
             self._prepare_contexts(graph)
+            self._plan_demand(graph)
             self._schedule(graph)
 
         self.stats.reachable_functions = len(graph.impls)
@@ -393,6 +415,10 @@ class IncrementalSemanticModeling:
                     if not impl:
                         continue
                     context = {**impl, "func_name": name, "file_path": impl.get("file", file)}
+                    context["project_root"] = str(self.modeler.config.project.project_root)
+                    facts_getter = getattr(self.modeler.code_index, "get_function_program_facts", None)
+                    if callable(facts_getter):
+                        context["program_facts"] = facts_getter(name, context["file_path"])
                     candidates = derive_contracts(context, registry)
                     if any(
                         c["role"] in RELEASE_ROLES
@@ -464,6 +490,21 @@ class IncrementalSemanticModeling:
             local_semantics=effective,
             overlay=overlay,
         )
+        if self.demand_plans:
+            result.demand_plan = {
+                "mode": "shadow",
+                "changes_execution": False,
+                "passes": copy.deepcopy(self.demand_plans),
+                "actual_execution": {
+                    "modeled_functions": self.stats.modeled_functions,
+                    "cache_hit_functions": self.stats.cache_hit_functions,
+                    "deterministic_snapshot_count": self.stats.deterministic_snapshot_count,
+                    "llm_snapshot_count": self.stats.llm_snapshot_count,
+                    "modeling_tasks": copy.deepcopy(self.stats.modeling_tasks),
+                    "reported_context_tokens": self.stats.total_context_tokens,
+                    "usage_authority": "existing_accounting_only",
+                },
+            }
         for key, snapshot in self.snapshots.items():
             identity = self._identity(key).key
             result.snapshots[identity] = snapshot
@@ -473,6 +514,27 @@ class IncrementalSemanticModeling:
             result.symbol_paths[identity] = [
                 [self._identity(node).key for node in path] for path in paths
             ]
+            if (
+                self.observation_mode == "shadow"
+                and self.records.get(key, {}).get("inputs", {}).get("spec") == self.spec
+                and key in self.observation_receipts
+            ):
+                from .snapshot_observations import bind_snapshot_observation
+
+                receipt = self.observation_receipts[key]
+                receipt["published"] = True
+                binding = bind_snapshot_observation(
+                    snapshot,
+                    symbol=identity,
+                    modeling_spec=self.spec,
+                    source_context=self.contexts[key],
+                    contract_version=result.contract_version,
+                    project_root=self.modeler.config.project.project_root,
+                    current_inputs=receipt["current"],
+                    expected_inputs=receipt["expected"],
+                )
+                if binding is not None:
+                    result.observation_bindings[identity] = binding
         result.suspicious_metrics = {
             "enabled": False,
             "policy_version": SNAPSHOT_CANDIDATE_POLICY_VERSION,
@@ -484,6 +546,18 @@ class IncrementalSemanticModeling:
         }
         from ..semantics.contracts import semantic_model_unit_uid
 
+        from ..semantics.resource_coverage import inference_coverage
+
+        resource_coverage = inference_coverage(
+            {self._identity(key).key: value for key, value in self.contexts.items()},
+            result.snapshots,
+            effective.contracts,
+            scheduled=[self._identity(key).key for key in graph.impls],
+        )
+        self.stats.resource_inference_coverage = {
+            key: value for key, value in resource_coverage.items() if key not in {"interfaces", "calls"}
+        }
+
         audit = {
             "schema_version": CONTRACT_COMPILER_VERSION,
             "contract_version": result.contract_version,
@@ -492,6 +566,7 @@ class IncrementalSemanticModeling:
             "workbook": str(self.modeler.user_config.workbook.path),
             "api_contracts": overlay.get("api_contracts", []),
             "api_pairs": overlay.get("api_pairs", []),
+            "resource_inference_coverage": resource_coverage,
             "failed_models": [
                 failure
                 for key in graph.impls
@@ -502,9 +577,9 @@ class IncrementalSemanticModeling:
                 )
             ],
             "call_sites": [
-                event
-                for context in self.contexts.values()
-                for event in effective.contracts.trace_calls(context)
+                {key: value for key, value in event.items() if key != "coverage_reason"}
+                for event in resource_coverage["calls"]
+                if "call_ordinal" in event
             ],
             "snapshots": [
                 {
@@ -523,11 +598,67 @@ class IncrementalSemanticModeling:
             status: sum(e["applicability"] == status for e in audit["call_sites"])
             for status in ("applies", "does_not_apply", "unknown")
         }
+        if result.demand_plan:
+            audit["demand_plan"] = result.demand_plan
         try:
             self.store._write_json_atomic(self.cache_dir / "publication.json", audit)
         except OSError as exc:
             self.stats.partial_reasons.append(f"semantic_audit_export:{type(exc).__name__}")
         return result
+
+    def _plan_demand(self, graph: "_Graph") -> None:
+        if getattr(self.modeler.config.analysis, "semantic_model_demand_mode", "off") != "shadow":
+            return
+        try:
+            from .semantic_demand import plan_semantic_demand
+            from ..semantics.defaults import default_local_pattern_semantics
+
+            registry = default_local_pattern_semantics().contracts
+            registry.shadowed_symbols.update(k.name for k in graph.impls if registry.find(k.name))
+            for rows in self.manual_rows.values():
+                for row in rows:
+                    contract = ApiContract.from_row(row)
+                    if contract:
+                        registry.add(contract)
+            _, components = self.modeler._strongly_connected_components(graph)
+            contexts = {
+                self._identity(key).key: {
+                    **context,
+                    "source_truncated": bool(graph.impls.get(key, {}).get("truncated")),
+                }
+                for key, context in self.contexts.items()
+            }
+            plan = plan_semantic_demand(
+                contexts=contexts,
+                children={
+                    self._identity(key).key: {self._identity(child).key for child in children}
+                    for key, children in graph.children.items()
+                },
+                components=[[self._identity(key).key for key in members] for members in components],
+                registry=registry,
+                spec=self.spec,
+                hints=self.modeler.demand_hints,
+                security_map=self.modeler.demand_security_map,
+                audit_units=self.modeler.demand_audit_units,
+                unavailable=[
+                    self._identity(key).key
+                    for key in sorted(set(graph.impls) | graph.unresolved)
+                    if key not in self.contexts
+                ],
+                graph_truncated=bool(graph.depth_capped_edges or graph.breadth_capped_edges),
+            )
+        except CancellationError:
+            raise
+        except Exception as exc:
+            # An advisory audit failure cannot alter production scheduling or
+            # silently authorize a narrower scope. Record no coverage claim.
+            plan = {
+                "mode": "shadow",
+                "changes_execution": False,
+                "status": "unavailable",
+                "reason": type(exc).__name__,
+            }
+        self.demand_plans.append(plan)
 
     def _identity(self, key: Any) -> SymbolIdentity:
         return SymbolIdentity.from_value(
@@ -535,6 +666,7 @@ class IncrementalSemanticModeling:
                 "name": key.name,
                 "file_path": key.file_path,
                 "signature": key.signature,
+                "build_context_id": self.contexts.get(key, {}).get("build_context_id", ""),
                 "symbol_type": (
                     "macro" if self.contexts.get(key, {}).get("is_macro") else "function"
                 ),
@@ -577,9 +709,16 @@ class IncrementalSemanticModeling:
                         include_context=False,
                     )
                 self.contexts[key] = context
+                context["project_root"] = str(self.modeler.config.project.project_root)
                 getter = getattr(self.modeler.code_index, "get_function_program_facts", None)
                 if callable(getter) and not context.get("is_macro"):
                     context["program_facts"] = getter(key.name, context["file_path"])
+                    from ..semantics.build_scope import context_build_id, source_scope_problem
+
+                    context["build_context_id"] = context_build_id(context)
+                    problem = source_scope_problem(context)
+                    if problem:
+                        self.stats.partial_reasons.append(f"{key.name}:{problem}")
                 unresolved = []
                 classifier = getattr(self.modeler.code_index, "call_model_status", None)
                 for target in context.get("unresolved_callees", []):
@@ -674,7 +813,7 @@ class IncrementalSemanticModeling:
         return digest(content)
 
     def _load_record(self, key: Any) -> None:
-        record = self._read_json(self.cache_dir / (digest(self._identity(key).key) + ".json"))
+        record = self._read_json(self._cache_record_path(key))
         self.records[key] = record
         snapshot = self.store.load_snapshot(str(record.get("index_name") or "")) if record else None
         if (
@@ -689,6 +828,16 @@ class IncrementalSemanticModeling:
             self.outputs[key] = str(record.get("output_hash") or "unknown")
         else:
             self.outputs[key] = "unknown"
+
+    def _cache_record_path(self, key: Any) -> Path:
+        # This is the last semantic input/result for a navigation symbol, not
+        # a proof identity. Exact compilation inputs remain in the record;
+        # changing variants may evict this slot but cannot authorize reuse.
+        # Evidence, publication and failure records retain full BuildContext.
+        from dataclasses import replace
+
+        symbol = replace(self._identity(key), build_context_id="")
+        return self.cache_dir / (digest(symbol.key) + ".json")
 
     def _schedule(self, graph: "_Graph") -> None:
         component_for, components = self.modeler._strongly_connected_components(graph)
@@ -868,9 +1017,20 @@ class IncrementalSemanticModeling:
             "manual": digest(manual_fingerprint),
             "spec": self.spec,
         }
+        if self.observation_mode == "shadow":
+            inputs["observation_schema"] = digest(self.schema)
         cached = self.records.get(key) or {}
         cached_snapshot = cached.get("cached_snapshot")
-        if cached_snapshot is not None and cached.get("inputs") == inputs:
+        changed_contract_receipt = bool(
+            cached_snapshot
+            and cached_snapshot.get("interface_contracts")
+            and cached.get("build_context_id", "") != context.get("build_context_id", "")
+        )
+        if (
+            cached_snapshot is not None
+            and cached.get("inputs") == inputs
+            and not changed_contract_receipt
+        ):
             from .modeling_coordinator import scan_coordinator
 
             scan_coordinator(str(self.store.snapshot_dir), self.store).record_cache_hit()
@@ -914,7 +1074,7 @@ class IncrementalSemanticModeling:
                 for part in ("spec", "code", "compilation", "dependencies", "manual", "callees")
                 if cached.get("inputs", {}).get(part) != inputs[part]
             ),
-            "missing_or_invalid_snapshot",
+            "build_receipt" if changed_contract_receipt else "missing_or_invalid_snapshot",
         )
         with self.guard:
             self.stats.rebuild_reasons[self._identity(key).key] = reason
@@ -974,6 +1134,7 @@ class IncrementalSemanticModeling:
         from ..semantics.defaults import default_local_pattern_semantics
 
         registry = default_local_pattern_semantics().contracts
+        registry = registry.for_context(context)
         registry.shadowed_symbols.update(k.name for k in graph.impls if registry.find(k.name))
         for sheet in self.manual_rows.values():
             for row in sheet:
@@ -1033,6 +1194,22 @@ class IncrementalSemanticModeling:
             and c.symbol.name not in registry.shadowed_symbols
         ]
         self.modeler.attach_contract(context, "semantic_modeler")
+        if self.observation_mode == "shadow":
+            from ..agents.semantic_modeler.agent import _effective_schema
+            from .snapshot_observations import conditional_snapshot_schema
+
+            context["schema"] = conditional_snapshot_schema(
+                _effective_schema(context.get("schema"), self.modeler.config.project.language),
+                "shadow",
+            )
+            inputs["observation_schema"] = digest(context["schema"])
+            # Custom schemas cannot be re-derived without invoking an arbitrary
+            # attachment hook. They are never re-authorized as current, and the
+            # changed input prevents reuse as a default-schema observation.
+            if inputs["observation_schema"] == digest(self.schema):
+                receipt = self._observation_receipt(key, graph, inputs)
+                if receipt is not None:
+                    self.observation_receipts[key] = receipt
         response = run_semantic_model_with_retries(
             self.modeler.semantic_agent_factory,
             context,
@@ -1044,6 +1221,10 @@ class IncrementalSemanticModeling:
         )
         self._check_cancelled()
         metadata = response.metadata or {}
+        if metadata.get("semantic_task_reused"):
+            # A shared result preserves the modeling contract, but this engine
+            # does not own the other execution's observation input receipt.
+            self.observation_receipts.pop(key, None)
         from ..semantics.contracts import semantic_model_unit_uid
 
         try:
@@ -1117,10 +1298,114 @@ class IncrementalSemanticModeling:
         }
         return snapshot, record, "llm"
 
+    def _observation_receipt(
+        self, key: Any, graph: "_Graph", inputs: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Capture before execution; persisted snapshots cannot restore this guard."""
+        from .snapshot_observations import observation_project_inputs
+        from .global_modeler import modeling_profile
+
+        expected_record = copy.deepcopy(inputs)
+        receipt: dict[str, Any] = {"published": False}
+
+        def current() -> str | None:
+            cfg = self.modeler.config
+            if getattr(cfg.analysis, "semantic_snapshot_candidate_mode", "off") != "shadow":
+                return None
+            if cfg.project.compile_commands_path:
+                # The source-only observation guard does not resolve compiler
+                # response/preinclude/sysroot inputs, including custom DB names.
+                return None
+            if receipt["published"] and self.records.get(key, {}).get("inputs") != expected_record:
+                return None
+            try:
+                from ..config.user_config_workbook import UserConfigWorkbook
+
+                schema, spec = self._modeling_specification()
+                if spec != self.spec or digest(schema) != expected_record.get("observation_schema"):
+                    return None
+                required = [
+                    value
+                    for value in (
+                        self.contexts[key].get("file_path"),
+                        cfg.project.compile_commands_path,
+                        cfg.project.user_config_file,
+                        *cfg.project.include_paths,
+                    )
+                    if value
+                ]
+                inventory = observation_project_inputs(
+                    cfg.project.project_root,
+                    excluded=(
+                        self.store.snapshot_dir,
+                        self.cache_dir,
+                        self.modeler.user_config.workbook.path,
+                        *cfg.project.exclude_paths,
+                    ),
+                    required_paths=required,
+                )
+                if inventory is None:
+                    return None
+                profile = modeling_profile(cfg)
+                llm = cfg.llms.get(profile) or cfg.llms.get("default")
+                current_manual = {
+                    sheet: [
+                        row
+                        for row in rows
+                        if not str(row.get("source") or "").startswith("inferred")
+                    ]
+                    for sheet, rows in UserConfigWorkbook(self.modeler.user_config.workbook.path)
+                    .read_rows()
+                    .items()
+                }
+                if current_manual != self.manual_rows:
+                    return None
+                return digest(
+                    {
+                        "spec": spec,
+                        "schema": schema,
+                        "inventory": inventory,
+                        "inputs": expected_record,
+                        "context": self.contexts.get(key),
+                        "manual": current_manual,
+                        "callees": {
+                            self._identity(child).key: self.outputs.get(child, "unknown")
+                            for child in graph.children.get(key, set())
+                            if child in graph.impls
+                        },
+                        "model": {
+                            name: getattr(llm, name, None)
+                            for name in (
+                                "models",
+                                "base_urls",
+                                "max_tokens",
+                                "supports_structured_output",
+                            )
+                        },
+                        "project": {
+                            "id": cfg.project.project_id,
+                            "language": cfg.project.language,
+                            "root": str(cfg.project.project_root),
+                            "source_root": str(cfg.project.source_root),
+                            "excluded_paths": [str(path) for path in cfg.project.exclude_paths],
+                            "required_paths": [str(path) for path in required],
+                        },
+                    }
+                )
+            except (OSError, TypeError, ValueError):
+                return None
+
+        expected = current()
+        if expected is None:
+            return None
+        receipt.update(current=current, expected=expected)
+        return receipt
+
     def _commit(
         self, key: Any, snapshot: dict[str, Any], record: dict[str, Any], status: str
     ) -> None:
         old = self.records.get(key) or {}
+        record["build_context_id"] = self.contexts[key].get("build_context_id", "")
         record["snapshot_content_hash"] = self._snapshot_content_hash(snapshot)
         (self.cache_dir / (digest(self._identity(key).key) + ".failure.json")).unlink(
             missing_ok=True
@@ -1143,7 +1428,7 @@ class IncrementalSemanticModeling:
             )
         if snapshot_changed or old.get("snapshot_content_hash") != record["snapshot_content_hash"]:
             self.store._write_json_atomic(
-                self.cache_dir / (digest(self._identity(key).key) + ".json"),
+                self._cache_record_path(key),
                 {k: v for k, v in record.items() if k != "cached_snapshot"},
             )
         self.records[key] = {**record, "cached_snapshot": snapshot}
@@ -1162,7 +1447,7 @@ class IncrementalSemanticModeling:
         self.records[key] = {}
         try:
             self.store._write_json_atomic(
-                self.cache_dir / (digest(self._identity(key).key) + ".json"), {}
+                self._cache_record_path(key), {}
             )
         except OSError:
             logger.warning("Unable to invalidate semantic cache for %s", key)
@@ -1196,6 +1481,7 @@ class IncrementalSemanticModeling:
         from .snapshot_candidates import _source_lines
 
         result = copy.deepcopy(snapshot)
+        result["build_context_id"] = context.get("build_context_id", "")
 
         def indexed_tokens(value: dict[str, Any]) -> tuple[list[str], list[int]]:
             tokens, numbers = [], []

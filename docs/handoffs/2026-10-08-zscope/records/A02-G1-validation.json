@@ -1,0 +1,195 @@
+{
+  "task": "A02",
+  "date": "2026-10-08",
+  "scope": "passive_offline_import_only",
+  "task_status": "deferred",
+  "implementation_status": "complete_offline_subset",
+  "verification_status": "passed_g1_awaiting_root_g2",
+  "python": "/home/zeal/venv313/bin/python",
+  "python_version": "3.13.15",
+  "platform": "WSL Ubuntu",
+  "passed": 124,
+  "failed": 0,
+  "skipped": 0,
+  "new_test_count": 73,
+  "not_run": [
+    "real_external_scan",
+    "vendor_version_license_eligibility_auth_verification",
+    "external_scan_cost_time_and_independent_tp_metrics",
+    "full_repository_compileall_mypy",
+    "agent_docs_pending_shared_document_freeze"
+  ],
+  "earlier_results": [
+    {
+      "run": 1,
+      "passed": 61,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": 2,
+      "passed": 69,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "check": "first_scoped_mypy",
+      "exit_code": 1,
+      "reason": "single-element tuple inference; fixed explicit tuple[ExternalRun, ...] annotation"
+    }
+  ],
+  "input_before": {
+    "tests/test_active_discovery.py": "2e3448432f40299ae8db6df1d35dcb130226f52b23b64aa1d0d53750b941d817",
+    "tests/test_candidate_decision_context.py": "f1e8546fd9292dbb777cbebe7a9eab731ad8b9856edb3cb69cb8b7ded756f142",
+    "tests/test_candidate_ledger.py": "da166f0930f103b073dad681620ead2517034cb0d4dd32bb15d093c209eb0a15",
+    "tests/test_external_findings_import.py": "a03abfa23c8135882f9095a24aa32183d818df3ccee9940ddd0fb7992c7a57f2",
+    "tests/test_finding_attribution_contract.py": "f000b2f07197f444d0ffb58396d5230c7ae240d4e54b1e52f70ac312e060b985",
+    "tests/test_source_search.py": "b1d89d236ec1ebcc2fae2285ed45428d83048b74043b19d117ca4ac95606471a",
+    "zscope/core/candidates/decision_facts.py": "e5fc52777d22516ad50c87d10e32e8d8a7c8c9b80060d391862e8260144e5ad9",
+    "zscope/core/candidates/evidence_models.py": "a0bc898e1dae1c80fc6758205427aaae24f08c01a4011e28e2c85c3d00cc0d6b",
+    "zscope/core/validation/proofs.py": "76e6d0381583362148f06b04e2bc00b4d5ce7dd7690f71c41fba02b6fb961ba4",
+    "zscope/orchestration/candidate_envelope.py": "bd300ae20897ef0e2170e7fe95d59d83e3a3d795beadc74cb4c7af9026b621a9",
+    "zscope/orchestration/candidates.py": "d9ba071869880fe8d67ffe2adb1ac1efce4b11399c2112a9dd6e8322d729a816",
+    "zscope/orchestration/external_findings.py": "c4b9083aed15fc1a1bcb807eeecd7ed7ffcb9b680d98933417f8b157f28fafac",
+    "zscope/reporting/attribution.py": "56ced8ebe557f4ce45559c0b692afac306e88188f8cb2bb6cb86d8c9251b1a94",
+    "zscope/reporting/immutable_evidence.py": "6b2d0d32b129c58d8413cd9535e0ec8f3115884627ab56348b43bec8f201ceb1",
+    "zscope/tools/source_access.py": "8325cfc6263d1a20a5806110e20861798ca86f57a6f638722e66aebf356af8f8",
+    "zscope/tools/symbols.py": "077574489bbbc7a4f67bcc586e8968e3aad44483ace36a0dfce58c624dd5765a"
+  },
+  "input_after": {
+    "tests/test_active_discovery.py": "2e3448432f40299ae8db6df1d35dcb130226f52b23b64aa1d0d53750b941d817",
+    "tests/test_candidate_decision_context.py": "f1e8546fd9292dbb777cbebe7a9eab731ad8b9856edb3cb69cb8b7ded756f142",
+    "tests/test_candidate_ledger.py": "da166f0930f103b073dad681620ead2517034cb0d4dd32bb15d093c209eb0a15",
+    "tests/test_external_findings_import.py": "a03abfa23c8135882f9095a24aa32183d818df3ccee9940ddd0fb7992c7a57f2",
+    "tests/test_finding_attribution_contract.py": "f000b2f07197f444d0ffb58396d5230c7ae240d4e54b1e52f70ac312e060b985",
+    "tests/test_source_search.py": "b1d89d236ec1ebcc2fae2285ed45428d83048b74043b19d117ca4ac95606471a",
+    "zscope/core/candidates/decision_facts.py": "e5fc52777d22516ad50c87d10e32e8d8a7c8c9b80060d391862e8260144e5ad9",
+    "zscope/core/candidates/evidence_models.py": "a0bc898e1dae1c80fc6758205427aaae24f08c01a4011e28e2c85c3d00cc0d6b",
+    "zscope/core/validation/proofs.py": "76e6d0381583362148f06b04e2bc00b4d5ce7dd7690f71c41fba02b6fb961ba4",
+    "zscope/orchestration/candidate_envelope.py": "bd300ae20897ef0e2170e7fe95d59d83e3a3d795beadc74cb4c7af9026b621a9",
+    "zscope/orchestration/candidates.py": "d9ba071869880fe8d67ffe2adb1ac1efce4b11399c2112a9dd6e8322d729a816",
+    "zscope/orchestration/external_findings.py": "c4b9083aed15fc1a1bcb807eeecd7ed7ffcb9b680d98933417f8b157f28fafac",
+    "zscope/reporting/attribution.py": "56ced8ebe557f4ce45559c0b692afac306e88188f8cb2bb6cb86d8c9251b1a94",
+    "zscope/reporting/immutable_evidence.py": "6b2d0d32b129c58d8413cd9535e0ec8f3115884627ab56348b43bec8f201ceb1",
+    "zscope/tools/source_access.py": "8325cfc6263d1a20a5806110e20861798ca86f57a6f638722e66aebf356af8f8",
+    "zscope/tools/symbols.py": "077574489bbbc7a4f67bcc586e8968e3aad44483ace36a0dfce58c624dd5765a"
+  },
+  "commands": [
+    {
+      "argv": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_external_findings_import.py",
+        "tests/test_candidate_ledger.py",
+        "tests/test_candidate_decision_context.py",
+        "tests/test_finding_attribution_contract.py",
+        "tests/test_source_search.py",
+        "tests/test_active_discovery.py::test_shared_registrar_strips_spoofed_confirmed_status",
+        "tests/test_active_discovery.py::test_shared_registrar_rejects_unversioned_or_wrong_explicit_attribution",
+        "tests/test_active_discovery.py::test_shared_registrar_merges_discovery_attribution_as_sets",
+        "--basetemp=/tmp/zscope-parallel-20261008/A02/run-3",
+        "-o",
+        "cache_dir=/tmp/zscope-parallel-20261008/A02/cache-3",
+        "--junitxml=/tmp/zscope-parallel-20261008/A02/run-3-record/pytest.xml"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 8.290054911980405
+    },
+    {
+      "argv": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "mypy",
+        "--cache-dir",
+        "/tmp/zscope-parallel-20261008/A02/mypy-cache",
+        "zscope/orchestration/external_findings.py"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 2.7760681100189686
+    },
+    {
+      "argv": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "compileall",
+        "-f",
+        "-q",
+        "zscope/orchestration/external_findings.py",
+        "tests/test_external_findings_import.py"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.06859292602166533
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--no-index",
+        "--check",
+        "/dev/null",
+        "zscope/orchestration/external_findings.py"
+      ],
+      "exit_code": 1,
+      "wall_seconds": 0.06147193582728505
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--no-index",
+        "--check",
+        "/dev/null",
+        "tests/test_external_findings_import.py"
+      ],
+      "exit_code": 1,
+      "wall_seconds": 0.035007086116820574
+    },
+    {
+      "argv": [
+        "git",
+        "-c",
+        "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
+        "diff",
+        "--no-index",
+        "--check",
+        "/dev/null",
+        "zscope/orchestration/external_findings.py"
+      ],
+      "exit_code": 1,
+      "diagnostic_lines": 0
+    },
+    {
+      "argv": [
+        "git",
+        "-c",
+        "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
+        "diff",
+        "--no-index",
+        "--check",
+        "/dev/null",
+        "tests/test_external_findings_import.py"
+      ],
+      "exit_code": 1,
+      "diagnostic_lines": 0
+    }
+  ],
+  "quality": {
+    "zscope/orchestration/external_findings.py": {
+      "sha256": "c4b9083aed15fc1a1bcb807eeecd7ed7ffcb9b680d98933417f8b157f28fafac",
+      "whitespace_utf8_lf": "passed"
+    },
+    "tests/test_external_findings_import.py": {
+      "sha256": "a03abfa23c8135882f9095a24aa32183d818df3ccee9940ddd0fb7992c7a57f2",
+      "whitespace_utf8_lf": "passed"
+    }
+  },
+  "raw_repository_git_diff_check": {
+    "exit_code": 2,
+    "diagnostic": "Existing CRLF differences across unrelated files; root G0 already established this condition. No line-ending rewrites.",
+    "full_log": "/tmp/zscope-parallel-20261008/A02/run-3-record/quality-summary.json"
+  },
+  "junit": "/tmp/zscope-parallel-20261008/A02/run-3-record/pytest.xml",
+  "input_stable": true
+}

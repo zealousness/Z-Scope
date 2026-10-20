@@ -1,0 +1,14 @@
+{
+  "tool": "dispatch_task",
+  "id": "doc-audit-native",
+  "arguments": {
+    "agent": "dsh",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "简单计划文档链接与编号核对（仅审计）",
+    "user_requested": true,
+    "request_id": "975e47bf-635d-4c5b-8abe-1b0f80fcc68a",
+    "message": "本次只用已获用户授权并独立ACP连通验明的 bundled 0.2.0-rc.2 deepseek/deepseek-v4.1-flash，禁止换模型/路由/凭据。原 DOC-AUDIT 因旧入口模型不匹配在提示前停止，本次新进程仅执行以下真正简单的审计。所有工具只读或写本隔离结果；出现权限/内容拒绝即停，不重试绕过。\n你仅处理非常简单的DOC-AUDIT，隔离目录 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\doc-audit。只读计划11/16/21/22及相关README，检查本地Markdown链接/锚点、任务ID/验收ID相互引用，指出旧待办被21更新覆盖的具体段落。仅输出本隔离目录DELIVERY.md和doc_audit/results.json；不修改产品/测试/正式文档，不开发UI或后端，不运行扫描。UTF8无BOM/LF。不要把部分切片或历史重复测试数当全部完成。对caller-wake占用只记录、不提出实施或补丁。无需浏览或外部研究；每条审计给文件/行号/观察结果，不虚构验收。"
+  },
+  "branch": "DOC-AUDIT"
+}

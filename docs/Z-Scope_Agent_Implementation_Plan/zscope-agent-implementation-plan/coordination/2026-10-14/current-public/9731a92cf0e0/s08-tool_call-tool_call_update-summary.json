@@ -1,0 +1,52 @@
+{
+  "session_id": "sess_4b386346c6",
+  "kinds": "tool_call,tool_call_update",
+  "start_offset": 1274,
+  "next_offset": 3762,
+  "pages": 55,
+  "total_matching": 3762,
+  "has_more": false,
+  "events_read": 2488,
+  "latest_at": "2026-10-14T05:33:25.175423+00:00",
+  "failed_tools": [
+    {
+      "ts": "2026-10-14T05:32:55.982297+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Write_47",
+        "status": "failed",
+        "output": "Invalid args for tool \"Write\": must have required property 'path'"
+      }
+    }
+  ],
+  "completed_tail": [
+    {
+      "ts": "2026-10-14T05:16:13.369096+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_45",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:26:18.197635+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:TodoList_46",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:32:56.078559+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_48",
+        "status": "completed"
+      }
+    }
+  ]
+}

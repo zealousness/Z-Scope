@@ -1,0 +1,31 @@
+{
+  "at": "2026-10-14T10:16:55.907153+00:00",
+  "branch": "s01-coverage",
+  "independent_junit": "s01-coverage-fixed-independent.xml",
+  "tests": [
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "54",
+      "time": "42.348",
+      "timestamp": "2026-10-14T18:09:45.503510+08:00",
+      "hostname": "Cindala"
+    }
+  ],
+  "baseline_inputs_unchanged": 965,
+  "files": [
+    {
+      "path": "zscope/orchestration/entry_instance_coverage.py",
+      "sha256": "e7f5c2b2c439ec455186f4eca708be4efda8e71e70ded5017dfb25fa8d71fd94",
+      "old_sha256": null
+    },
+    {
+      "path": "tests/test_entry_instance_coverage.py",
+      "sha256": "076c5486f330516b534e5c8e7b6016421973e87da4d0a3b71cf95df125b8da75",
+      "old_sha256": null
+    }
+  ],
+  "scope": "accepted backend slice; not whole package"
+}

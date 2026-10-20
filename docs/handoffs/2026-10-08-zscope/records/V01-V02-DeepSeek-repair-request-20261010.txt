@@ -1,0 +1,33 @@
+继续原 DeepSeek 会话 bc51fb3a-c9e7-445e-b6e3-855461b3179c（preset=standard），在 C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope 修复本次独立验收发现的普通证据快照/证明有效性问题。沿用既有项目规则与原会话，不新建或伪装会话身份。
+
+先阅读 docs/handoffs/2026-10-08-zscope/records/V01-V02-independent-reacceptance-20261010.md，以及同目录 test_v01_v02_independent_drift.py、V01-V02-independent-acceptance-20261010-ag7xwe18.json 与 new-file-drift 的完整 JUnit/日志。1711 项普通检查已通过；新增四项失败不是旧 R01–R09 失败，也不是未经运行的静态猜测。
+
+四个实际失败：
+1) test_drift_between_last_execution_and_registration_never_confirms[mutate]
+2) 同节点 [delete]
+最后执行与两次 replay 后、登记前修改/删除自有临时源码。register_dynamic_reproduction 后，预期 deterministic_decision_proof(issue, outcome="confirm") is None；实际仍返回 DecisionProof(outcome='confirm', proof_kind='dynamic_witness_candidate_match', ...)。
+3) test_binary_drift_after_registration_revokes_confirmation[mutate]
+4) 同节点 [delete]
+先登记并断言 valid control 可 confirm，再修改/删除 fake 二进制。相同 no-confirm 断言失败。
+这些用例完全 fake，只通过测试专用 production promotion hook 满足信任前置条件；fake binary 从未启动。不得把测试改成真实 exploit、绕过策略或关闭 production 信任门。
+
+代码主要范围 zscope/core/validation/dynamic_reproduction.py：
+1434–1456 frozen_source_digests：登记时重新获取当前摘要；1446 不含 binary；1451–1455 略过缺失/不可读输入。
+1473–1508 dynamic_witness_proof_is_live：1497 空列表跳过文件核验，最终不重读 binary。
+3538–3575 register_dynamic_reproduction：3560 冻结的是登记时文件，未核对执行时接受快照。
+
+必须达到：
+- 收据/执行 authority 绑定执行时已经接受的 candidate source、harness、全部声明 input 的内容快照；不得用登记时新内容替代旧执行快照。
+- 登记前重新核对该接受快照：内容变化、缺失、不可读，均不得授予 confirm。可以明确拒绝或保留未决，但不得将摘要略过造成空列表成功。
+- 绑定批准的 binary_path 和实际接受的 binary_digest（包含 build 后产物）；最终 proof 使用/统一裁决时，二进制变化、删除、不可读均使旧 confirm 失效。不能只信 issue 映射或 receipt 字符串。
+- 保留已实现生产信任门、exact object/完整候选身份、TTL、receipt/replay 逐轮身份/对象/站点/缺陷族匹配、共享预算、取消/进程组清理、scoped cleanup、shadow mode、真实 build 后摘要支持和默认禁用行为。
+- 保留 Ledger/rules/range/truth 与用户缓存、借用客户端；不要自动安装、更新工具、发布、修改权限或删除旧验收记录。
+- 在核心测试中加入有 valid control 的上述四个边界。若登记接口选择明确异常拒绝，测试应断言拒绝且未生成 proof；不能只吞异常或减弱为“未崩溃”。
+- 仅同步确有必要的模块/architecture 文档，纠正 V4 仍被描述为纯预留的差异，如最终行为涉及该文档。
+
+允许的工作：普通证据生命周期实现、对应纯 fake/负向回归、普通兼容/质量检查及必要文档。沿用项目批准的 Linux/WSL 执行方式和正式审批；任何明确访问/策略拒绝都停止该操作并保存原始错误，不换入口、改 ACL/权限、伪装请求或降低隔离。
+
+本轮不执行 tests/test_dynamic_reproduction_execution.py，不执行真实 ASAN/TSAN 缺陷样例或 runtime 探针、不启动容器、不处理资源耗尽 fixture。真实样例的具体隔离方案由独立验收端审核后另行安排。历史 cybersecurity flag 的具体操作仍不明，不能把绕过该策略作为目标。
+
+完成后保存新的、不可覆盖旧记录的作者结果：精确命令、cwd、非凭据环境、退出码、JUnit/日志、输入摘要、实际修改文件，以及仍 blocked/not_run 的项。至少重跑新增四边界、126 动态单测、25 原负例、16 R01–R09、普通集成和相同 1543 节点兼容范围；使用现有 clang 18 PATH 避免将 34 个节点静默跳过；compileall/mypy 也需通过。不要以作者自验宣称独立放行；完成后等待独立复验。
+

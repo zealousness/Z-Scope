@@ -1,0 +1,28 @@
+{
+  "at": "2026-10-14T08:56:40.673046+00:00",
+  "public_snapshot": "current-public\\c725deddeaf7",
+  "branches": [
+    {
+      "label": "s01-cdb-coverage",
+      "prior_task": "task_6dceb47315",
+      "prior_status": "failed",
+      "reason": "bridge_restarted",
+      "session_id": "sess_c3c6c01381",
+      "input_files_unchanged": 965,
+      "owned_new_files_absent": true,
+      "permission_complete_no_recorded_denial": true,
+      "request_id": "1bcef089-cbed-4541-9f0d-b359cb3ebe00"
+    },
+    {
+      "label": "s08-fair-queue",
+      "prior_task": "task_d3ceded741",
+      "prior_status": "failed",
+      "reason": "bridge_restarted",
+      "session_id": "sess_a3dc643fae",
+      "input_files_unchanged": 965,
+      "owned_new_files_absent": true,
+      "permission_complete_no_recorded_denial": true,
+      "request_id": "0a5cd37b-f323-496c-aebd-91b5e12ff658"
+    }
+  ]
+}

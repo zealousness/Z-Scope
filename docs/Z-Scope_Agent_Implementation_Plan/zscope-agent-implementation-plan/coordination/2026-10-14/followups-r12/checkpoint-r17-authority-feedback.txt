@@ -1,0 +1,15 @@
+继续原 Kimi K3 会话和原 scan-checkpoint-r17 六文件独占范围。task_c0099a15bb 实际15:23:04开始、15:47:57结束，观察模型正确，DELIVERY停写且producer WSL进程空。协调者保留初始60/1失败及最终119/0、原四探针9/0，不把它们相加为整包。
+
+独立冻结当前最终1014输入，source前后相同且与producer当前相同；新 followups-r12/test_scan_checkpoint_authority_boundary.py 两项实际native+SQLite+service.resume反例全部失败（2/2fail，0error/skip，15:51:07）。收据 artifacts/coordinator-checkpoint-r17-authority-probes-20261015/review.json。根R16仍1207/0加六命令0，未集成你R17或ZCode活跃版本。
+
+必须修复的两个实际问题：
+1. test_changed_contract_compiler_cannot_reuse_a_previous_completion：真实首轮ALT/BASE分别执行，两实例完成；实际service.resume新run且input_revision相同。当前contracts/contract_compiler.CONTRACT_COMPILER_VERSION改变后仍执行0实例、复用旧完成。现指纹缺真正契约编译版本和默认Registry当前内容/version，defaults_only固定字符串不能代替实际依赖。绑定当前可核验的compiler/Registry版本与当前语义/反馈依赖；缺失则miss，不从磁盘自报版本授予。保留未知/配置/头文件/业务回答变化失效，不削弱现有指纹。
+2. test_owner_handoff_during_checkpoint_read_prevents_stale_report_publication：真实收据和checkpoint已验证，在verify_bound_checkpoint返回前经真正service.resume/SQL切到第三个run，旧reader仍写出当前报告、未抛JobError。原任务已经要求“receiver文件检查后再复核current binding后消费”。验证文件后和报告发布前检查实际job/run/owner/input；不继续投影旧run完成，不触碰当前run报告。检查与必要提交的原子边界用已有store.bound_attempt等安全接口，但不能在持有SQLite写锁时再开另一个store写连接死锁。不要只在lookup之前检查，也不通过捕获JobError后继续写报告。
+
+新增第三个独立反例同文件：test_serialized_confirmation_cannot_become_a_current_scan_confirmation。它使用真实native/ScanSession/SQL和受控报告输出，明确注入带candidate_disposition=confirmed、validation_status=validated、decision_proof的序列化标记；不声称该标记是真证明。下个run不得把该磁盘标记恢复为当前confirmed finding。你DELIVERY把“恢复磁盘判定、未当前重裁决”记为缺口，但当前标准报告仍把它当有效confirmed，metadata.restored_from_run_id不能撤销其权限。原任务禁止恢复进程内确认资格。最小安全方案是在无法当前重放/裁决时令包含确认/证明权限的checkpoint miss并执行当前链；不能只改标签、继续给当前consumer确认效果。支持严格候选恢复时必须回到当前native/Registry/Validator，不能执行磁盘命令或反序列化授权。第三反例将在最终独验中执行，独立文件只读，不能伪造其结果。
+
+本轮仍可先闭合可信whole-plan恢复，逐实例durable未实现就继续明示，不关闭S08/S01。关于共享接口请求：现append_bound_event的data本身可携带额外字段，SQL只证明真实坐标，实例集合/validated不能靠bool自报获得语义授权；trusted_completion目前确实只返回该plan最新收据。要实现逐实例partial，需具体的candidate-envelope/ledger恢复方案和阶段区分，不能直接把analyzed+validated=true JSON当proof。你可提出 ParallelAnalyzer.open_instance_batch/resume中安全载入“未确认候选”的最小接口与精确外部改动建议；不要借此扩大本次所有权。repend_all不是当前必要依赖，已有本run隔离队列和真实started收据路线保留，不改共享queue或canonical sidecar。
+
+原19相关文件及Main独验范围、Java10+C++10、旧四实际native/crash/queue/deadline探针全部保留。把新三authority反例加入最终稳定字节自测与独验，不只跑你新5例/119例。保留原失败和收据，不覆盖历史JUnit/log（请新r17-repair-*命名），不skip/xfail/删失败/降timeout/defaultfd。自有test_scan_session_jobs已有canonical位置断言应按真实producer-run文件/收据定位，不能删篡改义务。
+
+只能 scan-checkpoint-r17 六路径，不碰父scan-session-r12冻结目录、根、ZCode正在写的contract-validation-r12、Astra/UI、shared store/owner/service/queue/其他模块；已有API是只读依赖，当前ZCode版本未独验不能复制。WSL Ubuntu zeal bash -lc、venv313、根test_slot.py两槽和独立ext4tmp不变；native只读SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399不重建。compileall/mypy/必要Black和完整真实测试后新的DELIVERY、逐文件SHA、时间、范围、后台清空和停写。原Bridge owner80748、不新起服务、不恢复S06-R02；不改provider/权限/凭据，不commit/push/reset/clean。平台/审批/额度限制停受影响动作报告，不换路由规避；普通API超时如有原样留证由协调者按已授权流程处理。

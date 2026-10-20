@@ -20,6 +20,7 @@ from .symbols import (
     public_symbol,
     valid_symbol_id,
 )
+from .source_access import ProjectSourceAccess, SourceAccessError
 
 DESCRIPTION = """Read exact source by symbol_id from search_code or by project-relative line
 range. Returns numbered source, symbol metadata, and continuation/truncation
@@ -53,6 +54,7 @@ READ_CONTRACT = ToolContract(
                                 "start_line": {"type": "integer", "minimum": 1},
                                 "end_line": {"type": "integer", "minimum": 1},
                                 "code": {"type": "string"},
+                                "revision": {"type": "string"},
                                 "definition_end_line": {
                                     "type": ["integer", "null"],
                                     "minimum": 1,
@@ -105,10 +107,29 @@ READ_CONTRACT = ToolContract(
 
 
 class ReadCodeTool(ContractTool):
-    def __init__(self, code_index: Any, catalog: SymbolCatalog) -> None:
+    def __init__(
+        self,
+        code_index: Any,
+        catalog: SymbolCatalog,
+        source_access: ProjectSourceAccess | None = None,
+    ) -> None:
         super().__init__(READ_CONTRACT)
         self.code_index = code_index
         self.catalog = catalog
+        self.source_access = source_access or ProjectSourceAccess.for_index(code_index)
+
+    def cache_identity(self, arguments: Dict[str, Any]) -> Any:
+        if self.source_access is None:
+            return None
+        path = arguments.get("file_path")
+        if not path:
+            record = self.catalog.resolve(str(arguments.get("symbol_id") or ""))
+            path = record.get("file") if record else None
+        try:
+            _, digest, identity = self.source_access.read(str(path or ""))
+            return (path, digest, identity, self.catalog.epoch)
+        except SourceAccessError:
+            return object()  # Never reuse a read after a failed permission/version check.
 
     def validate_cross_fields(self, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         symbol_id = arguments.get("symbol_id")
@@ -282,13 +303,37 @@ class ReadCodeTool(ContractTool):
             # report an honest continuation rather than a seemingly complete
             # fixed-size window.
             requested_end = 2_147_483_647
-        snippet = self.code_index.get_file_snippet(
-            file_path,
-            start_line,
-            requested_end,
-            max_lines=max_lines,
-            default_max_lines=max_lines,
-        )
+        try:
+            snippet = (
+                self.source_access.snippet(
+                    file_path, start_line, int(requested_end or start_line), max_lines
+                )
+                if self.source_access is not None
+                else self.code_index.get_file_snippet(
+                    file_path,
+                    start_line,
+                    requested_end,
+                    max_lines=max_lines,
+                    default_max_lines=max_lines,
+                )
+            )
+        except SourceAccessError as exc:
+            denied = exc.reason in {"corpus_denied", "sensitive_content", "conclusion_artifact"}
+            return tool_result(
+                status="forbidden" if denied else "unavailable",
+                data=None,
+                missing=[exc.reason],
+                error=(
+                    {
+                        "code": "source_denied",
+                        "path": "file_path",
+                        "message": "The requested source is outside the permitted corpus.",
+                        "retryable": False,
+                    }
+                    if denied
+                    else None
+                ),
+            )
         if not snippet:
             return tool_result(
                 status="not_found",
@@ -309,6 +354,8 @@ class ReadCodeTool(ContractTool):
             "truncated": truncated,
             "next_start_line": int(snippet.get("end_line") or 0) + 1 if truncated else None,
         }
+        if "revision" in snippet:
+            source["revision"] = snippet["revision"]
         data: Dict[str, Any] = {
             "symbol": symbol,
             "source": source,
@@ -332,10 +379,16 @@ class ReadCodeTool(ContractTool):
         )
 
     def _scan_global_end(self, file_path: str, start_line: int) -> Tuple[int, bool]:
-        resolved = self.code_index.resolve_existing_file(file_path)
-        if resolved is None:
-            return start_line, False
-        lines = self.code_index._read_file_lines(resolved)
+        if self.source_access is not None:
+            try:
+                lines = self.source_access.read(file_path)[0].splitlines(keepends=True)
+            except SourceAccessError:
+                return start_line, False
+        else:
+            resolved = self.code_index.resolve_existing_file(file_path)
+            if resolved is None:
+                return start_line, False
+            lines = self.code_index._read_file_lines(resolved)
         quote = ""
         escaped = False
         block_comment = False

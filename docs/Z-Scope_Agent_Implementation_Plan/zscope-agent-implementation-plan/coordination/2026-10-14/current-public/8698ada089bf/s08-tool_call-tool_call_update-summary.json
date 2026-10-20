@@ -1,0 +1,47 @@
+{
+  "session_id": "sess_4b386346c6",
+  "kinds": "tool_call,tool_call_update",
+  "start_offset": 3762,
+  "next_offset": 10292,
+  "pages": 143,
+  "total_matching": 10292,
+  "has_more": false,
+  "events_read": 6530,
+  "latest_at": "2026-10-14T06:41:39.001438+00:00",
+  "failed_tools": [],
+  "completed_tail": [
+    {
+      "ts": "2026-10-14T06:38:41.180596+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Bash_89",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:38:50.814805+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Read_90",
+        "status": "completed",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/reporting/shared_objects.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T06:41:39.001438+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "1:Read_91",
+        "status": "completed",
+        "locations": [
+          "C:/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner/zscope/reporting/shared_objects.py"
+        ]
+      }
+    }
+  ]
+}

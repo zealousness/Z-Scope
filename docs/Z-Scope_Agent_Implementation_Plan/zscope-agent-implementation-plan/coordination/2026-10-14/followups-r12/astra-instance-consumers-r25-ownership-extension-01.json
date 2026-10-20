@@ -1,0 +1,21 @@
+{
+  "coordinator_authorized": true,
+  "logical_task": "ASTRA-INSTANCE-CONSUMERS-R25",
+  "actual_task": "/root/astra_design_contract_r23",
+  "workspace": "astra-instance-consumers-r25",
+  "write_paths": [
+    "zscope/core/candidates/cpp_domains/resource_lifecycle.py",
+    "zscope/core/candidates/cpp_domains/concurrency_shared_state.py",
+    "zscope/core/candidates/cpp_domains/memory_bounds_integer.py",
+    "zscope/core/candidates/cpp_domains/protocol_ownership_logic.py",
+    "zscope/core/candidates/cpp_domains/typed_resources.py"
+  ],
+  "reason": "Source audit identified literal builtin effect/suppression paths that bypass all three facades. Exclusive isolated consumer repair must restrict these paths under the new bounded mode; legacy behavior and rule governance remain required. Original baseline is retained. Coordinator owns Root/stage integration and will not concurrently edit these isolated owned files.",
+  "original_total_inputs": 1070,
+  "original_readonly_inputs": 1066,
+  "new_readonly_inputs": 1061,
+  "root_product_write_permission": false,
+  "shared_contracts_models_defaults_write_permission": false,
+  "independent_acceptance": false,
+  "integrated": false
+}

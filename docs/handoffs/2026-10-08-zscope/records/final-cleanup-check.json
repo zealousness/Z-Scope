@@ -1,0 +1,9 @@
+{
+  "source_changes_since_final_G2": [],
+  "original_artifacts_preserved": {
+    "benchmarks/experiments/balanced_confirmed_tp/dashboard/server.pid": true,
+    "benchmarks/experiments/balanced_confirmed_tp/m5tpr_replay_results.jsonl": true
+  },
+  "remaining_task_scoped_processes": [],
+  "action": "read-only verification; no borrowed service or other agent process was stopped"
+}

@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-14T19:11:47.242632+00:00",
+  "session_state": "ready",
+  "processes": {
+    "workspace": "scan-session-r12",
+    "processes": []
+  },
+  "source_matches_diagnostic": true,
+  "diagnostic": "coordinator-scan-session-r12-native-owner-probes-20261015"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "s01-analysis-r6",
+  "branch": "s01-analysis-r6",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "kimi",
+    "model": "volceapi/kimi-k3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S01-INST-EXEC",
+    "message": "实施 S01-INST-EXEC：把当前精确编译实例实际交给分析消费，不能只增加计划、标签或 mock 调度。\n当前 entry_instances 仍 scheduled_instances=null/scan_coverage_complete=false；ScanSession 仍 analyze_function_entries(entries)。\n你独占 analyzer.py、parallel_analyzer.py、entry_instances.py、新 retrieval/instance_index.py、test_all_variant_scan.py、新 test_instance_analysis.py；其余源码只读。\n协调者独占根目录、scan_session.py、code_index.py、全局建模/共享契约/验证器公共文件及报告/路由接线。需要这些修改时交付精确接线说明，不越权写文件。\n实现可由协调者调用的真实实例分析入口，以精确 BuildContext+native USR 选择当前事实，传给真实 Analyzer 及既有验证链。作用域必须贯穿所消费的事实和候选/结果身份、缓存/去重；不能仅事后给 issue 贴 build_context_id。\n可用专门 scoped CodeIndex facade，但旧导航、图或语义消费者无法保持作用域时必须明确 gap/unsupported，不静默取第一实例、裸函数名或退回其他构建。未知构建不是通配符。\n首切片限定实际 native 双宏/同名函数的当前构建；至少一例仅在一个变体存在的真实候选经过实际分析链，与正常变体分开；覆盖 foreign/missing identity、头文件/宏变化、不同 TU/重载和显式文件选择拒绝。模型响应可以明确受控，native/Analyzer/候选/验证消费不可用假调用列表代替。不要为变绿删除当前反例。\n当前根目录已修 normalized ../ entry 拒绝，保留该行为。不要声称完整 S01-SYMBOL、链接、全变体建模或真实 LLM 扫描已完成。\n交付 actual execution API、相关正反例、真实 Linux/native JUnit、compileall/mypy、必要 Black、SHA 和未消费缺口。若实现需要超出独占文件，先交付已可验证部分和具体所需文件/调用位置，由协调者处理共享接线。\n当前根目录联合回归与6项质量命令已通过，真实收据 artifacts/coordinator-r6-integrated-20261014。本任务仅在 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-analysis-r6（WSL /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-analysis-r6）修改独占文件。\n先读快照 AGENTS/architecture、计划11/16/21及当前源码，不把历史切片等同整包。所有产品质量在WSL Ubuntu /home/zeal/venv313/bin/python，PYTHONPATH必须为本隔离目录。\n每次 pytest/native/质量命令通过根目录协调 test_slot.py --workspace <本隔离目录Linux绝对路径> -- <argv> 执行，最多两个并发检查；临时文件已自动放独立ext4 /tmp，不使用/mnt/c TMPDIR。native测试设置 Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer。Astra浏览器设置 ZSCOPE_UI_PLAYWRIGHT_MODULE=/mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright，ZSCOPE_UI_CHROMIUM=/home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome；ZSCOPE_UI_EVIDENCE 指向本分支 artifacts。native只读 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，不重建。\n共享root、其他分支、凭据/provider/权限、旧S06会话不操作；不commit/push/reset/clean。允许本分支DELIVERY.md/artifacts；交付逐文件SHA、JUnit/实际命令/时间/未测和需协调接线范围。工具按当前公开参数schema，不重放旧错误调用。\n",
+    "request_id": "076e4f3d-f5d1-4a51-93aa-94aa3c95e271",
+    "user_requested": true
+  }
+}

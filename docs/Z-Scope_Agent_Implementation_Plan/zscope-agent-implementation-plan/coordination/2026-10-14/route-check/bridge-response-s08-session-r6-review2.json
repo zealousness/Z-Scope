@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "task_id": "task_c1fb932358",
+  "session_id": "sess_3b6b9a19b2",
+  "agent": "zcode",
+  "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+  "effort": null,
+  "persisted": true,
+  "request_id": "92a444d1-961d-4fbb-823a-63c7b1e01dbd",
+  "reused": false
+}

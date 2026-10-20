@@ -1,0 +1,7 @@
+{
+  "id": "s08-instance-recovery-min-r23-dispatch-active-check",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  }
+}

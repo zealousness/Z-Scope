@@ -1,0 +1,18 @@
+{
+  "logical_task": "S08-INSTANCE-RECOVERY-MIN-R23",
+  "task_id": "task_8886dcf232",
+  "session_id": "sess_d9cfbf4113",
+  "at": "2026-10-16T12:22:18.032073+08:00",
+  "dispatch_accepted": true,
+  "actual_execution_confirmed": false,
+  "independent_acceptance": false,
+  "integrated": false,
+  "original_task_id": "task_4d8c492e1d",
+  "consecutive_failed_actual_deliveries": 1,
+  "preflights": [
+    "route-check/bridge-response-r24-s08-repair-agents-a68d884e5012.json",
+    "route-check/bridge-response-r24-s08-repair-active-558803de8703.json"
+  ],
+  "dispatch_receipt": "route-check/bridge-response-s08-instance-recovery-repair-r24.json",
+  "root_inputs_verified": 1065
+}

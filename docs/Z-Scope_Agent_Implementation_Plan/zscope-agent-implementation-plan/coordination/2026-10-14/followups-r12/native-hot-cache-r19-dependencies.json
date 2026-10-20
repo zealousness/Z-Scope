@@ -1,0 +1,22 @@
+{
+  "captured_at": "2026-10-15T12:37:37.313631+00:00",
+  "coordinator_authored": true,
+  "producer_write_permission_granted": false,
+  "root_changed": false,
+  "validated": false,
+  "files": [
+    {
+      "path": "tests/test_incremental_replay.py",
+      "previous_sha256": "7e57ceedd17a9834d5b6967b887c8b0134fe14e240ff506ad00d1b43620fdb21",
+      "sha256": "546643d0961016d9e001849741dbd9a9cb1e386e51593910f060c7e7f48c5c07"
+    }
+  ],
+  "test_description_correction": {
+    "path": "tests/test_native_replay_hot_cache.py",
+    "producer_sha256": "ce363957f387c9093ed3f03053aac555b2c0ec72ffec353dc8f58ec2f7019b39",
+    "sha256": "6351ac5e5f58098be166909fcb7aa515dd16cf09cf54082be95dd26bfa077178",
+    "executable_ast_unchanged": true
+  },
+  "scope": "Exact native hot AST0 + full reuse assertion, preserving every mutation and clean/semantic checks. Test docs no longer infer zero processes from byte stability; native version/loader queries are disclosed separately.",
+  "evidence": "artifacts/coordinator-current-native-process-classified-r19-20261015/review.json"
+}

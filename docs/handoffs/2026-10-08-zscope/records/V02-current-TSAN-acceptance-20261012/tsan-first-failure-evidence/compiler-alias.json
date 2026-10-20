@@ -1,0 +1,9 @@
+{
+  "path": "/tmp/zscope-acceptance-tools/clang",
+  "sha256": "b0d78dac90afb76090a28acbd2749e7e54f0c8c64201acd2c882a1452cd831e3",
+  "text": "#!/bin/sh\nexec /opt/zscope-test/bin/clang18 \"$@\"\n",
+  "underlying_tool_hashes": {
+    "/opt/zscope-test/llvm18/bin/clang": "8ef402d453d1ba4902e4ee0f0f847f6cfa01400c95aa43c24e97818b9c0e3f45",
+    "/opt/zscope-test/llvm18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.a": "2252b875dd1f3bdcf67417a43497f8b0e418b9218e33031bf332c63f679917d4"
+  }
+}

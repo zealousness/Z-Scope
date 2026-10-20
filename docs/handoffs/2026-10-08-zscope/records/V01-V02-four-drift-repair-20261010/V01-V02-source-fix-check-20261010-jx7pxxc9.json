@@ -1,0 +1,84 @@
+{
+  "startedAt": "2026-10-10T04:20:31.093097+00:00",
+  "python": "/home/zeal/venv313/bin/python",
+  "scope": "ordinary source snapshot and related proof regressions; fake binary never launched",
+  "checks": [
+    {
+      "label": "source-drift",
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/zscope-source-fix-20261010-jx7pxxc9/source-drift-tmp",
+        "--junitxml=/tmp/zscope-source-fix-20261010-jx7pxxc9/source-drift.xml",
+        "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/test_v01_v02_independent_drift.py",
+        "-k",
+        "drift_between_last_execution_and_registration"
+      ],
+      "exitCode": 0,
+      "stopped": null,
+      "elapsed": 1.759,
+      "stdout": "/tmp/zscope-source-fix-20261010-jx7pxxc9/source-drift.stdout.log",
+      "stderr": "/tmp/zscope-source-fix-20261010-jx7pxxc9/source-drift.stderr.log",
+      "counts": {
+        "passed": 2,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "junit": "/tmp/zscope-source-fix-20261010-jx7pxxc9/source-drift.xml",
+      "failures": []
+    },
+    {
+      "label": "related-proof",
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/zscope-source-fix-20261010-jx7pxxc9/related-proof-tmp",
+        "--junitxml=/tmp/zscope-source-fix-20261010-jx7pxxc9/related-proof.xml",
+        "tests/test_dynamic_reproduction.py",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-regressions.py",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-regressions.py"
+      ],
+      "exitCode": 0,
+      "stopped": null,
+      "elapsed": 20.138,
+      "stdout": "/tmp/zscope-source-fix-20261010-jx7pxxc9/related-proof.stdout.log",
+      "stderr": "/tmp/zscope-source-fix-20261010-jx7pxxc9/related-proof.stderr.log",
+      "counts": {
+        "passed": 167,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "junit": "/tmp/zscope-source-fix-20261010-jx7pxxc9/related-proof.xml",
+      "failures": []
+    }
+  ],
+  "before": {
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/zscope/core/validation/dynamic_reproduction.py": "d78417fb96b22380f43e3611e841fa75a15f39a8b0af41057cbc6e7f230775ca",
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/test_dynamic_reproduction.py": "b45a387a72203dae46a6951b7a2e1af940cbd1c7bfcedfbb7372acf9ba32bdd4",
+    "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/test_v01_v02_independent_drift.py": "ec88778c128976ba07a4844af98ff97a144f871d3d733d86f7b110558f7c6118",
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-regressions.py": "ac66899b7686be9bc61fd31af37ed0b9e4c2ae283eb7503424ad283c6ad413c5",
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-regressions.py": "8d05c9deb3b674c0906ae71f8136c2e8d1e3d2a53d775434dde680c876c794a6"
+  },
+  "work": "/tmp/zscope-source-fix-20261010-jx7pxxc9",
+  "after": {
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/zscope/core/validation/dynamic_reproduction.py": "d78417fb96b22380f43e3611e841fa75a15f39a8b0af41057cbc6e7f230775ca",
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/test_dynamic_reproduction.py": "b45a387a72203dae46a6951b7a2e1af940cbd1c7bfcedfbb7372acf9ba32bdd4",
+    "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/test_v01_v02_independent_drift.py": "ec88778c128976ba07a4844af98ff97a144f871d3d733d86f7b110558f7c6118",
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-regressions.py": "ac66899b7686be9bc61fd31af37ed0b9e4c2ae283eb7503424ad283c6ad413c5",
+    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-reacceptance-regressions.py": "8d05c9deb3b674c0906ae71f8136c2e8d1e3d2a53d775434dde680c876c794a6"
+  },
+  "changed": [],
+  "completedAt": "2026-10-10T04:20:53.008750+00:00"
+}

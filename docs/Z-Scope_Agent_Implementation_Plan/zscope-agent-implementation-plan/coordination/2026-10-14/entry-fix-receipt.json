@@ -1,0 +1,34 @@
+{
+  "applied_at": "20261014T031722Z",
+  "scope": "User only",
+  "path_inserted_before": "C:\\Users\\10273\\home\\tool\\npm-global",
+  "new_entry": "C:\\Users\\10273\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin",
+  "shared_directory_preserved": true,
+  "system_path_unchanged": true,
+  "config": "C:\\Users\\10273\\.agent-bridge\\agents.toml",
+  "private_config_backup": "C:\\Users\\10273\\.agent-bridge\\agents.toml.backup-20261014T031722Z",
+  "path_backup": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\docs\\Z-Scope_Agent_Implementation_Plan\\zscope-agent-implementation-plan\\coordination\\2026-10-14\\user-path-backup-20261014T031722Z.json",
+  "changed_fields": [
+    "agents.dsh.command",
+    "agents.dsh.fallback_commands",
+    "agents.zcode.command",
+    "agents.zcode.fallback_commands"
+  ],
+  "commands": {
+    "dsh": [
+      "C:\\Windows\\System32\\cmd.exe",
+      "/d",
+      "/c",
+      "call",
+      "C:\\Users\\10273\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+      "--profile",
+      "acp"
+    ],
+    "zcode": [
+      "C:\\Users\\10273\\.agent-bridge\\adapters\\zcode-acp-0.67.0\\node_modules\\.bin\\zcode-acp-server.cmd"
+    ]
+  },
+  "credentials_or_permissions_changed": false,
+  "running_bridge_restarted": false,
+  "rollback": "restore original User Path with its registry type from path_backup and original agents.toml bytes from private_config_backup; restart only idle affected clients"
+}

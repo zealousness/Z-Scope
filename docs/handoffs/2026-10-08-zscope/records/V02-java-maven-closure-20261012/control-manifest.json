@@ -1,0 +1,79 @@
+{
+  "copies": [
+    {
+      "source": "input-manifest.json",
+      "area": "control",
+      "destination": "input-manifest.json",
+      "mode": 292,
+      "bytes": 1895437,
+      "sha256": "a77792554f225a8e864d03a0ae22a3fec36d19eef4f4e9fb79a9c195308ac873"
+    },
+    {
+      "source": "python-dependencies.json",
+      "area": "control",
+      "destination": "python-dependencies.json",
+      "mode": 292,
+      "bytes": 1479274,
+      "sha256": "863edb6d8fa70340804da5d85415665033f20aaefe44a35abddc007018351227"
+    },
+    {
+      "source": "java-two-nodes-inside.proposed.py",
+      "area": "control",
+      "destination": "java-two-nodes-inside.proposed.py",
+      "mode": 292,
+      "bytes": 8116,
+      "sha256": "db5f40fc5e82ecedf57bcee741a42cde027f4b1a09da620b90ead99103a16920"
+    },
+    {
+      "source": "generated/settings.xml",
+      "area": "control",
+      "destination": "settings.xml",
+      "mode": 292,
+      "bytes": 234,
+      "sha256": "f8bef00b489da8786ecc1874916126b11acfbcec9221d4f9070fc306fd8f54d7"
+    },
+    {
+      "source": "generated/settings.xml",
+      "area": "bundle",
+      "destination": "maven/conf/settings.xml",
+      "mode": 292,
+      "bytes": 234,
+      "sha256": "f8bef00b489da8786ecc1874916126b11acfbcec9221d4f9070fc306fd8f54d7"
+    },
+    {
+      "source": "generated/simplelogger.properties",
+      "area": "bundle",
+      "destination": "maven/conf/logging/simplelogger.properties",
+      "mode": 292,
+      "bytes": 86,
+      "sha256": "13428608924c6dc094d4a6b18e4e6c242f51cedb68d14ffa1e2f8a828f5f0312"
+    },
+    {
+      "source": "generated/mvn",
+      "area": "bundle",
+      "destination": "maven/bin/mvn",
+      "mode": 365,
+      "bytes": 318,
+      "sha256": "9654f41cb05a5354f2d4213bbb40de00ac149926de7df80b26921beb449f9156"
+    }
+  ],
+  "generated_files": [
+    {
+      "container_path": "/control/settings.xml",
+      "sha256": "f8bef00b489da8786ecc1874916126b11acfbcec9221d4f9070fc306fd8f54d7"
+    },
+    {
+      "container_path": "/java-inputs/maven/conf/settings.xml",
+      "sha256": "f8bef00b489da8786ecc1874916126b11acfbcec9221d4f9070fc306fd8f54d7"
+    },
+    {
+      "container_path": "/java-inputs/maven/conf/logging/simplelogger.properties",
+      "sha256": "13428608924c6dc094d4a6b18e4e6c242f51cedb68d14ffa1e2f8a828f5f0312"
+    },
+    {
+      "container_path": "/java-inputs/maven/bin/mvn",
+      "sha256": "9654f41cb05a5354f2d4213bbb40de00ac149926de7df80b26921beb449f9156"
+    }
+  ],
+  "self_copy": "Outer copies control-manifest.json separately after sealed artifact identity verification; avoids self-hash recursion."
+}

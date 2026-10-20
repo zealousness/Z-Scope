@@ -1,0 +1,40 @@
+{
+  "sessionId": "session-fb6a18a8-ffa9-4f68-9bcd-5d7c0bceed47",
+  "sourceDigest": "d78417fb96b22380f43e3611e841fa75a15f39a8b0af41057cbc6e7f230775ca",
+  "candidateDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "modelAnswerDigest": "db22df573e5525d0feae442fa9dec6d3fed2261a3fe4a572db1794a370ea35a2",
+  "edits": [
+    {
+      "symbol": "_ExecutionEntry",
+      "line": 1038,
+      "oldBytes": 522,
+      "newBytes": 650
+    },
+    {
+      "symbol": "_ExecutionAuthority.register",
+      "line": 1106,
+      "oldBytes": 1376,
+      "newBytes": 2535
+    },
+    {
+      "symbol": "source_digests_hold",
+      "line": 1493,
+      "oldBytes": 414,
+      "newBytes": 1508
+    },
+    {
+      "symbol": "dynamic_witness_proof_is_live",
+      "line": 1557,
+      "oldBytes": 175,
+      "newBytes": 270
+    },
+    {
+      "symbol": "register_dynamic_reproduction",
+      "line": 3646,
+      "oldBytes": 270,
+      "newBytes": 579
+    }
+  ],
+  "explanation": "Freeze the actually-accepted binary (path + measured digest) in the process-local execution entry at registration, require it for real production runs, and re-check it at proof registration and in dynamic_witness_proof_is_live. Missing/unreadable/changed bound binaries now fail the check instead of being skipped; symbolic test fixtures that bound no real file stay valid and still need explicit promotion.",
+  "productApplied": false
+}

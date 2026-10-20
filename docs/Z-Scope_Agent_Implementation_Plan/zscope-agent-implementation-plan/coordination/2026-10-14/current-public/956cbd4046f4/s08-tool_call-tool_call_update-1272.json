@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T05:11:32.528077+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Running: MSYS_NO_PATHCONV=1 wsl -d Ubuntu -e bash -c '\nls -…",
+        "tool_call_id": "0:Bash_40",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:11:32.726301+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_40",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 1272,
+  "count": 2,
+  "next_offset": 1274,
+  "has_more": false,
+  "total_matching": 1274
+}

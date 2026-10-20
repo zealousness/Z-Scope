@@ -1,0 +1,1 @@
+{"id": "full-tools-disposition-0", "tool": "get_transcript", "arguments": {"session_id": "sess_8fa76506e8", "offset": 0, "limit": 1000, "kinds": "tool_call,tool_call_update"}}

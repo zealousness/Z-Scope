@@ -1,0 +1,92 @@
+{
+  "synthetic_only": true,
+  "kind": "actual_parser_and_generated_schema_inspection_not_full_jsonschema_validator",
+  "cases": [
+    {
+      "case": "stop_at_pattern",
+      "schema_pattern": "^\\s*(?:[01]\\d|2[0-3]):[0-5]\\d\\s*$",
+      "pattern_search_accepts": false,
+      "parser_accepted": false,
+      "parser_error": "execution.stop_at must be a local 'HH:MM' wall-clock time (00:00-23:59)"
+    },
+    {
+      "case": "focus_duplicates",
+      "schema_uniqueItems": null,
+      "parser_accepted": true,
+      "parsed_focus": [
+        "memory"
+      ]
+    },
+    {
+      "case": "stop_requires_timezone",
+      "schema_required": [],
+      "schema_dependentRequired": {
+        "stop_at": [
+          "timezone"
+        ]
+      },
+      "schema_allOf": null,
+      "parser_accepted": false,
+      "parser_error": "execution.stop_at requires an explicit execution.timezone so the boundary does not depend on the loading machine"
+    },
+    {
+      "case": "cpp_requires_database",
+      "schema_target_required": [
+        "id"
+      ],
+      "schema_allOf": [
+        {
+          "if": {
+            "required": [
+              "language"
+            ],
+            "properties": {
+              "language": {
+                "const": "c_cpp"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "targets": {
+                "items": {
+                  "required": [
+                    "id",
+                    "compile_commands"
+                  ]
+                }
+              }
+            }
+          },
+          "description": "C/C++ targets: compile_commands is required"
+        },
+        {
+          "if": {
+            "required": [
+              "language"
+            ],
+            "properties": {
+              "language": {
+                "const": "java"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "targets": {
+                "items": {
+                  "properties": {
+                    "compile_commands": false
+                  }
+                }
+              }
+            }
+          },
+          "description": "Java targets: compile_commands is forbidden"
+        }
+      ],
+      "parser_accepted": false,
+      "parser_error": "project.targets[0].compile_commands is required for C/C++"
+    }
+  ]
+}

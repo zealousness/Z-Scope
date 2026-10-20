@@ -1,0 +1,6 @@
+#!/bin/sh
+export MAVEN_SKIP_RC=1
+export JAVA_HOME=/java-inputs/jdk
+export MAVEN_HOME=/java-inputs/maven
+export M2_HOME=/java-inputs/maven
+exec /java-inputs/maven/bin/mvn.original --offline --batch-mode --settings /control/settings.xml --global-settings /control/settings.xml -Dmaven.repo.local=/java-inputs/cache "$@"

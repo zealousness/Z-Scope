@@ -1,0 +1,44 @@
+{
+  "session_id": "sess_a3dc643fae",
+  "kinds": "tool_call,tool_call_update",
+  "start_offset": 0,
+  "next_offset": 50,
+  "pages": 3,
+  "total_matching": 50,
+  "has_more": false,
+  "events_read": 50,
+  "latest_at": "2026-10-14T08:46:39.054179+00:00",
+  "failed_tools": [],
+  "completed_tail": [
+    {
+      "ts": "2026-10-14T08:46:38.550979+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ead18a3e2bda480cac766dda",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:38.615088+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ead18a3e2bda480cac766dda",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\zscope\\orchestration\\jobs\\scheduler_hook.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:39.054179+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c6074bf3aed7420d98fe1915",
+        "status": "completed"
+      }
+    }
+  ]
+}

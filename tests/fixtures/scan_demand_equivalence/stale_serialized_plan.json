@@ -1,0 +1,259 @@
+{
+  "changes_execution": false,
+  "components": [
+    [
+      "{\"build_context_id\":\"\",\"file_path\":\"src/consume.c\",\"name\":\"consume\",\"signature\":\"int consume ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+    ],
+    [
+      "{\"build_context_id\":\"\",\"file_path\":\"src/entry.c\",\"name\":\"entry\",\"signature\":\"int entry ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+    ],
+    [
+      "{\"build_context_id\":\"\",\"file_path\":\"src/helper.c\",\"name\":\"helper\",\"signature\":\"void helper ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+    ],
+    [
+      "{\"build_context_id\":\"\",\"file_path\":\"src/on_event.c\",\"name\":\"on_event\",\"signature\":\"int on_event ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+    ],
+    [
+      "{\"build_context_id\":\"\",\"file_path\":\"src/release_slot.c\",\"name\":\"release_slot\",\"signature\":\"int release_slot ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+    ],
+    [
+      "{\"build_context_id\":\"\",\"file_path\":\"src/standalone.c\",\"name\":\"standalone\",\"signature\":\"int standalone ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+    ]
+  ],
+  "counts": {
+    "deferred": 2,
+    "planned": 6,
+    "selected": 4,
+    "unbound": 0,
+    "unknown": 6
+  },
+  "deferred": [
+    "{\"build_context_id\":\"\",\"file_path\":\"src/on_event.c\",\"name\":\"on_event\",\"signature\":\"int on_event ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/standalone.c\",\"name\":\"standalone\",\"signature\":\"int standalone ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+  ],
+  "mode": "shadow",
+  "rows": [
+    {
+      "context_fingerprint": "b141caeebbf5a6100941cbc9a297ed0c6d02f732424dffdf0df890ac3e2add4b",
+      "coverage": [],
+      "decision": "selected",
+      "execution": "unchanged_full_schedule",
+      "modeling_spec": "s07-oracle-fixture-spec-v1",
+      "reasons": [
+        "candidate_missing_facts"
+      ],
+      "safety_status": "unknown",
+      "semantic_status": "unknown",
+      "source_hash": "6e36b8356ddab4e78db7acceef75faa059360958b8731c39ffd3a5ba0c6dd1b0",
+      "symbol": "{\"build_context_id\":\"\",\"file_path\":\"src/consume.c\",\"name\":\"consume\",\"signature\":\"int consume ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+      "unknowns": [
+        "program_coverage_unavailable"
+      ]
+    },
+    {
+      "context_fingerprint": "e3ce5da4cdba1250b7828c5b65247c051abf161591d7f31eb9373155ec6d03ef",
+      "coverage": [],
+      "decision": "selected",
+      "execution": "unchanged_full_schedule",
+      "modeling_spec": "s07-oracle-fixture-spec-v1",
+      "reasons": [
+        "opaque_interface"
+      ],
+      "safety_status": "unknown",
+      "semantic_status": "unknown",
+      "source_hash": "29e7e8d491d83582095e3641315cbd155faf1ce0f2801b7cbb5c18528602d5e3",
+      "symbol": "{\"build_context_id\":\"\",\"file_path\":\"src/entry.c\",\"name\":\"entry\",\"signature\":\"int entry ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+      "unknowns": [
+        "program_coverage_unavailable"
+      ]
+    },
+    {
+      "context_fingerprint": "92f7c8fc8240de0e94040f9b8ee02ab1404b0cce18b67136d00bb4e89fb821f6",
+      "coverage": [],
+      "decision": "selected",
+      "execution": "unchanged_full_schedule",
+      "modeling_spec": "s07-oracle-fixture-spec-v1",
+      "reasons": [
+        "opaque_interface"
+      ],
+      "safety_status": "unknown",
+      "semantic_status": "unknown",
+      "source_hash": "fe328aaa3ed39f084621fefa91de31ac1f8869795334bf1ac6f2c723bd5a7557",
+      "symbol": "{\"build_context_id\":\"\",\"file_path\":\"src/helper.c\",\"name\":\"helper\",\"signature\":\"void helper ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+      "unknowns": [
+        "program_coverage_unavailable"
+      ]
+    },
+    {
+      "context_fingerprint": "ce07e1dc7147b2bc9260e194a9018669e5a5d0ec21c592069436b485cfc44807",
+      "coverage": [],
+      "decision": "deferred",
+      "execution": "unchanged_full_schedule",
+      "modeling_spec": "s07-oracle-fixture-spec-v1",
+      "reasons": [
+        "no_observed_demand"
+      ],
+      "safety_status": "unknown",
+      "semantic_status": "unknown",
+      "source_hash": "bf2966f35ee27040b02de380da6e75365bdedfbe8b665b5fde1ae4069a5d6f49",
+      "symbol": "{\"build_context_id\":\"\",\"file_path\":\"src/on_event.c\",\"name\":\"on_event\",\"signature\":\"int on_event ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+      "unknowns": [
+        "program_coverage_unavailable"
+      ]
+    },
+    {
+      "context_fingerprint": "396edd2422f827f24c7f0a076747fdcb7a6340a4975c533e30a199192985a57e",
+      "coverage": [
+        {
+          "authority": "advisory_only",
+          "current_project_revision_build": "unverified",
+          "identity": "COVER_2d0a0514f6bf4286f2113a776efcc353474c7223378f913e9c474993e345c80c",
+          "key": {
+            "build_context": null,
+            "family": "resource_lifecycle",
+            "function_uid": "synthetic-uid-release-slot-0001",
+            "object_ref": null,
+            "operation_site": "release_slot:3",
+            "scope_discriminator": "src-release-slot-scope"
+          },
+          "map_project_id": "synthetic-project",
+          "map_revision": "synthetic-revision",
+          "migration_status": "current",
+          "occurrences": [
+            {
+              "entry_identity": "synthetic-entry-0001",
+              "entry_path": [
+                "synthetic-entry-0001",
+                "entry"
+              ],
+              "event_refs": [
+                "synthetic-event-0001"
+              ],
+              "reachability": "call_path"
+            }
+          ],
+          "unit_fingerprint": "synthetic-fingerprint-0001",
+          "unit_id": "synthetic-unit-release-slot-0001"
+        },
+        {
+          "authority": "advisory_only",
+          "current_project_revision_build": "unverified",
+          "identity": "COVER_4ff5fc58fc75c96b3d9b24236349493aff20ae18aff3bc4228900d81d47d96b9",
+          "key": {
+            "build_context": null,
+            "family": "resource_lifecycle",
+            "function_uid": "synthetic-uid-release-slot-0001",
+            "object_ref": "slot-a",
+            "operation_site": "release_slot:2",
+            "scope_discriminator": "src-release-slot-scope"
+          },
+          "map_project_id": "synthetic-project",
+          "map_revision": "synthetic-revision",
+          "migration_status": "current",
+          "occurrences": [
+            {
+              "entry_identity": "synthetic-entry-0001",
+              "entry_path": [
+                "synthetic-entry-0001",
+                "entry"
+              ],
+              "event_refs": [
+                "synthetic-event-0001"
+              ],
+              "reachability": "call_path"
+            }
+          ],
+          "unit_fingerprint": "synthetic-fingerprint-0001",
+          "unit_id": "synthetic-unit-release-slot-0001"
+        },
+        {
+          "authority": "advisory_only",
+          "current_project_revision_build": "unverified",
+          "identity": "COVER_ad2271bd3417ab3985b0133edc90aa61abbee7a5308f75cb1395d612a8e986cd",
+          "key": {
+            "build_context": "2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e",
+            "family": "resource_lifecycle",
+            "function_uid": "synthetic-uid-release-slot-0001",
+            "object_ref": "slot-a",
+            "operation_site": "release_slot:2",
+            "scope_discriminator": "src-release-slot-scope"
+          },
+          "map_project_id": "synthetic-project",
+          "map_revision": "synthetic-revision",
+          "migration_status": "current",
+          "occurrences": [
+            {
+              "entry_identity": "synthetic-entry-0001",
+              "entry_path": [
+                "synthetic-entry-0001",
+                "entry"
+              ],
+              "event_refs": [
+                "synthetic-event-0001"
+              ],
+              "reachability": "call_path"
+            }
+          ],
+          "unit_fingerprint": "synthetic-fingerprint-0001",
+          "unit_id": "synthetic-unit-release-slot-0001"
+        }
+      ],
+      "decision": "selected",
+      "execution": "unchanged_full_schedule",
+      "modeling_spec": "s07-oracle-fixture-spec-v1",
+      "reasons": [
+        "audit_coverage_gap",
+        "document_conflict",
+        "opaque_interface"
+      ],
+      "safety_status": "unknown",
+      "semantic_status": "unknown",
+      "source_hash": "a7c4fcc48a3361ad0895d2262f6af1409a4bd7432c3a9abbf6dc05fdc7990c99",
+      "symbol": "{\"build_context_id\":\"\",\"file_path\":\"src/release_slot.c\",\"name\":\"release_slot\",\"signature\":\"int release_slot ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+      "unknowns": [
+        "build_context_unknown",
+        "object_identity_unknown",
+        "program_coverage_unavailable",
+        "supplemental_context_unverified"
+      ]
+    },
+    {
+      "context_fingerprint": "5e0fb1f9cfc382253d50b64d5cc422ce4536d51cbb35c736b3db19b1ec4ae47f",
+      "coverage": [],
+      "decision": "deferred",
+      "execution": "unchanged_full_schedule",
+      "modeling_spec": "s07-oracle-fixture-spec-v1",
+      "reasons": [
+        "no_observed_demand"
+      ],
+      "safety_status": "unknown",
+      "semantic_status": "unknown",
+      "source_hash": "68124628266f66f246053c4feab6e57968937aa4a4351d47eb7cb8a5b0e5c6de",
+      "symbol": "{\"build_context_id\":\"\",\"file_path\":\"src/standalone.c\",\"name\":\"standalone\",\"signature\":\"int standalone ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+      "unknowns": [
+        "program_coverage_unavailable"
+      ]
+    }
+  ],
+  "schema_version": "zscope.semantic-demand.shadow.v1",
+  "selected": [
+    "{\"build_context_id\":\"\",\"file_path\":\"src/consume.c\",\"name\":\"consume\",\"signature\":\"int consume ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/entry.c\",\"name\":\"entry\",\"signature\":\"int entry ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/helper.c\",\"name\":\"helper\",\"signature\":\"void helper ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/release_slot.c\",\"name\":\"release_slot\",\"signature\":\"int release_slot ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+  ],
+  "unbound": [],
+  "unknown": [
+    "{\"build_context_id\":\"\",\"file_path\":\"src/consume.c\",\"name\":\"consume\",\"signature\":\"int consume ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/entry.c\",\"name\":\"entry\",\"signature\":\"int entry ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/helper.c\",\"name\":\"helper\",\"signature\":\"void helper ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/on_event.c\",\"name\":\"on_event\",\"signature\":\"int on_event ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/release_slot.c\",\"name\":\"release_slot\",\"signature\":\"int release_slot ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}",
+    "{\"build_context_id\":\"\",\"file_path\":\"src/standalone.c\",\"name\":\"standalone\",\"signature\":\"int standalone ( void )\",\"symbol_type\":\"function\",\"usr\":\"\"}"
+  ],
+  "usage": {
+    "physical_attempts": null,
+    "status": "unknown",
+    "tokens": null
+  }
+}

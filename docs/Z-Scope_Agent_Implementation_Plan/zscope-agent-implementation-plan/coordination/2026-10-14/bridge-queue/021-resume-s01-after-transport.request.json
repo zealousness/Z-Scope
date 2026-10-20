@@ -1,0 +1,14 @@
+{
+  "id": "resume-s01-after-transport",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "kimi",
+    "model": "volceapi/kimi-k3",
+    "session_id": "sess_9669ed4555",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S01 全变体原会话恢复（传输中断）",
+    "user_requested": true,
+    "request_id": "d1015411-bbc4-49b8-9157-2f9c7196b1d7",
+    "message": "这是普通Bridge控制连接中断后的同会话恢复，不是内容/权限拒绝后的重试。公开check已确认前轮failed/bridge_restarted，list_sessions为idle_unloaded；本轮当前owner下无原worker活进程，允许文件核对未发现已写实现（S01四文件仍匹配基线，S08 jobs目录/全变体测试尚不存在）。保留任何实际partial文件先核对，不盲覆盖。控制连接改为独立隐藏后台标准MCP客户端，不随单次exec结束退出。请恢复当前同会话，从已有分析推进实际实现；若session/load失败导致上下文丢失，以以下完整范围重新核对。禁止操作用户保留task_0947f2854f，不换模型/provider。\n\nundefined\n继续S01-INST本轮已授权独立分支：只在原项目内隔离目录 .coordination/20261014/workspaces/s01-instances开发，原根仅作为dispatch cwd。所有权 scan_session.py/global_modeler.py/code_index.py/indexing_inventory.py/test_all_variant_scan.py和最小新增helper；不修改shared协议/native/catalog/Validator/UI/配置/原根文件。\n实现完整扫描多编译实例的明确BuildContext+nativeUSR工作单元，避免按文件/裸名只分析第一实例。真实事实/契约/callee/候选/缓存/coverage保持身份，不从compile_commands猜链接目标；未支持实例明确gap。相关测试ID01-04和全变体当前/新增删除/两TUstatic/重载/恢复cache，现有真实native工具只读，受控模型调度不冒真实LLM/formal。输出隔离实际代码/test/DELIVERY及Linux精确证据。原自包含任务保留于 coordination/2026-10-14/bridge-queue/004-s01-instances.request.json，可以只读回看自己的原message。"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "tool": "get_transcript",
+  "id": "r6-repair-tools-total-8704877d",
+  "arguments": {
+    "offset": 0,
+    "kinds": "tool_call_update",
+    "session_id": "sess_a0adb99b15",
+    "limit": 1
+  }
+}

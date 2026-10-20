@@ -1,0 +1,50 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T08:45:35.283752+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "隔离"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:35.594268+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "的工作区是仓库的完整副本。让我找到协调契约文件。"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:55.175221+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "隔离"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:55.562124+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "的 `AGENTS.md` 与根目录一致。现在让我"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:45:55.606896+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "查找 `NEXT_BACKEND_CONTRACT.md`："
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 5,
+  "next_offset": 5,
+  "has_more": false,
+  "total_matching": 5
+}

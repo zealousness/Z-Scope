@@ -1,0 +1,57 @@
+{
+  "at": "2026-10-14T08:30:21.806366+00:00",
+  "task_id": "task_1e2a609d1d",
+  "existing_source_changes": [],
+  "tests": "s08-fixed-explicit-path-tests.xml:69 passed/33.64s; original68/1 import-binding failure retained in s08-fixed-independent-tests.xml",
+  "files": [
+    {
+      "path": "zscope/orchestration/jobs/__init__.py",
+      "sha256": "c97a892a6e4ef1e78709bfe7891030aafe473b7155640e809e84857e6a16fe07"
+    },
+    {
+      "path": "zscope/orchestration/jobs/__main__.py",
+      "sha256": "2ad11455aaf4eb0f5f163c0f65e0bb74fadd8452053c820d63bd976c4e303d77"
+    },
+    {
+      "path": "zscope/orchestration/jobs/fingerprint.py",
+      "sha256": "dd29779317a10129b22d8092b6748d36c7870274e63a7363b67362e385652489"
+    },
+    {
+      "path": "zscope/orchestration/jobs/identity.py",
+      "sha256": "e36ab8412b0a95b8e6630961314422140b9b71935baa6bd93931aa0bd2ca8876"
+    },
+    {
+      "path": "zscope/orchestration/jobs/models.py",
+      "sha256": "3c2f4c7852aeeda1870d71d82dd3a5f9fac0afe1590199bf97872656876fd869"
+    },
+    {
+      "path": "zscope/orchestration/jobs/owner.py",
+      "sha256": "19807199b85fe2c99be7235cb8f5872af7a4ee0a5d037e1537383059f287199d"
+    },
+    {
+      "path": "zscope/orchestration/jobs/runner.py",
+      "sha256": "73fc2326da6d8f9d4c943da543dc3053baf2b433d28db944fac79ab9c78313bf"
+    },
+    {
+      "path": "zscope/orchestration/jobs/scheduler_hook.py",
+      "sha256": "f6ecbddcc051966d42319f045b3231001825ff64c0a680f155cc953fede4fa16"
+    },
+    {
+      "path": "zscope/orchestration/jobs/service.py",
+      "sha256": "21cbd74b3ed0f4aad31c79f083fb6a9a7d3399442ce8bbcb95ae34d41ad03572"
+    },
+    {
+      "path": "zscope/orchestration/jobs/store.py",
+      "sha256": "b2f06107e31ee5905668f6e68276b5ff22d5914cc4f8470ec6413edddec44a59"
+    },
+    {
+      "path": "tests/test_scan_jobs.py",
+      "sha256": "89437697e1b97ed2c180916a1b71817875c4becd9479f1b7d011e9a1017e506c"
+    },
+    {
+      "path": "tests/test_scan_job_execution.py",
+      "sha256": "74e60ae3d8c18f21ac81f28ec3822f5ce05419394a23e0095c35d7ee2078982d"
+    }
+  ],
+  "scope": "real owner/store/process over controlled scanners; full JOB04/JOB06, real model/native scanning and real UI jobs not yet verified"
+}

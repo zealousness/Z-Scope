@@ -1,0 +1,2104 @@
+{
+  "asan_allocation_limit": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "04ce65bf5ac41e4bb2099b5c3e60b9537ac846d7f9a5ec51451bbd231da7b1bd",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_allocation_limit_sta0/oversize",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "resource_exhaustion",
+    "duration_ms": 121,
+    "environment": [
+      [
+        "ASAN_OPTIONS",
+        "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=512"
+      ],
+      [
+        "HOME",
+        "/tmp/zscope-asan-run-j68htz6h"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-asan-run-j68htz6h"
+      ]
+    ],
+    "exit_code": 1,
+    "findings": [],
+    "input_verification_digest": "acc955c9cd5ae28660222cc9a2a4eddd1920c976b651e6efd4167acaf8e9e018",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "rlimit_as_not_applied_to_sanitizer_runtime",
+      "memory_limit_enforced_by_sanitizer_allocation_cap",
+      "memory_limit_is_per_allocation_not_total_rss",
+      "memory_limit_total_rss_watchdog_applied",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": true,
+    "outcome": "engine_failed",
+    "plan_digest": "d9b26339b83e006385a0537de73e7a8157e3bd1fa6d6ff031a961626127069e8",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-adab4330f573b569-1437657b4f9d",
+    "replay_classifications": [
+      "engine_failed:resource_exhaustion"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_allocation_limit_sta0/oversize",
+      "1073741824"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_allocation_limit_sta0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "engine_failed:resource_exhaustion"
+        ],
+        "detail": "engine_failed:resource_exhaustion",
+        "exit_code": 1,
+        "findings": [],
+        "index": 0,
+        "oom_killed": true,
+        "outcome": "engine_failed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 1463,
+        "stderr_digest": "5782352233b699c6cf70c070c3a36cafa0cb6d05c62872de1f0485bde318929b",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "5782352233b699c6cf70c070c3a36cafa0cb6d05c62872de1f0485bde318929b",
+    "stderr_excerpt": "=================================================================\n==235014==ERROR: AddressSanitizer: requested allocation size 0x40000000 (0x40001000 after adjustments for alignment, red zones etc.) exceeds maximum supported size of 0x20000000 (thread T0)\n    #0 0x5df6106331a3 in malloc (/tmp/pytest-of-zeal/pytest-170/test_asan_allocation_limit_sta0/oversize+0xc61a3) (BuildId: 8bc6cf088867686691f5b470b45c325ae2b0b75e)\n    #1 0x5df610671754 in zscope_dynamic_repro_allocate /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/allocation_oversize.c:12:19\n    #2 0x5df61067184f in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/allocation_oversize.c:29:13\n    #3 0x7fd96522a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x7fd96522a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #5 0x5df610598354 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_allocation_limit_sta0/oversize+0x2b354) (BuildId: 8bc6cf088867686691f5b470b45c325ae2b0b75e)\n\n==235014==HINT: if you don't care about these errors you may set allocator_may_return_null=1\nSUMMARY: AddressSanitizer: allocation-size-too-big (/tmp/pytest-of-zeal/pytest-170/test_asan_allocation_limit_sta0/oversize+0xc61a3) (BuildId: 8bc6cf088867686691f5b470b45c325ae2b0b75e) in malloc\n==235014==ABORTING\n",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "asan_build": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "9b86262aed02bc2660101739534c195de5f4185edb5d8a68b9dcbf245caf7037",
+    "binary_identity_source": "post_build_output",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_positive_build_runs_0/built-positive",
+    "build_argv": [
+      "/usr/lib/llvm-18/bin/clang",
+      "-fsanitize=address",
+      "-g",
+      "-O0",
+      "-fno-omit-frame-pointer",
+      "-o",
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_positive_build_runs_0/built-positive",
+      "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c"
+    ],
+    "build_exit_code": 0,
+    "build_stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "build_stdout_excerpt": "",
+    "detail": "sanitizer_report",
+    "duration_ms": 317,
+    "environment": [
+      [
+        "ASAN_OPTIONS",
+        "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=512"
+      ],
+      [
+        "HOME",
+        "/tmp/zscope-asan-run-nwu16bpy"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-asan-run-nwu16bpy"
+      ]
+    ],
+    "exit_code": 1,
+    "findings": [
+      {
+        "access": "write",
+        "allocation_frames": [
+          "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "frames": [
+          "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "kind": "heap-buffer-overflow",
+        "object_ref": "0x502000000020",
+        "raw_digest": "3aa1fd95f2a9de1ba51297cd0ab0b4c35085e27fb06a2d96c915bf82293c70b7",
+        "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+        "source_mapping": [
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "thread": "T0"
+      }
+    ],
+    "input_verification_digest": "8ba58d6cd3edd795f8db741b04d3f95dfbe2c46b25546ec966eaf8d5e6f008c5",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "binary_identity_bound_after_build",
+      "rlimit_as_not_applied_to_sanitizer_runtime",
+      "memory_limit_enforced_by_sanitizer_allocation_cap",
+      "memory_limit_is_per_allocation_not_total_rss",
+      "memory_limit_total_rss_watchdog_applied",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": false,
+    "outcome": "witness_observed",
+    "plan_digest": "aa8d9bf68916a184ef0d8015a855c8dc9f899f1f62834cd0cd443d2967a115dd",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-1405c291a842a107-da6d5ef457c1",
+    "replay_classifications": [
+      "heap-buffer-overflow"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_positive_build_runs_0/built-positive",
+      "64"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_positive_build_runs_0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "heap-buffer-overflow"
+        ],
+        "detail": "heap-buffer-overflow",
+        "exit_code": 1,
+        "findings": [
+          {
+            "access": "write",
+            "allocation_frames": [
+              "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "frames": [
+              "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "kind": "heap-buffer-overflow",
+            "object_ref": "0x502000000020",
+            "raw_digest": "3aa1fd95f2a9de1ba51297cd0ab0b4c35085e27fb06a2d96c915bf82293c70b7",
+            "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "source_mapping": [
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "thread": "T0"
+          }
+        ],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 3635,
+        "stderr_digest": "3aa1fd95f2a9de1ba51297cd0ab0b4c35085e27fb06a2d96c915bf82293c70b7",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "3aa1fd95f2a9de1ba51297cd0ab0b4c35085e27fb06a2d96c915bf82293c70b7",
+    "stderr_excerpt": "=================================================================\n==234953==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x502000000020 at pc 0x5a32744467ca bp 0x7fff6001cf20 sp 0x7fff6001cf18\nWRITE of size 1 at 0x502000000020 thread T0\n    #0 0x5a32744467c9 in zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19:23\n    #1 0x5a32744468c4 in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29:17\n    #2 0x79d7d522a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #3 0x79d7d522a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x5a327436d344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_positive_build_runs_0/built-positive+0x2b344) (BuildId: d649589f091fa1b928870614d2285869607fbf45)\n\n0x502000000020 is located 0 bytes after 16-byte region [0x502000000010,0x502000000020)\nallocated by thread T0 here:\n    #0 0x5a3274408193 in malloc (/tmp/pytest-of-zeal/pytest-170/test_asan_positive_build_runs_0/built-positive+0xc6193) (BuildId: d649589f091fa1b928870614d2285869607fbf45)\n    #1 0x5a3274446744 in zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11:28\n    #2 0x5a32744468c4 in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29:17\n    #3 0x79d7d522a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x79d7d522a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #5 0x5a327436d344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_positive_build_runs_0/built-positive+0x2b344) (BuildId: d649589f091fa1b928870614d2285869607fbf45)\n\nSUMMARY: AddressSanitizer: heap-buffer-overflow /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19:23 in zscope_dynamic_repro_positive\nShadow bytes around the buggy address:\n  0x501ffffffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n=>0x502000000000: fa fa 00 00[fa]fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000080: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\nShadow byte legend (one shadow byte represents 8 application bytes):\n  Addressable:           00\n  Partially addressable: 01 02 03 04 05 06 07 \n  Heap left redzone:       fa\n  Freed heap region:       fd\n  Stack left redzone:      f1\n  Stack mid redzone:       f2\n  Stack right redzone:     f3\n  Stack after return:      f5\n  Stack use after scope:   f8\n  Global redzone:          f9\n  Global init order:       f6\n  Poisoned by user:        f7\n  Container overflow:      fc\n  Array cookie:            ac\n  Intra object redzone:    bb\n  ASan internal:           fe\n  Left alloca redzone:     ca\n  Right alloca redzone:    cb\n==234953==ABORTING\n",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "asan_build_confirmation": {
+    "facts": {
+      "binary_identity_bound": true,
+      "candidate_object_matched": true,
+      "candidate_site_matched": true,
+      "defect_family_matched": true,
+      "replay_consistent": true,
+      "source_identity_bound": true
+    },
+    "qualified": true,
+    "reasons": [],
+    "record": {
+      "artifact_refs": [],
+      "artifact_root": "",
+      "binary_digest": "9b86262aed02bc2660101739534c195de5f4185edb5d8a68b9dcbf245caf7037",
+      "binary_identity_source": "post_build_output",
+      "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_build_generated_bina0/built-confirmed",
+      "build_argv": [
+        "/usr/lib/llvm-18/bin/clang",
+        "-fsanitize=address",
+        "-g",
+        "-O0",
+        "-fno-omit-frame-pointer",
+        "-o",
+        "/tmp/pytest-of-zeal/pytest-170/test_asan_build_generated_bina0/built-confirmed",
+        "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c"
+      ],
+      "build_exit_code": 0,
+      "build_stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "build_stderr_excerpt": "",
+      "build_stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "build_stdout_excerpt": "",
+      "detail": "sanitizer_report",
+      "duration_ms": 318,
+      "environment": [
+        [
+          "ASAN_OPTIONS",
+          "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=512"
+        ],
+        [
+          "HOME",
+          "/tmp/zscope-asan-run-zochypi6"
+        ],
+        [
+          "LANG",
+          "C.UTF-8"
+        ],
+        [
+          "PATH",
+          "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        ],
+        [
+          "TMPDIR",
+          "/tmp/zscope-asan-run-zochypi6"
+        ]
+      ],
+      "exit_code": 1,
+      "findings": [
+        {
+          "access": "write",
+          "allocation_frames": [
+            "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+            "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+          ],
+          "frames": [
+            "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+          ],
+          "kind": "heap-buffer-overflow",
+          "object_ref": "0x502000000020",
+          "raw_digest": "665a37fb04a782977de617b88a903eac00616216cea442ddf34e71c9140a405c",
+          "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "source_mapping": [
+            "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+          ],
+          "thread": "T0"
+        }
+      ],
+      "input_verification_digest": "70cca567813d6cd00c1bfb2cd5f762d61fe8f00e4aa855c72d1ff211602f47ff",
+      "inputs_verified": true,
+      "isolation": "process",
+      "isolation_notes": [
+        "isolation=process",
+        "process_group_isolated",
+        "subprocess_is_not_a_container_sandbox"
+      ],
+      "isolation_verified": true,
+      "limitations": [
+        "binary_identity_bound_after_build",
+        "rlimit_as_not_applied_to_sanitizer_runtime",
+        "memory_limit_enforced_by_sanitizer_allocation_cap",
+        "memory_limit_is_per_allocation_not_total_rss",
+        "memory_limit_total_rss_watchdog_applied",
+        "execution_logs_not_published"
+      ],
+      "memory_limit_mode": "sanitizer_allocation_cap",
+      "oom_killed": false,
+      "outcome": "witness_observed",
+      "plan_digest": "77ef45e338d418606e0273f95e222a98e6837e61e4a0090b1484b4d6b7308ffc",
+      "provider_kind": "asan",
+      "provider_name": "asan-runner",
+      "provider_version": "1",
+      "record_id": "dynrepro-asan-249dae2638020d2f-90e52baa4720",
+      "replay_classifications": [
+        "heap-buffer-overflow"
+      ],
+      "replay_count": 1,
+      "run_argv": [
+        "/tmp/pytest-of-zeal/pytest-170/test_asan_build_generated_bina0/built-confirmed",
+        "64"
+      ],
+      "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_build_generated_bina0",
+      "runs": [
+        {
+          "artifacts": [],
+          "classifications": [
+            "heap-buffer-overflow"
+          ],
+          "detail": "heap-buffer-overflow",
+          "exit_code": 1,
+          "findings": [
+            {
+              "access": "write",
+              "allocation_frames": [
+                "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+                "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "frames": [
+                "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "kind": "heap-buffer-overflow",
+              "object_ref": "0x502000000020",
+              "raw_digest": "665a37fb04a782977de617b88a903eac00616216cea442ddf34e71c9140a405c",
+              "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "source_mapping": [
+                "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "thread": "T0"
+            }
+          ],
+          "index": 0,
+          "oom_killed": false,
+          "outcome": "observed",
+          "output_truncated": false,
+          "signal_number": null,
+          "stderr_bytes": 3638,
+          "stderr_digest": "665a37fb04a782977de617b88a903eac00616216cea442ddf34e71c9140a405c",
+          "stdout_bytes": 0,
+          "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "timed_out": false
+        }
+      ],
+      "schema_version": "zscope.dynamic-execution-record.v2",
+      "signal_number": null,
+      "stderr_digest": "665a37fb04a782977de617b88a903eac00616216cea442ddf34e71c9140a405c",
+      "stderr_excerpt": "=================================================================\n==234963==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x502000000020 at pc 0x592cae0e17ca bp 0x7fffcbb63d10 sp 0x7fffcbb63d08\nWRITE of size 1 at 0x502000000020 thread T0\n    #0 0x592cae0e17c9 in zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19:23\n    #1 0x592cae0e18c4 in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29:17\n    #2 0x700153e2a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #3 0x700153e2a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x592cae008344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_build_generated_bina0/built-confirmed+0x2b344) (BuildId: d649589f091fa1b928870614d2285869607fbf45)\n\n0x502000000020 is located 0 bytes after 16-byte region [0x502000000010,0x502000000020)\nallocated by thread T0 here:\n    #0 0x592cae0a3193 in malloc (/tmp/pytest-of-zeal/pytest-170/test_asan_build_generated_bina0/built-confirmed+0xc6193) (BuildId: d649589f091fa1b928870614d2285869607fbf45)\n    #1 0x592cae0e1744 in zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11:28\n    #2 0x592cae0e18c4 in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29:17\n    #3 0x700153e2a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x700153e2a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #5 0x592cae008344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_build_generated_bina0/built-confirmed+0x2b344) (BuildId: d649589f091fa1b928870614d2285869607fbf45)\n\nSUMMARY: AddressSanitizer: heap-buffer-overflow /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19:23 in zscope_dynamic_repro_positive\nShadow bytes around the buggy address:\n  0x501ffffffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n=>0x502000000000: fa fa 00 00[fa]fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000080: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\nShadow byte legend (one shadow byte represents 8 application bytes):\n  Addressable:           00\n  Partially addressable: 01 02 03 04 05 06 07 \n  Heap left redzone:       fa\n  Freed heap region:       fd\n  Stack left redzone:      f1\n  Stack mid redzone:       f2\n  Stack right redzone:     f3\n  Stack after return:      f5\n  Stack use after scope:   f8\n  Global redzone:          f9\n  Global init order:       f6\n  Poisoned by user:        f7\n  Container overflow:      fc\n  Array cookie:            ac\n  Intra object redzone:    bb\n  ASan internal:           fe\n  Left alloca redzone:     ca\n  Right alloca redzone:    cb\n==234963==ABORTING\n",
+      "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_excerpt": "",
+      "timed_out": false
+    },
+    "replay": {
+      "binary_digest": "9b86262aed02bc2660101739534c195de5f4185edb5d8a68b9dcbf245caf7037",
+      "classifications": [
+        "heap-buffer-overflow",
+        "heap-buffer-overflow"
+      ],
+      "consistent": true,
+      "plan_digest": "77ef45e338d418606e0273f95e222a98e6837e61e4a0090b1484b4d6b7308ffc",
+      "provider_name": "asan-runner",
+      "provider_version": "1",
+      "runs": [
+        {
+          "binary_digest": "9b86262aed02bc2660101739534c195de5f4185edb5d8a68b9dcbf245caf7037",
+          "binary_identity_source": "post_build_output",
+          "classifications": [
+            "heap-buffer-overflow"
+          ],
+          "findings": [
+            {
+              "access": "write",
+              "allocation_frames": [
+                "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+                "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "frames": [
+                "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "kind": "heap-buffer-overflow",
+              "object_ref": "0x502000000020",
+              "raw_digest": "d647116d0a2832bfe68bc0ea251abbccad97b232511e7ad9abcc99abd5dd20d5",
+              "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "source_mapping": [
+                "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "thread": "T0"
+            }
+          ],
+          "index": 0,
+          "input_verification_digest": "70cca567813d6cd00c1bfb2cd5f762d61fe8f00e4aa855c72d1ff211602f47ff",
+          "outcome": "witness_observed",
+          "record_id": "dynrepro-asan-249dae2638020d2f-73f5f6533007",
+          "runs": [
+            {
+              "artifacts": [],
+              "classifications": [
+                "heap-buffer-overflow"
+              ],
+              "detail": "heap-buffer-overflow",
+              "exit_code": 1,
+              "findings": [
+                {
+                  "access": "write",
+                  "allocation_frames": [
+                    "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+                    "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+                  ],
+                  "frames": [
+                    "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                    "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+                  ],
+                  "kind": "heap-buffer-overflow",
+                  "object_ref": "0x502000000020",
+                  "raw_digest": "d647116d0a2832bfe68bc0ea251abbccad97b232511e7ad9abcc99abd5dd20d5",
+                  "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                  "source_mapping": [
+                    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+                  ],
+                  "thread": "T0"
+                }
+              ],
+              "index": 0,
+              "oom_killed": false,
+              "outcome": "observed",
+              "output_truncated": false,
+              "signal_number": null,
+              "stderr_bytes": 3638,
+              "stderr_digest": "d647116d0a2832bfe68bc0ea251abbccad97b232511e7ad9abcc99abd5dd20d5",
+              "stdout_bytes": 0,
+              "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "timed_out": false
+            }
+          ]
+        },
+        {
+          "binary_digest": "9b86262aed02bc2660101739534c195de5f4185edb5d8a68b9dcbf245caf7037",
+          "binary_identity_source": "post_build_output",
+          "classifications": [
+            "heap-buffer-overflow"
+          ],
+          "findings": [
+            {
+              "access": "write",
+              "allocation_frames": [
+                "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+                "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "frames": [
+                "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "kind": "heap-buffer-overflow",
+              "object_ref": "0x502000000020",
+              "raw_digest": "cc73325cfa5e18d887b71bfac3f8e997e1c5a3eacb0607cd43ee19ad8dd2d80a",
+              "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "source_mapping": [
+                "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+              ],
+              "thread": "T0"
+            }
+          ],
+          "index": 1,
+          "input_verification_digest": "70cca567813d6cd00c1bfb2cd5f762d61fe8f00e4aa855c72d1ff211602f47ff",
+          "outcome": "witness_observed",
+          "record_id": "dynrepro-asan-249dae2638020d2f-400a6fd29490",
+          "runs": [
+            {
+              "artifacts": [],
+              "classifications": [
+                "heap-buffer-overflow"
+              ],
+              "detail": "heap-buffer-overflow",
+              "exit_code": 1,
+              "findings": [
+                {
+                  "access": "write",
+                  "allocation_frames": [
+                    "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+                    "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+                  ],
+                  "frames": [
+                    "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                    "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+                  ],
+                  "kind": "heap-buffer-overflow",
+                  "object_ref": "0x502000000020",
+                  "raw_digest": "cc73325cfa5e18d887b71bfac3f8e997e1c5a3eacb0607cd43ee19ad8dd2d80a",
+                  "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                  "source_mapping": [
+                    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+                    "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+                  ],
+                  "thread": "T0"
+                }
+              ],
+              "index": 0,
+              "oom_killed": false,
+              "outcome": "observed",
+              "output_truncated": false,
+              "signal_number": null,
+              "stderr_bytes": 3638,
+              "stderr_digest": "cc73325cfa5e18d887b71bfac3f8e997e1c5a3eacb0607cd43ee19ad8dd2d80a",
+              "stdout_bytes": 0,
+              "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "timed_out": false
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "asan_build_failure": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "",
+    "binary_identity_source": "",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_build_failure_stays_0/never-built",
+    "build_argv": [
+      "/usr/lib/llvm-18/bin/clang",
+      "-fsanitize=address",
+      "-c",
+      "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/broken_build.c"
+    ],
+    "build_exit_code": 1,
+    "build_stderr_digest": "fb5f444e391ce3d03fe565fb76c6ff28748d0704549b653dda9b63204bd75a18",
+    "build_stderr_excerpt": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/broken_build.c:9:20: error: call to undeclared function 'undeclared_marker_symbol'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]\n    9 |     return value + undeclared_marker_symbol( /* ZSCOPE_CANDIDATE_SITE */\n      |                    ^\n/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/broken_build.c:10:1: error: expected expression\n   10 | }\n      | ^\n/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/broken_build.c:10:2: error: expected '}'\n   10 | }\n      |  ^\n/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/broken_build.c:8:1: note: to match this '{'\n    8 | {\n      | ^\n3 errors generated.\n",
+    "build_stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "build_stdout_excerpt": "",
+    "detail": "build_failed",
+    "duration_ms": 90,
+    "environment": [],
+    "exit_code": null,
+    "findings": [],
+    "input_verification_digest": "",
+    "inputs_verified": false,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": false,
+    "outcome": "engine_failed",
+    "plan_digest": "c86439f258bded98953d9c9aa4bfb5c8e83637f4cf4dabb2b049d334827d2a49",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-7f396c5e004b25e8-8cae0b67d12e",
+    "replay_classifications": [],
+    "replay_count": 0,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_build_failure_stays_0/never-built"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_build_failure_stays_0",
+    "runs": [],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "",
+    "stderr_excerpt": "",
+    "stdout_digest": "",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "asan_namespace": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "af8aadb231f7ee437e13c4bd6df34bbf0957b3a4446a49bdf8a194c9066248c7",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_net_namespace_wrap_i0/positive",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "sanitizer_report",
+    "duration_ms": 124,
+    "environment": [
+      [
+        "ASAN_OPTIONS",
+        "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=512"
+      ],
+      [
+        "HOME",
+        "/tmp/zscope-asan-run-mo4oykxt"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-asan-run-mo4oykxt"
+      ]
+    ],
+    "exit_code": 1,
+    "findings": [
+      {
+        "access": "write",
+        "allocation_frames": [
+          "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "frames": [
+          "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "kind": "heap-buffer-overflow",
+        "object_ref": "0x502000000020",
+        "raw_digest": "9b1732e29434ffb9a0d316c895f559f8c0ff70385b08aad54625e2e9fdab0756",
+        "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+        "source_mapping": [
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "thread": "T0"
+      }
+    ],
+    "input_verification_digest": "cd0d615246a6eff37be8c8d69571d0e7aa7e4d286383af07e2ec6595adb90869",
+    "inputs_verified": true,
+    "isolation": "user_net_namespace",
+    "isolation_notes": [
+      "net_namespace_applied",
+      "isolation=user_net_namespace",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "rlimit_as_not_applied_to_sanitizer_runtime",
+      "memory_limit_enforced_by_sanitizer_allocation_cap",
+      "memory_limit_is_per_allocation_not_total_rss",
+      "memory_limit_total_rss_watchdog_applied",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": false,
+    "outcome": "witness_observed",
+    "plan_digest": "982ac5e2bc236091d21497d812dc6e84a084e30f0aa46a27487cd1ac68d70747",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-49b0627ef641c962-2ffb2234a839",
+    "replay_classifications": [
+      "heap-buffer-overflow"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_net_namespace_wrap_i0/positive",
+      "64"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_net_namespace_wrap_i0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "heap-buffer-overflow"
+        ],
+        "detail": "heap-buffer-overflow",
+        "exit_code": 1,
+        "findings": [
+          {
+            "access": "write",
+            "allocation_frames": [
+              "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "frames": [
+              "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "kind": "heap-buffer-overflow",
+            "object_ref": "0x502000000020",
+            "raw_digest": "9b1732e29434ffb9a0d316c895f559f8c0ff70385b08aad54625e2e9fdab0756",
+            "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "source_mapping": [
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "thread": "T0"
+          }
+        ],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 3617,
+        "stderr_digest": "9b1732e29434ffb9a0d316c895f559f8c0ff70385b08aad54625e2e9fdab0756",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "9b1732e29434ffb9a0d316c895f559f8c0ff70385b08aad54625e2e9fdab0756",
+    "stderr_excerpt": "=================================================================\n==235033==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x502000000020 at pc 0x60f6bc4af7ca bp 0x7fff7ce124d0 sp 0x7fff7ce124c8\nWRITE of size 1 at 0x502000000020 thread T0\n    #0 0x60f6bc4af7c9 in zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19:23\n    #1 0x60f6bc4af8c4 in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29:17\n    #2 0x70f40662a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #3 0x70f40662a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x60f6bc3d6344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_net_namespace_wrap_i0/positive+0x2b344) (BuildId: 45c9aa10c811d93cbc4c31c6ff6ad83aeaa6ce18)\n\n0x502000000020 is located 0 bytes after 16-byte region [0x502000000010,0x502000000020)\nallocated by thread T0 here:\n    #0 0x60f6bc471193 in malloc (/tmp/pytest-of-zeal/pytest-170/test_asan_net_namespace_wrap_i0/positive+0xc6193) (BuildId: 45c9aa10c811d93cbc4c31c6ff6ad83aeaa6ce18)\n    #1 0x60f6bc4af744 in zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11:28\n    #2 0x60f6bc4af8c4 in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29:17\n    #3 0x70f40662a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x70f40662a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #5 0x60f6bc3d6344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_net_namespace_wrap_i0/positive+0x2b344) (BuildId: 45c9aa10c811d93cbc4c31c6ff6ad83aeaa6ce18)\n\nSUMMARY: AddressSanitizer: heap-buffer-overflow /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19:23 in zscope_dynamic_repro_positive\nShadow bytes around the buggy address:\n  0x501ffffffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n=>0x502000000000: fa fa 00 00[fa]fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000080: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\nShadow byte legend (one shadow byte represents 8 application bytes):\n  Addressable:           00\n  Partially addressable: 01 02 03 04 05 06 07 \n  Heap left redzone:       fa\n  Freed heap region:       fd\n  Stack left redzone:      f1\n  Stack mid redzone:       f2\n  Stack right redzone:     f3\n  Stack after return:      f5\n  Stack use after scope:   f8\n  Global redzone:          f9\n  Global init order:       f6\n  Poisoned by user:        f7\n  Container overflow:      fc\n  Array cookie:            ac\n  Intra object redzone:    bb\n  ASan internal:           fe\n  Left alloca redzone:     ca\n  Right alloca redzone:    cb\n==235033==ABORTING\n",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "asan_negative": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "907082db5ce3eae16dfaae307ae2298fd2fbe0e0ab9c469eb92b414a3231b3b8",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_negative_fixture_is_0/negative",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "no_sanitizer_report",
+    "duration_ms": 122,
+    "environment": [
+      [
+        "ASAN_OPTIONS",
+        "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=512"
+      ],
+      [
+        "HOME",
+        "/tmp/zscope-asan-run-5wf41o6y"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-asan-run-5wf41o6y"
+      ]
+    ],
+    "exit_code": 0,
+    "findings": [],
+    "input_verification_digest": "5f9afe0ad4e84ba83355de40e6ac053ace30480eecfb16f76f43075af41cb088",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "rlimit_as_not_applied_to_sanitizer_runtime",
+      "memory_limit_enforced_by_sanitizer_allocation_cap",
+      "memory_limit_is_per_allocation_not_total_rss",
+      "memory_limit_total_rss_watchdog_applied",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": false,
+    "outcome": "not_reproduced",
+    "plan_digest": "e42b2335b8ca4a94d16224d61304d3bffd38aea00b964c25e46e4f34754ce33c",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-f7070233a8740f21-8ff2fb7b9316",
+    "replay_classifications": [
+      "none"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_negative_fixture_is_0/negative",
+      "64"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_negative_fixture_is_0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "none"
+        ],
+        "detail": "none",
+        "exit_code": 0,
+        "findings": [],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 0,
+        "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_excerpt": "",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "asan_positive": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "af8aadb231f7ee437e13c4bd6df34bbf0957b3a4446a49bdf8a194c9066248c7",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_positive_fixture_con0/positive",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "sanitizer_report",
+    "duration_ms": 124,
+    "environment": [
+      [
+        "ASAN_OPTIONS",
+        "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=512"
+      ],
+      [
+        "HOME",
+        "/tmp/zscope-asan-run-k4d9czmr"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-asan-run-k4d9czmr"
+      ]
+    ],
+    "exit_code": 1,
+    "findings": [
+      {
+        "access": "write",
+        "allocation_frames": [
+          "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "frames": [
+          "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "kind": "heap-buffer-overflow",
+        "object_ref": "0x502000000020",
+        "raw_digest": "ce38e6ba470e0f9e130c76ac61b800f537c271d0f966ad46aa3c8a34a0bd3787",
+        "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+        "source_mapping": [
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "thread": "T0"
+      }
+    ],
+    "input_verification_digest": "a94fa0e3a8599b7b603f485a8098d22faa467d7431e5e45e72ad363a1bec58a0",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "rlimit_as_not_applied_to_sanitizer_runtime",
+      "memory_limit_enforced_by_sanitizer_allocation_cap",
+      "memory_limit_is_per_allocation_not_total_rss",
+      "memory_limit_total_rss_watchdog_applied",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": false,
+    "outcome": "witness_observed",
+    "plan_digest": "71b00c6c6d1576c07905b7a3fbe4915e41b937f7cc5df42d8e4f8100766a1632",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-e8b5f985d209f8c3-d184cf7e3c55",
+    "replay_classifications": [
+      "heap-buffer-overflow"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_positive_fixture_con0/positive",
+      "64"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_positive_fixture_con0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "heap-buffer-overflow"
+        ],
+        "detail": "heap-buffer-overflow",
+        "exit_code": 1,
+        "findings": [
+          {
+            "access": "write",
+            "allocation_frames": [
+              "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "frames": [
+              "zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "kind": "heap-buffer-overflow",
+            "object_ref": "0x502000000020",
+            "raw_digest": "ce38e6ba470e0f9e130c76ac61b800f537c271d0f966ad46aa3c8a34a0bd3787",
+            "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "source_mapping": [
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "thread": "T0"
+          }
+        ],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 3617,
+        "stderr_digest": "ce38e6ba470e0f9e130c76ac61b800f537c271d0f966ad46aa3c8a34a0bd3787",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "ce38e6ba470e0f9e130c76ac61b800f537c271d0f966ad46aa3c8a34a0bd3787",
+    "stderr_excerpt": "=================================================================\n==234939==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x502000000020 at pc 0x56aa322967ca bp 0x7ffec8b60b70 sp 0x7ffec8b60b68\nWRITE of size 1 at 0x502000000020 thread T0\n    #0 0x56aa322967c9 in zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19:23\n    #1 0x56aa322968c4 in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29:17\n    #2 0x7e8adb42a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #3 0x7e8adb42a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x56aa321bd344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_positive_fixture_con0/positive+0x2b344) (BuildId: 45c9aa10c811d93cbc4c31c6ff6ad83aeaa6ce18)\n\n0x502000000020 is located 0 bytes after 16-byte region [0x502000000010,0x502000000020)\nallocated by thread T0 here:\n    #0 0x56aa32258193 in malloc (/tmp/pytest-of-zeal/pytest-170/test_asan_positive_fixture_con0/positive+0xc6193) (BuildId: 45c9aa10c811d93cbc4c31c6ff6ad83aeaa6ce18)\n    #1 0x56aa32296744 in zscope_dynamic_repro_positive /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11:28\n    #2 0x56aa322968c4 in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29:17\n    #3 0x7e8adb42a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x7e8adb42a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #5 0x56aa321bd344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_positive_fixture_con0/positive+0x2b344) (BuildId: 45c9aa10c811d93cbc4c31c6ff6ad83aeaa6ce18)\n\nSUMMARY: AddressSanitizer: heap-buffer-overflow /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19:23 in zscope_dynamic_repro_positive\nShadow bytes around the buggy address:\n  0x501ffffffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n=>0x502000000000: fa fa 00 00[fa]fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000080: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\nShadow byte legend (one shadow byte represents 8 application bytes):\n  Addressable:           00\n  Partially addressable: 01 02 03 04 05 06 07 \n  Heap left redzone:       fa\n  Freed heap region:       fd\n  Stack left redzone:      f1\n  Stack mid redzone:       f2\n  Stack right redzone:     f3\n  Stack after return:      f5\n  Stack use after scope:   f8\n  Global redzone:          f9\n  Global init order:       f6\n  Poisoned by user:        f7\n  Container overflow:      fc\n  Array cookie:            ac\n  Intra object redzone:    bb\n  ASan internal:           fe\n  Left alloca redzone:     ca\n  Right alloca redzone:    cb\n==234939==ABORTING\n",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "asan_stale_binary": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "binary_identity_source": "",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_stale_binary_referen0/positive",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "plan_identity_unverified",
+    "duration_ms": 51,
+    "environment": [],
+    "exit_code": null,
+    "findings": [],
+    "input_verification_digest": "",
+    "inputs_verified": false,
+    "isolation": "process",
+    "isolation_notes": [
+      "no_process_was_started"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "binary_identity_mismatch",
+      "unverified_plan_never_launched",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": false,
+    "outcome": "unsupported",
+    "plan_digest": "b8bf11a61697fa664dba82c1639c8cda2718ef80fddd7ed028acbd978a7b7c60",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-c0a97afa5a1f2ae9-256f92e22a3d",
+    "replay_classifications": [],
+    "replay_count": 0,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_stale_binary_referen0/positive",
+      "64"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_stale_binary_referen0",
+    "runs": [],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "",
+    "stderr_excerpt": "",
+    "stdout_digest": "",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "asan_unrelated": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "6d1c79a326a775b75e7d7da5895ebe4a5f904501b005b727d791b663ea1f2d9c",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_asan_unrelated_crash_neve0/unrelated",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "sanitizer_report",
+    "duration_ms": 123,
+    "environment": [
+      [
+        "ASAN_OPTIONS",
+        "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=512"
+      ],
+      [
+        "HOME",
+        "/tmp/zscope-asan-run-n986lpu7"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-asan-run-n986lpu7"
+      ]
+    ],
+    "exit_code": 1,
+    "findings": [
+      {
+        "access": "write",
+        "allocation_frames": [
+          "unrelated_helper /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:27",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:46"
+        ],
+        "frames": [
+          "unrelated_helper /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:35",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:46"
+        ],
+        "kind": "heap-buffer-overflow",
+        "object_ref": "0x502000000038",
+        "raw_digest": "b7ac263a234d17722b2f3946e7cf4942db8be8f265fa81ce7a7294723b053664",
+        "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:35",
+        "source_mapping": [
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:35",
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:46"
+        ],
+        "thread": "T0"
+      }
+    ],
+    "input_verification_digest": "d82b306d25e9f08adc708c1e9f7a9e4d7f832ec47cf70e8ce294f68bc2e31c0e",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "rlimit_as_not_applied_to_sanitizer_runtime",
+      "memory_limit_enforced_by_sanitizer_allocation_cap",
+      "memory_limit_is_per_allocation_not_total_rss",
+      "memory_limit_total_rss_watchdog_applied",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": false,
+    "outcome": "witness_observed",
+    "plan_digest": "c1cc5e8b1568cb6ee034e78c09461a35c2539a0772fe0ec8523b6aa609898259",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-1e4ead6f83f2d6e5-42c31309add0",
+    "replay_classifications": [
+      "heap-buffer-overflow"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_asan_unrelated_crash_neve0/unrelated",
+      "64"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_asan_unrelated_crash_neve0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "heap-buffer-overflow"
+        ],
+        "detail": "heap-buffer-overflow",
+        "exit_code": 1,
+        "findings": [
+          {
+            "access": "write",
+            "allocation_frames": [
+              "unrelated_helper /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:27",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:46"
+            ],
+            "frames": [
+              "unrelated_helper /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:35",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:46"
+            ],
+            "kind": "heap-buffer-overflow",
+            "object_ref": "0x502000000038",
+            "raw_digest": "b7ac263a234d17722b2f3946e7cf4942db8be8f265fa81ce7a7294723b053664",
+            "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:35",
+            "source_mapping": [
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:35",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:46"
+            ],
+            "thread": "T0"
+          }
+        ],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 3545,
+        "stderr_digest": "b7ac263a234d17722b2f3946e7cf4942db8be8f265fa81ce7a7294723b053664",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "b7ac263a234d17722b2f3946e7cf4942db8be8f265fa81ce7a7294723b053664",
+    "stderr_excerpt": "=================================================================\n==234994==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x502000000038 at pc 0x5915b97d795a bp 0x7ffd94383300 sp 0x7ffd943832f8\nWRITE of size 1 at 0x502000000038 thread T0\n    #0 0x5915b97d7959 in unrelated_helper /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:35:22\n    #1 0x5915b97d789f in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:46:14\n    #2 0x75f50ca2a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #3 0x75f50ca2a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x5915b96fe344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_unrelated_crash_neve0/unrelated+0x2b344) (BuildId: 6c62f20fa457cfff8b87d20f0fda4093e0863514)\n\n0x502000000038 is located 0 bytes after 8-byte region [0x502000000030,0x502000000038)\nallocated by thread T0 here:\n    #0 0x5915b9799193 in malloc (/tmp/pytest-of-zeal/pytest-170/test_asan_unrelated_crash_neve0/unrelated+0xc6193) (BuildId: 6c62f20fa457cfff8b87d20f0fda4093e0863514)\n    #1 0x5915b97d78d4 in unrelated_helper /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:27:27\n    #2 0x5915b97d789f in main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:46:14\n    #3 0x75f50ca2a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #4 0x75f50ca2a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)\n    #5 0x5915b96fe344 in _start (/tmp/pytest-of-zeal/pytest-170/test_asan_unrelated_crash_neve0/unrelated+0x2b344) (BuildId: 6c62f20fa457cfff8b87d20f0fda4093e0863514)\n\nSUMMARY: AddressSanitizer: heap-buffer-overflow /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/unrelated_crash.c:35:22 in unrelated_helper\nShadow bytes around the buggy address:\n  0x501ffffffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n=>0x502000000000: fa fa fd fd fa fa 00[fa]fa fa fa fa fa fa fa fa\n  0x502000000080: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\nShadow byte legend (one shadow byte represents 8 application bytes):\n  Addressable:           00\n  Partially addressable: 01 02 03 04 05 06 07 \n  Heap left redzone:       fa\n  Freed heap region:       fd\n  Stack left redzone:      f1\n  Stack mid redzone:       f2\n  Stack right redzone:     f3\n  Stack after return:      f5\n  Stack use after scope:   f8\n  Global redzone:          f9\n  Global init order:       f6\n  Poisoned by user:        f7\n  Container overflow:      fc\n  Array cookie:            ac\n  Intra object redzone:    bb\n  ASan internal:           fe\n  Left alloca redzone:     ca\n  Right alloca redzone:    cb\n==234994==ABORTING\n",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "rss_watchdog": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/bin/sh",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "resource_exhaustion",
+    "duration_ms": 141,
+    "environment": [
+      [
+        "ASAN_OPTIONS",
+        "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=64"
+      ],
+      [
+        "HOME",
+        "/tmp/zscope-asan-run-aj8mjpvz"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-asan-run-aj8mjpvz"
+      ]
+    ],
+    "exit_code": -9,
+    "findings": [],
+    "input_verification_digest": "e7bb9909a366efd3980f8bb4cbb91b72d698934fc2ca5f2cfed79de708688060",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "rlimit_as_not_applied_to_sanitizer_runtime",
+      "memory_limit_enforced_by_sanitizer_allocation_cap",
+      "memory_limit_is_per_allocation_not_total_rss",
+      "memory_limit_total_rss_watchdog_applied",
+      "memory_limit_enforced_by_rss_watchdog",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "oom_killed": true,
+    "outcome": "engine_failed",
+    "plan_digest": "6a2b20f83e5964a6e7e091c2b42d6b3223a279a6fd1c5012a33b18605c41980f",
+    "provider_kind": "asan",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-asan-25f2d3183f062660-447140da4f01",
+    "replay_classifications": [
+      "engine_failed:resource_exhaustion"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/bin/sh",
+      "-c",
+      "python3 -c \"a=bytearray(400*1024*1024); print(len(a)); import time; time.sleep(5)\""
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_rss_watchdog_records_and_0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "engine_failed:resource_exhaustion"
+        ],
+        "detail": "engine_failed:resource_exhaustion",
+        "exit_code": -9,
+        "findings": [],
+        "index": 0,
+        "oom_killed": true,
+        "outcome": "engine_failed",
+        "output_truncated": false,
+        "signal_number": 9,
+        "stderr_bytes": 0,
+        "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": 9,
+    "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_excerpt": "",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "tsan_flaky": {
+    "classifications": [
+      "none",
+      "none",
+      "none",
+      "none",
+      "none",
+      "none",
+      "none",
+      "none",
+      "data-race",
+      "none"
+    ],
+    "data_race_runs": 1,
+    "no_report_runs": 9,
+    "observed_non_deterministic": true
+  },
+  "tsan_flaky_mixed_observed": true,
+  "tsan_flaky_multi_replay": {
+    "binary_digest": "ee27ffd92c38244da91d4c7455514d565e5c37b815cd8968aa73af205a801520",
+    "classifications": [
+      "none",
+      "data-race",
+      "data-race",
+      "none",
+      "none",
+      "none",
+      "none"
+    ],
+    "consistent": false,
+    "plan_digest": "dc79dd92281af8e213ca0ae52fda70291a33a0c250a0339033b4a0765e4057e6",
+    "provider_name": "tsan-runner",
+    "provider_version": "1",
+    "runs": [
+      {
+        "binary_digest": "ee27ffd92c38244da91d4c7455514d565e5c37b815cd8968aa73af205a801520",
+        "binary_identity_source": "plan_declared",
+        "classifications": [
+          "none"
+        ],
+        "findings": [],
+        "index": 0,
+        "input_verification_digest": "e262e8b145df85d1fc069075ba54920f9d49956a04a63ad7b0aff53a45a918e6",
+        "outcome": "not_reproduced",
+        "record_id": "dynrepro-tsan-f72d13b137e3170e-24f76ac9c1ab",
+        "runs": [
+          {
+            "artifacts": [],
+            "classifications": [
+              "none"
+            ],
+            "detail": "none",
+            "exit_code": 0,
+            "findings": [],
+            "index": 0,
+            "oom_killed": false,
+            "outcome": "observed",
+            "output_truncated": false,
+            "signal_number": null,
+            "stderr_bytes": 0,
+            "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_bytes": 0,
+            "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "timed_out": false
+          }
+        ]
+      },
+      {
+        "binary_digest": "ee27ffd92c38244da91d4c7455514d565e5c37b815cd8968aa73af205a801520",
+        "binary_identity_source": "plan_declared",
+        "classifications": [
+          "data-race"
+        ],
+        "findings": [
+          {
+            "access": "write",
+            "allocation_frames": [],
+            "frames": [
+              "zscope_flaky_reader /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+              "zscope_flaky_setter /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:62",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:89",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:86"
+            ],
+            "kind": "data-race",
+            "object_ref": "shared_slot",
+            "raw_digest": "d0cd6e69b99c9eef7a4463984c970360477521d64888b7b5588c480628d67f70",
+            "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+            "source_mapping": [
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:62",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:89",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:86"
+            ],
+            "thread": "thread T2"
+          }
+        ],
+        "index": 1,
+        "input_verification_digest": "e262e8b145df85d1fc069075ba54920f9d49956a04a63ad7b0aff53a45a918e6",
+        "outcome": "witness_observed",
+        "record_id": "dynrepro-tsan-f72d13b137e3170e-11ddf4dd4e18",
+        "runs": [
+          {
+            "artifacts": [],
+            "classifications": [
+              "data-race"
+            ],
+            "detail": "data-race",
+            "exit_code": 1,
+            "findings": [
+              {
+                "access": "write",
+                "allocation_frames": [],
+                "frames": [
+                  "zscope_flaky_reader /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+                  "zscope_flaky_setter /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:62",
+                  "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:89",
+                  "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:86"
+                ],
+                "kind": "data-race",
+                "object_ref": "shared_slot",
+                "raw_digest": "d0cd6e69b99c9eef7a4463984c970360477521d64888b7b5588c480628d67f70",
+                "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+                "source_mapping": [
+                  "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+                  "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:62",
+                  "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:89",
+                  "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:86"
+                ],
+                "thread": "thread T2"
+              }
+            ],
+            "index": 0,
+            "oom_killed": false,
+            "outcome": "observed",
+            "output_truncated": false,
+            "signal_number": null,
+            "stderr_bytes": 1556,
+            "stderr_digest": "d0cd6e69b99c9eef7a4463984c970360477521d64888b7b5588c480628d67f70",
+            "stdout_bytes": 0,
+            "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "timed_out": false
+          }
+        ]
+      },
+      {
+        "binary_digest": "ee27ffd92c38244da91d4c7455514d565e5c37b815cd8968aa73af205a801520",
+        "binary_identity_source": "plan_declared",
+        "classifications": [
+          "data-race"
+        ],
+        "findings": [
+          {
+            "access": "write",
+            "allocation_frames": [],
+            "frames": [
+              "zscope_flaky_reader /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+              "zscope_flaky_setter /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:62",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:89",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:86"
+            ],
+            "kind": "data-race",
+            "object_ref": "shared_slot",
+            "raw_digest": "9430c62d871024f2507e15ea4c93bd9fb253b027f98feb749ea70dcc364a7a43",
+            "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+            "source_mapping": [
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:62",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:89",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:86"
+            ],
+            "thread": "thread T2"
+          }
+        ],
+        "index": 2,
+        "input_verification_digest": "e262e8b145df85d1fc069075ba54920f9d49956a04a63ad7b0aff53a45a918e6",
+        "outcome": "witness_observed",
+        "record_id": "dynrepro-tsan-f72d13b137e3170e-070afbfec29c",
+        "runs": [
+          {
+            "artifacts": [],
+            "classifications": [
+              "data-race"
+            ],
+            "detail": "data-race",
+            "exit_code": 1,
+            "findings": [
+              {
+                "access": "write",
+                "allocation_frames": [],
+                "frames": [
+                  "zscope_flaky_reader /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+                  "zscope_flaky_setter /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:62",
+                  "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:89",
+                  "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:86"
+                ],
+                "kind": "data-race",
+                "object_ref": "shared_slot",
+                "raw_digest": "9430c62d871024f2507e15ea4c93bd9fb253b027f98feb749ea70dcc364a7a43",
+                "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+                "source_mapping": [
+                  "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:74",
+                  "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:62",
+                  "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:89",
+                  "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_flaky.c:86"
+                ],
+                "thread": "thread T2"
+              }
+            ],
+            "index": 0,
+            "oom_killed": false,
+            "outcome": "observed",
+            "output_truncated": false,
+            "signal_number": null,
+            "stderr_bytes": 1556,
+            "stderr_digest": "9430c62d871024f2507e15ea4c93bd9fb253b027f98feb749ea70dcc364a7a43",
+            "stdout_bytes": 0,
+            "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "timed_out": false
+          }
+        ]
+      },
+      {
+        "binary_digest": "ee27ffd92c38244da91d4c7455514d565e5c37b815cd8968aa73af205a801520",
+        "binary_identity_source": "plan_declared",
+        "classifications": [
+          "none"
+        ],
+        "findings": [],
+        "index": 3,
+        "input_verification_digest": "e262e8b145df85d1fc069075ba54920f9d49956a04a63ad7b0aff53a45a918e6",
+        "outcome": "not_reproduced",
+        "record_id": "dynrepro-tsan-f72d13b137e3170e-b824384cec8d",
+        "runs": [
+          {
+            "artifacts": [],
+            "classifications": [
+              "none"
+            ],
+            "detail": "none",
+            "exit_code": 0,
+            "findings": [],
+            "index": 0,
+            "oom_killed": false,
+            "outcome": "observed",
+            "output_truncated": false,
+            "signal_number": null,
+            "stderr_bytes": 0,
+            "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_bytes": 0,
+            "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "timed_out": false
+          }
+        ]
+      },
+      {
+        "binary_digest": "ee27ffd92c38244da91d4c7455514d565e5c37b815cd8968aa73af205a801520",
+        "binary_identity_source": "plan_declared",
+        "classifications": [
+          "none"
+        ],
+        "findings": [],
+        "index": 4,
+        "input_verification_digest": "e262e8b145df85d1fc069075ba54920f9d49956a04a63ad7b0aff53a45a918e6",
+        "outcome": "not_reproduced",
+        "record_id": "dynrepro-tsan-f72d13b137e3170e-86102c056bde",
+        "runs": [
+          {
+            "artifacts": [],
+            "classifications": [
+              "none"
+            ],
+            "detail": "none",
+            "exit_code": 0,
+            "findings": [],
+            "index": 0,
+            "oom_killed": false,
+            "outcome": "observed",
+            "output_truncated": false,
+            "signal_number": null,
+            "stderr_bytes": 0,
+            "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_bytes": 0,
+            "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "timed_out": false
+          }
+        ]
+      },
+      {
+        "binary_digest": "ee27ffd92c38244da91d4c7455514d565e5c37b815cd8968aa73af205a801520",
+        "binary_identity_source": "plan_declared",
+        "classifications": [
+          "none"
+        ],
+        "findings": [],
+        "index": 5,
+        "input_verification_digest": "e262e8b145df85d1fc069075ba54920f9d49956a04a63ad7b0aff53a45a918e6",
+        "outcome": "not_reproduced",
+        "record_id": "dynrepro-tsan-f72d13b137e3170e-43036900c805",
+        "runs": [
+          {
+            "artifacts": [],
+            "classifications": [
+              "none"
+            ],
+            "detail": "none",
+            "exit_code": 0,
+            "findings": [],
+            "index": 0,
+            "oom_killed": false,
+            "outcome": "observed",
+            "output_truncated": false,
+            "signal_number": null,
+            "stderr_bytes": 0,
+            "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_bytes": 0,
+            "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "timed_out": false
+          }
+        ]
+      },
+      {
+        "binary_digest": "ee27ffd92c38244da91d4c7455514d565e5c37b815cd8968aa73af205a801520",
+        "binary_identity_source": "plan_declared",
+        "classifications": [
+          "none"
+        ],
+        "findings": [],
+        "index": 6,
+        "input_verification_digest": "e262e8b145df85d1fc069075ba54920f9d49956a04a63ad7b0aff53a45a918e6",
+        "outcome": "not_reproduced",
+        "record_id": "dynrepro-tsan-f72d13b137e3170e-ed2d73dae813",
+        "runs": [
+          {
+            "artifacts": [],
+            "classifications": [
+              "none"
+            ],
+            "detail": "none",
+            "exit_code": 0,
+            "findings": [],
+            "index": 0,
+            "oom_killed": false,
+            "outcome": "observed",
+            "output_truncated": false,
+            "signal_number": null,
+            "stderr_bytes": 0,
+            "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_bytes": 0,
+            "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "timed_out": false
+          }
+        ]
+      }
+    ]
+  },
+  "tsan_memory_limit": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "805522a0d3de6002396407439c7045c0b40bbdf7b6c05e5a66fba415cae68d40",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_tsan_memory_limit_is_reco0/locked-mem",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "no_sanitizer_report",
+    "duration_ms": 161,
+    "environment": [
+      [
+        "HOME",
+        "/tmp/zscope-tsan-run-vok_x6a3"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-tsan-run-vok_x6a3"
+      ],
+      [
+        "TSAN_OPTIONS",
+        "halt_on_error=1:exitcode=1:history_size=2"
+      ]
+    ],
+    "exit_code": 0,
+    "findings": [],
+    "input_verification_digest": "7db8db220f60d5a04f0f6705cf68c412a2e69ee2dadf3ef9201365bde6db35a8",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "memory_limit_enforced_by_rss_watchdog",
+      "rss_watchdog_is_sampled_not_a_kernel_limit",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "rss_watchdog",
+    "oom_killed": false,
+    "outcome": "not_reproduced",
+    "plan_digest": "5f8f426a046a40a1a719bcd3075dcbfb5e6e34958f1da4db3902d83f059ec682",
+    "provider_kind": "tsan",
+    "provider_name": "tsan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-tsan-09125e683566504c-40c4648a25ce",
+    "replay_classifications": [
+      "none"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_tsan_memory_limit_is_reco0/locked-mem"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_tsan_memory_limit_is_reco0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "none"
+        ],
+        "detail": "none",
+        "exit_code": 0,
+        "findings": [],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 0,
+        "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_excerpt": "",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "tsan_memory_limit_unset": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "805522a0d3de6002396407439c7045c0b40bbdf7b6c05e5a66fba415cae68d40",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_tsan_memory_limit_without0/unlimited-mem",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "no_sanitizer_report",
+    "duration_ms": 162,
+    "environment": [
+      [
+        "HOME",
+        "/tmp/zscope-tsan-run-fg86x3fv"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-tsan-run-fg86x3fv"
+      ],
+      [
+        "TSAN_OPTIONS",
+        "halt_on_error=1:exitcode=1:history_size=2"
+      ]
+    ],
+    "exit_code": 0,
+    "findings": [],
+    "input_verification_digest": "65465e93803e3018290e7d9571fa7b3f1a0622ed04072ab6a7df0d0d05d76286",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "memory_limit_not_enforced_for_tsan",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "none",
+    "oom_killed": false,
+    "outcome": "not_reproduced",
+    "plan_digest": "5cf3a4afa3ca882018f53131f7158d088ccbd7856aba750b4cbb245b5089e1df",
+    "provider_kind": "tsan",
+    "provider_name": "tsan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-tsan-a0abdf14e60e8d2d-be5416dd62b9",
+    "replay_classifications": [
+      "none"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_tsan_memory_limit_without0/unlimited-mem"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_tsan_memory_limit_without0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "none"
+        ],
+        "detail": "none",
+        "exit_code": 0,
+        "findings": [],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 0,
+        "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_excerpt": "",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "tsan_negative": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "805522a0d3de6002396407439c7045c0b40bbdf7b6c05e5a66fba415cae68d40",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_tsan_negative_fixture_is_0/locked",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "no_sanitizer_report",
+    "duration_ms": 162,
+    "environment": [
+      [
+        "HOME",
+        "/tmp/zscope-tsan-run-qb4kmjt5"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-tsan-run-qb4kmjt5"
+      ],
+      [
+        "TSAN_OPTIONS",
+        "halt_on_error=1:exitcode=1:history_size=2"
+      ]
+    ],
+    "exit_code": 0,
+    "findings": [],
+    "input_verification_digest": "8085ff2665a42f6f8daaab46e7ee3e370d46e3c51d0f70a8a33c4fbb002e4a7e",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "memory_limit_enforced_by_rss_watchdog",
+      "rss_watchdog_is_sampled_not_a_kernel_limit",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "rss_watchdog",
+    "oom_killed": false,
+    "outcome": "not_reproduced",
+    "plan_digest": "03157be42b0a04f957f36b8a75c931f617a0b9538e14bd90df0fc566b00fad4f",
+    "provider_kind": "tsan",
+    "provider_name": "tsan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-tsan-d8a9404cb64b4a9a-c8e724c67906",
+    "replay_classifications": [
+      "none"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_tsan_negative_fixture_is_0/locked"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_tsan_negative_fixture_is_0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "none"
+        ],
+        "detail": "none",
+        "exit_code": 0,
+        "findings": [],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 0,
+        "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_excerpt": "",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  },
+  "tsan_positive": {
+    "artifact_refs": [],
+    "artifact_root": "",
+    "binary_digest": "7c316cf07b1d15b1099d199d07223840856afb0ab124dce705e69c00fa4c0c28",
+    "binary_identity_source": "plan_declared",
+    "binary_path": "/tmp/pytest-of-zeal/pytest-170/test_tsan_positive_fixture_con0/race",
+    "build_argv": [],
+    "build_exit_code": null,
+    "build_stderr_digest": "",
+    "build_stderr_excerpt": "",
+    "build_stdout_digest": "",
+    "build_stdout_excerpt": "",
+    "detail": "sanitizer_report",
+    "duration_ms": 143,
+    "environment": [
+      [
+        "HOME",
+        "/tmp/zscope-tsan-run-iac8pfi8"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/home/zeal/venv313/bin:/usr/lib/llvm-18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-tsan-run-iac8pfi8"
+      ],
+      [
+        "TSAN_OPTIONS",
+        "halt_on_error=1:exitcode=1:history_size=2"
+      ]
+    ],
+    "exit_code": 1,
+    "findings": [
+      {
+        "access": "write",
+        "allocation_frames": [],
+        "frames": [
+          "zscope_race_writer /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+          "zscope_race_writer /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:30",
+          "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:27"
+        ],
+        "kind": "data-race",
+        "object_ref": "shared_counter",
+        "raw_digest": "5089bf6e29dc74a2213ecda813d5ad44c0b39a864feec66b470b183c1bcdc70d",
+        "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+        "source_mapping": [
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:30",
+          "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:27"
+        ],
+        "thread": "thread T2"
+      }
+    ],
+    "input_verification_digest": "e3a1f4ffa3ca167ba69fbb6ca7b7f22b70459e161e86f1b12c037dba24001687",
+    "inputs_verified": true,
+    "isolation": "process",
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "isolation_verified": true,
+    "limitations": [
+      "memory_limit_enforced_by_rss_watchdog",
+      "rss_watchdog_is_sampled_not_a_kernel_limit",
+      "execution_logs_not_published"
+    ],
+    "memory_limit_mode": "rss_watchdog",
+    "oom_killed": false,
+    "outcome": "witness_observed",
+    "plan_digest": "59f1cd09652396a074694da6debf622ba8312710c2b0b80aaaa62095ac05939b",
+    "provider_kind": "tsan",
+    "provider_name": "tsan-runner",
+    "provider_version": "1",
+    "record_id": "dynrepro-tsan-3ea3f663b43e06c8-27c4b5070175",
+    "replay_classifications": [
+      "data-race"
+    ],
+    "replay_count": 1,
+    "run_argv": [
+      "/tmp/pytest-of-zeal/pytest-170/test_tsan_positive_fixture_con0/race"
+    ],
+    "run_cwd": "/tmp/pytest-of-zeal/pytest-170/test_tsan_positive_fixture_con0",
+    "runs": [
+      {
+        "artifacts": [],
+        "classifications": [
+          "data-race"
+        ],
+        "detail": "data-race",
+        "exit_code": 1,
+        "findings": [
+          {
+            "access": "write",
+            "allocation_frames": [],
+            "frames": [
+              "zscope_race_writer /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+              "zscope_race_writer /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:30",
+              "main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:27"
+            ],
+            "kind": "data-race",
+            "object_ref": "shared_counter",
+            "raw_digest": "5089bf6e29dc74a2213ecda813d5ad44c0b39a864feec66b470b183c1bcdc70d",
+            "site": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+            "source_mapping": [
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:30",
+              "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:27"
+            ],
+            "thread": "thread T2"
+          }
+        ],
+        "index": 0,
+        "oom_killed": false,
+        "outcome": "observed",
+        "output_truncated": false,
+        "signal_number": null,
+        "stderr_bytes": 1564,
+        "stderr_digest": "5089bf6e29dc74a2213ecda813d5ad44c0b39a864feec66b470b183c1bcdc70d",
+        "stdout_bytes": 0,
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "timed_out": false
+      }
+    ],
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "signal_number": null,
+    "stderr_digest": "5089bf6e29dc74a2213ecda813d5ad44c0b39a864feec66b470b183c1bcdc70d",
+    "stderr_excerpt": "==================\nWARNING: ThreadSanitizer: data race (pid=235042)\n  Write of size 4 at 0x5555569de698 by thread T2:\n    #0 zscope_race_writer /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17:24 (race+0xded18) (BuildId: 5ee000720a3ebddc4824a504df89c9a4f5d1c1cc)\n\n  Previous write of size 4 at 0x5555569de698 by thread T1:\n    #0 zscope_race_writer /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17:24 (race+0xded18) (BuildId: 5ee000720a3ebddc4824a504df89c9a4f5d1c1cc)\n\n  Location is global 'shared_counter' of size 4 at 0x5555569de698 (race+0x148a698)\n\n  Thread T2 (tid=235045, running) created by main thread at:\n    #0 pthread_create <null> (race+0x605df) (BuildId: 5ee000720a3ebddc4824a504df89c9a4f5d1c1cc)\n    #1 main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:30:9 (race+0xdec2a) (BuildId: 5ee000720a3ebddc4824a504df89c9a4f5d1c1cc)\n\n  Thread T1 (tid=235044, finished) created by main thread at:\n    #0 pthread_create <null> (race+0x605df) (BuildId: 5ee000720a3ebddc4824a504df89c9a4f5d1c1cc)\n    #1 main /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:27:9 (race+0xdebfe) (BuildId: 5ee000720a3ebddc4824a504df89c9a4f5d1c1cc)\n\nSUMMARY: ThreadSanitizer: data race /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/tests/fixtures/dynamic_reproduction/data_race_positive.c:17:24 in zscope_race_writer\n==================\n",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_excerpt": "",
+    "timed_out": false
+  }
+}

@@ -14,8 +14,12 @@ from typing import Any, Iterable, Mapping
 from .contract_conditions import evaluate, legacy_predicate
 from ..reporting.shared_objects import dataclass_dict
 
-CONTRACT_SCHEMA_VERSION = "zscope.api-contract.v4"
-CONTRACT_COMPILER_VERSION = "zscope.contract-compiler.v15"
+CONTRACT_SCHEMA_VERSION = "zscope.api-contract.v5"
+# v26: SymbolIdentity carries the native USR of the exact compiled symbol and
+# the select chain resolves it (see find/find_for_call/match_call).  Caches
+# keyed on the v25 identity or compiler output cannot authorize records that
+# predate USR precision.
+CONTRACT_COMPILER_VERSION = "zscope.contract-compiler.v26"
 ROLES = frozenset(
     {
         "allocator",
@@ -32,6 +36,7 @@ ROLES = frozenset(
         "format_sink",
         "callback_register",
         "ownership_transfer",
+        "reference_retention",
         "lock_init",
         "lock_destroy",
         "lock_state",
@@ -116,7 +121,11 @@ def code_tokens(code: str) -> list[str]:
     """Ignore whitespace/comments without modifying string literals or tokens."""
     code = re.sub(r"(?m)^\s*\d+\s*\| ?", "", code)
     code = re.sub(r"\\\r?\n", "", code)
-    return [token for token in re.findall(_CODE_TOKEN_PATTERN, code) if not token.startswith(("//", "/*"))]
+    return [
+        token
+        for token in re.findall(_CODE_TOKEN_PATTERN, code)
+        if not token.startswith(("//", "/*"))
+    ]
 
 
 @dataclass(frozen=True, order=True)
@@ -125,6 +134,12 @@ class SymbolIdentity:
     file_path: str = ""
     signature: str = ""
     symbol_type: str = "function"
+    build_context_id: str = ""
+    # Native USR of the exact compiled symbol, established only through the
+    # compiler chain from verified program facts.  Empty means the identity is
+    # name-level (builtin standard roots, legacy records); it is never a
+    # wildcard that matches any USR-bearing query.
+    usr: str = ""
 
     @property
     def key(self) -> str:
@@ -141,6 +156,8 @@ class SymbolIdentity:
             str(data.get("file_path") or "").replace("\\", "/"),
             " ".join(code_tokens(str(data.get("signature") or ""))),
             str(data.get("symbol_type") or "function"),
+            str(data.get("build_context_id") or ""),
+            str(data.get("usr") or ""),
         )
 
 
@@ -218,13 +235,22 @@ class ObjectBinding:
 
 
 def semantic_model_unit_uid(context: Mapping[str, Any]) -> str:
-    """Run-scoped audit identity shared by model calls and published snapshots."""
+    """Run-scoped audit identity shared by model calls and published snapshots.
+
+    Deliberately name/build-level: snapshot projections drop program facts, so
+    the uid must stay stable across that roundtrip.  Native-USR precision
+    lives on the contract identities (SymbolIdentity) and their select chain,
+    not on this audit uid.
+    """
+    from .build_scope import context_build_id
+
     symbol = SymbolIdentity.from_value(
         {},
         name=context.get("func_name", ""),
         file_path=context.get("file_path", ""),
         signature=context.get("signature", ""),
         symbol_type="macro" if context.get("is_macro") else "function",
+        build_context_id=context_build_id(context),
     )
     return "semantic:" + digest(symbol.key)[:24]
 
@@ -267,6 +293,18 @@ class ApiContract:
     pair_evidence: Any = field(default_factory=list)
     resource_domain: ObjectBinding | None = None
     protocol: Any = field(default_factory=dict)
+
+    @property
+    def lock_mode(self) -> str:
+        mode = self.protocol.get("lock_mode") if isinstance(self.protocol, Mapping) else None
+        return (
+            mode
+            if self.role == "lock"
+            and self.effects_trusted
+            and isinstance(mode, str)
+            and mode in {"shared", "exclusive"}
+            else "unknown"
+        )
 
     @property
     def effects_trusted(self) -> bool:
@@ -323,7 +361,17 @@ class ApiContract:
         status = str(row.get("status") or raw.get("status") or "active")
         if role not in ROLES or status not in {"active", "valid", "confirmed", ""}:
             return None
-        symbol = SymbolIdentity.from_value(raw.get("symbol", {}), **dict(row))
+        source = str(row.get("source") or raw.get("source") or "user")
+        symbol_value = raw.get("symbol", {})
+        row_defaults = dict(row)
+        if not source.startswith("inferred"):
+            # USR precision is established only by the compiler chain from
+            # verified native facts.  A workbook/source row that spells a USR
+            # cannot borrow that precision; it stays a name-level identity.
+            if isinstance(symbol_value, dict):
+                symbol_value = {k: v for k, v in symbol_value.items() if k != "usr"}
+            row_defaults.pop("usr", None)
+        symbol = SymbolIdentity.from_value(symbol_value, **row_defaults)
         if not symbol.name:
             return None
         pairs = parse_pair_targets(row.get("pair") or raw.get("pairs") or [])
@@ -367,16 +415,29 @@ class ApiContract:
         cases = self.effect_cases or [
             {"when": legacy_predicate(self.conditions), "effect": "applies"}
         ]
-        possible = False
+        matched: set[str] = set()
+        possible: set[str] = set()
         for case in cases:
+            if not isinstance(case, Mapping) or case.get("effect") not in {
+                "applies",
+                "no_effect",
+                "unknown",
+            }:
+                return "unknown"
             status = evaluate(case.get("when"), arguments, returned, facts)
-            if status == "applies":
-                if case.get("effect") == "no_effect":
-                    return "does_not_apply"
-                if case.get("effect") == "applies" and prerequisite == "applies":
-                    return "applies"
-            possible |= status != "does_not_apply" and case.get("effect") != "no_effect"
-        return "unknown" if possible else "does_not_apply"
+            if status != "does_not_apply":
+                possible.add(case["effect"])
+                if status == "applies":
+                    matched.add(case["effect"])
+        # A matching case is not a priority rule. An overlapping contrary or
+        # unresolved effect must not discharge an obligation by list order.
+        if "unknown" in possible or {"applies", "no_effect"} <= possible:
+            return "unknown"
+        if "applies" in matched and prerequisite == "applies":
+            return "applies"
+        if "applies" in possible:
+            return "unknown"
+        return "does_not_apply"
 
 
 @dataclass(frozen=True)
@@ -395,6 +456,7 @@ class CallSemanticMatch:
     unknown_reason: str = ""
     callsite_facts: Any = field(default_factory=dict)
     transitions: Any = field(default_factory=list)
+    lock_mode: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return dataclass_dict(self)
@@ -417,6 +479,14 @@ def parse_pair_targets(value: Any) -> list[SymbolIdentity]:
     )
 
 
+def _snapshot_owner_usr(snapshot: Mapping[str, Any]) -> str:
+    """Owner-receipt USR of the snapshot's own symbol, from its native facts."""
+
+    from .build_scope import context_symbol_usr
+
+    return context_symbol_usr(snapshot)
+
+
 def contract_rows(snapshots: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     rows: dict[str, list[dict[str, Any]]] = {"resource": [], "lock": []}
     for snapshot in snapshots:
@@ -432,6 +502,15 @@ def contract_rows(snapshots: Iterable[Mapping[str, Any]]) -> dict[str, list[dict
                 file_path=snapshot.get("file_path", ""),
                 signature=snapshot.get("signature", ""),
                 symbol_type="macro" if snapshot.get("is_macro") else "function",
+                build_context_id=snapshot.get("build_context_id", declared.build_context_id),
+                # The owner receipt is the only authority for the USR: the
+                # explicit snapshot receipt first, then the receipt derived
+                # from the snapshot's own program facts.  A declared symbol
+                # USR cannot override or spoof either (it is honoured only
+                # when no receipt exists).
+                usr=(
+                    str(snapshot.get("usr") or "") or _snapshot_owner_usr(snapshot) or declared.usr
+                ),
             )
             raw = dict(raw, symbol=asdict(symbol))
             row = {
@@ -439,6 +518,7 @@ def contract_rows(snapshots: Iterable[Mapping[str, Any]]) -> dict[str, list[dict
                 "file_path": symbol.file_path,
                 "signature": symbol.signature,
                 "symbol_type": symbol.symbol_type,
+                "build_context_id": symbol.build_context_id,
                 "kind": raw.get("role", ""),
                 "contract": raw,
                 "pair": [asdict(p) for p in parse_pair_targets(raw.get("pairs") or [])],
@@ -475,6 +555,27 @@ class ContractRegistry:
     contracts: list[ApiContract] = field(default_factory=list)
     pairs: list[ApiPair] = field(default_factory=list)
     shadowed_symbols: set[str] = field(default_factory=set)
+    build_context_id: str = ""
+
+    def for_context(self, context: Mapping[str, Any]) -> "ContractRegistry":
+        from .build_scope import context_build_id
+
+        return ContractRegistry(
+            list(self.contracts),
+            list(self.pairs),
+            set(self.shadowed_symbols),
+            context_build_id(context),
+        )
+
+    def _in_scope(self, symbol: SymbolIdentity, build_context_id: str | None = None) -> bool:
+        from .build_scope import current_build_id
+
+        scope = (
+            (self.build_context_id or current_build_id())
+            if build_context_id is None
+            else build_context_id
+        )
+        return not symbol.build_context_id or symbol.build_context_id == scope
 
     @property
     def version(self) -> str:
@@ -494,6 +595,7 @@ class ContractRegistry:
         return digest(
             {
                 "schema": CONTRACT_SCHEMA_VERSION,
+                "compiler": CONTRACT_COMPILER_VERSION,
                 "shadowed_symbols": sorted(self.shadowed_symbols),
                 "contracts": [contracts[k] for k in sorted(contracts)],
                 "pairs": [pairs[k] for k in sorted(pairs)],
@@ -545,7 +647,14 @@ class ContractRegistry:
                 )
 
     def find(
-        self, name: str, role: str = "", file_path: str = "", signature: str = ""
+        self,
+        name: str,
+        role: str = "",
+        file_path: str = "",
+        signature: str = "",
+        *,
+        build_context_id: str | None = None,
+        usr: str | None = None,
     ) -> list[ApiContract]:
         scoped = [
             c for c in self.contracts if c.symbol.name == name and c.source != "builtin_defaults"
@@ -554,6 +663,7 @@ class ContractRegistry:
             c
             for c in self.contracts
             if c.symbol.name == name
+            and self._in_scope(c.symbol, build_context_id)
             and not ((scoped or name in self.shadowed_symbols) and c.source == "builtin_defaults")
             and (not role or c.role == role)
             and (
@@ -562,13 +672,76 @@ class ContractRegistry:
                 or c.symbol.file_path == file_path.replace("\\", "/")
             )
             and (not signature or not c.symbol.signature or c.symbol.signature == signature)
+            # Discovery-level USR narrowing only: an exact-USR query drops
+            # records pinned to a different native symbol; an omitted usr
+            # (None) states no USR knowledge and narrows nothing.
+            and (usr is None or not usr or not c.symbol.usr or c.symbol.usr == usr)
         ]
 
+    def find_for_call(
+        self,
+        name: str,
+        role: str = "",
+        file_path: str = "",
+        signature: str = "",
+        *,
+        usr: str | None = None,
+    ) -> list[ApiContract]:
+        """Resolve the symbol before filtering its effects by role.
+
+        A unique release contract among two overloads does not establish that
+        the call selects the releasing overload.  Raw ``find`` stays available
+        for discovery; effect consumers require an unambiguous identity.  An
+        exact native ``usr`` removes the false ambiguity between same-name
+        overloads whose identities the compiler pinned to their USRs.
+
+        ``usr`` omitted resolves the current native identity (the bound
+        call context's callee map, then the analysis context's own entry
+        symbol).  A failed resolution is an unknown identity and rejects
+        pinned records exactly like an explicit empty ``usr`` — omission is
+        never a wildcard that borrows a published record, and the number of
+        published records never proves which symbol this call selects.  Raw
+        :meth:`find` stays the discovery-level API.
+        """
+        if usr is None:
+            from .call_context import current_callee_usr
+
+            usr = current_callee_usr(self, name)
+        contracts = self.find(name, file_path=file_path, signature=signature, usr=usr)
+        contracts = [c for c in contracts if self._usr_authorized(c, usr)]
+        if len({contract.symbol for contract in contracts}) > 1:
+            return []
+        return [contract for contract in contracts if not role or contract.role == role]
+
+    @staticmethod
+    def _usr_authorized(contract: ApiContract, usr: str) -> bool:
+        """Symmetric USR authorization for granting effects.
+
+        A query without a USR cannot authorize a contract pinned to an exact
+        native symbol, and a USR-less record cannot answer an exact-USR
+        query.  The builtin standard roots keep their name-level verification
+        semantics under a USR query.
+        """
+
+        if usr:
+            return contract.symbol.usr == usr or (
+                not contract.symbol.usr and contract.source == "builtin_defaults"
+            )
+        return not contract.symbol.usr
+
     def releases(self, acquire: str) -> set[str]:
-        return {p.release.name for p in self.pairs if p.acquire.name == acquire}
+        return {
+            p.release.name
+            for p in self.pairs
+            if p.acquire.name == acquire and self._in_scope(p.acquire) and self._in_scope(p.release)
+        }
 
     def acquires(self, release: str) -> set[str]:
-        return {p.acquire.name for p in self.pairs if p.release.name == release}
+        return {
+            p.acquire.name
+            for p in self.pairs
+            if p.release.name == release and self._in_scope(p.acquire) and self._in_scope(p.release)
+        }
 
     def allows(self, acquire: str, release: str) -> bool:
         # A source-only detector cannot distinguish overloads or file-local
@@ -581,6 +754,8 @@ class ContractRegistry:
             if len(scoped) > 1:
                 return False
         for pair in self.pairs:
+            if not self._in_scope(pair.acquire) or not self._in_scope(pair.release):
+                continue
             if pair.source == "builtin_defaults" and ({acquire, release} & self.shadowed_symbols):
                 continue
             if pair.acquire.name != acquire or pair.release.name != release or pair.conditions:
@@ -608,13 +783,19 @@ class ContractRegistry:
         file_path: str = "",
         signature: str = "",
         facts: Mapping[str, Any] | None = None,
+        usr: str | None = None,
     ) -> list[CallSemanticMatch]:
-        from .call_context import unknown_reason, current_call_values
+        from .call_context import unknown_reason, current_call_values, current_callee_usr
 
         facts = {**current_call_values(self, name, arguments, returned), **dict(facts or {})}
-        matches = self.find(name, role, file_path, signature)
-        if len({c.symbol for c in matches if c.symbol.file_path or c.symbol.signature}) > 1:
-            return []
+        if usr is None:
+            # Resolve the callee's native USR from the bound call context (the
+            # per-body call map, then the analysis context's own entry symbol).
+            # A failed resolution is an unknown identity and rejects pinned
+            # records exactly like an explicit empty usr; the number of
+            # published records never proves which symbol this call selects.
+            usr = current_callee_usr(self, name)
+        matches = self.find_for_call(name, role, file_path, signature, usr=usr)
         return [
             CallSemanticMatch(
                 c.role,
@@ -634,7 +815,16 @@ class ContractRegistry:
                     else ""
                 ),
                 dict(facts or {}),
-                self.resolved_transitions(name, arguments, returned, facts=facts),
+                self.resolved_transitions(
+                    name,
+                    arguments,
+                    returned,
+                    facts=facts,
+                    file_path=file_path,
+                    signature=signature,
+                    usr=usr,
+                ),
+                c.lock_mode,
             )
             for c in matches
         ]
@@ -646,23 +836,55 @@ class ContractRegistry:
         returned: str = "",
         *,
         facts: Mapping[str, Any] | None = None,
+        file_path: str = "",
+        signature: str = "",
+        usr: str | None = None,
     ) -> list[dict[str, Any]]:
         from .contract_conditions import evaluate
-        from .call_context import current_call_values
+        from .call_context import current_call_values, current_callee_usr
 
         known = {**current_call_values(self, name, arguments, returned), **dict(facts or {})}
+        if usr is None:
+            usr = current_callee_usr(self, name)
         result = []
-        for contract in self.find(name):
+        for contract in self.find_for_call(name, file_path=file_path, signature=signature, usr=usr):
             if contract.protocol.get("kind") != "standard_api_effects":
                 continue
             for transition in contract.protocol.get("transitions", []):
                 status = evaluate(transition["when"], arguments, returned, known)
                 if not contract.effects_trusted and status != "does_not_apply":
                     status = "unknown"
+                async_effect = any(
+                    a.get("kind")
+                    in {
+                        "start_callback",
+                        "wait_callback_completion",
+                        "release_join_handle",
+                        "request_cancellation",
+                    }
+                    for a in transition.get("actions", [])
+                )
+                if (
+                    contract.role in {"lock", "unlock"} or async_effect
+                ) and status != "does_not_apply":
+                    # A partially verified recovery branch cannot regain
+                    # authority through an inherited standard transition.
+                    effect = contract.applicability(arguments, returned, known)
+                    if effect != "applies":
+                        status = effect
                 actions = []
                 for action in transition.get("actions", []):
                     resolved = {"kind": action["kind"]}
-                    for key in ("object", "old", "new"):
+                    if "lock_mode" in action:
+                        mode = action["lock_mode"]
+                        resolved["lock_mode"] = (
+                            mode
+                            if contract.effects_trusted
+                            and isinstance(mode, str)
+                            and mode in {"shared", "exclusive"}
+                            else "unknown"
+                        )
+                    for key in ("object", "old", "new", "callback", "context"):
                         if key in action:
                             binding = ObjectBinding.from_value(action[key])
                             resolved[key] = binding.resolve(arguments, returned)
@@ -680,8 +902,14 @@ class ContractRegistry:
         return result
 
     def allocation_extent(self, name: str, arguments: list[str]) -> str:
+        from .call_context import current_callee_usr
+
         expressions = set()
-        for contract in self.find(name):
+        # Effect-granting summary: resolve the current native callee identity
+        # exactly like match_call (call map, then the entry symbol); with no
+        # identity knowledge anywhere the lookup stays name-level under the
+        # registry's ambiguity rules.
+        for contract in self.find_for_call(name, usr=current_callee_usr(self, name)):
             if not contract.effects_trusted:
                 continue
             parts: list[str] = []
@@ -837,43 +1065,56 @@ class ContractRegistry:
         )
 
     def acquisition_domain(self, name: str, text: str) -> tuple[str, str]:
+        from .call_context import current_callee_usr
+
         arguments = self.call_arguments(name, text)
         if arguments is None:
             return "", ""
         values = {
             (c.resource_domain.resolve(arguments) if c.resource_domain else "", c.resource_family)
-            for c in self.find(name)
+            for c in self.find_for_call(name, usr=current_callee_usr(self, name))
             if c.role in ACQUIRE_ROLES
         }
         return next(iter(values)) if len(values) == 1 else ("", "")
 
-    def trace_calls(self, context: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """Auditable call-site resolutions against this frozen publication."""
+    def trace_calls(
+        self, context: Mapping[str, Any], *, source_facts: Any = None
+    ) -> list[dict[str, Any]]:
+        """Auditable call-site resolutions against this frozen publication.
+
+        The whole trace runs inside the caller's bound call context so each
+        resolution carries the native callee USR of its own body; callers do
+        not have to wrap this call themselves.
+        """
         from .contract_compiler import read_source_facts
 
-        source_facts = read_source_facts(context, self)
+        registry = self.for_context(context)
+        if source_facts is None:
+            source_facts = read_source_facts(context, registry)
         events = []
-        from .call_context import call_values
+        from .call_context import bind_call_context, call_values
 
-        for ordinal, call in enumerate(source_facts.calls):
-            known = call_values(source_facts, call)
-            for role in sorted({c.role for c in self.find(call.name)}):
-                for match in self.match_call(
-                    call.name, role, call.arguments, call.result, facts=known
-                ):
-                    events.append(
-                        {
-                            **match.to_dict(),
-                            "call_ordinal": ordinal,
-                            "caller": context.get("index_name") or context.get("func_name"),
-                            "file_path": context.get("file_path"),
-                            "arguments": call.arguments,
-                            "returned": call.result,
-                            "source_hash": digest(code_tokens(str(context.get("code") or ""))),
-                            "guard": call.guard,
-                            "source_facts_complete": source_facts.complete,
-                        }
-                    )
+        with bind_call_context(context, registry):
+            for ordinal, call in enumerate(source_facts.calls):
+                known = call_values(source_facts, call)
+                for role in sorted({c.role for c in registry.find(call.name)}):
+                    for match in registry.match_call(
+                        call.name, role, call.arguments, call.result, facts=known
+                    ):
+                        events.append(
+                            {
+                                **match.to_dict(),
+                                "call_ordinal": ordinal,
+                                "caller": context.get("index_name") or context.get("func_name"),
+                                "file_path": context.get("file_path"),
+                                "build_context_id": registry.build_context_id,
+                                "arguments": call.arguments,
+                                "returned": call.result,
+                                "source_hash": digest(code_tokens(str(context.get("code") or ""))),
+                                "guard": call.guard,
+                                "source_facts_complete": source_facts.complete,
+                            }
+                        )
         return events
 
 

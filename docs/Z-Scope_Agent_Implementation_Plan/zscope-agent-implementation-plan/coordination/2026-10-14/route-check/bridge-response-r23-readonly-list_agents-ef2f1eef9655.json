@@ -1,0 +1,202 @@
+{
+  "ok": true,
+  "coordinator": {
+    "mode": "manual",
+    "hint": "dispatch only when the user explicitly asked for a worker; dispatch_task is blocked unless user_requested=true",
+    "instructions": null,
+    "runtime_context": "coordinator",
+    "dispatch_enabled": true
+  },
+  "agents": [
+    {
+      "agent": "grok",
+      "available": false,
+      "version": null,
+      "detail": "grok not found",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.732737+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "kimi",
+      "available": true,
+      "version": "2.1.1",
+      "detail": "command=C:\\Users\\10273\\.kimi-code\\bin\\kimi.EXE; model=slugs the session advertises e.g. kimi-code/k3, kimi-code/k3-256k; effort mapped onto that model's thinking levels; mode forced to yolo; kimi-home=C:\\Users\\10273\\.kimi-code; auth=config-api-key (unverified); proxy=set",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:47.140410+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "cursor",
+      "available": false,
+      "version": null,
+      "detail": "cursor-agent not found; agent not found",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.753990+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "dsh",
+      "available": true,
+      "version": "Microsoft Windows [�汾 10.0.26200.9457]",
+      "detail": "command=C:\\Windows\\System32\\cmd.exe; dsh-home=C:\\Users\\10273\\.dsh; dsh-model=unset (DSH composition default); native acp profile: model=provider/model or id, effort=off|low|high|max via session/set_config_option; proxy=set",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.820950+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "claude",
+      "available": false,
+      "version": null,
+      "detail": "claude-agent-acp not found; claude-code-acp not found",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.753990+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "opencode",
+      "available": false,
+      "version": null,
+      "detail": "opencode not found",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.734736+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "devin",
+      "available": false,
+      "version": null,
+      "detail": "devin not found",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.737735+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "zcode",
+      "available": true,
+      "version": "0.67.0",
+      "detail": "command=C:\\Users\\10273\\.agent-bridge\\adapters\\zcode-acp-0.67.0\\node_modules\\.bin\\zcode-acp-server.cmd; model=provider\\model or a unique bare id the session advertises; effort mapped onto that model's thought levels; mode forced to yolo; zcode-home=C:\\Users\\10273\\.zcode; auth=login; product `zcode` is not ACP; worker is zcode-acp-server (npm zcode-acp-server; fallback `zcode-acp server`); proxy=set",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:47.007008+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "minimax",
+      "available": false,
+      "version": null,
+      "detail": "mcode not found",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.741736+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "antigravity",
+      "available": false,
+      "version": null,
+      "detail": "agy not found",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.738736+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    },
+    {
+      "agent": "codex",
+      "available": true,
+      "version": "codex-cli 0.162.0-alpha.17.2",
+      "detail": "command=C:\\Users\\10273\\AppData\\Local\\OpenAI\\Codex\\bin\\9614f1d9b40d9c4f\\codex.exe; model=codex slugs e.g. gpt-5.6-sol; effort=off|low|medium|high|max (off->none); default --approve-for-me, prompt via stdin; auth=$CODEX_HOME or ~/.codex ChatGPT login or CODEX_API_KEY / OPENAI_API_KEY; proxy=set",
+      "quota": {
+        "status": "unknown",
+        "windows": [],
+        "balance": null,
+        "plan": null,
+        "source": null,
+        "fetched_at": "2026-10-16T03:59:46.763092+00:00",
+        "cached": false,
+        "stale": false,
+        "detail": "quota lookup is disabled ([quota] enabled = false)"
+      }
+    }
+  ],
+  "environment_warnings": [
+    "5 other agent-bridge server instance(s) running on this machine (coordinator threads may each hold an instance; counts alone do not imply orphaned processes)"
+  ]
+}

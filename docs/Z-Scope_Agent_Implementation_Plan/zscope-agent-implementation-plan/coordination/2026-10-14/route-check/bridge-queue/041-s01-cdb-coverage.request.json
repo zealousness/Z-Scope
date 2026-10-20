@@ -1,0 +1,14 @@
+{
+  "id": "s01-cdb-coverage",
+  "branch": "S01-CDB-COVERAGE",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "s01-cdb-coverage",
+    "user_requested": true,
+    "request_id": "ddfb1d1a-4fa3-48b5-b1a8-c4ea587efed9",
+    "message": "本轮用户授权Agent-Bridge并行开发；Kimi此前反复普通API故障，用户明确允许转交既定ZCode hw/glm-5.3。你的任务是新解锁独立后端切片，不是被拦分支恢复。只能写下述项目内隔离目录中指定新文件和自己的DELIVERY/artifacts；其他复制输入只读。根checkout、公共scan_session/code_index/config/Web路由、静态/UI测试、共享文档/锁全部不改。全部前端和用户体验只能Astra亲自开发，你只产机器后端数据，不写用户流程或文案。禁止操作task_0947f2854f及此前被拦caller无通知/受限超时工作，禁止修改native/async_paths/lifecycle/protocol/rules/catalog或其测试。用户已确认旧观察线程归档，不需要你恢复/查询任何旧任务。不reset/clean/stash/commit/push，不改项目外配置/凭据，不重启任何Bridge/Agent；新拒绝准确停报，不换会话/模型绕过。\n先读隔离AGENTS、根coordination/2026-10-14/NEXT_BACKEND_CONTRACT.md和有关现有源码/规格。保持此前intake实现字节，不重复实现已接受的core。测试只能WSL Ubuntu /home/zeal/venv313/bin/python，使用你隔离目录绝对PYTHONPATH，最多一pytest；不得Windows形成结论，不安装共享venv、不重建native、不做真实模型扫描/formal/Range。真实native需用现有Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer。不把合成facts/controlled执行算native/完整扫描。提交稳定SHA/JUnit/compileall/mypy/Black与实际限制，前后字节一致，不与旧集合相加。先直接实现切片，在有限时间交付可审查模块；无法接全链路必须保持未接线，不能让字段冒充执行或完成。\n\n实际隔离目录：C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\n仅可写新文件：zscope/orchestration/entry_instance_coverage.py, tests/test_entry_instance_coverage.py\n输入为当前已接入entry_instances.py/CodeIndex与原BuildContext工具。已有helper只枚举存储contexts，无法证明CDB中每个预期命令已索引；整个scan_coverage_complete固定false，本任务不关闭它。新增readonly reconcile_entry_instance_coverage(code_index, *, compile_commands_path: Path, source_root: Path, include_paths=None, exclude_paths=None)->dict。复用indexing_identity.load_commands/source_path/command_identity/digest_json及build_context.context_input_status，不另造身份哈希或执行JSON命令。明确path选择范围与原索引一致；无法证明过滤一致时保留gap，不能假完整。逐预期(source,command_id)核对真实storedcontext，不能仅比总数/同source/name；同宏/不同宏命令分开，重复相同命令可明确dedup，额外/旧context不能补缺失命令。缺CDB/损坏/空/未知/工具收据或索引失败均保守gap；当前source/header/response/CDB/include否定依赖变化必须由现有context_input_status复核，不用缓存stat。返回schema zscope.entry-instance-coverage.v1, status, expected_commands(index选择分母未知则null), current_commands, missing_commands, stale_contexts, unexpected_contexts, gaps[{source,command_id,build_context_id?,reason,detail}], command_coverage_complete bool, scan_coverage_complete false。不推导链接归属/entry存在/Analyzer已运行。独立测试：单TU双宏少一context、等计数但错命令、重复命令、失效依赖/CDB/response/缺收据、过滤、Java/nonCDB无法解释边界。至少一个现有native真实两宏context对照，工具可用不skip假通过。不能修改旧模块；协调者负责scan_session/report最小公共接线。"
+  }
+}

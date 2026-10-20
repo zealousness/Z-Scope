@@ -1,0 +1,5 @@
+{
+  "global": "2",
+  "parent_personality": "00000000",
+  "probe_TSAN_OPTIONS": "verbosity=1"
+}

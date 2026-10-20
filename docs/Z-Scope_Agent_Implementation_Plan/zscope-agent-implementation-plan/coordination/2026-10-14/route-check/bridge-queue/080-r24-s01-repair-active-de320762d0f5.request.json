@@ -1,0 +1,7 @@
+{
+  "id": "r24-s01-repair-active-de320762d0f5",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  }
+}

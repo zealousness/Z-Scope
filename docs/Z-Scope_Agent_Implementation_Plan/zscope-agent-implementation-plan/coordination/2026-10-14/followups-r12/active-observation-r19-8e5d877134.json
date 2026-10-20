@@ -1,0 +1,65 @@
+{
+  "at": "2026-10-15T21:50:01.572497+08:00",
+  "tasks": {
+    "VALIDATION-CONTEXT-R18": {
+      "task_id": "task_1ef444cf29",
+      "session_id": "sess_a0adb99b15",
+      "status": "completed",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "started_at": "2026-10-15T12:06:58.250577+00:00",
+      "finished_at": "2026-10-15T12:19:40.355343+00:00",
+      "failure": null,
+      "warnings": [],
+      "tool_activity_types": [],
+      "receipt": "route-check/bridge-response-r19-active-validation-context-r18-8e5d877134.json"
+    },
+    "U01-STOP-AT-R18": {
+      "task_id": "task_4e43cb393d",
+      "session_id": "sess_b91680bb39",
+      "status": "completed",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "started_at": "2026-10-15T11:59:09.932523+00:00",
+      "finished_at": "2026-10-15T12:18:30.900692+00:00",
+      "failure": null,
+      "warnings": [],
+      "tool_activity_types": [
+        "tool_call",
+        "tool_call_update",
+        "tool_call_update"
+      ],
+      "receipt": "route-check/bridge-response-r19-active-u01-stop-at-r18-8e5d877134.json"
+    },
+    "S07-NATIVE-HOT-R19": {
+      "task_id": "task_7118aeca55",
+      "session_id": "sess_3b6b9a19b2",
+      "status": "completed",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "started_at": "2026-10-15T11:39:20.596671+00:00",
+      "finished_at": "2026-10-15T12:22:29.635701+00:00",
+      "failure": null,
+      "warnings": [],
+      "tool_activity_types": [],
+      "receipt": "route-check/bridge-response-r19-active-s07-native-hot-r19-8e5d877134.json"
+    },
+    "U01-JOB-CLI-WINDOW-R20": {
+      "task_id": "task_492e7a7037",
+      "session_id": "sess_b91680bb39",
+      "status": "running",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "observed_model": null,
+      "started_at": "2026-10-15T13:26:07.464557+00:00",
+      "finished_at": null,
+      "failure": null,
+      "warnings": [],
+      "tool_activity_types": [
+        "tool_call",
+        "tool_call_update",
+        "tool_call_update"
+      ],
+      "receipt": "route-check/bridge-response-r19-active-u01-job-cli-window-r20-8e5d877134.json"
+    }
+  }
+}

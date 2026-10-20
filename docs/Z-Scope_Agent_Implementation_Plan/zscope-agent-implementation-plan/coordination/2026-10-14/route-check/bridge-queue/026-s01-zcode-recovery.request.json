@@ -1,0 +1,14 @@
+{
+  "id": "s01-zcode-recovery",
+  "branch": "S01-INST",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S01 独立编译实例切片故障接续",
+    "user_requested": true,
+    "request_id": "7421a4b3-d2f6-4218-9c2c-6ae2146b4064",
+    "message": "用户父任务本次明确授权 S01 独立开发的普通故障恢复：Kimi task_f709895aa3 已公开failed/stop_reason=stalled（1800秒无ACP输出，Bridge自动取消turn），旧PID99896已由正式宿主只读核实不存在。原native证据含API超时重试，不是内容/权限拒绝。协调者保全了产物与回执，931隔离继承文件仍逐字节等于dirty基线，没有test_all_variant_scan.py，没有活动写入。选择你原hw/glm-5.3正常路由接续该独立分支，不改任何权限/配置/provider，不操作旧Kimi/session，不处理任何保留分支。出现新平台/权限/内容拒绝即停报告，不能换会话或模型绕过。\nBridge cwd 为原项目根；实际所有开发仅 .coordination/20261014/workspaces/s01-instances（Linux /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-instances）。它是当前dirty基线快照不是HEAD，SHA41d9c25a0e259457164b68191ed6d797b5d7e1e5a8b748b501fd79df37deabd1。不要改根checkout或其他隔离目录。先读隔离AGENTS、architecture、计划11/16/21/22与根coordination API_CONTRACT，用最新验收覆盖旧待办。不要重复全仓盘点，先落小可执行切片。\n所有权仅 zscope/orchestration/scan_session.py、global_modeler.py、zscope/retrieval/code_index.py、indexing_inventory.py、tests/test_all_variant_scan.py、必要的极小新内部instance helper（先在DELIVERY记录所有权）和本分支DELIVERY/artifacts。不能改Web/static、任何前端/UX/Astra测试（全部Astra亲自开发），也不能改native/async_paths/lifecycle/protocol/规则/catalog或相应测试、README/模块/21共享文档。严禁读取/派发/续发/改写/重试/代做用户保留 task_0947f2854f 的调用方一次无通知/受限超时分支；完整同一受限分支都排除。\n优先实现入口显式编译实例枚举与真正调度边界：复用 CodeIndex.get_build_contexts + get_function_program_facts(..., build_context_id=...)，每个精确BuildContext/USR为独立实例，未知不是通配符，不允许首命令/首context回落。相同源不同宏变体分别查询事实/独立分析调度，完全相同实例才去重；单变体失败/无entry/未知必须coverage gap，不授予其他变体也不显示覆盖完成。若完整Analyzer scope贯穿无法本切片闭合，明确剩余接线，不用枚举测试冒充完整S01。不要降低原验收标准以方便交付。\n正反例至少两宏变体分别且仅一次事实查询/调度，相同实例去重，单变体失败保持精确缺口与未完成。优先生产真实调用路径，test double只代外部native/模型，不把控制fixture宣称全量native扫描通过。必要最小参数接线，保留用户所有未提交修改，不reset/clean/stash/commit/push，不访问凭据或改项目外文件。\n测试和质量仅WSL Ubuntu /home/zeal/venv313/bin/python，隔离cwd和PYTHONPATH，不pip改共享venv安装，不重编任何native、不formal/真实LLM/Range、不并发大回归，最多一个pytest。定向测试并给JUnit、稳定源码SHA、compileall/mypy/必要Black和DELIVERY，清楚pass/fail/skip与未跑项。首个小切片完成即可结束，协调者验收后再解锁后续。\n"
+  }
+}

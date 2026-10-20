@@ -1,0 +1,18 @@
+{
+  "actual_task": "/root",
+  "owner": "coordinator",
+  "observed_at": "2026-10-17T11:55:42.542921+08:00",
+  "workspace": ".coordination/20261014/workspaces/coordinator-session-cost-r33",
+  "added_paths": [
+    "zscope/orchestration/scan_session.py",
+    "tests/test_session_preentry_cost_r33.py"
+  ],
+  "readonly_dependencies": {
+    "zscope/orchestration/parallel_analyzer.py": "f0f5edb9a858a8855401d9eb637306609626cc1aa8769f60927df1c07032d989",
+    "zscope/orchestration/instance_semantics_context.py": "d78ed827bf8ecea033df961260e0ec481adea722fad244d9e69e1c48ca438798",
+    "zscope/core/analysis/analyzer.py": "9e735f7bbf0e52832d9747873dafa4317e35ab88b2df4dc3c4b333873c531889"
+  },
+  "active_native_worker_files_disjoint": true,
+  "stage_write": false,
+  "root_write": false
+}

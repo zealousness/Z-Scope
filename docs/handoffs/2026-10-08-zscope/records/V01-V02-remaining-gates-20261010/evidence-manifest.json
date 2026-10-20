@@ -1,0 +1,138 @@
+{
+  "at": "2026-10-10T04:57:58.363Z",
+  "product_sha256": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "files": {
+    "gate-matrix.json": {
+      "bytes": 6526,
+      "sha256": "6e47e4bdd91e3ad95edadfc35a45b6bc136e6781f4fd897707dbb0f768d051df"
+    },
+    "original-standard-snapshots.json": {
+      "bytes": 11056,
+      "sha256": "00258e472268f93b20ef3e064e8dbf611b256382e4b2159718e4f5304f532228"
+    },
+    "prior-evidence-index.json": {
+      "bytes": 18162,
+      "sha256": "be061dc0b838d699b4b193d66cac5fe55538a7f38a7956bf2df2d74b5afc30ef"
+    },
+    "static-resource-findings.json": {
+      "bytes": 7656,
+      "sha256": "79c6cb4c9fc84d438a72d59667222dfb38cae268d228dacd437e4b8d8673352e"
+    },
+    "TSAN-evidence/container.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/container.stdout.log": {
+      "bytes": 864,
+      "sha256": "fb97aa01e7e142eb132c2f30d3d79fb4839fdc8e23a0f19777cd314f100c052b"
+    },
+    "TSAN-evidence/isolation-verification.json": {
+      "bytes": 3200,
+      "sha256": "1f6187e11e4498ad42a55217873ee1d4efa7fbf434e647ba54739b2cbd219f05"
+    },
+    "TSAN-evidence/observed-executions.json": {
+      "bytes": 5644,
+      "sha256": "6e714d49616f45da27df97cd7cead86913d0cd488236db91dae80fc10e3d0341"
+    },
+    "TSAN-evidence/pytest-request.json": {
+      "bytes": 725,
+      "sha256": "1e5917e63693bb1d5be79fc1c9c3651ecaac41b76df22bc77e626849de535309"
+    },
+    "TSAN-evidence/pytest-return.json": {
+      "bytes": 100,
+      "sha256": "94add1e0b95bd63b1033640bfcb8c898d9e804d441147016963125e1a2c72b6f"
+    },
+    "TSAN-evidence/raw/001-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/002-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/003-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/004-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/005-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/006-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/007-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/008-direct-stderr.log": {
+      "bytes": 80,
+      "sha256": "0aed53cbc0e536e726dac0ad76a42f04066fafcda2903ee9c172f5ad3083ba55"
+    },
+    "TSAN-evidence/raw/009-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/010-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/011-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "TSAN-evidence/raw/012-direct-stderr.log": {
+      "bytes": 80,
+      "sha256": "db7534836ebd059825f13fc2ee3a7bf8c852192d0dfcf3ad6abfbfd625a19f7a"
+    },
+    "TSAN-evidence/staging-manifest.json": {
+      "bytes": 48125,
+      "sha256": "1f6a5b696c78abc31b85c0f2d7efd716640418e94b0ba073e03b2ff0dea7f894"
+    },
+    "TSAN-evidence/toolchain-preflight.json": {
+      "bytes": 563,
+      "sha256": "d7210d1076d85e299c7d32d26b2e563980f9dd7d4b350ebf1b0a04dcfd5f97b6"
+    },
+    "TSAN-evidence/tsan-minimal-inside.py": {
+      "bytes": 10242,
+      "sha256": "7b6dbc161f12b76752e1d0571012bd59489507890e7ee845fd28fd813f227e00"
+    },
+    "TSAN-evidence/tsan-probe.json": {
+      "bytes": 224,
+      "sha256": "6894320a2bcf3dfe686bae490eecc5c1ecd4b7f7d712f8094acd22684ff20277"
+    },
+    "TSAN-evidence/tsan.xml": {
+      "bytes": 1047,
+      "sha256": "6612109529258afe260be7de13eca88d0d71a706d0ae8022566727880adb233f"
+    },
+    "TSAN-runtime-addendum.json": {
+      "bytes": 5742,
+      "sha256": "1d2289c198c34c62c71be1330d4fc0eb766b657716718daf209d1cc17ccfe000"
+    },
+    "V01-V02-TSAN-minimal-20261010-xc9j8htj.json": {
+      "bytes": 150186,
+      "sha256": "5df3c46aff2bf4ffc8c1e07cdd2774097270d35807b024545790ac9f062e3efc"
+    },
+    "V01-V02-TSAN-minimal-20261010.json": {
+      "bytes": 89393,
+      "sha256": "6d9dcdc5d7ad7efdded308f5bcdd51741c3d1698e6c1c3a200a74fb9703bd444"
+    },
+    "V01-V02-TSAN-minimal-container-20261010.py": {
+      "bytes": 10018,
+      "sha256": "d2c6bc9208cf03092b1f324855950f95ab742682aac142af41a90987fdaad5d1"
+    },
+    "V01-V02-TSAN-minimal-inside-20261010.py": {
+      "bytes": 10242,
+      "sha256": "7b6dbc161f12b76752e1d0571012bd59489507890e7ee845fd28fd813f227e00"
+    }
+  },
+  "report": {
+    "name": "V01-V02-remaining-gates-20261010.md",
+    "sha256": "01033e6f92ae4ec8ee3f898a027898424ae0b81cbf39fa9bcdb8d3322c9b9a28"
+  }
+}

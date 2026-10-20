@@ -1,0 +1,474 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:24:21.190948+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " JOB05"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:21.422514+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "；PID 复"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:21.668574+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "用不误"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:21.877907+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "杀"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:22.106634+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "反"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:22.337016+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "例"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:22.565390+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "；stop_at 窗口"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:22.793159+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "→partial"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:23.072593+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "；"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:24.266483+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "st"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:24.275599+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "ale "
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:24.282254+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "报告不绑定"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:24.288662+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "/f"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:24.296942+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "resh 报告绑定）。\n-"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:24.436366+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " `DELIVERY.md`（"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:24.624825+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "行为"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:24.855086+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "清单、验证"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:25.087602+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "证据、4"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:25.311289+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 项"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:25.538913+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "审查发现、HTTP"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:25.768286+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "/find"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:25.995657+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "ings/report identity"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:26.226181+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "/scheduler hook"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:26.453255+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 接线"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:26.691429+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "说明、限制"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:26.939793+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "边界）。\n\n**验证（W"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:27.141320+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "SL Ubuntu"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:27.370048+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "，venv"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:27.598236+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "313"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:27.833249+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " Python"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:28.064753+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 3.13"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:28.284487+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ".15，PYTHON"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:28.515379+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "PATH="
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:28.739898+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "工作区）"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:28.972533+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "**\n- `"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:29.714687+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "pytest tests"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:29.722850+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "/test_scan_jobs.py tests/test"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:29.731618+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "_scan_job_execution.py`：**"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:29.885121+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "53 passed / "
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:30.113134+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "0 failed**，"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:30.345893+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "连续三次全"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:30.574202+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "量一致（修复"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:30.802850+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "了一"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:31.031940+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "处 owner 退出与"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:31.259111+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "终"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:31.487311+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "态写入"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:31.732477+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "的竞态断言）；运行"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:31.945051+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "后无残留进程"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:32.176711+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "。\n- `compile"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:32.465053+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "all -f -q"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:32.633619+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " zscope scripts test tests`"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:32.869345+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "：通过。\n- `check"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:33.092687+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "_mypy_baseline.py"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:33.320168+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "`：报告"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:33.649494+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " "
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:33.780307+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "3 个基"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:34.008134+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "线外错误，**"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:24:34.261772+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "全部在"
+      }
+    }
+  ],
+  "offset": 478,
+  "count": 58,
+  "next_offset": 536,
+  "has_more": true,
+  "total_matching": 669
+}

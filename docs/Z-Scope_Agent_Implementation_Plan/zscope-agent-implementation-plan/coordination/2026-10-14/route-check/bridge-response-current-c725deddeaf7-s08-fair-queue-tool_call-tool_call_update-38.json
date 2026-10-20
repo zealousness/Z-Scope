@@ -1,0 +1,136 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T08:46:27.542150+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_05325bcb057043fe8b3a2de1",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:27.585934+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_b705c8eb6f324e1288b21bde",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:27.623656+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_b705c8eb6f324e1288b21bde",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\zscope\\orchestration\\jobs\\models.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:27.946118+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_05325bcb057043fe8b3a2de1",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:27.950119+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_05325bcb057043fe8b3a2de1",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\zscope\\orchestration\\jobs\\store.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:38.506314+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Read: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_ead18a3e2bda480cac766dda",
+        "kind": "read",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\zscope\\orchestration\\jobs\\scheduler_hook.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\\zscope\\\\orchestration\\\\jobs\\\\scheduler_hook.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:38.512939+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ead18a3e2bda480cac766dda",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:38.550979+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ead18a3e2bda480cac766dda",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:38.615088+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ead18a3e2bda480cac766dda",
+        "status": "completed",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\zscope\\orchestration\\jobs\\scheduler_hook.py"
+        ]
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:38.915924+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: ls \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\tests\" | grep -i -E \"job|scan_job|owner|s08\" ; echo \"===\"; wc -l \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\zscope\\orchestration\\jobs\\owner.py\" \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\zscope\\orchestration\\jobs\\identity.py\" \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-scheduling\\zscope\\orchestration\\jobs\\__init__.py\"",
+        "tool_call_id": "call_c6074bf3aed7420d98fe1915",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"ls \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\\tests\\\" | grep -i -E \\\"job|scan_job|owner|s08\\\" ; echo \\\"===\\\"; wc -l \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\\zscope\\\\orchestration\\\\jobs\\\\owner.py\\\" \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s08-scheduling\\\\zscope\\\\orchestration\\\\jobs\\\\identity.py\\\" \\\"C:\\\\U…"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:38.915924+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c6074bf3aed7420d98fe1915",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:39.054179+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c6074bf3aed7420d98fe1915",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 38,
+  "count": 12,
+  "next_offset": 50,
+  "has_more": false,
+  "total_matching": 50
+}

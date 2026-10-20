@@ -1,0 +1,41 @@
+{
+  "at": "2026-10-14T10:17:35.722881+00:00",
+  "branch": "s08-r5",
+  "independent_junit": "s08-r5-fixed-independent.xml",
+  "tests": [
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "83",
+      "time": "41.415",
+      "timestamp": "2026-10-14T18:14:57.104242+08:00",
+      "hostname": "Cindala"
+    }
+  ],
+  "baseline_inputs_unchanged": 931,
+  "files": [
+    {
+      "path": "zscope/orchestration/jobs/service.py",
+      "sha256": "45c66a0932f0c01f21414dd8859b79f2e34498a41b9fcc90544e0dd7c579c9a6",
+      "old_sha256": "21cbd74b3ed0f4aad31c79f083fb6a9a7d3399442ce8bbcb95ae34d41ad03572"
+    },
+    {
+      "path": "zscope/orchestration/jobs/store.py",
+      "sha256": "170c3d964c0d7b43b6a8520e721e372241f5819ae983c43f4731656d3c9d97d4",
+      "old_sha256": "b2f06107e31ee5905668f6e68276b5ff22d5914cc4f8470ec6413edddec44a59"
+    },
+    {
+      "path": "tests/test_scan_jobs.py",
+      "sha256": "c553aeb6da7a946df6b417fdf38e3fc9a45ca89d30b9104d054fc39389156ff3",
+      "old_sha256": "89437697e1b97ed2c180916a1b71817875c4becd9479f1b7d011e9a1017e506c"
+    },
+    {
+      "path": "tests/test_scan_job_execution.py",
+      "sha256": "a69d0284e487cb7b80f0fefec0c3e06380915769cfde0f87718208c64c38e98b",
+      "old_sha256": "74e60ae3d8c18f21ac81f28ec3822f5ce05419394a23e0095c35d7ee2078982d"
+    }
+  ],
+  "scope": "accepted backend slice; not whole package"
+}

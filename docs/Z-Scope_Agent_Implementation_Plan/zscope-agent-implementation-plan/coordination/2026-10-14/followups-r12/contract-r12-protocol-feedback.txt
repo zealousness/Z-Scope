@@ -1,0 +1,16 @@
+继续同ZCode GLM5.3/session/contract-validation-r12副本，修复独立验收新的真实产品失败；不要重复服务或接触其他任务。task_2d639b45b8已于03:55:52结束、WSL生产者进程已空。原自验892/0 + quality和原11边界独验通过保留；它们不替代新增真实协议消费反例。
+
+有效证据 artifacts/coordinator-contract-r12-final2-published-protocol-20261015/review.json，04:06:11完成，13测试11pass/2fail/0error/skip，stable_frozen_inputs/producer_current_matches_frozen均true。新增test_contract_protocol_usr_boundary.py使用真实refcount native工程，通过实际compile_snapshot→publish/workbook reload，先确认合法契约USR等于真实body.owner.usr且LifecyclePaths._contract接受；然后仅将已发布契约USR替换为空/foreign，保持相同build/file/name/verified效果，实际LifecyclePaths._contract仍授予此效果。正例原样已通过，失败在最终assert rejected is None，不是fixture准备失败。
+之前final2-protocol-boundary版本用了registered()旧原生checker直接输出，合法行本就缺USR，失败在准备断言，保留为setup观察不拿它冒充此次正确负例。更早manual invocation有2skip因为没设nativeenv，同样不算验收。上述published-protocol版本是全部工具真实、无skip的有效收据。
+
+最新明确所有权变更：协调者已写 followups-r12/contract-validation-r12-ownership-extension.json，原7文件外仅新增以下5个文件由本任务单写（覆盖原任务“这些文件只读”的旧清单）；原baseline保留，新增之前5文件在root/副本均与原baseline相同，Kimi/Astra无冲突：
+- zscope/core/candidates/cpp_domains/lifecycle_paths.py
+- zscope/core/candidates/cpp_domains/retained_slots.py
+- zscope/semantics/single_slot_pool.py
+- zscope/semantics/refcount_protocols.py
+- zscope/semantics/handle_protocols.py
+其它文件仍只读，root最终共享集成和验收由协调者负责。不要未经交接改其它producer/consumer；发现需要更多文件时给最小具体接口/调用点，不能弱化授权来绕过。
+
+修复方向：LifecyclePaths已持有实际native body.owner.usr，取效果时把这精确身份交find_for_call并拒空/错误/外来publication，而不是省略USR让其按name授予。retained_slots已有实际callee.usr也应精确传递。实际protocol checker核验body.owner后发布其真实USR，三份新增checker文件可补此字段，保持build/file/signature/native验证及原所有收据，不能从用户行或声明伪造USR、不能放宽from_row/当前源码重新核验。旧native正例registered()直接使用checker输出时应自然携带已验证USR，不能改只读旧测试绕过真实协议链。find/find_for_call若保留发现查询，任何实际效果消费路径不能因此省略当前已知USR；尤其contracts内部allocation_extent/acquisition_domain也核对当前native callee身份。请核查其余真实直接效果调用者并列出已接/待接，不宣称整S01完成；不要只用match_call最末过滤掩盖其它授权口。
+
+原37测试文件+原11探针全部保留，新2published-protocol反例加入最终全量。用户不要求旧name-only兼容；仅旧测试直接发现查找不授予效果时可以保留discovery行为，但不能让实际消费回退。不要改原测试/探针，正反例全部继续，完整12个owned文件必要Black，compileall/mypy，所有最终稳定字节0fail/error/skip后新DELIVERY、SHA、UTC+8时刻、日志/JUnit和停写声明。源工具/测试启动要求不变：WSL zeal bash -lc/venv313，root test_slot两槽/ext4 TMPDIR/默认fd，实际clang-indexer只读不得重建；native环境必须显式设置。根R15已1206全通过，不包含本交付；Kimi task_2ba352c7a1独占ScanSession/parallel/scan_work，Astra新astra-job-projection-r15独占UI；不能改他们目录。原S06归档不操作，不改provider/审批/凭据，转交不能规避审核。

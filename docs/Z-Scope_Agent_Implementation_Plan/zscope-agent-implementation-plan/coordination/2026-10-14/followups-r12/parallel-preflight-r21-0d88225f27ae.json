@@ -1,0 +1,18 @@
+{
+  "at": "2026-10-15T23:50:43.389875+08:00",
+  "existing_owner_only": true,
+  "dispatch_or_session_resume": false,
+  "archived_sessions_requested": false,
+  "active_sessions": [],
+  "coordinator": {
+    "mode": "manual",
+    "hint": "dispatch only when the user explicitly asked for a worker; dispatch_task is blocked unless user_requested=true",
+    "instructions": null,
+    "runtime_context": "coordinator",
+    "dispatch_enabled": true
+  },
+  "response_paths": {
+    "list_sessions": "route-check/bridge-response-r21-readonly-list_sessions-0d88225f27ae.json",
+    "list_agents": "route-check/bridge-response-r21-readonly-list_agents-0d88225f27ae.json"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "session_id": "sess_c3c6c01381",
+  "kinds": "tool_call,tool_call_update",
+  "start_offset": 0,
+  "next_offset": 41,
+  "pages": 3,
+  "total_matching": 41,
+  "has_more": false,
+  "events_read": 41,
+  "latest_at": "2026-10-14T08:46:48.017412+00:00",
+  "failed_tools": [],
+  "completed_tail": [
+    {
+      "ts": "2026-10-14T08:46:30.782458+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_b8c15645eefb4fae87982a6e",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:41.921697+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_a3edb1b0c1234302bdc657cd",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:48.017412+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_1b1ed678127f43b1bd534acb",
+        "status": "completed"
+      }
+    }
+  ]
+}

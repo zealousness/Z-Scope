@@ -1,0 +1,7 @@
+{
+  "id": "r25-s01-active-ec9dcff68de4",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  }
+}

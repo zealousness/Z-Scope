@@ -278,7 +278,9 @@ class RegexMemoryBoundsIntegerRules:
     def _rule_stack_escape(self, lines: List[CodeLine], emit) -> None:
         locals_seen = self._collect_local_vars(lines)
         for line in lines:
-            create = re.search(r"\bpthread_create\s*\((?P<args>[^;]+)\)", line.text)
+            create = re.search(
+                self._literal_api_pattern(r"\bpthread_create\s*\((?P<args>[^;]+)\)"), line.text
+            )
             if create:
                 for var, decl in locals_seen.items():
                     if f"&{var}" in create.group("args") and decl.index < line.index:
@@ -413,7 +415,9 @@ class RegexMemoryBoundsIntegerRules:
                 casts[cast.group("size")] = (line, cast.group("src"))
             for size_var, (cast_line, src_var) in list(casts.items()):
                 if re.search(
-                    rf"\b(?:memcpy|memmove|{user_io_len})\s*\([^;]*\b{re.escape(size_var)}\b",
+                    self._literal_api_pattern(
+                        rf"\b(?:memcpy|memmove|{user_io_len})\s*\([^;]*\b{re.escape(size_var)}\b"
+                    ),
                     line.text,
                 ):
                     emit(
@@ -536,7 +540,9 @@ class RegexMemoryBoundsIntegerRules:
             if decl and "=" not in line.text and "typedef" not in line.text:
                 struct_locals[decl.group("var")] = (line, 0, False)
             for var, (decl_line, field_writes, has_memset) in list(struct_locals.items()):
-                if re.search(rf"\bmemset\s*\(\s*&{re.escape(var)}\s*,", line.text):
+                if re.search(
+                    self._literal_api_pattern(rf"\bmemset\s*\(\s*&{re.escape(var)}\s*,"), line.text
+                ):
                     struct_locals[var] = (decl_line, field_writes, True)
                 elif re.search(rf"\b{re.escape(var)}\.[A-Za-z_]\w*\s*=", line.text):
                     struct_locals[var] = (decl_line, field_writes + 1, has_memset)
@@ -679,7 +685,7 @@ class GraphMemoryBoundsIntegerRules:
         issues: List[Dict[str, Any]],
     ) -> None:
         text = "\n".join(line.text for line in view.lines)
-        if "memset" in text:
+        if "memset" in text and self._semantic_call_allowed("memset", "copy"):
             return
         for line in view.lines:
             match = re.search(
@@ -734,6 +740,8 @@ class GraphMemoryBoundsIntegerRules:
         view: FunctionView,
         issues: List[Dict[str, Any]],
     ) -> None:
+        array_size_allowed = self._semantic_call_allowed("ARRAY_SIZE", "standard_operation")
+        array_size_name = "ARRAY_SIZE" if array_size_allowed else "(?!)"
         local_arrays: Dict[str, Tuple[str, GraphLine]] = {}
         for line in view.lines:
             match = re.search(
@@ -788,8 +796,8 @@ class GraphMemoryBoundsIntegerRules:
                 )
                 array_limit, array_line = local_arrays[array_name]
                 guard_text = "\n".join(item.text for item in view.lines[max(0, idx - 8) : idx + 1])
-                if "ARRAY_SIZE" in guard_text or re.search(
-                    rf"\b{re.escape(limit_name)}\s*<=\s*(?:{re.escape(array_limit)}|ARRAY_SIZE|sizeof)",
+                if (array_size_allowed and "ARRAY_SIZE" in guard_text) or re.search(
+                    rf"\b{re.escape(limit_name)}\s*<=\s*(?:{re.escape(array_limit)}|{array_size_name}|sizeof)",
                     guard_text,
                 ):
                     continue
@@ -815,8 +823,8 @@ class GraphMemoryBoundsIntegerRules:
                 )
                 return
             guard_text = "\n".join(item.text for item in view.lines[max(0, idx - 5) : idx + 1])
-            if "ARRAY_SIZE" in guard_text or re.search(
-                rf"\b{re.escape(limit_name)}\s*<=\s*(?:ARRAY_SIZE|sizeof)", guard_text
+            if (array_size_allowed and "ARRAY_SIZE" in guard_text) or re.search(
+                rf"\b{re.escape(limit_name)}\s*<=\s*(?:{array_size_name}|sizeof)", guard_text
             ):
                 continue
             issues.append(
@@ -899,11 +907,15 @@ class GraphMemoryBoundsIntegerRules:
             guard_text = "\n".join(item.text for item in view.lines[: line.index + 1])
             if (
                 re.search(
-                    rf"\b{re.escape(idx_name)}\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)",
+                    self._literal_api_pattern(
+                        rf"\b{re.escape(idx_name)}\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)"
+                    ),
                     guard_text,
                 )
                 or re.search(
-                    rf"\b{re.escape(idx_name)}\s*>?=\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)",
+                    self._literal_api_pattern(
+                        rf"\b{re.escape(idx_name)}\s*>?=\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)"
+                    ),
                     guard_text,
                 )
                 or re.search(
@@ -975,7 +987,9 @@ class ClangMemoryBoundsIntegerRules:
         var = risky_use.group("var")
         assign_line = None
         for item in reversed(lines[max(0, line.index - 10) : line.index]):
-            if re.search(rf"\b{re.escape(var)}\s*=\s*strchr\s*\(", item.text):
+            if re.search(
+                self._literal_api_pattern(rf"\b{re.escape(var)}\s*=\s*strchr\s*\("), item.text
+            ):
                 assign_line = item
                 break
         if assign_line is None:
@@ -1044,9 +1058,11 @@ class ClangMemoryBoundsIntegerRules:
         array_name = match.group("array")
         guard_window = "\n".join(item.text for item in lines[: line.index + 1])
         explicit_bound = re.search(
-            rf"\b{re.escape(idx_name)}\s*(?:<|<=|>=|>)\s*"
-            rf"(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|"
-            r"[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM|CORES|SIZE)[A-Z0-9_]*)",
+            self._literal_api_pattern(
+                rf"\b{re.escape(idx_name)}\s*(?:<|<=|>=|>)\s*"
+                rf"(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|"
+                r"[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM|CORES|SIZE)[A-Z0-9_]*)"
+            ),
             guard_window,
         )
         validator_guard = re.search(
@@ -1097,8 +1113,10 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         copy = re.search(
-            r"\bmemcpy\s*\(\s*&\s*(?P<count>[A-Za-z_]\w*)\s*,\s*"
-            r"(?P<src>[A-Za-z_]\w*)\s*\+\s*(?P<offset>\d+)\s*,\s*sizeof\s*\(\s*(?P=count)\s*\)\s*\)",
+            self._literal_api_pattern(
+                r"\bmemcpy\s*\(\s*&\s*(?P<count>[A-Za-z_]\w*)\s*,\s*"
+                r"(?P<src>[A-Za-z_]\w*)\s*\+\s*(?P<offset>\d+)\s*,\s*sizeof\s*\(\s*(?P=count)\s*\)\s*\)"
+            ),
             line.text,
             re.IGNORECASE,
         )
@@ -1249,9 +1267,7 @@ class ClangMemoryBoundsIntegerRules:
             validation_required=not audit_only,
             finding_kind="audit_observation" if audit_only else "clang_ast_cfg_candidate",
             audit_observation_reason=(
-                "大小/规格上限不匹配，且在本地 CFG 中没有可见的不安全汇点"
-                if audit_only
-                else ""
+                "大小/规格上限不匹配，且在本地 CFG 中没有可见的不安全汇点" if audit_only else ""
             ),
         )
 
@@ -1464,7 +1480,9 @@ class ClangMemoryBoundsIntegerRules:
         if field and field.group("var") in aggregate_field_writes:
             aggregate_field_writes[field.group("var")].add(field.group("field"))
         memset = re.search(
-            r"\bmemset\s*\(\s*&?\s*(?P<var>[A-Za-z_]\w*)\s*,\s*0\s*,\s*sizeof\s*\(\s*(?P=var)\s*\)\s*\)",
+            self._literal_api_pattern(
+                r"\bmemset\s*\(\s*&?\s*(?P<var>[A-Za-z_]\w*)\s*,\s*0\s*,\s*sizeof\s*\(\s*(?P=var)\s*\)\s*\)"
+            ),
             line.text,
         )
         if memset and memset.group("var") in aggregate_field_writes:
@@ -1527,7 +1545,9 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         copy_call = re.search(
-            r"\b(?P<api>memcpy|memmove)\s*\(\s*(?P<dst>[A-Za-z_]\w*)\s*,\s*[^,]+,\s*(?P<len>[^)]+)\)",
+            self._literal_api_pattern(
+                r"\b(?P<api>memcpy|memmove)\s*\(\s*(?P<dst>[A-Za-z_]\w*)\s*,\s*[^,]+,\s*(?P<len>[^)]+)\)"
+            ),
             line.text,
         )
         if not copy_call:
@@ -1594,7 +1614,9 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         copy_call = re.search(
-            r"\b(?P<api>memcpy|memmove)\s*\(\s*[^,]+,\s*(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<len>[^)]+)\)",
+            self._literal_api_pattern(
+                r"\b(?P<api>memcpy|memmove)\s*\(\s*[^,]+,\s*(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<len>[^)]+)\)"
+            ),
             line.text,
         )
         if not copy_call:
@@ -1662,7 +1684,9 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         sink = re.search(
-            r"\b(?P<api>memcpy|memmove|memset|strncpy)\s*\(\s*(?P<args>.*)\)",
+            self._literal_api_pattern(
+                r"\b(?P<api>memcpy|memmove|memset|strncpy)\s*\(\s*(?P<args>.*)\)"
+            ),
             line.text,
         )
         if not sink:
@@ -1938,8 +1962,10 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         trunc = re.search(
-            r"\bstrncpy\s*\(\s*(?P<dst>[A-Za-z_]\w*\s*->\s*(?:key|name|id)|[A-Za-z_]\w*\.(?:key|name|id))\s*,\s*"
-            r"(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<limit>\d+|[A-Z_][A-Z0-9_]*)\s*\)",
+            self._literal_api_pattern(
+                r"\bstrncpy\s*\(\s*(?P<dst>[A-Za-z_]\w*\s*->\s*(?:key|name|id)|[A-Za-z_]\w*\.(?:key|name|id))\s*,\s*"
+                r"(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<limit>\d+|[A-Z_][A-Z0-9_]*)\s*\)"
+            ),
             line.text,
         )
         if not trunc:
@@ -1952,7 +1978,9 @@ class ClangMemoryBoundsIntegerRules:
             item.text for item in lines[max(0, lookup_line.index - 4) : line.index + 1]
         )
         if re.search(
-            rf"\bstrlen\s*\(\s*{re.escape(src)}\s*\)\s*(?:<|<=)\s*{re.escape(trunc.group('limit'))}\b",
+            self._literal_api_pattern(
+                rf"\bstrlen\s*\(\s*{re.escape(src)}\s*\)\s*(?:<|<=)\s*{re.escape(trunc.group('limit'))}\b"
+            ),
             guard_window,
         ):
             return
@@ -2247,7 +2275,7 @@ class ClangMemoryBoundsIntegerRules:
         local_aggregates: Dict[str, Tuple[ClangCfgLine, str]],
     ) -> None:
         for api, args in self._calls(line.text):
-            if api != "pthread_create":
+            if api != "pthread_create" or not self._semantic_call_allowed(api, "thread_create"):
                 continue
             split = self._split_args(args)
             if len(split) < 4:
@@ -2515,8 +2543,10 @@ class ClangMemoryBoundsIntegerRules:
         later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 16])
         return bool(
             re.search(
-                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc)\s*"
-                rf"\([^;]*\b{re.escape(length_var)}\b",
+                self._literal_api_pattern(
+                    rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc)\s*"
+                    rf"\([^;]*\b{re.escape(length_var)}\b"
+                ),
                 later,
             )
         )
@@ -2691,8 +2721,14 @@ class ClangMemoryBoundsIntegerRules:
         alloc_token = re.escape(str(alloc_size).strip())
         return bool(
             re.search(rf"\b{copy_token}\b\s*(?:<=|<)\s*\b{alloc_token}\b", window)
-            or re.search(rf"\bmin\s*\(\s*{copy_token}\s*,\s*{alloc_token}\s*\)", window)
-            or re.search(rf"\bmin\s*\(\s*{alloc_token}\s*,\s*{copy_token}\s*\)", window)
+            or re.search(
+                self._literal_api_pattern(rf"\bmin\s*\(\s*{copy_token}\s*,\s*{alloc_token}\s*\)"),
+                window,
+            )
+            or re.search(
+                self._literal_api_pattern(rf"\bmin\s*\(\s*{alloc_token}\s*,\s*{copy_token}\s*\)"),
+                window,
+            )
         )
 
     def _find_pointer_backtrack_assignment(
@@ -2836,7 +2872,8 @@ class ClangMemoryBoundsIntegerRules:
         for item in reversed(lines[max(0, line.index - 32) : line.index]):
             match = re.search(
                 rf"(?:^|[;{{}}])\s*(?!(?:return|else)\b)"
-                rf"(?:[A-Za-z_]\w*\s+)+(?:\*\s*)?{escaped}\s*\[\s*(?P<size>[A-Za-z_]\w*|\d+)\s*\]\s*(?:=|;)", item.text
+                rf"(?:[A-Za-z_]\w*\s+)+(?:\*\s*)?{escaped}\s*\[\s*(?P<size>[A-Za-z_]\w*|\d+)\s*\]\s*(?:=|;)",
+                item.text,
             )
             if match:
                 return item, match.group("size")
@@ -2889,9 +2926,15 @@ class ClangMemoryBoundsIntegerRules:
         if re.fullmatch(r"\d+", count_expr) and re.fullmatch(r"\d+", array_size):
             return int(count_expr) <= int(array_size)
         patterns = [
-            rf"\b{count}\b\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})",
-            rf"\bif\s*\([^)]*\b{count}\b\s*>\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})[^)]*\)\s*(?:return|goto|break)",
-            rf"\b{count}\b\s*=\s*(?:MIN|min)\s*\(\s*\b{count}\b\s*,\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|{size_escaped})",
+            self._literal_api_pattern(
+                rf"\b{count}\b\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})"
+            ),
+            self._literal_api_pattern(
+                rf"\bif\s*\([^)]*\b{count}\b\s*>\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})[^)]*\)\s*(?:return|goto|break)"
+            ),
+            self._literal_api_pattern(
+                rf"\b{count}\b\s*=\s*(?:MIN|min)\s*\(\s*\b{count}\b\s*,\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|{size_escaped})"
+            ),
         ]
         return any(re.search(pattern, window) for pattern in patterns)
 
@@ -2914,10 +2957,10 @@ class ClangMemoryBoundsIntegerRules:
         for item in reversed(lines[max(0, line.index - 16) : line.index]):
             if not re.search(rf"\b{escaped}\s*=", item.text):
                 continue
-            statement = " ".join(row.text for row in lines[item.index:line.index]).split(";", 1)[0]
-            if not re.search(
-                r"\([^)]*\*\s*\)", statement
-            ):
+            statement = " ".join(row.text for row in lines[item.index : line.index]).split(";", 1)[
+                0
+            ]
+            if not re.search(r"\([^)]*\*\s*\)", statement):
                 continue
             rhs = statement.split("=", 1)[1]
             if self._looks_wire_pointer_source(rhs):
@@ -3054,8 +3097,10 @@ class ClangMemoryBoundsIntegerRules:
             if self._is_var_redefined(text, count_var):
                 return None
             if re.search(
-                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc)\s*"
-                rf"\([^;]*\b{escaped}\b",
+                self._literal_api_pattern(
+                    rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc)\s*"
+                    rf"\([^;]*\b{escaped}\b"
+                ),
                 text,
             ):
                 return item
@@ -3073,8 +3118,7 @@ class ClangMemoryBoundsIntegerRules:
                     return item
         return None
 
-    @staticmethod
-    def _has_overflow_guard(guard_window: str, expr: str) -> bool:
+    def _has_overflow_guard(self, guard_window: str, expr: str) -> bool:
         text = str(guard_window or "")
         identifiers = re.findall(r"\b[A-Za-z_]\w*\b", str(expr or ""))
         size_names = [
@@ -3083,7 +3127,17 @@ class ClangMemoryBoundsIntegerRules:
             if re.search(r"(?:len|length|size|count|num|total|max)", name, re.I)
         ]
         if re.search(
-            r"\b(?:SIZE_MAX|UINT32_MAX|UINT_MAX|INT_MAX|__builtin_(?:add|mul)_overflow)\b", text
+            (
+                r"\b(?:SIZE_MAX|UINT32_MAX|UINT_MAX|INT_MAX|__builtin_(?:add|mul)_overflow)\b"
+                if not self.restrict_to_semantics
+                else r"\b(?:SIZE_MAX|UINT32_MAX|UINT_MAX|INT_MAX)\b"
+            ),
+            text,
+        ):
+            return True
+        if self.restrict_to_semantics and re.search(
+            self._literal_api_pattern(r"\b(?:__builtin_add_overflow|__builtin_mul_overflow)\s*\("),
+            text,
         ):
             return True
         return any(

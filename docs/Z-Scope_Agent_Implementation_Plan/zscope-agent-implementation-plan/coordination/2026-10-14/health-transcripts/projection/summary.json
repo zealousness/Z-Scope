@@ -1,0 +1,48 @@
+{
+  "session_id": "sess_5b2791bb4a",
+  "kinds": "tool_call,tool_call_update",
+  "pages": 103,
+  "total_matching": 4548,
+  "has_more": false,
+  "latest_at": "2026-10-14T04:07:00.561738+00:00",
+  "failures": [
+    {
+      "at": "2026-10-14T03:52:39.489483+00:00",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "failed",
+        "output": ".coordination/20261014/workspaces/u02-projection/DELIVERY.md:                         Python script, Unicode text, UTF-8 text executable, with very long lines (445)\n.coordination/20261014/workspaces/u02-projection/zscope/reporting/acceptance.py:      Python script, Unicode text, UTF-8 text executable\n.coordination/20261014/workspaces/u02-projection/tests/test_acceptance_projection.py: Python script, Unicode text, UTF-8 text executable\n.coordination/20261014/workspaces/u02-projection/DELIVERY.md:…"
+      }
+    }
+  ],
+  "completed_tail": [
+    {
+      "at": "2026-10-14T03:50:17.328638+00:00",
+      "tool_call_id": "0:Bash_71",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T03:52:15.713890+00:00",
+      "tool_call_id": "0:Write_72",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T03:52:39.062543+00:00",
+      "tool_call_id": "0:Bash_73",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:07:00.471609+00:00",
+      "tool_call_id": "0:Bash_75_32fd04a8",
+      "title": null
+    },
+    {
+      "at": "2026-10-14T04:07:00.561738+00:00",
+      "tool_call_id": "0:Bash_76_6c7dc1fe",
+      "title": null
+    }
+  ],
+  "tool_content_complete": false,
+  "limitation": "Bridge drops content and truncates rawOutput; these pages cannot restore it"
+}

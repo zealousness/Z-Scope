@@ -1,0 +1,79 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T08:46:39.147216+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: grep -rl \"entry-instance-coverage\\|reconcile_entry_instance_coverage\\|entry_instance_coverage\" \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\" --include=\"*.md\" 2>/dev/null | head; echo \"---\"; grep -rl \"NEXT_BACKEND_CONTRACT\" \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\" --include=\"*.md\" 2>/dev/null | grep -v \"\\.git\" | head -5",
+        "tool_call_id": "call_a3edb1b0c1234302bdc657cd",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"grep -rl \\\"entry-instance-coverage\\\\|reconcile_entry_instance_coverage\\\\|entry_instance_coverage\\\" \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\" --include=\\\"*.md\\\" 2>/dev/null | head; echo \\\"---\\\"; grep -rl \\\"NEXT_BACKEND_CONTRACT\\\" \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\" --include=\\\"*.md\\\" 2>/dev/null | grep -v \\\"\\\\.git\\\" | head -5\", \"description\": \"Grep for coverage contract references in coordination and repo\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:39.154219+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_a3edb1b0c1234302bdc657cd",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:41.225806+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_a3edb1b0c1234302bdc657cd",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:41.921697+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_a3edb1b0c1234302bdc657cd",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:47.430277+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: grep -rl \"entry_instances\\|entry-instance\" \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\" --include=\"*.md\" 2>/dev/null | head -10; echo \"---root zscope orchestration---\"; ls \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\zscope\\orchestration\" 2>/dev/null | head -40",
+        "tool_call_id": "call_1b1ed678127f43b1bd534acb",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"grep -rl \\\"entry_instances\\\\|entry-instance\\\" \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\" --include=\\\"*.md\\\" 2>/dev/null | head -10; echo \\\"---root zscope orchestration---\\\"; ls \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\zscope\\\\orchestration\\\" 2>/dev/null | head -40\", \"description\": \"Find entry_instances references and orchestration dir\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:47.435918+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_1b1ed678127f43b1bd534acb",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T08:46:48.017412+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_1b1ed678127f43b1bd534acb",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 34,
+  "count": 7,
+  "next_offset": 41,
+  "has_more": false,
+  "total_matching": 41
+}

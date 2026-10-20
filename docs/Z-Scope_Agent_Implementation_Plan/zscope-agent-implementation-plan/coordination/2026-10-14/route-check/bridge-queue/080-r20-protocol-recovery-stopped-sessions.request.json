@@ -1,0 +1,7 @@
+{
+  "id": "r20-protocol-recovery-stopped-sessions",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": false
+  }
+}

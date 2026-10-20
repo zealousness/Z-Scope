@@ -1,0 +1,3 @@
+#!/bin/sh
+export LD_LIBRARY_PATH=/opt/zscope-test/host-libs:/opt/zscope-test/llvm18/lib
+exec /opt/zscope-test/llvm18/bin/llvm-symbolizer "$@"

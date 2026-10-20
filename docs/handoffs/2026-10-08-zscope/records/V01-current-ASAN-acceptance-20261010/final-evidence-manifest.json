@@ -1,0 +1,383 @@
+{
+  "at": "2026-10-10T11:31:30.427544+00:00",
+  "source_sha256": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7",
+  "source_and_handoff": {
+    "zscope/core/validation/dynamic_reproduction.py": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7",
+    "tests/test_dynamic_reproduction.py": "651127df8aab8a93e4556cad23b82a9702e88cdb019953a40dd8f28a5ddc9d13",
+    "tests/test_dynamic_reproduction_execution.py": "3205acd925075b04dff129f8876b30da3509d6e717856df4f352f3eb7327fa3b",
+    "docs/handoffs/2026-10-08-zscope/TASKS.yaml": "804320afe820ee43cdf596d2e102bcc1f4f0e7e0a357b7a1ffdb8fd5416cd357",
+    "docs/handoffs/2026-10-08-zscope/PROGRESS.md": "cc743d88fce68ae08f1c07473fc082570c085a3f15bfb7b3b02d29a353789489",
+    "docs/handoffs/2026-10-08-zscope/records/V01-current-ASAN-acceptance-20261010.md": "02ffec62e053a698003585fa5248c39e20f5ddaa3d3261fdf2d43844517ee7ee"
+  },
+  "current_ASAN_counts": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "docs_counts": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "previous_ordinary_counts": {
+    "passed": 1736,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "previous_compileall_exit": 0,
+  "previous_mypy_exit": 0,
+  "existing_input_count": 403,
+  "changed_existing_inputs": [],
+  "declared_handoff_changes": [
+    "docs/handoffs/2026-10-08-zscope/PROGRESS.md",
+    "docs/handoffs/2026-10-08-zscope/TASKS.yaml"
+  ],
+  "V01": "done",
+  "V02": "blocked",
+  "real_TSAN": "not_run",
+  "artifacts": {
+    "ASAN-evidence/asan-inside.py": {
+      "bytes": 8872,
+      "sha256": "f311464bdd8b8277bf8680c7b1c586298e8fe3a1754025b08c51b1a9f79c917f"
+    },
+    "ASAN-evidence/asan.xml": {
+      "bytes": 968,
+      "sha256": "a4c01cced92a4bd7385b8ff35389730577a3ee384cffde283fa2e85539bb6e21"
+    },
+    "ASAN-evidence/container.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/container.stdout.log": {
+      "bytes": 964,
+      "sha256": "fa3595001295a096cb75c2916b850dd093ae181b744ffd1a4f49821758901997"
+    },
+    "ASAN-evidence/isolation-verification.json": {
+      "bytes": 3200,
+      "sha256": "ac8f5378f20ce0c1f92c9d502849261ac75463206836147020d1805d9a947359"
+    },
+    "ASAN-evidence/observed-executions.json": {
+      "bytes": 221801,
+      "sha256": "728db281ab92cabb2d4f51f950c705b1dff10f5f0c22b2e77b365d6147c5dfb5"
+    },
+    "ASAN-evidence/pytest-request.json": {
+      "bytes": 1397,
+      "sha256": "6d8118f8af54887805615bd73937f4b0569054ef7de50c1347a006915694aced"
+    },
+    "ASAN-evidence/pytest-return.json": {
+      "bytes": 100,
+      "sha256": "70f0fd2ae04745124ab96b8eb9e8c7c09c6a0f7f3f3b4235339e7a54947597af"
+    },
+    "ASAN-evidence/raw/001-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/002-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/003-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/004-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/005-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/006-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/007-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/008-run-0-stderr.log": {
+      "bytes": 2981,
+      "sha256": "6b060316499f2b12b62e969cabb319640d615bee0bac45bc85991199b32f7940"
+    },
+    "ASAN-evidence/raw/009-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/010-run-0-stderr.log": {
+      "bytes": 2981,
+      "sha256": "f812aa69df1de2c75b584fdc776908f20decf7da885581653d5adb2083110767"
+    },
+    "ASAN-evidence/raw/011-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/012-run-0-stderr.log": {
+      "bytes": 2981,
+      "sha256": "36526f3705b44c6ffc92b628cd33e4a08515bab6779de3b0d666781772c6f219"
+    },
+    "ASAN-evidence/raw/013-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/014-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/015-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/016-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/017-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/018-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/019-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/020-run-0-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/021-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/022-run-0-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/023-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/024-run-0-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/025-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/026-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/027-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/028-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/029-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/030-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/031-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/032-run-0-stderr.log": {
+      "bytes": 2907,
+      "sha256": "bbefc785fe83a8df1d25264f6a6779d43611fffeff068f28222115b2a36926e8"
+    },
+    "ASAN-evidence/raw/033-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/034-run-0-stderr.log": {
+      "bytes": 2907,
+      "sha256": "ac2def283c57c739d27108f4b22f15133d383cc5c0733987a7c93a6577780ac8"
+    },
+    "ASAN-evidence/raw/035-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/036-run-0-stderr.log": {
+      "bytes": 2907,
+      "sha256": "ed1351734ef2d593bfa0198110e930bc0141f3f3b7ad22f336b848f2462a4518"
+    },
+    "ASAN-evidence/raw/037-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/038-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/039-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/040-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/041-build-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/042-build-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/043-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/044-run-0-stderr.log": {
+      "bytes": 2988,
+      "sha256": "2aa6d6f97feceb32c84d87de5769f3884595969055a90365c8a187d76a367e85"
+    },
+    "ASAN-evidence/raw/045-build-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/046-build-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/047-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/048-run-0-stderr.log": {
+      "bytes": 2988,
+      "sha256": "6559b745aa7a71a53b5efecc08730df87fa1bc70d03aee35563acfb509a81b26"
+    },
+    "ASAN-evidence/raw/049-build-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/050-build-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/051-run-0-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/052-run-0-stderr.log": {
+      "bytes": 2988,
+      "sha256": "a9ab81a203547b0062664f8b38e70ed63a2a35fa5bca6dba0f827158f01a060d"
+    },
+    "ASAN-evidence/raw/053-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/054-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/055-direct-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/056-direct-stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/057-build-stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ASAN-evidence/raw/058-build-stderr.log": {
+      "bytes": 898,
+      "sha256": "f499da7ad1c6e4b4acc95f331b0c5a0b2b4d435e107c456a0be74ea5f4365a61"
+    },
+    "ASAN-evidence/staging-manifest.json": {
+      "bytes": 48476,
+      "sha256": "060073ab1bc6269ce0f06992ad0bf42077f5572ecfef582a4b6ffd5bef3d2c14"
+    },
+    "ASAN-evidence/toolchain-preflight.json": {
+      "bytes": 563,
+      "sha256": "d7210d1076d85e299c7d32d26b2e563980f9dd7d4b350ebf1b0a04dcfd5f97b6"
+    },
+    "acceptance-summary.json": {
+      "bytes": 12890,
+      "sha256": "e91c5e75e84227ec0990f29a978cac98c3cb751cb646854d95711020e827b89b"
+    },
+    "bridge-materials-receipt.json": {
+      "bytes": 448,
+      "sha256": "c6ca0fca9ce3d21623ff09798b7b3917b0151c4e8083e9418abebdd59ffe65fc"
+    },
+    "collect_evidence.py": {
+      "bytes": 8595,
+      "sha256": "9d3412deca388150a05fca48a30f39703d262791afba83d06bda9b2c360c759b"
+    },
+    "current-asan-container.py": {
+      "bytes": 9201,
+      "sha256": "16862727a8f08614fa32ee283b0590df3bf71887a4dcf9025f523585642c5986"
+    },
+    "current-asan-inside.py": {
+      "bytes": 8872,
+      "sha256": "f311464bdd8b8277bf8680c7b1c586298e8fe3a1754025b08c51b1a9f79c917f"
+    },
+    "current-asan-result.json": {
+      "bytes": 155914,
+      "sha256": "0ede7d0021769f5693d12e77bcd79b9acb1603fe1519de0586cf3488ef065643"
+    },
+    "driver-preparation.json": {
+      "bytes": 509,
+      "sha256": "3a02ede971701fff8e6e7b30ec81b0b12b6637f5971a08b964b4900512b75799"
+    },
+    "final-validation.json": {
+      "bytes": 2148,
+      "sha256": "2e3b8fe8fa43c09dd2671a3ec7c9e098e0082c0d24c5fa01f6ec16f4d8a62b8c"
+    },
+    "finalize.py": {
+      "bytes": 5853,
+      "sha256": "e3a71d2b1197c950b45b7053609a9a1aef16cf1e2038d390ccb54410991ec091"
+    },
+    "git-diff-check.stderr.log": {
+      "bytes": 2767,
+      "sha256": "2f44baa491b5804708ca7dc7fd5442c9d577a27afdcf7083c366c87456a5a717"
+    },
+    "git-diff-check.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "handoff-docs.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "handoff-docs.stdout.log": {
+      "bytes": 98,
+      "sha256": "13b83f3cc32eb3659a38ffdf6f7257576ff81749f9f782c2b37ef33a0b8b08e0"
+    },
+    "handoff-docs.xml": {
+      "bytes": 956,
+      "sha256": "84acd985b25f57a066def74a14221cadf43b5672897177df8cf5d3f22ad342d8"
+    },
+    "prepare_asan.py": {
+      "bytes": 3130,
+      "sha256": "756c3d373fe019b0be650f1d528d90a87bb0e747a24c0dab84b074b9da8050a9"
+    },
+    "prior-evidence-link.json": {
+      "bytes": 282,
+      "sha256": "edb365ea352b93ef274f301e5cd4d40692e065aba90951d5241640a498e84988"
+    },
+    "tsan-current-diagnostic.json": {
+      "bytes": 2910,
+      "sha256": "39f3f6c11548640b1aba56d35ce6aafc4d5ee3a21699ad5bf3182f932d395c29"
+    }
+  }
+}

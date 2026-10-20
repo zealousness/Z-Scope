@@ -8,6 +8,8 @@ similarity, detector names and LLM prose are deliberately excluded.
 
 from __future__ import annotations
 
+from ..common.issue_identity import issue_build_context_id
+
 import hashlib
 import json
 import re
@@ -275,6 +277,7 @@ def _attachment_signature(item: Mapping[str, Any]) -> str:
     return json.dumps(
         {
             "version": FINDING_ROOT_VERSION,
+            "build_context_id": issue_build_context_id(item),
             "family": family,
             "region": region_key,
             "subject": subject,
@@ -353,6 +356,7 @@ def _root_signature(item: Mapping[str, Any]) -> str:
         }
     payload = {
         "version": FINDING_ROOT_VERSION,
+        "build_context_id": issue_build_context_id(item),
         "disposition": str(item.get("candidate_disposition") or "").lower(),
         "family": family,
         "file": file_path,
@@ -426,6 +430,7 @@ def _exact_sink_root_signature(item: Mapping[str, Any]) -> str:
         {
             "version": FINDING_ROOT_VERSION,
             "contract": "exact_sink_with_deterministic_anchor",
+            "build_context_id": issue_build_context_id(item),
             "family": family,
             "file": file_path,
             "function": function,

@@ -1,0 +1,12 @@
+[
+  {
+    "old_id": "s01-cdb-coverage-post-update",
+    "public_dispatch_not_called": true,
+    "idempotency_key": "1bcef089-cbed-4541-9f0d-b359cb3ebe00"
+  },
+  {
+    "old_id": "s08-fair-queue-post-update",
+    "public_dispatch_not_called": true,
+    "idempotency_key": "0a5cd37b-f323-496c-aebd-91b5e12ff658"
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "id": "r20-network-close-get_result-98a41f4ccf",
+  "tool": "get_result",
+  "arguments": {
+    "task_id": "task_d98c531060",
+    "max_chars": 1000
+  }
+}

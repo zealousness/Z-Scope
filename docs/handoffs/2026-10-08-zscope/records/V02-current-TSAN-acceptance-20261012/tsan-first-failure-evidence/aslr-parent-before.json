@@ -1,0 +1,5 @@
+{
+  "global": "2",
+  "personality": "00000000",
+  "scope": "TSAN process-local ASLR exception"
+}

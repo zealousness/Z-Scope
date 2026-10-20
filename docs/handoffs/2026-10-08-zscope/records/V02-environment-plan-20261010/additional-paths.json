@@ -1,0 +1,11 @@
+{
+  "portable_clang": {
+    "path": "/home/zeal/.cache/zscope-portable/x86_64/prefix/llvm18/bin/clang",
+    "exists": true,
+    "sha256": "70455564692b937db5bce5d840b56e079a38efdb9974227ea0833f71279504b6"
+  },
+  "portable_tsan_runtime_matches": [],
+  "gcc_cc1_actual_path": "/usr/libexec/gcc/x86_64-linux-gnu/13/cc1",
+  "rg_unavailable": "FileNotFoundError: [Errno 2] No such file or directory: 'rg'",
+  "fallback_search": "targeted pathlib glob; no installation"
+}

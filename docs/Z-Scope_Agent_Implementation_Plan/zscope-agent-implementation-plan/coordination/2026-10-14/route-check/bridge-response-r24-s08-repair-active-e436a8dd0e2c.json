@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "scope": "current_instance",
+  "other_live_instances": 5,
+  "sessions": [
+    {
+      "session_id": "sess_6ecde27723",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "1ecc4ee3-3813-4ac2-b838-078a2dde5407",
+      "proc_state": "busy",
+      "turns": 1,
+      "title": "S01-INSTANCE-SEMANTICS-MIN-R23 repair-r24",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-16T04:07:12.696712+00:00"
+    },
+    {
+      "session_id": "sess_d9cfbf4113",
+      "agent": "zcode",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "a1c49629-4160-40bc-8770-6d6f256d94ea",
+      "proc_state": "ready",
+      "turns": 1,
+      "title": "S08-INSTANCE-RECOVERY-MIN-R23",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "effort": null,
+      "last_active_at": "2026-10-16T04:01:48.832129+00:00"
+    }
+  ]
+}

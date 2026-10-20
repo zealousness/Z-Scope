@@ -1,0 +1,8 @@
+{
+  "at": "2026-10-14T07:02:56.601719+00:00",
+  "prior_task": "task_f2a4721a58",
+  "prior_status": "cancelled",
+  "checkpoint_files": 13,
+  "post_stop_bytes_and_mtimes_unchanged": true,
+  "no_new_dispatch_before_this_check": true
+}

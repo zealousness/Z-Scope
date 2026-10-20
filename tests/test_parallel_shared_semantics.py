@@ -187,6 +187,7 @@ def test_parallel_analyzer_runs_global_model_before_entries(monkeypatch, tmp_pat
 
     class FakeGlobalModeler:
         result = SessionSemanticResult(FakeStats(), local_semantics=LocalPatternSemantics())
+
         def run(self, entries):
             events.append(("global", [entry.function_name for entry in entries]))
             return FakeStats()
@@ -272,6 +273,7 @@ def test_parallel_analyzer_continues_partial_when_global_model_fails(monkeypatch
 
     class IncompleteGlobalModeler:
         result = SessionSemanticResult(IncompleteStats(), local_semantics=LocalPatternSemantics())
+
         def run(self, entries):
             return IncompleteStats()
 
@@ -395,6 +397,48 @@ def test_scan_validation_queue_validates_one_shared_ledger_group(tmp_path) -> No
     assert snapshot["outcomes"][0]["validation_attempt_count"] == 0
 
 
+@pytest.mark.parametrize("mode", ["off", "shadow"])
+def test_batch_snapshot_shadow_follows_blind_discovery_before_freeze(
+    monkeypatch, tmp_path, mode
+) -> None:
+    from zscope.orchestration import snapshot_candidates
+
+    config = _config(tmp_path)
+    config.analysis.semantic_snapshot_candidate_mode = mode
+    config.scan.depth = "balanced"
+    parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
+    parallel.semantic_result = object()
+    events = []
+
+    def blind(entries, profile):
+        assert not parallel._candidate_ledger.records()
+        events.append("blind")
+
+    def register(result, registrar, **kwargs):
+        assert events == ["blind"]
+        assert result is parallel.semantic_result
+        assert not registrar.ledger._frozen
+        assert kwargs["mode"] == "shadow"
+        events.append("snapshot")
+        return []
+
+    original_validate = parallel._run_scan_validation_queue
+
+    def validate():
+        events.append("validate")
+        original_validate()
+        assert parallel._candidate_ledger._frozen
+
+    monkeypatch.setattr(parallel_module, "rollout_active_discovery_mode", lambda config: "active")
+    monkeypatch.setattr(parallel, "_run_active_discovery", blind)
+    monkeypatch.setattr(parallel, "_run_scan_validation_queue", validate)
+    monkeypatch.setattr(snapshot_candidates, "register_conditional_snapshot_candidates", register)
+    parallel.analyze_function_entries([])
+    assert events == (
+        ["blind", "snapshot", "validate"] if mode == "shadow" else ["blind", "validate"]
+    )
+
+
 def test_project_deterministic_fact_pass_collects_reachable_function_once(tmp_path) -> None:
     class ReachableCodeIndex:
         def get_function_impl(self, name, **_kwargs):
@@ -463,7 +507,7 @@ int worker(void) {
     candidate_payload = stack_records[0].ticket.evidence["candidate_payload"]
     assert candidate_payload["candidate_kind"] == "deterministic_rule"
     assert candidate_payload["rule_engine"] == "cpp_clang_cfg"
-    assert candidate_payload["rule_revision"] == 6
+    assert candidate_payload["rule_revision"] == 7
     assert candidate_payload["rule_catalog_sha256"]
 
 

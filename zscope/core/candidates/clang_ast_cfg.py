@@ -144,16 +144,28 @@ class ClangAstCfgCandidateGenerator(
         tooling_evidence_provider: Optional[Callable[..., Dict[str, Any]]] = None,
         rule_policy: Optional[Any] = None,
         program_facts_provider: Optional[Callable[..., Dict[str, Any]]] = None,
+        *,
+        restrict_to_semantics: bool = False,
     ):
-        self.semantics = self._default_semantics()
-        if semantics is not None:
+        from .regex import _restricted_semantics
+
+        self.restrict_to_semantics = restrict_to_semantics
+        self.semantics = (
+            _restricted_semantics(semantics) if restrict_to_semantics else self._default_semantics()
+        )
+        if semantics is not None and not restrict_to_semantics:
             self.semantics.merge(semantics)
-        self.semantic_overlay = semantic_overlay or {}
-        self.semantics.merge_overlay(self.semantic_overlay)
+        # api_contracts selects rows derived from the owned local registry only.
+        self.semantic_overlay = (
+            {"api_contracts": []} if restrict_to_semantics else (semantic_overlay or {})
+        )
+        if not restrict_to_semantics:
+            self.semantics.merge_overlay(self.semantic_overlay)
         self.tooling_evidence_provider = tooling_evidence_provider
         self.rule_policy = rule_policy
         self.program_facts_provider = program_facts_provider
         self.program_facts: Dict[str, Any] = {}
+        self.last_object_protocol_path: Dict[str, Any] = {}
         self._compile_api_models()
 
     def generate_issues(
@@ -165,22 +177,27 @@ class ClangAstCfgCandidateGenerator(
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
         self._function_name = str(func_name).split("@", 1)[0].rsplit("::", 1)[-1]
+        self.last_object_protocol_path = {}
         lines = self._parse_lines(code)
-        self.last_semantic_events = self.semantics.contracts.trace_calls(
-            {"func_name": func_name, "file_path": file_path, "code": code}
-        )
         self.program_facts = (
             self.program_facts_provider(func_name, file_path)
             if self.program_facts_provider is not None
             else {}
         )
+        semantic_context = {
+            "func_name": func_name,
+            "file_path": file_path,
+            "code": code,
+            "program_facts": self.program_facts,
+        }
+        self.last_semantic_events = self.semantics.contracts.trace_calls(semantic_context)
         if not lines:
             return []
         allowed = set(allowed_skills) if allowed_skills is not None else None
         issues: List[Dict[str, Any]] = []
         from ...semantics.call_context import bind_call_context
-        with bind_call_context({"func_name": func_name, "file_path": file_path, "code": code,
-                                "program_facts": self.program_facts}, self.semantics.contracts):
+
+        with bind_call_context(semantic_context, self.semantics.contracts):
             run_detector_plan(
                 "clang_ast_cfg",
                 "function",
@@ -193,6 +210,9 @@ class ClangAstCfgCandidateGenerator(
                     allowed_skills=allowed,
                 ),
             )
+        from ...semantics.build_scope import bind_candidate_build_scope
+
+        bind_candidate_build_scope(issues, semantic_context)
         return self._dedupe(issues)
 
     def generate_tickets(
@@ -304,6 +324,23 @@ class ClangAstCfgCandidateGenerator(
             | self._semantics_names(semantics, "io_releasers")
             | self._checker_defaults("extended_io_releasers")
         )
+        if self.restrict_to_semantics:
+            for attr, role in {
+                "_send_sink_names": "send_sink",
+                "_format_sink_names": "format_sink",
+                "_open_sink_names": "io_acquire",
+                "_recv_source_names": "recv_source",
+                "_io_release_names": "io_release",
+            }.items():
+                setattr(
+                    self,
+                    attr,
+                    {
+                        name
+                        for name in getattr(self, attr)
+                        if self._semantic_call_allowed(name, role)
+                    },
+                )
         self._user_io_acquire_names = semantics.names_from_nondefault_sources("io_acquirers")
         self._user_io_release_names = semantics.names_from_nondefault_sources("io_releasers")
         self._user_send_sink_names = semantics.names_from_nondefault_sources("send_sinks")
@@ -415,7 +452,10 @@ class ClangAstCfgCandidateGenerator(
         self._realloc_call_re = self._call_re(self._reallocator_names & self._return_acquirers)
         self._release_call_re = self._call_re(self._release_names)
         self._lock_call_re = self._call_re(
-            self._lock_names, extra_patterns=[r"pthread_rwlock_(?:rdlock|wrlock)"]
+            self._lock_names,
+            extra_patterns=(
+                [] if self.restrict_to_semantics else [r"pthread_rwlock_(?:rdlock|wrlock)"]
+            ),
         )
         self._unlock_call_re = self._call_re(self._unlock_names)
         self._send_call_re = self._call_re(self._send_sink_names)
@@ -426,9 +466,21 @@ class ClangAstCfgCandidateGenerator(
         self._callback_registrar_call_re = self._call_re(self._callback_registrar_names)
 
     def _semantic_api_pattern(self, pattern: str) -> str:
-        from ...semantics.contracts import expand_api_pattern
+        from .regex import _consumer_api_pattern
 
-        return expand_api_pattern(pattern, self.semantics)
+        return _consumer_api_pattern(pattern, self.semantics, self.restrict_to_semantics)
+
+    def _literal_api_pattern(self, pattern: str) -> str:
+        from .regex import _consumer_api_pattern
+
+        return _consumer_api_pattern(
+            pattern, self.semantics, self.restrict_to_semantics, expand_slots=False
+        )
+
+    def _semantic_call_allowed(self, name: str, *roles: str) -> bool:
+        from .regex import _semantic_call_allowed
+
+        return _semantic_call_allowed(self.semantics, self.restrict_to_semantics, name, *roles)
 
     _FD_OPEN_EXCLUDED_NAMES = {"fopen", "fdopen", "freopen", "popen"}
 
@@ -449,12 +501,15 @@ class ClangAstCfgCandidateGenerator(
         user-defined extension so stock projects keep identical candidates.
         """
 
-        return (
+        names = (
             {"open", "creat", "socket", "accept", "dup", "eventfd", "memfd_create"}
             | set(self._user_io_acquire_names)
         ) - self._FD_OPEN_EXCLUDED_NAMES
+        return names & self._io_acquire_names if self.restrict_to_semantics else names
 
     def _fd_close_names(self) -> Set[str]:
+        if self.restrict_to_semantics:
+            return set(self._io_release_names)
         return {"close", "closesocket"} | set(self._user_io_release_names)
 
     def _emit(
@@ -928,11 +983,10 @@ class ClangAstCfgCandidateGenerator(
 
         return default_local_pattern_semantics()
 
-    @staticmethod
-    def _checker_defaults(role_name: str) -> Set[str]:
+    def _checker_defaults(self, role_name: str) -> Set[str]:
         from ...semantics.defaults import default_checker_api_names
 
-        return set(default_checker_api_names(role_name))
+        return set() if self.restrict_to_semantics else set(default_checker_api_names(role_name))
 
     def _overlay_rows(self, key: str) -> List[Dict[str, Any]]:
         if not isinstance(self.semantic_overlay, dict):
@@ -940,17 +994,35 @@ class ClangAstCfgCandidateGenerator(
         if "api_contracts" in self.semantic_overlay:
             rows = []
             for contract in self.semantics.contracts.contracts:
-                if not contract.effects_trusted or contract not in self.semantics.contracts.find(contract.symbol.name):
+                if not contract.effects_trusted or contract not in self.semantics.contracts.find(
+                    contract.symbol.name
+                ):
                     continue
-                is_lock = contract.role in {"lock", "unlock", "lock_init", "lock_destroy", "lock_wait", "lock_state"}
+                is_lock = contract.role in {
+                    "lock",
+                    "unlock",
+                    "lock_init",
+                    "lock_destroy",
+                    "lock_wait",
+                    "lock_state",
+                }
                 if key == "macro_models" and contract.symbol.symbol_type != "macro":
                     continue
                 if key == "resource_models" and is_lock or key == "lock_models" and not is_lock:
                     continue
-                rows.append({"name": contract.symbol.name, "kind": contract.role,
-                             "symbol_type": contract.symbol.symbol_type,
-                             "carrier": "return_value" if contract.carrier.kind == "return" else contract.carrier.kind,
-                             "object_binding": contract.to_dict()["carrier"]})
+                rows.append(
+                    {
+                        "name": contract.symbol.name,
+                        "kind": contract.role,
+                        "symbol_type": contract.symbol.symbol_type,
+                        "carrier": (
+                            "return_value"
+                            if contract.carrier.kind == "return"
+                            else contract.carrier.kind
+                        ),
+                        "object_binding": contract.to_dict()["carrier"],
+                    }
+                )
             return rows
         rows = self.semantic_overlay.get(key) or []
         return [dict(row) for row in rows if isinstance(row, dict)]

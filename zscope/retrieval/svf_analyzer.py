@@ -34,7 +34,7 @@ _WPA_MEMORY_FACTOR_PER_BC_MB = 25.0
 class SvfAnalyzer:
     """Build bitcode, run SVF, and write indirect-call/Saber data."""
 
-    MATERIALIZATION_SCHEMA_VERSION = 1
+    MATERIALIZATION_SCHEMA_VERSION = 2
     MATERIALIZATION_STATE_KEY = "svf_db_materialization"
 
     def __init__(
@@ -75,6 +75,9 @@ class SvfAnalyzer:
         )
         self._parallel_workers = max(1, int(parallel_workers or 1))
         self._project_root: Optional[Path] = None
+        # group -> BitcodeBuilder.group_tu_identities(); the producer-side build
+        # identity that lets a signal be attributed to a compile command.
+        self._group_identities: Dict[str, Dict[str, Any]] = {}
         self._compile_preparation: Any = None
 
     @observed("svf-validate-build-analyze-import")
@@ -91,11 +94,13 @@ class SvfAnalyzer:
             return True
 
         self._project_root = Path(project_root)
+        self._group_identities = {}
 
         try:
             if self._compile_preparation is None:
                 from .compile_commands_prepare import prepare_compile_commands
                 from .compile_preflight import discover_tools
+
                 self._compile_preparation = prepare_compile_commands(
                     Path(compile_commands_path),
                     discover_tools(llvm_link=self._llvm_link, gclang=self._gclang),
@@ -151,6 +156,16 @@ class SvfAnalyzer:
             )
             failed_tus = list(getattr(builder, "failed_tus", []))
             bitcode_complete = not failed_tus and not getattr(builder, "failed_links", [])
+            self._group_identities = {}
+            identities = getattr(builder, "group_tu_identities", None)
+            if callable(identities):
+                for group in bc_paths:
+                    try:
+                        self._group_identities[group] = cast(Dict[str, Any], identities(group))
+                    except Exception as exc:  # attribution is additive, never fatal
+                        logger.warning(
+                            "SVF build identity unavailable for group %s: %s", group, exc
+                        )
             if failed_tus:
                 logger.warning(
                     "Bitcode build incomplete: %d translation unit(s) failed; "
@@ -730,6 +745,7 @@ class SvfAnalyzer:
                     self._db,
                     svf_group=group_name,
                     project_root=self._project_root,
+                    tu_identities=self._group_identities.get(group_name),
                 )
                 if tool == "ander":
                     row_count = mapper.import_callgraph(artifact_path, commit=False)

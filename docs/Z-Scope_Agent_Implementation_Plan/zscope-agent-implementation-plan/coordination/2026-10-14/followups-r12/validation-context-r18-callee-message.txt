@@ -1,0 +1,13 @@
+ZCode glm-5.3：返修 VALIDATION-CONTEXT-R18，继续同一 validation-context-r18 隔离副本和会话，不恢复旧 Kimi/S06，不动根目录。task_cb7011476d 已结束18:20:23；协调者1068/0+四命令0为通过切片，但新增独立native身份探针2/2失败，当前任务未签收/未集成。
+
+精确证据：artifacts/coordinator-validation-callee-r18-probes-20261015/{review.json,command-0.log,results.xml,test_validation_callee_rebind_boundary.py}。原探针 docs/.../coordination/2026-10-14/followups-r12/test_validation_callee_rebind_boundary.py 只读。真实 C++ native overload/caller identities，contract-selection隔离测试，不是物理I/O效果验收。
+
+根因：ExecutionContext/rebound_execution_context 只捕获/重绑 build_scope 两变量，未处理 call_context._ACTIVE_CALL_FACTS。已有 bind_call_context(call_int, registry) 时换到同一BuildContext中的 call_mixed（当前native实际含int/char两个overload）后，registry.match_call仍借旧call_int映射返回int契约；EMPTY_EXECUTION_CONTEXT也仍返回旧callee USR。新入口/legacy不得借另一入口的callee观测、调用值或条件。你旧overload用例在自定义provider中手工重新bind，不能代表框架重绑已经闭合此边界。
+
+授权写入仍原五文件（runner.py/evidence_completion.py/validator_agent/agent.py/execution_context.py/test_validation_context_workers.py）；另 prospective 增加 zscope/semantics/call_context.py 一个文件，收据 validation-context-r18-ownership-extension-callee.json。其余源码/旧tests/独立探针/根与别的副本只读。不要改契约筛选语义、放宽USR/current native校验、加名称fallback、强行信JSON或环境/候选字符串来过关。不要 blanket copy_context 带入其他入口ambient数据。
+
+完整处理入口/build身份切换、同一已核验入口的合法callee/调用值携带、未知/legacy清空及finally恢复；必要快照必须与当前精确入口绑定、提交时冻结，混合或未知callee保持unknown，源/Registry变化不授旧强效果。捕获与消费仍使用既有native核验接口，不从序列化恢复权限。线程池复用、timeout/cancel/异常后不能残留旧callee图。
+
+先原样跑两例并保留真实失败，再修。增加真实 ValidationRunner→实际ValidatorAgent→真实fact-provider调用的callee效果选择正反例（只控制模型/等待边界，不能整个Validator或provider结果stub），用真实native同BuildContext不同caller/overload、跨variant并发、same-entry有效映射、mixed/unknown/legacy、父输入改变、异常/timeout后恢复。保留原309自测全部类与当前五份独立探针，修复后协调者仍将运行1068集合加新增边界，不会删旧测试。
+
+仅WSL Linux zeal bash -lc/venv313，根 test_slot.py 两槽/default fd/ext4，禁止嵌套取槽。native只读 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399；不改native源码/工具或完成标记。compileall zscope scripts test tests、mypy zscope、只对改动Python必要Black。每轮新JUnit/日志名，保留旧失败/285与309切片收据，最终DELIVERY+SHA+真实时间+未测，清空后台稳定停写。无commit/push/reset/clean，无provider/凭据/审批变化或新服务。这是同任务实证返修，非绕过审核或额度。

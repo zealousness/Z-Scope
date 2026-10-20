@@ -1,0 +1,136 @@
+{
+  "date": "2026-10-09",
+  "source_changes": [],
+  "encoding": {
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-review.md": {
+      "utf8_bom": false,
+      "crlf": false,
+      "final_lf": true
+    },
+    "docs/handoffs/2026-10-08-zscope/PROGRESS.md": {
+      "utf8_bom": false,
+      "crlf": false,
+      "final_lf": true
+    },
+    "docs/handoffs/2026-10-08-zscope/TASKS.yaml": {
+      "utf8_bom": false,
+      "crlf": false,
+      "final_lf": true
+    }
+  },
+  "review_scripts_sha256": {
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-regressions.py": "ac66899b7686be9bc61fd31af37ed0b9e4c2ae283eb7503424ad283c6ad413c5",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-acceptance-driver.py": "b2110b23d705d712e5b056eaad41dfe418bb76ccacc2a485c26566f0eaebf71a",
+    "docs/handoffs/2026-10-08-zscope/records/V01-V02-container-review.py": "5b5d3ae47b521c4cfd8dc606c108746cbc5f47de0cf3f81d5913ce1ff4a58855"
+  },
+  "docs_test": {
+    "command": [
+      "/home/zeal/venv313/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider",
+      "--basetemp=/tmp/zscope-v01-v02-final-docs-4f822ldq/pytest",
+      "tests/test_agent_docs.py"
+    ],
+    "exit_code": 0,
+    "stdout": "......                                                                   [100%]\n6 passed in 2.04s\n",
+    "stderr": ""
+  },
+  "author_execution_record_unchanged": true,
+  "native_git": {
+    "status": [
+      " M README.md",
+      " M docs/modules/agent-runtime.md",
+      " M docs/modules/analysis-pipeline.md",
+      " M docs/modules/configuration-state.md",
+      " M docs/modules/execution-orchestration.md",
+      " M docs/modules/interfaces-reporting.md",
+      " M docs/modules/retrieval-backends.md",
+      " M tests/fixtures/tool_use_eval_v1.json",
+      " M tests/test_active_discovery.py",
+      " M tests/test_balanced_rollout.py",
+      " M tests/test_parallel_shared_semantics.py",
+      " M tests/test_scan_session_resume_svf.py",
+      " M tests/test_single_entry_active_discovery.py",
+      " M tests/test_tool_use_eval.py",
+      " M tests/test_validation_pipeline.py",
+      " M zscope/cli/cli.py",
+      " M zscope/cli/index_audit.py",
+      " M zscope/config/config.py",
+      " M zscope/config/runtime_defaults.yaml",
+      " M zscope/config/v2.py",
+      " M zscope/core/analysis/analyzer.py",
+      " M zscope/core/validation/pipeline.py",
+      " M zscope/core/validation/proofs.py",
+      " M zscope/core/validation/runner.py",
+      " M zscope/mcp/http_server.py",
+      " M zscope/mcp/provider.py",
+      " M zscope/mcp/server.py",
+      " M zscope/orchestration/active_discovery.py",
+      " M zscope/orchestration/candidates.py",
+      " M zscope/orchestration/global_modeler.py",
+      " M zscope/orchestration/parallel_analyzer.py",
+      " M zscope/orchestration/scan_session.py",
+      " M zscope/orchestration/semantic_modeling.py",
+      " M zscope/orchestration/snapshot_candidates.py",
+      " M zscope/retrieval/indexing_inventory.py",
+      " M zscope/semantics/contract_compiler.py",
+      " M zscope/semantics/contract_conditions.py",
+      " M zscope/semantics/contracts.py",
+      " M zscope/semantics/security_map.py",
+      " M zscope/snapshots/policy.py",
+      " M zscope/tools/read_code.py",
+      " M zscope/tools/registry.py",
+      " M zscope/tools/runtime.py",
+      " M zscope/tools/search_code.py",
+      " M zscope/tools/semantic_context.py",
+      " M zscope/tools/symbols.py",
+      "?? benchmarks/experiments/balanced_confirmed_tp/dashboard/server.pid",
+      "?? benchmarks/experiments/balanced_confirmed_tp/m5tpr_replay_results.jsonl",
+      "?? docs/handoffs/",
+      "?? docs/mcp-read-only.md",
+      "?? tests/fixtures/dynamic_reproduction/",
+      "?? tests/test_audit_coverage.py",
+      "?? tests/test_bounded_investigation.py",
+      "?? tests/test_conditional_ownership_contracts.py",
+      "?? tests/test_dynamic_reproduction.py",
+      "?? tests/test_dynamic_reproduction_execution.py",
+      "?? tests/test_external_findings_import.py",
+      "?? tests/test_external_investigation.py",
+      "?? tests/test_incremental_replay.py",
+      "?? tests/test_investigation_evidence.py",
+      "?? tests/test_investigation_runtime.py",
+      "?? tests/test_mcp_read_only.py",
+      "?? tests/test_semantic_cache_only.py",
+      "?? tests/test_semantic_demand.py",
+      "?? tests/test_snapshot_observation_shadow.py",
+      "?? tests/test_source_search.py",
+      "?? zscope/common/readonly.py",
+      "?? zscope/core/validation/dynamic_reproduction.py",
+      "?? zscope/orchestration/bounded_investigation.py",
+      "?? zscope/orchestration/external_findings.py",
+      "?? zscope/orchestration/external_investigation.py",
+      "?? zscope/orchestration/investigation.py",
+      "?? zscope/orchestration/semantic_demand.py",
+      "?? zscope/orchestration/snapshot_observations.py",
+      "?? zscope/retrieval/cached_index.py",
+      "?? zscope/retrieval/incremental_replay.py",
+      "?? zscope/snapshots/readonly.py",
+      "?? zscope/tools/source_access.py"
+    ],
+    "head": "010f40210b54ba0f79a088312ce5d8be3a82ace0",
+    "branch": "v1.3.1_feat/llm-wiki"
+  },
+  "preserved_original_artifacts": {
+    "benchmarks/experiments/balanced_confirmed_tp/dashboard/server.pid": {
+      "matches_previous": true,
+      "sha256": "52123a077cc4560bcf758e1ec01817e837280fd9cc65dc083eb2938ffb34d717"
+    },
+    "benchmarks/experiments/balanced_confirmed_tp/m5tpr_replay_results.jsonl": {
+      "matches_previous": true,
+      "sha256": "a364604e0f072fd39a2a4ae4cd4444138dd9e01dc72c1dd5a50d12987ad650ef"
+    }
+  }
+}

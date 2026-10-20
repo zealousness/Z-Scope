@@ -1,0 +1,409 @@
+{
+  "events": [
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/tmp/zscope-acceptance-tools/clang",
+        "-fsanitize=thread",
+        "-g",
+        "-O0",
+        "-o",
+        "/tmp/zscope-tsan-probe-95uk33mf/probe",
+        "/tmp/zscope-tsan-probe-95uk33mf/probe.c",
+        "-pthread"
+      ],
+      "cwd": "/tmp/zscope-tsan-probe-95uk33mf",
+      "exit_code": 0,
+      "stdout": {
+        "path": "/work/raw/001-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/002-direct-stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/tmp/zscope-tsan-probe-95uk33mf/probe"
+      ],
+      "cwd": "/tmp/zscope-tsan-probe-95uk33mf",
+      "exit_code": 0,
+      "stdout": {
+        "path": "/work/raw/003-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/004-direct-stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "availability",
+      "type": "ProviderAvailability",
+      "evidence": {
+        "available": true,
+        "reason": "",
+        "details": {
+          "compiler": "/tmp/zscope-acceptance-tools/clang",
+          "probe_exit_code": "0"
+        }
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "compiler_or_probe_process",
+      "argv": [
+        "/tmp/zscope-acceptance-tools/clang",
+        "-fsanitize=thread",
+        "-g",
+        "-O0",
+        "-fno-omit-frame-pointer",
+        "-std=c11",
+        "-pthread",
+        "-o",
+        "/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race",
+        "/repo/tests/fixtures/dynamic_reproduction/data_race_positive.c"
+      ],
+      "cwd": "/repo",
+      "exit_code": 0,
+      "stdout": {
+        "path": "/work/raw/005-direct-stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/work/raw/006-direct-stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "build_execution_plan",
+      "type": "ExecutionPlan",
+      "evidence": {
+        "schema_version": "zscope.dynamic-execution-plan.v1",
+        "plan_id": "dynrepro-tsan-4855681fbecd783c",
+        "binding": {
+          "project_id": "zscope-dynamic-reproduction-fixtures",
+          "source_revision": "fixture-rev-1",
+          "candidate_uid": "cand-data_race_positive.c",
+          "validation_cluster_uid": "cluster-data_race_positive.c",
+          "object_identity": "shared_counter",
+          "site": "tests/fixtures/dynamic_reproduction/data_race_positive.c:17",
+          "defect_family": "race_without_happens_before",
+          "build_configuration": "default",
+          "toolchain_id": "unspecified",
+          "dependency_code_hash": "fixture-rev-1",
+          "rollout_visibility": "",
+          "candidate_kind": "",
+          "candidate_source": "",
+          "discovered_by": []
+        },
+        "binding_digest": "50fdefd1e0183da2aec8dfbd26eecc9707283c7deb7d8e3ff89522e54a5baf03",
+        "provider_kind": "tsan",
+        "provider_name": "tsan-runner",
+        "provider_version": "1",
+        "harness_ref": "/repo/tests/fixtures/dynamic_reproduction/data_race_positive.c",
+        "harness_digest": "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865",
+        "input_refs": [
+          "/repo/tests/fixtures/dynamic_reproduction/data_race_positive.c"
+        ],
+        "input_digests": [
+          "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865"
+        ],
+        "run_argv": [
+          "/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race"
+        ],
+        "run_cwd": "/tmp/pytest-tsan/test_tsan_positive_fixture_con0",
+        "env_allowlist": [
+          [
+            "PATH",
+            "/tmp/zscope-acceptance-tools:/opt/zscope-test/bin:/usr/bin:/bin"
+          ]
+        ],
+        "timeout_seconds": 60,
+        "memory_limit_mb": 512,
+        "isolation": "process",
+        "max_replays": 2,
+        "binary_path": "/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race",
+        "binary_digest": "41fa1ad3d2610898d3cba001762445b31a297040426f6fda7838a934db5cdd91",
+        "toolchain_id": "tsan:clang",
+        "build_configuration": "tsan-fixture-build",
+        "allowed_exec_roots": [
+          "/tmp/pytest-tsan/test_tsan_positive_fixture_con0",
+          "/tmp/pytest-tsan/test_tsan_positive_fixture_con0",
+          "/repo/tests/fixtures/dynamic_reproduction",
+          "/tmp",
+          "/bin",
+          "/usr/bin"
+        ],
+        "site_tolerance_lines": 0,
+        "build": null
+      }
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "raw_runner_process",
+      "argv": [
+        "/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race"
+      ],
+      "cwd": "/tmp/pytest-tsan/test_tsan_positive_fixture_con0",
+      "tag": "run-0",
+      "timeout_seconds": 60,
+      "environment": {
+        "PATH": "/tmp/zscope-acceptance-tools:/opt/zscope-test/bin:/usr/bin:/bin",
+        "HOME": "/tmp/zscope-tsan-run-jw5mh_p7",
+        "TMPDIR": "/tmp/zscope-tsan-run-jw5mh_p7",
+        "LANG": "C.UTF-8",
+        "TSAN_OPTIONS": "halt_on_error=1:exitcode=1:history_size=2"
+      },
+      "streams": {
+        "out_path": {
+          "path": "/work/raw/007-run-0-stdout.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "err_path": {
+          "path": "/work/raw/008-run-0-stderr.log",
+          "bytes": 1468,
+          "sha256": "3757c9a10a5533fe6cb587d3dd983c2807361b527a59e66235ed64dff3cd2428"
+        }
+      },
+      "exit_code": 1
+    },
+    {
+      "node": "tests/test_dynamic_reproduction_execution.py::test_tsan_positive_fixture_confirms_through_shared_adjudication",
+      "event": "execute",
+      "type": "ExecutionRecord",
+      "evidence": {
+        "schema_version": "zscope.dynamic-execution-record.v2",
+        "record_id": "dynrepro-tsan-4855681fbecd783c-9a6ccf286d9e",
+        "plan_digest": "15ce746d7866f940cf3a057319c24a5343a8f0bd3a4b3700a1648cbca5495734",
+        "provider_name": "tsan-runner",
+        "provider_version": "1",
+        "provider_kind": "tsan",
+        "outcome": "engine_failed",
+        "run_argv": [
+          "/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race"
+        ],
+        "run_cwd": "/tmp/pytest-tsan/test_tsan_positive_fixture_con0",
+        "environment": [
+          [
+            "HOME",
+            "/tmp/zscope-tsan-run-jw5mh_p7"
+          ],
+          [
+            "LANG",
+            "C.UTF-8"
+          ],
+          [
+            "PATH",
+            "/tmp/zscope-acceptance-tools:/opt/zscope-test/bin:/usr/bin:/bin"
+          ],
+          [
+            "TMPDIR",
+            "/tmp/zscope-tsan-run-jw5mh_p7"
+          ],
+          [
+            "TSAN_OPTIONS",
+            "halt_on_error=1:exitcode=1:history_size=2"
+          ]
+        ],
+        "isolation": "process",
+        "isolation_verified": true,
+        "isolation_notes": [
+          "isolation=process",
+          "process_group_isolated",
+          "subprocess_is_not_a_container_sandbox"
+        ],
+        "build_argv": [],
+        "build_exit_code": null,
+        "build_stdout_digest": "",
+        "build_stderr_digest": "",
+        "build_stdout_excerpt": "",
+        "build_stderr_excerpt": "",
+        "exit_code": 1,
+        "signal_number": null,
+        "timed_out": false,
+        "oom_killed": false,
+        "binary_digest": "41fa1ad3d2610898d3cba001762445b31a297040426f6fda7838a934db5cdd91",
+        "binary_path": "/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race",
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_digest": "3757c9a10a5533fe6cb587d3dd983c2807361b527a59e66235ed64dff3cd2428",
+        "stdout_excerpt": "",
+        "stderr_excerpt": "==10==WARNING: invalid path to external symbolizer!\n==10==WARNING: Failed to use and restart external symbolizer!\n==================\nWARNING: ThreadSanitizer: data race (pid=10)\n  Write of size 4 at 0x5555569de698 by thread T2:\n    #0 <null> <null> (race+0xded18) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #1 <null> <null> (race+0x60542) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n\n  Previous write of size 4 at 0x5555569de698 by thread T1:\n    #0 <null> <null> (race+0xded18) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #1 <null> <null> (race+0x60542) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n\n  Thread T2 (tid=13, running) created by main thread at:\n    #0 <null> <null> (race+0x605df) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #1 <null> <null> (race+0xdec2a) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #2 <null> <null> (libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)\n\n  Thread T1 (tid=12, finished) created by main thread at:\n    #0 <null> <null> (race+0x605df) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #1 <null> <null> (race+0xdebfe) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #2 <null> <null> (libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)\n\nSUMMARY: ThreadSanitizer: data race (/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race+0xded18) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82) \n==================\n",
+        "findings": [],
+        "replay_classifications": [
+          "engine_failed:exit_1"
+        ],
+        "replay_count": 1,
+        "duration_ms": 28,
+        "memory_limit_mode": "rss_watchdog",
+        "runs": [
+          {
+            "index": 0,
+            "outcome": "engine_failed",
+            "detail": "engine_failed:exit_1",
+            "exit_code": 1,
+            "signal_number": null,
+            "timed_out": false,
+            "oom_killed": false,
+            "classifications": [
+              "engine_failed:exit_1"
+            ],
+            "findings": [],
+            "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_digest": "3757c9a10a5533fe6cb587d3dd983c2807361b527a59e66235ed64dff3cd2428",
+            "stdout_bytes": 0,
+            "stderr_bytes": 1468,
+            "output_truncated": false,
+            "artifacts": []
+          }
+        ],
+        "artifact_refs": [],
+        "artifact_root": "",
+        "inputs_verified": true,
+        "input_verification_digest": "f89aae6d1315149a40f6ac0def6ccf22d808d14fd39ad921bb9a1ab7ff1fae67",
+        "source_digests": [
+          [
+            "/repo/tests/fixtures/dynamic_reproduction/data_race_positive.c",
+            "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865"
+          ],
+          [
+            "tests/fixtures/dynamic_reproduction/data_race_positive.c",
+            "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865"
+          ]
+        ],
+        "binary_identity_source": "plan_declared",
+        "limitations": [
+          "memory_limit_enforced_by_rss_watchdog",
+          "rss_watchdog_is_sampled_not_a_kernel_limit",
+          "execution_logs_not_published"
+        ],
+        "detail": "exit_1"
+      }
+    }
+  ],
+  "test_observed": {
+    "tsan_positive": {
+      "schema_version": "zscope.dynamic-execution-record.v2",
+      "record_id": "dynrepro-tsan-4855681fbecd783c-9a6ccf286d9e",
+      "plan_digest": "15ce746d7866f940cf3a057319c24a5343a8f0bd3a4b3700a1648cbca5495734",
+      "provider_name": "tsan-runner",
+      "provider_version": "1",
+      "provider_kind": "tsan",
+      "outcome": "engine_failed",
+      "run_argv": [
+        "/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race"
+      ],
+      "run_cwd": "/tmp/pytest-tsan/test_tsan_positive_fixture_con0",
+      "environment": [
+        [
+          "HOME",
+          "/tmp/zscope-tsan-run-jw5mh_p7"
+        ],
+        [
+          "LANG",
+          "C.UTF-8"
+        ],
+        [
+          "PATH",
+          "/tmp/zscope-acceptance-tools:/opt/zscope-test/bin:/usr/bin:/bin"
+        ],
+        [
+          "TMPDIR",
+          "/tmp/zscope-tsan-run-jw5mh_p7"
+        ],
+        [
+          "TSAN_OPTIONS",
+          "halt_on_error=1:exitcode=1:history_size=2"
+        ]
+      ],
+      "isolation": "process",
+      "isolation_verified": true,
+      "isolation_notes": [
+        "isolation=process",
+        "process_group_isolated",
+        "subprocess_is_not_a_container_sandbox"
+      ],
+      "build_argv": [],
+      "build_exit_code": null,
+      "build_stdout_digest": "",
+      "build_stderr_digest": "",
+      "build_stdout_excerpt": "",
+      "build_stderr_excerpt": "",
+      "exit_code": 1,
+      "signal_number": null,
+      "timed_out": false,
+      "oom_killed": false,
+      "binary_digest": "41fa1ad3d2610898d3cba001762445b31a297040426f6fda7838a934db5cdd91",
+      "binary_path": "/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race",
+      "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_digest": "3757c9a10a5533fe6cb587d3dd983c2807361b527a59e66235ed64dff3cd2428",
+      "stdout_excerpt": "",
+      "stderr_excerpt": "==10==WARNING: invalid path to external symbolizer!\n==10==WARNING: Failed to use and restart external symbolizer!\n==================\nWARNING: ThreadSanitizer: data race (pid=10)\n  Write of size 4 at 0x5555569de698 by thread T2:\n    #0 <null> <null> (race+0xded18) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #1 <null> <null> (race+0x60542) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n\n  Previous write of size 4 at 0x5555569de698 by thread T1:\n    #0 <null> <null> (race+0xded18) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #1 <null> <null> (race+0x60542) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n\n  Thread T2 (tid=13, running) created by main thread at:\n    #0 <null> <null> (race+0x605df) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #1 <null> <null> (race+0xdec2a) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #2 <null> <null> (libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)\n\n  Thread T1 (tid=12, finished) created by main thread at:\n    #0 <null> <null> (race+0x605df) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #1 <null> <null> (race+0xdebfe) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)\n    #2 <null> <null> (libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)\n\nSUMMARY: ThreadSanitizer: data race (/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race+0xded18) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82) \n==================\n",
+      "findings": [],
+      "replay_classifications": [
+        "engine_failed:exit_1"
+      ],
+      "replay_count": 1,
+      "duration_ms": 28,
+      "memory_limit_mode": "rss_watchdog",
+      "runs": [
+        {
+          "index": 0,
+          "outcome": "engine_failed",
+          "detail": "engine_failed:exit_1",
+          "exit_code": 1,
+          "signal_number": null,
+          "timed_out": false,
+          "oom_killed": false,
+          "classifications": [
+            "engine_failed:exit_1"
+          ],
+          "findings": [],
+          "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_digest": "3757c9a10a5533fe6cb587d3dd983c2807361b527a59e66235ed64dff3cd2428",
+          "stdout_bytes": 0,
+          "stderr_bytes": 1468,
+          "output_truncated": false,
+          "artifacts": []
+        }
+      ],
+      "artifact_refs": [],
+      "artifact_root": "",
+      "inputs_verified": true,
+      "input_verification_digest": "f89aae6d1315149a40f6ac0def6ccf22d808d14fd39ad921bb9a1ab7ff1fae67",
+      "source_digests": [
+        [
+          "/repo/tests/fixtures/dynamic_reproduction/data_race_positive.c",
+          "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865"
+        ],
+        [
+          "tests/fixtures/dynamic_reproduction/data_race_positive.c",
+          "d0bdb615fd46f35eb53858a121b16f1045d0850b89d9cbcdcde2cc1881416865"
+        ]
+      ],
+      "binary_identity_source": "plan_declared",
+      "limitations": [
+        "memory_limit_enforced_by_rss_watchdog",
+        "rss_watchdog_is_sampled_not_a_kernel_limit",
+        "execution_logs_not_published"
+      ],
+      "detail": "exit_1"
+    }
+  },
+  "observer_errors": [],
+  "raw_files": 8,
+  "raw_bytes": 1468
+}

@@ -1,0 +1,15 @@
+{
+  "branch": "s01-analysis-r6-review1",
+  "tool": "dispatch_task",
+  "id": "s01-analysis-r6-review1",
+  "arguments": {
+    "user_requested": true,
+    "agent": "kimi",
+    "session_id": "sess_261a55289f",
+    "model": "volceapi/kimi-k3",
+    "request_id": "c7da2fde-9f1a-4f07-8dc7-8de0296f8517",
+    "message": "S01-INST-EXEC 独立验收返修，继续原会话 sess_261a55289f、原副本 .coordination/20261014/workspaces/s01-analysis-r6 和原6文件所有权。初轮 task_c5ebd65572 已21:02:30 completed，公开get_result完整无warnings/failure；已保存原始交付5个改动源码、DELIVERY和287项JUnit于根 artifacts/coordinator-s01-r6-review-20261014/initial-delivery，不导入根目录。\n先直接修复已确认边界，不重新长规划。你的 last_instance_results accessor 已在稳定交付补齐并可保留，此项不需要返工。稳定交付独立反例2 fail：\n1. ScopedCodeIndex._unscoped / __getattr__ 仍透传未隔离导航、图/语义/源函数信息，get_callees返回另一个变体数据；仅列unscoped_consumers、让scan_coverage_complete=false，不能阻止错误数据进入候选/验证/反证。“输出不带构建ID”不代表无证据权限。\n2. analyze_entry_instances直接调用私有_analyze_function_entries，绕过公开 analyze_function_entries 的生命周期；真实线程反例显示close()在实例分析仍运行时即执行资源清理。\n不可修改的协调反例：根 docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/followups-r6/test_instance_consumer_guard.py；最终失败JUnit artifacts/coordinator-s01-r6-review-20261014/results.xml；独立审计 review.json/ownership-review.json（981有效输入，未越权）。这些是合成隔离/生命周期边界反例，不冒充native效果。\n修复要求：\n- 会进入候选/验证/反证的消费者只有可核对精确BuildContext+native USR/源码范围时才返回可用数据。无法scope的方法必须返回显式gap/unsupported或对应空结果并记录缺口；不能委托首投影，再仅在汇总时声明未知。审查__getattr__默认透传、get_function_impl/metadata/导航/图等，尤其同TU重载和显式file不能拿另一函数体。无需完成整个S01-SYMBOL，可保留有界消费者缺口，但必须在消费处拒绝弱回退。\n- scoped执行不能先用未包装base index运行global modeling/shared semantics/project deterministic pass/active discovery，再只在_instance_outcome里按buildID过滤。能保精确作用域才执行，未接入部分停止该路径并明确gap。不要把旧semantic_result或全局overlay当实例事实授权。初轮DELIVERY建议_scan_session先全局prepare再传入semantic_result并不构成隔离；根scan_session的_ensure_semantic_phase由协调者接线处理，请给明确安全调用约定，不修改共享文件。复用已有标准根契约/实际native候选和验证链，保持默认实验开关。\n- public analyze_entry_instances 使用与原公开入口相同的占用/关闭/中断生命周期：已close拒绝、并发batch拒绝或既有规范处理、进度callback close延后清理，不能运行中提前释放资源。\n- 保留真实native两宏正反例（仅ALT有double_free、基线0），保留foreign/missing/stale/TU/overload/file和../反例；不能删除问题字段或虚改scope_complete使测试变绿。你拥有tests/test_instance_analysis.py，可补充上述边界，协调探针只读。\n.metadata/.gitattributes、LICENSE及7 vendor LICENSE已由协调者补齐，最新只读依赖收据 followups-r6/s01-analysis-r6-dependencies.json。文档测试独立6 pass收据 artifacts/coordinator-s01-isolation-metadata-r6-20261014/metadata-final.xml；DELIVERY需将“目前仍缺.editorconfig”更正为历史隔离输入缺失已补齐，不虚写抖动。原287结果保留，新最终JUnit用不同文件名。\n全部pytest/native/质量经根 coordination/2026-10-14/test_slot.py --workspace /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-analysis-r6 -- <argv>；WSL Ubuntu /home/zeal/venv313/bin/python，PYTHONPATH本副本，TMPDIR独立ext4，两检查槽。native只读 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer（SHA d39cbe72...），不重建。完成相关/native回归、compileall/mypy及必要局部Black，交付稳定SHA/命令时间/新JUnit/剩余缺口和共享接线要求。\n根目录、其他分支、scan_session.py/code_index.py、global_modeler/共享契约/验证公共文件/报告/路由只读；不操作provider/权限/旧S06，不commit/push/reset/clean，不声称全S01完成。",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S01-INST-EXEC-R1"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "at": "2026-10-14T05:14:25.153032+00:00",
+  "branch": "s09-prep",
+  "source_baseline": "41d9c25a0e259457164b68191ed6d797b5d7e1e5a8b748b501fd79df37deabd1",
+  "files": [
+    {
+      "path": "scripts/agent_plan_evaluation.py",
+      "sha256": "4a729c66fd5ada5d52bc71db19db4f1334441ed5e8e24727053f4503f690c809"
+    },
+    {
+      "path": "tests/test_agent_plan_evaluation.py",
+      "sha256": "7b226f8ad4d43bba4b968965621554f99131d9a97f1effd3c3cb2a268f10cace"
+    }
+  ],
+  "existing_source_changes": [],
+  "state": "immutable_intake_snapshot_pending_independent_integration_tests_and_final_worker_receipt"
+}

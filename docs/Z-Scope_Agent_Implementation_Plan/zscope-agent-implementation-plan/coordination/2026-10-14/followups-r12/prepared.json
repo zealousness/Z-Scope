@@ -1,0 +1,66 @@
+{
+  "at": "2026-10-14T18:09:08.870887+00:00",
+  "source_files": 1002,
+  "tasks": [
+    {
+      "id": "SCAN-SESSION-R12",
+      "workspace": "scan-session-r12",
+      "agent": "kimi",
+      "model": "volceapi/kimi-k3",
+      "session_id": "sess_261a55289f",
+      "owns": [
+        "zscope/orchestration/scan_session.py",
+        "zscope/orchestration/parallel_analyzer.py",
+        "zscope/orchestration/jobs/scan_work.py",
+        "tests/test_scan_session_instances.py",
+        "tests/test_scan_session_jobs.py"
+      ],
+      "message": "继续实施 S01/S08 的实际 ScanSession 主路径接线，本任务由 Kimi K3 开发。R11当前根目录1123/0fail/0error/0skip、六质量命令通过；此前实例分析API及独立SessionWorkScheduler已集成，但普通扫描仍走旧入口/global semantic path，不等于完整S01/S08。新隔离副本scan-session-r12取自R11同一1002文件快照，旧副本只读。\n独占 zscope/orchestration/scan_session.py、parallel_analyzer.py、新jobs/scan_work.py、新tests/test_scan_session_instances.py、新tests/test_scan_session_jobs.py。其余只读。Analyzer/ValidationRunner/contracts由另一ZCode任务独占，不要改；jobs底层scheduler/store/service/owner/queue、CLI/Web/MCP、reporting、配置、native、规则、文档均协调者独占。需要共享修改时交出调用点和最小改动建议。\n把普通C/C++单入口及批量ScanSession实际执行切到精确EntryInstancePlan→analyze_entry_instances，不能仅metadata贴计划或继续name-only路径；无可核验实例不能回退未知构建。Java不适用编译实例，保留其真正执行路径。实例模式不得先调用全局_prepare_semantics/modeling/旧name-only resume，已明确unsupported的建模能力继续真实缺口而非借全局证据。不能丢弃原CandidateLedger、集中验证、shared cache、报告/退出完整性路径。\n将owner传入的五个ZSCOPE_JOB_*标识在实际ScanSession消费，使用现有SessionWorkScheduler/WorkQueue驱动实际工作。需要按实例分析、验证与checkpoint真实阶段settle，不能每个工作项重开整个ParallelAnalyzer batch导致Ledger/cache重置，也不能把整扫描伪装一个工作项、先完成队列再做验证、只有unused adapter或只mock callback清单。可重构ParallelAnalyzer内部连续batch API，但保留一次scan范围账本、真实去重及当前build作用域。队列处理、checkpoint与结果授权都核对job/run/owner/input/claim及当前实例，不执行磁盘JSON保存命令。给出精确而最小checkpoint协议供协调者审阅；完成记录必须具备真实已提交结果，crash窗口不能令恢复跳过未验证/未持久化结果，旧entry报告不自动授权实例完成。同input重启仅跳已验证完成实例，source/header/config变化撤回旧完成；取消/截止停止新claim、在途有界收尾、剩余持久化、partial/coverage/remaining真实，不靠owner强杀验证stop。\n另一ZCode任务将在ValidationRunner内部为scoped index的真实run和每个executor/scheduler worker绑定build上下文，不需你改runner/Analyzer；双方以现有ScopedCodeIndex.scope/InstanceScope.to_payload为界，不传全局registry授权。如果需要新interface先交具体签名，协调者统一，不能自行改对方文件。\n相关ScanSession/ParallelAnalyzer、all_variant/instance/native、jobs/session scheduler/cancel/deadline/snapshot/report旧回归全部保留；新真实native双编译变体ALT double_free/BASE无候选，实际ScanSession（仅模型边界可明确受控）→真实SQLite scheduler→实际Analyzer/Validator→报告/checkpoint→重建恢复，含deadline/cancel/in-flight/输入变化/失效claim/无重复/未验证不得complete。拒绝只用fake Analyzer或mock全成功队列形成接线验收。条件性S10/Q、真实模型与完整专业扫描能力不扩大。完成后给每项实际已接入/仍缺口及最终DELIVERY，停写后才报完成。\n唯一可写副本 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\scan-session-r12；WSL /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/scan-session-r12。Bridge cwd根目录只定位会话，不准写根/旧副本。读取本副本AGENTS.md、architecture与相关模块、实施11/16/19/20/21后核对调用者。测试/质量仅WSL Ubuntu zeal login shell bash -lc、/home/zeal/venv313/bin/python，通过根协调test_slot.py --workspace <副本绝对Linux路径> -- <argv>，最多两槽、PYTHONPATH本副本、ext4TMPDIR、默认pytest fd不降级。该test_slot.py位于 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\docs\\Z-Scope_Agent_Implementation_Plan\\zscope-agent-implementation-plan\\coordination\\2026-10-14。native Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，只读不重建。不能Windows测试结论、skip/xfail/屏蔽探针或改配置变绿。\ncompileall -f -q zscope scripts test tests、mypy zscope及只必要变更Black；Astra浏览器ZSCOPE_UI_PLAYWRIGHT_MODULE=/mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright、ZSCOPE_UI_CHROMIUM=/home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome，EVIDENCE变量本副本artifacts、ZSCOPE_UI_MULTI_TARGET_EDITING=1。静态锁只读。不启动Bridge/代理/旧S06，不commit/push/reset/clean，不改凭据/provider/审批。普通API超时原样保留由协调者按授权处理，转交不能绕审核。最终DELIVERY.md和artifacts可写，区分已派发/执行/产物/自验/独验/集成/联合；最终稳定后停写，等协调者独验，不宣称整包/真实项目完成。\n",
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\scan-session-r12",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/scan-session-r12",
+      "depends_on": [
+        "CURRENT-JOINT-R11"
+      ]
+    },
+    {
+      "id": "CONTRACT-VALIDATION-R12",
+      "workspace": "contract-validation-r12",
+      "agent": "zcode",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "session_id": "sess_a0adb99b15",
+      "owns": [
+        "zscope/semantics/contracts.py",
+        "zscope/semantics/build_scope.py",
+        "zscope/semantics/call_context.py",
+        "zscope/semantics/contract_compiler.py",
+        "zscope/core/validation/runner.py",
+        "tests/test_contract_usr_scope.py",
+        "tests/test_validation_build_scope.py"
+      ],
+      "message": "继续 S01 精确契约身份与共享验证上下文接线，由ZCode glm-5.3开发。当前R11联合1123通过，基础ScopedCodeIndex及native消费者已集成；当前SymbolIdentity缺USR，find_for_call/match_call只name/file/signature，集中验证直接ValidationRunner.run绕过Analyzer.run build_scope。不能以已有切片说明整包完成。\n独占 zscope/semantics/contracts.py、build_scope.py、call_context.py、contract_compiler.py、zscope/core/validation/runner.py、新tests/test_contract_usr_scope.py、新tests/test_validation_build_scope.py。其他文件包括Analyzer/ParallelAnalyzer/ScanSession/retrieval/native/其他semantics/providers/规则/配置/docs只读。必要外部producer/consumer改动请交精确建议给协调者，不扩大所有权。ScanSession/ParallelAnalyzer由Kimi独占；现有ScopedCodeIndex.scope/InstanceScope.to_payload为边界。\n给SymbolIdentity与真正契约建立/发布/选择链保留真实native USR；unknown build/USR不是通配，不得以名字、尾部split、任意caller_build或仅name+file推断当前callee。核对实际native event/contract compiler及call_context消费；已有确切USR应解除同名重载误拒，错误USR/另一TU/另一变体/过期输入/只角色唯一仍拒。builtin标准根需保留现有核验语义，普通source/工作簿不能凭伪造USR授效果；需要其它producer文件时说明。更新契约编译版本使旧cache不得借缺USR记录授权。限制在能实际接通和核验的消费者；其余明示缺口，不把全局建模当精确模型。\nValidationRunner.run本身必须在scoped code_index.scope的真实上下文运行：准备证据、validator、review/rebuttal、related candidates及cache都不借外层线程。每个ThreadPoolExecutor/ScanScheduler worker显式绑定且finally释放当前精确构建上下文；既有单线程与非scoped调用也不继承另一variant遗留。incoming候选/evidence build与scoped build冲突或缺身份不可补标签授权。不要只给Analyzer构造参数，因为共享helper根本不调用Analyzer.run。不得降低已有cache/Validator通过标准。\n测试必须在真实ValidationRunner.run调用链覆盖executor及scheduler多线程并发BASE/ALT、错误/异常/cancel后context恢复、未知/混合candidate build拒绝，真实native C++重载/同名双TU/条件callee契约选择正反例，实际契约compiler发布→真实消费者（不仅手工SymbolIdentity/fake calls）。保留全部已有protocol/contract/native/model_cache/feedback/身份/validation回归。原始native工具只读已有真实构建，不编造事实。不恢复S06-R02。交最终稳定SHA/JUnit/质量/实际时间/未测及共享修改建议，完成停写。\n唯一可写副本 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\contract-validation-r12；WSL /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/contract-validation-r12。Bridge cwd根目录只定位会话，不准写根/旧副本。读取本副本AGENTS.md、architecture与相关模块、实施11/16/19/20/21后核对调用者。测试/质量仅WSL Ubuntu zeal login shell bash -lc、/home/zeal/venv313/bin/python，通过根协调test_slot.py --workspace <副本绝对Linux路径> -- <argv>，最多两槽、PYTHONPATH本副本、ext4TMPDIR、默认pytest fd不降级。该test_slot.py位于 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\docs\\Z-Scope_Agent_Implementation_Plan\\zscope-agent-implementation-plan\\coordination\\2026-10-14。native Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，只读不重建。不能Windows测试结论、skip/xfail/屏蔽探针或改配置变绿。\ncompileall -f -q zscope scripts test tests、mypy zscope及只必要变更Black；Astra浏览器ZSCOPE_UI_PLAYWRIGHT_MODULE=/mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright、ZSCOPE_UI_CHROMIUM=/home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome，EVIDENCE变量本副本artifacts、ZSCOPE_UI_MULTI_TARGET_EDITING=1。静态锁只读。不启动Bridge/代理/旧S06，不commit/push/reset/clean，不改凭据/provider/审批。普通API超时原样保留由协调者按授权处理，转交不能绕审核。最终DELIVERY.md和artifacts可写，区分已派发/执行/产物/自验/独验/集成/联合；最终稳定后停写，等协调者独验，不宣称整包/真实项目完成。\n",
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\contract-validation-r12",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/contract-validation-r12",
+      "depends_on": [
+        "CURRENT-JOINT-R11"
+      ]
+    },
+    {
+      "id": "ASTRA-QUEUE-UX-R12",
+      "workspace": "astra-queue-ux-r12",
+      "agent": "Astra",
+      "model": "gpt-6-astra",
+      "owns": [
+        "zscope/web/static/**",
+        "tests/test_agent_workbench_ui.py",
+        "tests/fixtures/agent_workbench_ui.cjs"
+      ],
+      "message": "Astra继续实际U01/U02界面与用户流程，任务ASTRA-QUEUE-UX-R12。新副本astra-queue-ux-r12来自最新R11联合1123通过同一1002文件快照；所有旧副本停写保留证据。\n独占zscope/web/static/**（vendor及LICENSE只读）、tests/test_agent_workbench_ui.py、tests/fixtures/agent_workbench_ui.cjs。所有后台/锁/docs/MCP/配置/native/旧S06只读，根目录协调者集成。Kimi正在完整ScanSession/队列接线，ZCode正在契约与验证上下文；不要为其未交付行为新增全成功fixture来声称完成。可以并行核查当前已存在ScanJobService progress/pending_count/phase/events/owner/input binding界面消费、真实截止/取消/恢复、断网草稿与服务重建、多client状态和迟到响应。\n优先实际找可复现问题，例如测量进度语义是否把分析完成等同验证完成、resume后旧进度/报告/输入revision混淆、unknown denominator/失效结果/remaining显示是否误导。至少使用真实HTTP/SQLite/service/owner走已支持路径；当前scanner/report仍受控时明确synthetic，不算真实扫描效果。可零产品改动交证据矩阵；有缺陷则只修已复现UI问题。后续Kimi新backend合同若需要消费协调者会明确递交稳定副本，不自行读取其活跃写目录来集成。\n保持桌面/手机/键盘/无障碍与12秒真实owner/deadline/cancel/partial/resume旧回归；严格409与晚到响应不覆盖当前状态。完成真实浏览器、截图、JUnit及最终逐文件SHA，锁由协调者更新。停写后交DELIVERY，不能把切片等同整U01/UX完成。\n唯一可写副本 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\astra-queue-ux-r12；WSL /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/astra-queue-ux-r12。Bridge cwd根目录只定位会话，不准写根/旧副本。读取本副本AGENTS.md、architecture与相关模块、实施11/16/19/20/21后核对调用者。测试/质量仅WSL Ubuntu zeal login shell bash -lc、/home/zeal/venv313/bin/python，通过根协调test_slot.py --workspace <副本绝对Linux路径> -- <argv>，最多两槽、PYTHONPATH本副本、ext4TMPDIR、默认pytest fd不降级。该test_slot.py位于 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\docs\\Z-Scope_Agent_Implementation_Plan\\zscope-agent-implementation-plan\\coordination\\2026-10-14。native Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，只读不重建。不能Windows测试结论、skip/xfail/屏蔽探针或改配置变绿。\ncompileall -f -q zscope scripts test tests、mypy zscope及只必要变更Black；Astra浏览器ZSCOPE_UI_PLAYWRIGHT_MODULE=/mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright、ZSCOPE_UI_CHROMIUM=/home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome，EVIDENCE变量本副本artifacts、ZSCOPE_UI_MULTI_TARGET_EDITING=1。静态锁只读。不启动Bridge/代理/旧S06，不commit/push/reset/clean，不改凭据/provider/审批。普通API超时原样保留由协调者按授权处理，转交不能绕审核。最终DELIVERY.md和artifacts可写，区分已派发/执行/产物/自验/独验/集成/联合；最终稳定后停写，等协调者独验，不宣称整包/真实项目完成。\n",
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\astra-queue-ux-r12",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/astra-queue-ux-r12",
+      "depends_on": [
+        "CURRENT-JOINT-R11"
+      ]
+    }
+  ],
+  "dispatched": false
+}

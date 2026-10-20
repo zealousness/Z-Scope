@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "scope": "current_instance",
+  "other_live_instances": 5,
+  "sessions": [
+    {
+      "session_id": "sess_bdab8c13fb",
+      "agent": "dsh",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "30fcbb4d-d53b-4762-bb46-caeef66eb7f7",
+      "proc_state": "idle_unloaded",
+      "turns": 2,
+      "title": "简单 Linux 评测前置环境清单（只读）",
+      "model": "deepseek/deepseek-v4.1-flash",
+      "effort": null,
+      "last_active_at": "2026-10-14T05:24:56.896015+00:00"
+    }
+  ]
+}

@@ -230,7 +230,24 @@ _CONFIRMATION_REQUIREMENTS = {
         "no_intraprocedural_release",
         "no_ownership_transfer",
     },
+    # V01 controlled dynamic reproduction.  The facts are minted only by
+    # ``zscope/core/validation/dynamic_reproduction.py`` after the witness has
+    # been matched to the candidate object/site/defect family and independently
+    # replayed; the record additionally has to hold a live in-process
+    # attestation, so a serialized log can never regain this authority.
+    "dynamic_witness_candidate_match": {
+        "candidate_object_matched",
+        "candidate_site_matched",
+        "defect_family_matched",
+        "binary_identity_bound",
+        "source_identity_bound",
+        "replay_consistent",
+    },
 }
+
+# Confirmation kinds whose authority is process-scoped: the record must be
+# backed by a runner attestation still live in this process.
+_PROCESS_ATTESTED_CONFIRMATION_KINDS = frozenset({"dynamic_witness_candidate_match"})
 
 
 def deterministic_decision_proof(
@@ -248,15 +265,29 @@ def deterministic_decision_proof(
     expected = str(outcome or "").lower()
     if issue.get("analysis_scope") == "conditional_source_branch":
         return None
+    if str(issue.get("rule_id") or issue.get("rule") or "") == "zscope.c_cpp.cpp_clang_cfg.object_protocol_path":
+        from .protocol_assessment import protocol_confirmation
+
+        # Serialized generic proofs cannot bypass this rule's business
+        # obligations. A negative business answer is not a safety proof.
+        return protocol_confirmation(issue) if expected == "confirm" else None
     compiler_required = str(issue.get("rule_id") or issue.get("rule") or "") in {
-        "configured_acquire_without_release", "clang_cfg_acquire_without_release_on_exit",
-        "clang_cfg_parent_release_without_owned_member_cleanup", "clang_cfg_unchecked_insert_after_ownership_handoff",
-        "clang_cfg_allocation_result_used_without_null_check", "clang_cfg_fd_open_return_without_close",
-        "clang_cfg_nonliteral_format_string", "clang_cfg_narrowed_allocation_original_length_copy",
-        "clang_cfg_unbounded_count_indexes_fixed_array", "clang_cfg_return_with_lock_held",
-        "clang_cfg_borrowed_pointer_returned_after_unlock", "insert_failure_leaves_stale_tree_node",
-        "global_container_registration_without_cleanup_path", "clang_cfg_external_size_allocation_without_limit",
-        "clang_cfg_allocation_size_arithmetic_without_overflow_guard", "clang_cfg_callback_while_lock_held",
+        "configured_acquire_without_release",
+        "clang_cfg_acquire_without_release_on_exit",
+        "clang_cfg_parent_release_without_owned_member_cleanup",
+        "clang_cfg_unchecked_insert_after_ownership_handoff",
+        "clang_cfg_allocation_result_used_without_null_check",
+        "clang_cfg_fd_open_return_without_close",
+        "clang_cfg_nonliteral_format_string",
+        "clang_cfg_narrowed_allocation_original_length_copy",
+        "clang_cfg_unbounded_count_indexes_fixed_array",
+        "clang_cfg_return_with_lock_held",
+        "clang_cfg_borrowed_pointer_returned_after_unlock",
+        "insert_failure_leaves_stale_tree_node",
+        "global_container_registration_without_cleanup_path",
+        "clang_cfg_external_size_allocation_without_limit",
+        "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "clang_cfg_callback_while_lock_held",
     }
     if expected == "reject" and (compiler_required or issue.get("review_checked_proofs_enabled") is True):
         from .review_checks import checked_receipt
@@ -304,6 +335,11 @@ def deterministic_decision_proof(
             continue
         if not _complete(proof) or not _has_fact_ids(proof) or not _has_code_hash(proof, issue):
             continue
+        if kind in _PROCESS_ATTESTED_CONFIRMATION_KINDS:
+            from .dynamic_reproduction import dynamic_witness_proof_is_live
+
+            if not dynamic_witness_proof_is_live(proof, issue):
+                continue
         engine = str(proof.get("producer_engine") or proof.get("engine") or "").lower()
         if not engine or engine in {"llm", "validator", "model"}:
             continue

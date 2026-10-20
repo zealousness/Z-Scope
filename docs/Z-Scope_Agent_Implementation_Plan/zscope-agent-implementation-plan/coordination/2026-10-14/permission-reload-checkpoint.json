@@ -1,0 +1,84 @@
+{
+  "at": "2026-10-14T04:16:21.6917143Z",
+  "checkpoint": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\checkpoints\\permission-reload-20261014T0415Z",
+  "files": [
+    {
+      "branch": "s08-owner",
+      "path": "zscope\\orchestration\\jobs\\fingerprint.py",
+      "sha256": "bc0d64d167e93fbb3e3f54f55b23a46687cff0989f1d30f10188e2159a899862",
+      "size": 7955
+    },
+    {
+      "branch": "s08-owner",
+      "path": "zscope\\orchestration\\jobs\\identity.py",
+      "sha256": "de2c740a1008db144415227f7d9364afd2c9310b8092471c3648f3e136bc1002",
+      "size": 2741
+    },
+    {
+      "branch": "s08-owner",
+      "path": "zscope\\orchestration\\jobs\\models.py",
+      "sha256": "3648843d3fa687d548b4daa0d7b812bf226d991b125794aa8c0df0081332006c",
+      "size": 11269
+    },
+    {
+      "branch": "s08-owner",
+      "path": "zscope\\orchestration\\jobs\\owner.py",
+      "sha256": "ad05224e4851396718c186cba28b69778888dac714fb239c86d608daf0302285",
+      "size": 27575
+    },
+    {
+      "branch": "s08-owner",
+      "path": "zscope\\orchestration\\jobs\\runner.py",
+      "sha256": "73fc2326da6d8f9d4c943da543dc3053baf2b433d28db944fac79ab9c78313bf",
+      "size": 3028
+    },
+    {
+      "branch": "s08-owner",
+      "path": "zscope\\orchestration\\jobs\\scheduler_hook.py",
+      "sha256": "f6ecbddcc051966d42319f045b3231001825ff64c0a680f155cc953fede4fa16",
+      "size": 6435
+    },
+    {
+      "branch": "s08-owner",
+      "path": "zscope\\orchestration\\jobs\\service.py",
+      "sha256": "0bd0e039cf52d188ba4e5b8c51153868ee77fb23954f57c5772a28ab6214770d",
+      "size": 37701
+    },
+    {
+      "branch": "s08-owner",
+      "path": "zscope\\orchestration\\jobs\\store.py",
+      "sha256": "6488909057d4196c416532c3541243da4190368f6812f9ac27e548b6fddc6623",
+      "size": 22504
+    },
+    {
+      "branch": "s01-instances",
+      "path": "zscope\\orchestration\\scan_session.py",
+      "sha256": "23ed6bac305dcd44ae00d9559082500589b335eb51f6ce9449f46240e4cf3978",
+      "size": 43273
+    },
+    {
+      "branch": "s01-instances",
+      "path": "zscope\\orchestration\\global_modeler.py",
+      "sha256": "22776c300f16f89ee7a925b3555a156597b5d69573faf0400f27e3d6550c6254",
+      "size": 36045
+    },
+    {
+      "branch": "s01-instances",
+      "path": "zscope\\retrieval\\code_index.py",
+      "sha256": "f98abeed190e99e4139456ee76306b9cf38e00bcae60774a21e3fab2ce2c502e",
+      "size": 206168
+    },
+    {
+      "branch": "s01-instances",
+      "path": "zscope\\retrieval\\indexing_inventory.py",
+      "sha256": "dcca9edd5bd910f6098f564e61c19b39ba7e65040dc41e5c1af3e4c719a1e85f",
+      "size": 11259
+    }
+  ],
+  "user_config_path": "C:\\Users\\10273\\.kimi-code\\config.toml",
+  "user_config_updated_utc": "2026-10-14T04:11:11.9951669Z",
+  "user_config_size": 333,
+  "user_config_sha256": "aaffa9fa4b10bee216ad49b732fb3c810e38f9dbcc78e5f4c50819d3d15eb2f0",
+  "configuration_modified_by_coordinator": false,
+  "secret_values_read_or_copied": false
+}

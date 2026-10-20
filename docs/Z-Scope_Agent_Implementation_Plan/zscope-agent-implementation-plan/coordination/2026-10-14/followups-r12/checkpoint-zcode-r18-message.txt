@@ -1,0 +1,19 @@
+用户最新分工已明确：“后续任务都先交给 ZCode 吧，暂时不用kimi了”。本任务由现有ZCode glm-5.3开发；Astra继续负责UI。此为用户改分工，不是普通API超时转交或规避审核。原Bridge owner80748复用，不改provider/凭据/入口。你复用 sess_3b6b9a19b2，但原MCP交付目录已冻结；另一ZCode sess_a0adb99b15 的contract-validation-r12已交付，协调者正在独验，也禁止改它。
+
+唯一可写新隔离副本：C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope\.coordination\20261014\workspaces\checkpoint-zcode-r18；WSL /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/checkpoint-zcode-r18。
+仅六条路径：zscope/orchestration/scan_session.py、zscope/orchestration/parallel_analyzer.py、zscope/orchestration/jobs/scan_work.py、tests/test_scan_session_instances.py、tests/test_scan_session_jobs.py、tests/test_scan_checkpoint_resume.py。root、旧Kimi scan-checkpoint-r17、父scan-session-r12、MCP旧目录、契约目录、Astra/UI、共享store/queue/service/owner/其他模块/docs/静态锁均只读。artifacts/和DELIVERY.md可写。不得扩大所有权。
+
+基线：Kimi task_b21e0df6a7最终字节（16:13:47结束且停写），协调者完整20文件+独立native/owner/authority回归433/0及四质量命令0，16:22:39，1014输入稳定。但随后当前helper等价字节上新依赖探针3/3失败，故整个检查点仍未验收/未集成，不能把433局部范围通过当整包完成。原Kimi目录和全部历史失败/收据保留，此副本复制1014固定输入，followups-r12/checkpoint-zcode-r18-baseline.json。新契约v5当前由协调者独验，未把未验收字节偷带入本副本。根R16仍1207/0加六命令0。
+
+必要返修：只读独立文件 followups-r12/test_scan_checkpoint_dependency_boundary.py 三例均失败，真实UserConfigStore/SQLite+合成plan（不声称native提取/全扫描），收据 artifacts/coordinator-checkpoint-r17-dependency-uri-probes-20261015/review.json；引用更早2例收据也保留。
+1. corrupt_answer_database：真实空回答DB原本可核验，损坏DB后 compute_plan_fingerprint仍返回known hash，预期None。
+2. unreadable_answer_schema：真实DB删除origin字段后，SELECT报错仍当空回答known，预期None。
+3. readonly_uri_hash_path：UserConfigStore路径state#fragment，当前f"file:{path}?mode=ro"被SQLite解释fragment，竟在旁边创建另一state数据库。只读准备/依赖读取不能写错库，路径含#/?/空格等必须保持实际文件身份并用真正只读URI（例如已解析Path.as_uri()再加mode=ro，确认SQLite语义）。不得通过删除测试或禁掉特殊路径规避。
+根因 _business_answers_digest 捕获所有sqlite3.Error后rows=[]，将不可核验的读失败等同已核验空回答。合法首次尚无DB或已核验空表可以是空摘要；存在却损坏、缺字段/未知schema、读取错误、无法确认的路径保持None/miss，不能在只读读取时初始化/修复DB隐藏缺口。路径定位应和正式UserConfigStore约定一致，不能猜到另一个store；不把Analyzer自身finding_baselines写入当用户回答变化，不用整个频繁变化DB摘要废掉所有正常缓存。核对有效语义工作簿/反馈路径，不凭固定defaults_only标记授资格；无法核验保持miss。
+
+必须保留已有五项真实authority修复：当前contract compiler+默认Registry内容/版本进入指纹；序列化confirmed/decision_proof一律miss后当前重裁决；verify后复核；整个JSON/Markdown/任务副本/batch备份实际发布在当前job/run/owner/input事务围栏内，传分析时捕获的input_revision，非空with检查不算围栏、不重读已变输入冒充期望值；锁内不跑模型/扫描、不对同jobs.db开第二写连接死锁。canonical队列/sidecar不删除，每run隔离队列+真实scheduler SQL收据路线保留。当前仍whole-plan checkpoint，逐实例durable未做，不能声称整S01/S08；initial_candidates接口建议继续只提案，不扩scope。
+
+验证标准不得降低：原19相关文件+checkpoint_resume（完整20）和r6/r10消费者探针、r12 native/crash/queue/deadline/authority五项，以及新增三SQL依赖探针均保留。原Java10+C++10迁移只读，不改测试或coordinator探针，不skip/xfail/删失败/放宽timeout或fd。你可在六owned测试补正反例。先针对三SQL、五authority和现有相关测试，再完整原范围+质量；历史收据不覆盖，新用zcode-r18-*命名。最终DELIVERY真实UTC+8时间、SHA从实际六文件重算、JUnit/日志、范围/未测、后台结束停写，等协调者独验/集成/联合。
+
+仅WSL Ubuntu zeal bash -lc、/home/zeal/venv313/bin/python，经根 docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/test_slot.py --workspace <本副本绝对Linux路径> -- <argv>，两槽、PYTHONPATH副本、独立ext4/tmp、默认pytest fd。Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399，只读不重建。compileall -f -q zscope scripts test tests、mypy zscope、必要六文件Black必须真实通过。读取AGENTS、architecture及相关模块/实施11/16/19/20/21，以源码和执行结果为准。
+不启动Bridge/重复服务，不恢复旧S06-R02，不改权限/provider/凭据，不commit/push/reset/clean。遇到审批、平台或额度限制停止受影响操作报告，不能换路由规避；普通API超时原样保留并由协调者处理。真实LLM/项目效果、SVF/link/full modeling、formal/portable和条件S10/Q不扩大。

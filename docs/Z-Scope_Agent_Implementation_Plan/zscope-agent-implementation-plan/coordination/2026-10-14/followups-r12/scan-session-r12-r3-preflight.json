@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-14T20:04:14.838257+00:00",
+  "session_state": "idle_unloaded",
+  "processes": {
+    "workspace": "scan-session-r12",
+    "processes": []
+  },
+  "source_matches_diagnostic": true,
+  "diagnostic": "coordinator-scan-session-r12-r2-refreshed-final-probes-20261015"
+}

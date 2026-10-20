@@ -1,0 +1,57 @@
+{
+  "at": "2026-10-15T22:23:15.883337+08:00",
+  "task_id": "task_d98c531060",
+  "session_id": "sess_e10155a00c",
+  "status": "failed_network_retries_only_closed",
+  "failure_at": "2026-10-15T14:17:56.539023+00:00",
+  "public_failure_kind": {
+    "operation": "session/prompt",
+    "kind": "protocol_error",
+    "prompt_may_have_been_sent": true,
+    "exit_code": null,
+    "stderr_summary": null
+  },
+  "public_network_retries": [
+    "[Network error, retrying (1/5)…]",
+    "[Network error, retrying (2/5)…]",
+    "[Network error, retrying (3/5)…]",
+    "[Network error, retrying (4/5)…]",
+    "[Network error, retrying (5/5)…]"
+  ],
+  "tool_execution_observed": false,
+  "observed_model": null,
+  "owned_source_unchanged": {
+    "zscope/cli/cli.py": "9964cc77ce1527d8f543153b98bb4b757492429e2da7569d82c8647921376b15",
+    "zscope/orchestration/execution_profile.py": "170b0158115dc5f7e8c2cfb0e4ac1fc1dedbd08599b1d5a203419440114fac87",
+    "tests/test_job_cli_stop_window.py": "4b163140dfa6295a098914ce43f268ab3957343ffc61124d1260d7bbf4e50543"
+  },
+  "linux_process_inspection": "22:22:38 inspector returned no workspace processes",
+  "session_state_after": "dead",
+  "journal_before": [
+    [
+      "53b74c8b-4993-4656-85ce-c0ed749c76a8",
+      "job-cli-window-r20",
+      "accepted",
+      "task_d98c531060"
+    ]
+  ],
+  "journal_after": [
+    [
+      "53b74c8b-4993-4656-85ce-c0ed749c76a8",
+      "job-cli-window-r20",
+      "failed",
+      "task_d98c531060"
+    ]
+  ],
+  "receipts": [
+    "route-check/bridge-response-r20-network-close-get_result-98a41f4ccf.json",
+    "route-check/bridge-response-r20-network-close-list_sessions-238f82f1b5.json",
+    "route-check/bridge-response-r20-network-close-end_session-314981aee6.json",
+    "route-check/bridge-response-r20-network-close-list_sessions-a053a0815f.json"
+  ],
+  "owner_restarted": false,
+  "provider_or_credentials_or_policy_changed": false,
+  "counts_as_glm_actual_delivery_failure": false,
+  "development_failure_streak": 1,
+  "scope": "Transport network retry exhaustion; unknown turnState notification also logged but not proven causal. No platform rejection observed."
+}

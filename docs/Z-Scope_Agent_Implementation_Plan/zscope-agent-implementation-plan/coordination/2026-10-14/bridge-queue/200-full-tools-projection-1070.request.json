@@ -1,0 +1,1 @@
+{"id": "full-tools-projection-1070", "tool": "get_transcript", "arguments": {"session_id": "sess_5b2791bb4a", "offset": 1070, "limit": 1000, "kinds": "tool_call,tool_call_update"}}

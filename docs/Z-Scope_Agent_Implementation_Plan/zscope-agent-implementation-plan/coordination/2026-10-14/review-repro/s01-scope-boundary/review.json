@@ -1,0 +1,35 @@
+{
+  "synthetic_only": true,
+  "interim_worker_source": true,
+  "source_sha256_before": "9a2e254d2b035de447d84bb187f913601b7500e8fe187146af4e11c248390b50",
+  "source_sha256_after": "9a2e254d2b035de447d84bb187f913601b7500e8fe187146af4e11c248390b50",
+  "stable": true,
+  "results": {
+    "foreign_build_identity": {
+      "accepted_instances": [
+        [
+          "usr-main",
+          "bc-b:usr-main",
+          "unit.c",
+          "entry_file"
+        ]
+      ],
+      "gap": null,
+      "detail": "",
+      "queries": 1
+    },
+    "explicit_entry_file_absent_but_other_file_present": {
+      "accepted_instances": [
+        [
+          "usr-other",
+          "bc-a:usr-other",
+          "other.c",
+          "entry_file"
+        ]
+      ],
+      "gap": null,
+      "detail": "",
+      "queries": 2
+    }
+  }
+}

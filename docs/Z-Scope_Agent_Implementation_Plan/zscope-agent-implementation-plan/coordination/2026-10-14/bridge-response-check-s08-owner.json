@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "task_id": "task_5da2bda636",
+  "session_id": "sess_66640fd67a",
+  "agent": "kimi",
+  "status": "failed",
+  "stop_reason": "error",
+  "error": "kimi rejected model 'kimi-k3'; session advertises ['volceapi/kimi-k3']",
+  "failure": {
+    "operation": "session/set_config_option model",
+    "kind": "protocol_error",
+    "prompt_may_have_been_sent": false,
+    "exit_code": null,
+    "stderr_summary": null
+  },
+  "warnings": [],
+  "files_changed": [],
+  "files_changed_total": 0,
+  "files_changed_truncated": false,
+  "files_changed_state": "collected",
+  "files_outside_cwd": [],
+  "files_outside_cwd_total": 0,
+  "model": "kimi-k3",
+  "effort": null,
+  "observed_model": null,
+  "observed_effort": null,
+  "created_at": "2026-10-14T02:06:08.596681+00:00",
+  "started_at": "2026-10-14T02:06:08.606682+00:00",
+  "finished_at": "2026-10-14T02:06:09.938829+00:00",
+  "recent_activity": [
+    "raw",
+    "raw",
+    "raw"
+  ],
+  "elapsed_sec": 1,
+  "silent_for_sec": null,
+  "stall_timeout_sec": 1800,
+  "persisted": true
+}

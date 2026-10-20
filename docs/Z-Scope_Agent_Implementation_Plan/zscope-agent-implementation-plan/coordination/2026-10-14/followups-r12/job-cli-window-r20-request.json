@@ -1,0 +1,15 @@
+{
+  "id": "job-cli-window-r20",
+  "branch": "job-cli-window-r20",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "U01-JOB-CLI-WINDOW-R20",
+    "session_id": "sess_b91680bb39",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "user_requested": true,
+    "request_id": "d159a7e2-023f-4c5f-831c-1a624e3283ce",
+    "message": "ZCode glm-5.3，新增实际消费端集成义务 U01-JOB-CLI-WINDOW-R20，保持已独验并导入的三个切片，不重做其开发。沿用当前空闲 sess_b91680bb39，工作目录只在隔离副本 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\job-cli-window-r20，Linux /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/job-cli-window-r20。Root 当前联合回归仍在运行，绝对不能改 Root 或其他副本。\n\n协调者21:21:38真实执行的两探针均失败，源码1035项前后一致：C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\artifacts\\coordinator-current-job-cli-window-r20-corrected-probes-20261015。显式请求已正确落SQL epoch，但真实CLI共享token预算却取配置00:00下次午夜；resume真实失败attempt后SQL清空stop_at_epoch，CLI仍再次套配置窗口。探针 followups-r12/test_job_cli_effective_window_boundary.py 在Root协调目录只读，原文件在失败artifact冻结，只控制分析run体，service/detached owner/CLI/真实ScanSessionRunner与token不替换。第一版探针原第二项exit1是成功finding导致resume409，已明确无效fixture；不要计作产品失败。以corrected两项为原样回放基准。原00:00并非过期，初次HHMM解析会取下次发生；已经解析的绝对窗口过期才不得roll。\n\n只允许写这3路径：['zscope/cli/cli.py', 'zscope/orchestration/execution_profile.py', 'tests/test_job_cli_stop_window.py']；DELIVERY.md和本副本artifacts可写。owner/store/service/scheduler_hook/scan_session/其它源码/旧tests/文档/native/工具只读；确需额外产品路径先提出具体契约与理由，协调者审查后才扩权。可读现有jobs/scheduler_hook.py session_job_context_from_env与真实SQL绑定接口，复用当前job/run/owner/input/run_dir校验。有效owner绑定时，SQL持久窗口是唯一有效预算来源，包括合法None（resume清空后不fallback配置）。不能通过自报JSON/env时间当权威，不能接受错store/job/run/owner/input或不完整伪造环境；无owner的独立CLI继续config一次解析预算。过期已解析窗口拒绝/结束，不能roll；与已有更早期限/父取消/显式取消保持真实原因及tighten-only共享token。不要更换token、写假flag、隐藏异常、宽松unknown或关掉guard过测。\n\n先原样复现corrected两失败并留不同文件收据；然后修复并增加真实owner显式/config/resume、standalone、身份不匹配/部分env/过期等正反例。保留原35stop消费者、共享预算HTTP2、原因2和相邻jobs/CLI/MCP/v2/v3回归。测试必须WSL Ubuntu zeal /home/zeal/venv313/bin/python，经Root协调目录test_slot.py --workspace <本Linux副本> -- <argv> 两共享槽/default fd/ext4临时目录，不能嵌套槽。native只读SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399。完整compileall -f -q zscope scripts test tests、mypy zscope、所有累计修改Python Black --check，完整退出码/JUnit/源SHA/时间；失败原样保留且每次artifact独立，不能覆盖before/after。协调者后续独验和Root集成。\n\n当前路由政策 DISPATCH_POLICY.md 适用，新增消费义务保留父项与历史，不借ID隐藏同一义务连续失败。不得操作旧S06-R02/创建重复Bridge/更改凭据或服务/commit push reset clean。平台拦截停止并报告，不换路由规避。完成后交付准确范围/未测/路径SHA/真实收据并停止所有后台、停止写入，等待协调者独验。不要宣称全U01/S08或真实项目效果完成。\n"
+  }
+}

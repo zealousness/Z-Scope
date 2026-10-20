@@ -1,0 +1,172 @@
+{
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-rs",
+    "tests/test_indexing_pipeline.py::test_real_direct_bitcode_dependency_cache_and_svf",
+    "--basetemp=/tmp/zscope-parallel-20261008/P01/llvm2/tmp",
+    "-o",
+    "cache_dir=/tmp/zscope-parallel-20261008/P01/llvm2/cache"
+  ],
+  "exit_code": 0,
+  "before": {
+    "zscope/retrieval/analysis_facts.py": "8f5fc5fd116a4a1a5cbbf4cbd2f14fee76ec549612bc2cca80eba72711301a24",
+    "zscope/retrieval/backend_base.py": "5e18990788b30868c4501ae31e2e89c831dcf3e3b9611dd09eac6faff968afba",
+    "zscope/retrieval/bitcode_compile.py": "12fa537538e4c03599f80a54e50e382206053318fcb445dc1a6e31375f8469b7",
+    "zscope/retrieval/bitcode_scope.py": "99644f169118b1626c2e8a5bd477343fe45b191651e3372f09445744fc198c38",
+    "zscope/retrieval/build_llvm.py": "f07556ea82e3251d5c29b050743caa841ba82e0804c2e8a440b7c2e3a2845899",
+    "zscope/retrieval/cached_index.py": "8800da9b8bd5c2f6ec4a75355b16e5013d2bbd82ebad32c35802dcf8452a185a",
+    "zscope/retrieval/claim_paths.py": "346a8745a9e79b50dd265966613688598d5f960d4111df715fa1a1795dac4a78",
+    "zscope/retrieval/clang_backend.py": "46bb3fbafa5e85bd0521709276e7d76758bbf11db4d6f9aad81e90942ee44cc9",
+    "zscope/retrieval/clang_batch.py": "9913bc668152d17f8d564bdd1b17c2d6c367cd449f2fcfd60a7da66d0d779244",
+    "zscope/retrieval/clang_derived_cache.py": "220b78386bd8d44aa264d7a19703e3d8b7502f9e952a6b06751ed3a60864e2ed",
+    "zscope/retrieval/clang_extractor.py": "1d82e9d263cb16f2f7077d1329c1e6e77c31f09750c450725c61b995805d56ea",
+    "zscope/retrieval/clang_extractor_pool.py": "4aa876eb1e6993d0d616472bf9e70e6bb9a9144d63176681083e58d4b7bcf0fb",
+    "zscope/retrieval/clang_input_watch.py": "7cb30eed29337bea4dbf04f938b269eec121d37c8f8d5fb3b4561fd51ca21582",
+    "zscope/retrieval/clang_resolution.py": "e2548ea04e0545dcd51328cae094cf3f516f8c368183ac9b4ae33ed2b1b612a9",
+    "zscope/retrieval/clang_source_snapshot.py": "80f8bc287a50d6c12dc53ff6a058d59c31bc64fdb58a35349bc8d5a3934a2e51",
+    "zscope/retrieval/clang_tooling_evidence.py": "3b45740c1bf01446671860efd197a897ac5386b5202561c4a6a7970bb97dc7aa",
+    "zscope/retrieval/clang_type_scheduler.py": "532c7cdac061104f262eb2c68f711057ca9cc981b3da236b8ef088e2d22720c2",
+    "zscope/retrieval/clang_type_state.py": "8031a5fffc1634a641a7292a9f8669742498a6f4e3707446750dae2815f13be2",
+    "zscope/retrieval/clang_type_worker.py": "5f786ccec22dd875a587c61231bdf62bdbeebea1275156cfe67cb673084c3ca9",
+    "zscope/retrieval/code_index.py": "bb1493e6171cd36dae48a1fd0efa0e6af6da65d97fcdb5826853850b39aa17bb",
+    "zscope/retrieval/compiler_compat.py": "371576c60deb059a19dd6a47e69bb9bf96696df2760b3df45ba2f02b3d5b7da6",
+    "zscope/retrieval/compiler_diagnostics.py": "a98eafc3905f67201522f9275928249bd630d8ae1767efb0bd6781553c2a165a",
+    "zscope/retrieval/compile_commands_prepare.py": "1a6ffcf98279b476173990cea1e762a956e477a4e742e65426160b516ebf6cf4",
+    "zscope/retrieval/compile_preflight.py": "9ac8f729989769f423f5d3a83c491d4c84128db0106c4b239fd3bbc965801719",
+    "zscope/retrieval/incremental_replay.py": "5e5d93e8b8d839c74d52e0bccc06ab83afeed7fc9cd740acf8d5fb48877a6874",
+    "zscope/retrieval/indexing_identity.py": "b82d51c1559e0a06a3b62b28884c05a505a1e2c5590f970ad69c2b604e0a14c2",
+    "zscope/retrieval/indexing_inventory.py": "dcca9edd5bd910f6098f564e61c19b39ba7e65040dc41e5c1af3e4c719a1e85f",
+    "zscope/retrieval/indexing_runtime.py": "a39b7d0e084ea77ad5485775c7ca484210afecc63ef8ca9ea94e867b720f7226",
+    "zscope/retrieval/java_joern_backend.py": "911a3dbb66fab8f8a7133b3d397bdc45176993763f5a0a4cbbf4e007b698c86b",
+    "zscope/retrieval/java_models.py": "a0f1abe221a11fffcbfb9d862f70c9e25577ed4df399c65e23761f0a8f1c491a",
+    "zscope/retrieval/java_signal_providers.py": "f5e2f446bfb9daf768da00db02fb2afebed15abf7c74b66b0b4f360aa214f632",
+    "zscope/retrieval/java_source_backend.py": "efb908a731ee67d279e293f2d8b6874c800e1bfc46d87d29fdd22d46e5e68f93",
+    "zscope/retrieval/java_source_extractor.py": "abd11c35b02f9a48d90d5daa02126cdf840322e984d8a1dc9de329f2627f4a6b",
+    "zscope/retrieval/java_structure_db.py": "63a9c920a8f3d1bac2579a0b4c7024e4be18097c16ee144072287c26d5f2dba4",
+    "zscope/retrieval/java_unified_backend.py": "8de31cb4de3702843e4016a637547ff565d3180885d4a4b455b79c80eed51336",
+    "zscope/retrieval/joern_backend.py": "fbbe76ed3af317d7e556f79e0f56e449a00b1a68c825ebdeab9864d100b029e1",
+    "zscope/retrieval/knowledge_db.py": "560e48a882311e2fb84eed15c5f21c2242bda88afb41ed4e0e58cdcdf9271504",
+    "zscope/retrieval/lifecycle_analysis.py": "fe2848934a0161708d38dd5cd365753dae8d5ba3e65fda024b4879798e47c6be",
+    "zscope/retrieval/llvm_toolchain.py": "7cc3e0284692f1587e01042c620010c847772de726a2b9115116916b64188293",
+    "zscope/retrieval/svf_analyzer.py": "6e0b24543211f3e2808f5af5b98463049163981401d728a6953e39b4a0064338",
+    "zscope/retrieval/svf_parser.py": "df0351897eff59da00de848f7dac064ce15fd3497931b66adbba5ea9f9695d85",
+    "zscope/retrieval/svf_runner.py": "cdb928620bbbf1d9844b227ad83b00772ad912086a4c7194733780063c8101c0",
+    "zscope/retrieval/unified_backend.py": "5d84e08b2d81375d52a012c78ba7b61624eff775b8133d3c9ffc6afafcf44f41",
+    "zscope/retrieval/validation_facts.py": "caf409dcee28608984080cd11bdd7fe76b333333f0949e16f88fdaf06f02fa51",
+    "zscope/retrieval/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests/test_indexing_pipeline.py": "d54103eae72b99c3f4910d2ff8b97a7c2654edc5e779937d685a1cadd4255b8b"
+  },
+  "after": {
+    "zscope/retrieval/analysis_facts.py": "8f5fc5fd116a4a1a5cbbf4cbd2f14fee76ec549612bc2cca80eba72711301a24",
+    "zscope/retrieval/backend_base.py": "5e18990788b30868c4501ae31e2e89c831dcf3e3b9611dd09eac6faff968afba",
+    "zscope/retrieval/bitcode_compile.py": "12fa537538e4c03599f80a54e50e382206053318fcb445dc1a6e31375f8469b7",
+    "zscope/retrieval/bitcode_scope.py": "99644f169118b1626c2e8a5bd477343fe45b191651e3372f09445744fc198c38",
+    "zscope/retrieval/build_llvm.py": "f07556ea82e3251d5c29b050743caa841ba82e0804c2e8a440b7c2e3a2845899",
+    "zscope/retrieval/cached_index.py": "8800da9b8bd5c2f6ec4a75355b16e5013d2bbd82ebad32c35802dcf8452a185a",
+    "zscope/retrieval/claim_paths.py": "346a8745a9e79b50dd265966613688598d5f960d4111df715fa1a1795dac4a78",
+    "zscope/retrieval/clang_backend.py": "46bb3fbafa5e85bd0521709276e7d76758bbf11db4d6f9aad81e90942ee44cc9",
+    "zscope/retrieval/clang_batch.py": "9913bc668152d17f8d564bdd1b17c2d6c367cd449f2fcfd60a7da66d0d779244",
+    "zscope/retrieval/clang_derived_cache.py": "220b78386bd8d44aa264d7a19703e3d8b7502f9e952a6b06751ed3a60864e2ed",
+    "zscope/retrieval/clang_extractor.py": "1d82e9d263cb16f2f7077d1329c1e6e77c31f09750c450725c61b995805d56ea",
+    "zscope/retrieval/clang_extractor_pool.py": "4aa876eb1e6993d0d616472bf9e70e6bb9a9144d63176681083e58d4b7bcf0fb",
+    "zscope/retrieval/clang_input_watch.py": "7cb30eed29337bea4dbf04f938b269eec121d37c8f8d5fb3b4561fd51ca21582",
+    "zscope/retrieval/clang_resolution.py": "e2548ea04e0545dcd51328cae094cf3f516f8c368183ac9b4ae33ed2b1b612a9",
+    "zscope/retrieval/clang_source_snapshot.py": "80f8bc287a50d6c12dc53ff6a058d59c31bc64fdb58a35349bc8d5a3934a2e51",
+    "zscope/retrieval/clang_tooling_evidence.py": "3b45740c1bf01446671860efd197a897ac5386b5202561c4a6a7970bb97dc7aa",
+    "zscope/retrieval/clang_type_scheduler.py": "532c7cdac061104f262eb2c68f711057ca9cc981b3da236b8ef088e2d22720c2",
+    "zscope/retrieval/clang_type_state.py": "8031a5fffc1634a641a7292a9f8669742498a6f4e3707446750dae2815f13be2",
+    "zscope/retrieval/clang_type_worker.py": "5f786ccec22dd875a587c61231bdf62bdbeebea1275156cfe67cb673084c3ca9",
+    "zscope/retrieval/code_index.py": "bb1493e6171cd36dae48a1fd0efa0e6af6da65d97fcdb5826853850b39aa17bb",
+    "zscope/retrieval/compiler_compat.py": "371576c60deb059a19dd6a47e69bb9bf96696df2760b3df45ba2f02b3d5b7da6",
+    "zscope/retrieval/compiler_diagnostics.py": "a98eafc3905f67201522f9275928249bd630d8ae1767efb0bd6781553c2a165a",
+    "zscope/retrieval/compile_commands_prepare.py": "1a6ffcf98279b476173990cea1e762a956e477a4e742e65426160b516ebf6cf4",
+    "zscope/retrieval/compile_preflight.py": "9ac8f729989769f423f5d3a83c491d4c84128db0106c4b239fd3bbc965801719",
+    "zscope/retrieval/incremental_replay.py": "5e5d93e8b8d839c74d52e0bccc06ab83afeed7fc9cd740acf8d5fb48877a6874",
+    "zscope/retrieval/indexing_identity.py": "b82d51c1559e0a06a3b62b28884c05a505a1e2c5590f970ad69c2b604e0a14c2",
+    "zscope/retrieval/indexing_inventory.py": "dcca9edd5bd910f6098f564e61c19b39ba7e65040dc41e5c1af3e4c719a1e85f",
+    "zscope/retrieval/indexing_runtime.py": "a39b7d0e084ea77ad5485775c7ca484210afecc63ef8ca9ea94e867b720f7226",
+    "zscope/retrieval/java_joern_backend.py": "911a3dbb66fab8f8a7133b3d397bdc45176993763f5a0a4cbbf4e007b698c86b",
+    "zscope/retrieval/java_models.py": "a0f1abe221a11fffcbfb9d862f70c9e25577ed4df399c65e23761f0a8f1c491a",
+    "zscope/retrieval/java_signal_providers.py": "f5e2f446bfb9daf768da00db02fb2afebed15abf7c74b66b0b4f360aa214f632",
+    "zscope/retrieval/java_source_backend.py": "efb908a731ee67d279e293f2d8b6874c800e1bfc46d87d29fdd22d46e5e68f93",
+    "zscope/retrieval/java_source_extractor.py": "abd11c35b02f9a48d90d5daa02126cdf840322e984d8a1dc9de329f2627f4a6b",
+    "zscope/retrieval/java_structure_db.py": "63a9c920a8f3d1bac2579a0b4c7024e4be18097c16ee144072287c26d5f2dba4",
+    "zscope/retrieval/java_unified_backend.py": "8de31cb4de3702843e4016a637547ff565d3180885d4a4b455b79c80eed51336",
+    "zscope/retrieval/joern_backend.py": "fbbe76ed3af317d7e556f79e0f56e449a00b1a68c825ebdeab9864d100b029e1",
+    "zscope/retrieval/knowledge_db.py": "560e48a882311e2fb84eed15c5f21c2242bda88afb41ed4e0e58cdcdf9271504",
+    "zscope/retrieval/lifecycle_analysis.py": "fe2848934a0161708d38dd5cd365753dae8d5ba3e65fda024b4879798e47c6be",
+    "zscope/retrieval/llvm_toolchain.py": "7cc3e0284692f1587e01042c620010c847772de726a2b9115116916b64188293",
+    "zscope/retrieval/svf_analyzer.py": "6e0b24543211f3e2808f5af5b98463049163981401d728a6953e39b4a0064338",
+    "zscope/retrieval/svf_parser.py": "df0351897eff59da00de848f7dac064ce15fd3497931b66adbba5ea9f9695d85",
+    "zscope/retrieval/svf_runner.py": "cdb928620bbbf1d9844b227ad83b00772ad912086a4c7194733780063c8101c0",
+    "zscope/retrieval/unified_backend.py": "5d84e08b2d81375d52a012c78ba7b61624eff775b8133d3c9ffc6afafcf44f41",
+    "zscope/retrieval/validation_facts.py": "caf409dcee28608984080cd11bdd7fe76b333333f0949e16f88fdaf06f02fa51",
+    "zscope/retrieval/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests/test_indexing_pipeline.py": "d54103eae72b99c3f4910d2ff8b97a7c2654edc5e779937d685a1cadd4255b8b"
+  },
+  "tools_before": {
+    "cmake": {
+      "path": "/usr/bin/cmake",
+      "sha256": "1c5227af4edd22d8d689def545e18ee458260c0fd579eba2187967f38817e638"
+    },
+    "gcc": {
+      "path": "/usr/bin/gcc",
+      "sha256": "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26"
+    },
+    "cc": {
+      "path": "/usr/bin/cc",
+      "sha256": "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26"
+    },
+    "clang": {
+      "path": "/usr/lib/llvm-18/bin/clang",
+      "sha256": "8ef402d453d1ba4902e4ee0f0f847f6cfa01400c95aa43c24e97818b9c0e3f45"
+    },
+    "clangd": {
+      "path": "/usr/lib/llvm-18/bin/clangd",
+      "sha256": "553224114539729bc00ed96ac6c16df6015c40265658610624da74da930f3894"
+    },
+    "gclang": {
+      "path": "/home/zeal/go/bin/gclang",
+      "sha256": "4490048f1e057a53aa315019d586c3a2e6ae3f69927b240f63df43522a60cab9"
+    },
+    "get-bc": {
+      "path": "/home/zeal/go/bin/get-bc",
+      "sha256": "817a491abb67a70766727465d12485ed52d517ef782d418a2ee89695177e657e"
+    },
+    "llvm-link": {
+      "path": "/usr/lib/llvm-18/bin/llvm-link",
+      "sha256": "e340363ed9e5346f0d6dc4441f4953c5f516ff73fa0a03e1955c1adaad68b651"
+    },
+    "llvm-nm": {
+      "path": "/usr/lib/llvm-18/bin/llvm-nm",
+      "sha256": "3f85dd567c2806f2c031e317871e7145f858072fc9595aba4dc33d2e3a671402"
+    },
+    "wpa": {
+      "path": "/home/zeal/.local/svf/SVF-linux-x86_64/bin/wpa",
+      "sha256": "51abab0bcde8debbf56a6618e3ecda6e1fced00e009b1c8613003eac69f41aa0"
+    },
+    "saber": {
+      "path": "/home/zeal/.local/svf/SVF-linux-x86_64/bin/saber",
+      "sha256": "a1942f4a5112c60d159b9e89ee1546cb02ad62da057d7a335b0cc3bcc1f56587"
+    }
+  },
+  "tools_after": {
+    "cmake": "1c5227af4edd22d8d689def545e18ee458260c0fd579eba2187967f38817e638",
+    "gcc": "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26",
+    "cc": "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26",
+    "clang": "8ef402d453d1ba4902e4ee0f0f847f6cfa01400c95aa43c24e97818b9c0e3f45",
+    "clangd": "553224114539729bc00ed96ac6c16df6015c40265658610624da74da930f3894",
+    "gclang": "4490048f1e057a53aa315019d586c3a2e6ae3f69927b240f63df43522a60cab9",
+    "get-bc": "817a491abb67a70766727465d12485ed52d517ef782d418a2ee89695177e657e",
+    "llvm-link": "e340363ed9e5346f0d6dc4441f4953c5f516ff73fa0a03e1955c1adaad68b651",
+    "llvm-nm": "3f85dd567c2806f2c031e317871e7145f858072fc9595aba4dc33d2e3a671402",
+    "wpa": "51abab0bcde8debbf56a6618e3ecda6e1fced00e009b1c8613003eac69f41aa0",
+    "saber": "a1942f4a5112c60d159b9e89ee1546cb02ad62da057d7a335b0cc3bcc1f56587"
+  },
+  "inputs_stable": true,
+  "tools_stable": true,
+  "llvm_library_stable": true
+}

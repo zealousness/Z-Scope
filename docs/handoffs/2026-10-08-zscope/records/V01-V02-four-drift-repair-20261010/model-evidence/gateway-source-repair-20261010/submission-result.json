@@ -1,0 +1,215 @@
+{
+  "startedAt": "2026-10-10T04:12:35.338Z",
+  "profile": "headless",
+  "provider": "deepseek",
+  "model": "deepseek-v4.1-flash",
+  "baseURL": "user-approved gateway (private endpoint redacted)",
+  "overlay": "C:/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-headless-auth-20261010/probe.patch.yml",
+  "sourceDigest": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+  "promptDigest": "f8013fd3d81b0756057c46784374555d7dd7535a898a408dc17f42081f5de768",
+  "promptBytes": 66225,
+  "events": [
+    "gateway-credential-presence",
+    "session",
+    "status",
+    "status",
+    "gateway-request-controls",
+    "gateway-model-status",
+    "thinking",
+    "text",
+    "status",
+    "gateway-model-status",
+    "status",
+    "final"
+  ],
+  "statuses": [
+    {
+      "phase": "turn_start"
+    },
+    {
+      "phase": "step_start"
+    },
+    {
+      "phase": "step_end",
+      "usage": {
+        "inputTokens": 17104,
+        "outputTokens": 24226,
+        "totalTokens": 41330
+      }
+    },
+    {
+      "phase": "turn_end",
+      "reason": {
+        "kind": "completed"
+      }
+    }
+  ],
+  "modelStatuses": [
+    {
+      "eventType": "assistant/message",
+      "facts": [
+        {
+          "key": "inputTokens",
+          "value": 17104
+        },
+        {
+          "key": "outputTokens",
+          "value": 24226
+        },
+        {
+          "key": "totalTokens",
+          "value": 41330
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-start"
+        },
+        {
+          "key": "type",
+          "value": "reasoning-chunks"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-start"
+        },
+        {
+          "key": "type",
+          "value": "text-chunks"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-end"
+        },
+        {
+          "key": "type",
+          "value": "reasoning"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "block-end"
+        },
+        {
+          "key": "type",
+          "value": "text"
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "usage"
+        },
+        {
+          "key": "inputTokens",
+          "value": 17104
+        },
+        {
+          "key": "outputTokens",
+          "value": 24226
+        },
+        {
+          "key": "totalTokens",
+          "value": 41330
+        },
+        {
+          "key": "type",
+          "value": "chunk"
+        },
+        {
+          "key": "type",
+          "value": "finish"
+        },
+        {
+          "key": "kind",
+          "value": "stop"
+        },
+        {
+          "key": "kind",
+          "value": "pi-ai"
+        },
+        {
+          "key": "responseId",
+          "value": "021791605555671b9ba894077e10bfbe81e23e95585e3ded077c7"
+        },
+        {
+          "key": "stopReason",
+          "value": "stop"
+        },
+        {
+          "key": "type",
+          "value": "reasoning"
+        },
+        {
+          "key": "type",
+          "value": "text"
+        },
+        {
+          "key": "kind",
+          "value": "pi-ai"
+        },
+        {
+          "key": "responseId",
+          "value": "021791605555671b9ba894077e10bfbe81e23e95585e3ded077c7"
+        },
+        {
+          "key": "stopReason",
+          "value": "stop"
+        }
+      ]
+    },
+    {
+      "eventType": "turn/end",
+      "facts": [
+        {
+          "key": "kind",
+          "value": "completed"
+        }
+      ]
+    }
+  ],
+  "requestId": null,
+  "rawDiagnosticsDiscarded": true,
+  "privateReasoningDiscarded": true,
+  "credentialValuesExcluded": true,
+  "modelToolsDisabled": true,
+  "persistentSessionsDisabled": true,
+  "routeVerified": {
+    "configured": true,
+    "source": "file",
+    "selectionMatches": true,
+    "endpointMatches": true
+  },
+  "sessionId": "session-802119d3-b9e2-444f-a353-5a00443ed4f6",
+  "requestControls": {
+    "provider": "deepseek",
+    "model": "deepseek-v4.1-flash",
+    "maxTokens": null,
+    "reasoningEffort": null
+  },
+  "completedAt": "2026-10-10T04:15:03.629Z",
+  "exitCode": 0,
+  "signal": null,
+  "stdoutBytes": 17473,
+  "stderrBytes": 263,
+  "answerBytes": 3333,
+  "answerDigest": "5b6ceb50b1aa06b6d0b8281ccddcc4b3f091134519223617c5f41e3b9b8d3450",
+  "modelReturnedAnswer": true,
+  "productSourceUnchanged": true
+}

@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
+
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.validation.pipeline import ValidationPipeline
+from zscope.core.validation.runner import ValidationRunner
 
 
 class FakeUserConfig:
@@ -174,6 +177,121 @@ def test_non_shadow_producer_on_merged_group_preserves_normal_proof_authority() 
     assert outcome is not None
     assert outcome.report_bucket == "issues"
     assert issue["candidate_disposition"] == "confirmed"
+
+
+@pytest.mark.parametrize("decision", ["model", "proof"])
+def test_conditional_snapshot_shadow_remains_telemetry(decision) -> None:
+    issue = _shadow_discovery_issue(
+        candidate_source="semantic_snapshot",
+        candidate_kind="conditional_snapshot_observation",
+        attribution={"discovered_by": ["semantic_modeling"]},
+    )
+    pipeline = ValidationPipeline(FakeUserConfig())
+    assert ValidationRunner._is_shadow_only_candidate(issue)
+    if decision == "proof":
+        issue["deterministic_proofs"] = [
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:1", "cfg:2"],
+                "code_hash": "code-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ]
+        outcome = pipeline.apply_deterministic_prevalidation(issue, _score(1.0))
+    else:
+        outcome = pipeline.apply_validator_result(
+            issue,
+            {"positive_evidence": ["path:1"], "blocking_negative_evidence": False},
+            verdict="verified",
+            score_data=_score(1.0),
+        )
+    assert outcome is not None
+    assert outcome.report_bucket is None
+    assert issue["candidate_disposition"] == "shadow_observation"
+
+
+@pytest.mark.parametrize("changed", ["mixed", "legacy", "off"])
+def test_conditional_shadow_does_not_change_other_producers(changed) -> None:
+    issue = _shadow_discovery_issue(
+        candidate_source="semantic_snapshot",
+        candidate_kind="conditional_snapshot_observation",
+        attribution={"discovered_by": ["semantic_modeling"]},
+    )
+    if changed == "mixed":
+        issue["attribution"]["discovered_by"].append("deterministic_rule")
+    elif changed == "legacy":
+        issue["candidate_kind"] = "semantic_snapshot_hypothesis"
+    else:
+        issue["rollout_visibility"] = "off"
+    assert not ValidationPipeline._is_rollout_shadow_candidate(issue)
+    assert not ValidationRunner._is_shadow_only_candidate(issue)
+
+
+@pytest.mark.parametrize("route", ["static", "feedback", "baseline", "failure", "disabled"])
+def test_conditional_shadow_early_exit_remains_out_of_default_report(route) -> None:
+    issue = _shadow_discovery_issue(
+        candidate_source="semantic_snapshot",
+        candidate_kind="conditional_snapshot_observation",
+        attribution={"discovered_by": ["semantic_modeling"]},
+        function="entry",
+        location="a.c:1",
+    )
+    user_config = FakeUserConfig()
+    pipeline = ValidationPipeline(user_config)
+    if route == "static":
+        issue["validation_required"] = False
+    elif route == "feedback":
+        user_config.false_positive = True
+    elif route == "baseline":
+        user_config.baseline = {"status": "false_positive"}
+    if route == "failure":
+        outcome = pipeline.apply_validation_failure(issue, "test-error")
+        assert issue["engine_status"] == "failed"
+        assert issue["candidate_disposition"] == "engine_failed"
+    elif route == "disabled":
+        outcome = pipeline.apply_unvalidated(issue, _score(1.0))
+    else:
+        outcome = pipeline.apply_pre_validation_feedback(issue, "entry")
+        assert issue["candidate_disposition"] == "shadow_observation"
+        assert issue["shadow_feedback_kind"]
+    assert outcome is not None
+    assert outcome.report_bucket is None
+
+
+def test_conditional_shadow_cannot_create_visible_review_children() -> None:
+    from zscope.core.validation.review_checkpoint import RelatedCandidateRegistry
+
+    parent = _shadow_discovery_issue(
+        candidate_source="semantic_snapshot",
+        candidate_kind="conditional_snapshot_observation",
+        attribution={"discovered_by": ["semantic_modeling"]},
+        function="entry",
+        location="a.c:1",
+        review_related_proposals=[
+            {
+                "file": "a.c",
+                "line": 1,
+                "location": "a.c:1",
+                "function": "entry",
+                "category": "race",
+                "source": "node->name",
+                "sink": "access",
+                "description": "another member requires investigation",
+                "analysis_scope": "conditional_source_branch",
+                "trigger_condition": "concurrent callers",
+                "evidence_refs": ["tool"],
+            }
+        ],
+    )
+    assert len(RelatedCandidateRegistry([parent]).freeze()) == 1
+    runner = object.__new__(ValidationRunner)
+    runner._review_flag = lambda name: True
+    state = {"observations": [], "pending_new_issues": []}
+    runner._validate_related_candidates(state, [parent])
+    assert state == {"observations": [], "pending_new_issues": []}
 
 
 def test_validation_pipeline_reports_high_score_verified_issue() -> None:

@@ -1,0 +1,74 @@
+{
+  "at": "2026-10-15T19:20:57.909243+08:00",
+  "context": {
+    "ok": true,
+    "task_id": "task_bf7efdfce3",
+    "session_id": "sess_a0adb99b15",
+    "status": "completed",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "observed_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "started_at": "2026-10-15T10:45:55.972577+00:00",
+    "finished_at": "2026-10-15T11:01:25.533546+00:00",
+    "failure": null,
+    "warnings": [],
+    "actual_tool_activity": [],
+    "receipt": "route-check/bridge-response-r19-observe-context-db99098256.json"
+  },
+  "deadline": {
+    "ok": true,
+    "task_id": "task_9565621a54",
+    "session_id": "sess_b91680bb39",
+    "status": "running",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "observed_model": null,
+    "started_at": "2026-10-15T11:17:03.544056+00:00",
+    "finished_at": null,
+    "failure": null,
+    "warnings": [],
+    "actual_tool_activity": [
+      "tool_call_update",
+      "tool_call_update",
+      "tool_call_update",
+      "tool_call_update",
+      "tool_call_update"
+    ],
+    "receipt": "route-check/bridge-response-r19-observe-deadline-db99098256.json"
+  },
+  "sessions": {
+    "sessions": [
+      {
+        "session_id": "sess_261a55289f",
+        "agent": "kimi",
+        "model": "volceapi/kimi-k3",
+        "proc_state": "idle_unloaded",
+        "task_id": null,
+        "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope"
+      },
+      {
+        "session_id": "sess_3b6b9a19b2",
+        "agent": "zcode",
+        "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+        "proc_state": "idle_unloaded",
+        "task_id": null,
+        "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope"
+      },
+      {
+        "session_id": "sess_a0adb99b15",
+        "agent": "zcode",
+        "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+        "proc_state": "idle_unloaded",
+        "task_id": null,
+        "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope"
+      },
+      {
+        "session_id": "sess_b91680bb39",
+        "agent": "zcode",
+        "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+        "proc_state": "busy",
+        "task_id": null,
+        "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope"
+      }
+    ],
+    "receipt": "route-check/bridge-response-r19-observe-sessions-db99098256.json"
+  }
+}

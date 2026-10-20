@@ -1,0 +1,18 @@
+{
+  "product_changes": false,
+  "at": "2026-10-14T20:49:09.3667730+08:00",
+  "schema": "zscope.coordination.readonly-dependency-refresh.v1",
+  "owner": "coordinator",
+  "files": [
+    {
+      "path": ".editorconfig",
+      "sha256": "6e4fba2bf32da6bfe4a9de013c33c9d664f86190477d2221a70a9acdc4a371fd"
+    },
+    {
+      "path": ".gitattributes",
+      "sha256": "b06bd4ee002f37a8b5ed320d78504e025e150e16feed695e3609a5709b397812"
+    }
+  ],
+  "reason": "isolation omitted repository metadata required by test_agent_docs; preserve that test and original baseline receipt",
+  "workspace": "u01-entrypoints-r6"
+}

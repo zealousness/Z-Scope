@@ -1,0 +1,10 @@
+{
+  "recorded_at": "2026-10-15T17:25:18.977470+08:00",
+  "native_agent_id": "/root/astra_instance_ui_r18",
+  "model": "gpt-6-astra",
+  "first_execution": "Astra reported actual reads of the R18 full task, baseline hashes, AGENTS.md, architecture and interfaces-reporting; later implemented UI and ran one WSL state-contract test.",
+  "first_execution_timestamp": "not independently timestamped; observed before this receipt",
+  "dependency": "Bound lightweight report omits metadata.entry_instances and metadata.job; coordinator preparing additive readonly backend dependency.",
+  "independent_acceptance": false,
+  "integrated": false
+}

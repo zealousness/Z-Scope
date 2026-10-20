@@ -1,0 +1,7 @@
+{
+  "id": "job-cli-window-r20-sessions-preflight",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": false
+  }
+}

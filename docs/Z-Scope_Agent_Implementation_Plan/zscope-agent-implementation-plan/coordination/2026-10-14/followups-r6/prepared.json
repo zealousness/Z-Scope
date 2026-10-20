@@ -1,0 +1,69 @@
+{
+  "at": "2026-10-14T12:19:56.328026+00:00",
+  "tasks": [
+    {
+      "id": "S01-INST-EXEC",
+      "workspace": "s01-analysis-r6",
+      "model": "volceapi/kimi-k3",
+      "owns": [
+        "zscope/core/analysis/analyzer.py",
+        "zscope/orchestration/parallel_analyzer.py",
+        "zscope/orchestration/entry_instances.py",
+        "zscope/retrieval/instance_index.py",
+        "tests/test_all_variant_scan.py",
+        "tests/test_instance_analysis.py"
+      ],
+      "agent": "kimi",
+      "isolated_workspace_windows": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-analysis-r6",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-analysis-r6"
+    },
+    {
+      "id": "S08-SESSION-SCHEDULER",
+      "workspace": "s08-session-r6",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "owns": [
+        "zscope/orchestration/jobs/session_scheduler.py",
+        "zscope/orchestration/jobs/scheduler_hook.py",
+        "zscope/orchestration/jobs/owner.py",
+        "tests/test_job_session_scheduler.py"
+      ],
+      "agent": "zcode",
+      "isolated_workspace_windows": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-session-r6",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-session-r6"
+    },
+    {
+      "id": "U01-ENTRYPOINTS",
+      "workspace": "u01-entrypoints-r6",
+      "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "owns": [
+        "zscope/config/editor.py",
+        "zscope/cli/config_cli.py",
+        "zscope/cli/init.py",
+        "zscope.c_cpp.yaml",
+        "zscope.java.yaml",
+        "tests/test_cli_config_v2.py",
+        "tests/test_reference_configs.py",
+        "tests/test_config_v3_entrypoints.py"
+      ],
+      "agent": "zcode",
+      "isolated_workspace_windows": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u01-entrypoints-r6",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/u01-entrypoints-r6"
+    },
+    {
+      "id": "ASTRA-V3-EDITOR",
+      "owns": [
+        "zscope/web/static/**",
+        "tests/test_agent_workbench_ui.py",
+        "tests/fixtures/agent_workbench_ui.cjs"
+      ],
+      "workspace": "astra-config-r6",
+      "model": "gpt-6-astra",
+      "existing_thread": "01a13811-2ebb-7301-bc19-03e9ddc7e0f1",
+      "agent": "Astra",
+      "isolated_workspace_windows": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\astra-config-r6",
+      "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/astra-config-r6"
+    }
+  ],
+  "source_files": 971,
+  "dispatched": false
+}

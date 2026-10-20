@@ -1,0 +1,7 @@
+{
+  "id": "r21-correction-active-a6377fe099bf",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  }
+}

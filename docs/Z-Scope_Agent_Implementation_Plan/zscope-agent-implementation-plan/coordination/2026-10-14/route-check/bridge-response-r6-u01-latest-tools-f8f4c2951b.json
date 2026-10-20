@@ -1,0 +1,148 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T12:54:08.192009+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:09.198635+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:10.205725+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:11.213171+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:12.221585+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:13.227516+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:14.234773+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:15.237314+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:16.244899+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:17.252020+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:18.257429+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:18.296749+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_c2cd481f4054466e933922ba",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:25.121180+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "TodoWrite: {\"todos\":[{\"content\":\"读源码：v2 loader、cli/init.py 现状、模板、现有测试、p",
+        "tool_call_id": "call_dd5f7104613d4222b974d43f",
+        "kind": "other",
+        "status": "pending",
+        "input": "{\"todos\": [{\"content\": \"读源码：v2 loader、cli/init.py 现状、模板、现有测试、pyproject 入口\", \"priority\": \"high\", \"status\": \"completed\"}, {\"content\": \"实现 config/editor.py（协调者服务：同目录验证保存 + 结构化读取投影）\", \"priority\": \"high\", \"status\": \"completed\"}, {\"content\": \"改 cli/config_cli.py：prepare 用 prepare_saved_config、validate 显示实际版本\", \"priority\": \"high\", \"status\": \"completed\"}, {\"content\": \"重写 cli/init.py 为严格 v3 初始化器\", \"priority\": \"high\", \"status\": \"completed\"}, {\"content\": \"更新 zscope.c_cpp.yaml / zscope.java.yaml 为严格 v3 模板\",…"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:25.130187+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_dd5f7104613d4222b974d43f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T12:54:25.136183+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_dd5f7104613d4222b974d43f",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 715,
+  "count": 15,
+  "next_offset": 730,
+  "has_more": false,
+  "total_matching": 730
+}

@@ -1,0 +1,28 @@
+{
+  "sessionId": "session-c195ca4e-c8fd-4c3f-a91d-eaeeb65f05ec",
+  "sourceDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "candidateDigest": "fa1e6c0ac43a19e2a65f988633cef4692a537fe254435522c65961e61f32e565",
+  "modelAnswerDigest": "5d2204d2929eeab96be9990c1560b003e40935bd45e8c6ed412e60ceba83b256",
+  "edits": [
+    {
+      "symbol": "execute.build_rss_limit",
+      "line": 2257,
+      "oldBytes": 373,
+      "newBytes": 441
+    },
+    {
+      "symbol": "execute.build_resource_exhaustion",
+      "line": 2267,
+      "oldBytes": 511,
+      "newBytes": 1335
+    },
+    {
+      "symbol": "SanitizerReproductionRunner._run_once",
+      "line": 2649,
+      "oldBytes": 3472,
+      "newBytes": 7628
+    }
+  ],
+  "explanation": "RG01: forward the plan's declared memory limit to the build through the existing RSS watchdog (RLIMIT_AS would break sanitizer virtual memory) and short-circuit a build stopped by RSS/output-budget exhaustion as engine_failed/resource_exhaustion before any run or candidate decision. RG02: replace direct-file redirection with bounded pipe reads that enforce each stream's cap while consuming bytes (never overshooting the spool), stop a producer whose stream is capped, keep an EOF probe so an exactly-at-cap stream is not falsely truncated, drain late buffered bytes after exit without blocking on stray descendants, then digest/excerpt. Capped streams are marked truncated/inconclusive. All deadlines, budget claims, cancellation, process-group kill, cwd/env/stdin and other semantics are preserved.",
+  "productApplied": false
+}

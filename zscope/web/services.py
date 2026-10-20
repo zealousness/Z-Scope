@@ -9,7 +9,15 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
 
+from ..common.issue_identity import issue_build_context_id
+
 from ..config.config import ConfigLoader, yaml
+from ..config.editor import (
+    read_structured_document,
+    save_document_data,
+    save_document_text,
+    validate_document_file,
+)
 from ..config.user_config_workbook import SHEET_HEADERS
 from ..framework.llm_usage import scan_token_usage_snapshot
 from ..orchestration.rollout import rollout_runtime_policy
@@ -21,9 +29,16 @@ from ..reporting.views import (
     report_view_summary,
 )
 from ..reporting.issue_markdown import issue_identity
+from ..reporting.acceptance import acceptance_coverage, acceptance_for_issue, report_context_for
 from ..rules.query import query_effective_rules, validate_rule_filters
 from ..wiki.control import wiki_query, wiki_status
-from ..review_memory.identity import candidate_projection, project_id, review_subject_id, stable_id, utc_now
+from ..review_memory.identity import (
+    candidate_projection,
+    project_id,
+    review_subject_id,
+    stable_id,
+    utc_now,
+)
 from ..review_memory.store import ReviewMemoryStore
 
 
@@ -181,29 +196,24 @@ class ConfigService:
         return data if isinstance(data, dict) else {}
 
     def save_document(self, data: Dict[str, Any]) -> None:
-        if yaml is None:
-            raise RuntimeError("PyYAML is required for structured config editing")
-        header = (
-            "# Z-SCOPE 配置文件\n"
-            "# 本文件由 Web UI 结构化配置编辑器生成。\n"
-            "# 字段说明请参考仓库根目录 zscope.c_cpp.yaml 或 zscope.java.yaml 中的注释。\n\n"
-        )
-        text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-        self._validate_and_replace(header + text)
+        save_document_data(self.path, data)
 
     def structured_payload(self) -> Dict[str, Any]:
+        # Validate the formal document without forcing multi-target execution.
+        if self.path.exists() and self.path.read_text(encoding="utf-8").strip():
+            validate_document_file(self.path)
+        payload = read_structured_document(self.path)
+        document = payload["config"]
+        multi_target = (
+            document.get("config_version") == 3
+            and len((document.get("project") or {}).get("targets") or []) != 1
+        )
         effective = None
-        if self.path.exists():
+        if document and not multi_target:
             overrides: Dict[str, Any] = {}
             if self.scan_depth is not None:
                 overrides["scan_depth"] = self.scan_depth
             effective = ConfigLoader.load(str(self.path), **overrides)
-        document = self.load_document()
-        payload: Dict[str, Any] = {
-            "config": document,
-            "config_version": document.get("config_version"),
-            "language": (document.get("project") or {}).get("language"),
-        }
         if effective is not None:
             payload["effective_scan"] = {
                 "depth": effective.scan.depth,
@@ -219,22 +229,23 @@ class ConfigService:
             return {"content": ""}
         return {"content": path.read_text(encoding="utf-8")}
 
+    def prepare_project(self) -> Dict[str, Any]:
+        if self.scan_depth is None:
+            from ..config.v3_preparation import prepare_saved_config
+
+            return prepare_saved_config(str(self.path))
+        from ..config.preparation import prepare_project
+
+        overrides = {"scan_depth": self.scan_depth} if self.scan_depth is not None else {}
+        config = ConfigLoader.load(str(self.path), read_only=True, **overrides)
+        return prepare_project(config, self.path)
+
     def write_text(self, content: str) -> Dict[str, Any]:
         self._validate_and_replace(content)
         return {"success": True, "path": str(self.path)}
 
     def _validate_and_replace(self, content: str) -> None:
-        path = self.path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-        try:
-            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-                handle.write(content)
-            ConfigLoader.load(str(temporary))
-            os.replace(temporary, path)
-        finally:
-            if temporary.exists():
-                temporary.unlink()
+        save_document_text(self.path, content)
 
 
 class RuleService:
@@ -302,7 +313,9 @@ class WikiControlService:
         fact_kind = str((params.get("fact_kind") or ["unknown"])[0] or "unknown").strip()
         if len(fact_kind) > 80:
             raise ValueError("fact_kind must be at most 80 characters")
-        candidate_file = str((params.get("candidate_file") or [""])[0] or "").replace("\\", "/").strip()
+        candidate_file = (
+            str((params.get("candidate_file") or [""])[0] or "").replace("\\", "/").strip()
+        )
         if candidate_file.startswith("/") or ".." in Path(candidate_file).parts:
             raise ValueError("candidate_file must be project-root relative")
 
@@ -699,7 +712,9 @@ class ReportFeedbackService:
         review_config = getattr(project_config, "review_memory", None)
         if review_config is not None and getattr(review_config, "mode", "off") != "off":
             try:
-                self.review_memory_store = ReviewMemoryStore(project_config.project_root, review_config.state_dir)
+                self.review_memory_store = ReviewMemoryStore(
+                    project_config.project_root, review_config.state_dir
+                )
             except Exception:
                 self.review_memory_store = None
         self.report_filename = report_filename
@@ -720,7 +735,9 @@ class ReportFeedbackService:
             raw_report = read_report(report_path)
         except json.JSONDecodeError as exc:
             try:
-                raw_report = json.loads(strip_json_code_fence(report_path.read_text(encoding="utf-8")))
+                raw_report = json.loads(
+                    strip_json_code_fence(report_path.read_text(encoding="utf-8"))
+                )
             except json.JSONDecodeError:
                 print(f"Warning: failed to parse report JSON: {exc}")
                 return empty_report()
@@ -764,12 +781,13 @@ class ReportFeedbackService:
             "needs_review_governance": report.get("needs_review_governance"),
             "metadata": {
                 "report_view_summary": metadata.get("report_view_summary"),
+                "entry_instances": metadata.get("entry_instances"),
+                "job": metadata.get("job"),
             },
         }
 
     def selected_view_payload(self, path: str) -> Dict[str, Any]:
         from urllib.parse import urlparse
-        from .review_reports import report_identity
 
         report = self.load_report()
         view = selected_report_view(path)
@@ -779,17 +797,36 @@ class ReportFeedbackService:
             "true",
             "yes",
         }
+        return self.project_report(report, self.report_filename, view=view, full_report=full_report)
+
+    @classmethod
+    def project_report(
+        cls,
+        report: Dict[str, Any],
+        report_filename: str,
+        *,
+        view: str = "with_needs_review",
+        full_report: bool = False,
+    ) -> Dict[str, Any]:
+        """Project an already bound report without consulting the live file."""
+        from .review_reports import report_identity
+
         findings = findings_for_view(report, view)
-        projected = findings if full_report else self._compact_findings(findings)
-        report_id = report_identity(report, self.report_filename)
+        context = report_context_for(report)
+        acceptances = [acceptance_for_issue(original, context) for original in findings]
+        projected = findings if full_report else cls._compact_findings(findings)
+        report_id = report_identity(report, report_filename)
         projected = [
-            dict(item, issue_id=issue_identity(original), report_id=report_id)
-            for original, item in zip(findings, projected)
+            dict(
+                item, issue_id=issue_identity(original), report_id=report_id, acceptance=acceptance
+            )
+            for original, item, acceptance in zip(findings, projected, acceptances)
         ]
         return {
-            "report": report if full_report else self._lightweight_report(report),
+            "report": report if full_report else cls._lightweight_report(report),
             "findings": projected,
             "report_id": report_id,
+            "coverage": acceptance_coverage(report),
             "view": view,
             "views": report_view_summary(report),
         }
@@ -919,7 +956,7 @@ class ReportFeedbackService:
                 if baseline_status:
                     store.upsert_finding_baseline(dedup_key, baseline_status, issue)
                     result["baseline_upserts"] += 1
-            if status == "rejected":
+            if status == "rejected" and not issue_build_context_id(issue):
                 store.add_false_positive_suppression(
                     func_name=str(issue.get("function") or ""),
                     location=str(issue.get("location") or ""),
@@ -930,19 +967,25 @@ class ReportFeedbackService:
                     note=str(issue.get("description") or ""),
                 )
                 result["suppression_upserts"] += 1
+            if status == "rejected":
                 if self.review_memory_store is not None:
                     try:
                         finding = dict(issue)
-                        review_id = stable_id("review", {
-                            "project_id": project_id(self.project_config),
-                            "issue_id": finding.get("issue_id") or finding.get("id"),
-                            "dedup_key": dedup_key,
-                            "rebuttal": rebuttal or "",
-                        })
+                        review_id = stable_id(
+                            "review",
+                            {
+                                "project_id": project_id(self.project_config),
+                                "issue_id": finding.get("issue_id") or finding.get("id"),
+                                "dedup_key": dedup_key,
+                                "rebuttal": rebuttal or "",
+                            },
+                        )
                         record = {
                             "schema_version": "zscope.review-record.v1",
                             "review_id": review_id,
-                            "review_subject_id": review_subject_id({"project_id": project_id(self.project_config), "finding": finding}),
+                            "review_subject_id": review_subject_id(
+                                {"project_id": project_id(self.project_config), "finding": finding}
+                            ),
                             "project_id": project_id(self.project_config),
                             "repository_identity": {},
                             "finding": finding,
@@ -950,7 +993,9 @@ class ReportFeedbackService:
                             "candidate_projection": candidate_projection(finding),
                             "user_rebuttal": str(rebuttal or ""),
                             "source_context": {
-                                "source_context_fingerprint": finding.get("source_context_fingerprint", ""),
+                                "source_context_fingerprint": finding.get(
+                                    "source_context_fingerprint", ""
+                                ),
                                 "file": finding.get("file", finding.get("source", "")),
                                 "function": finding.get("function", ""),
                                 "snippet": finding.get("code_snippet", ""),
@@ -962,16 +1007,26 @@ class ReportFeedbackService:
                         self.review_memory_store.save_record(record)
                         result["review_memory_records"] += 1
                         review_config = getattr(self.project_config, "review_memory", None)
-                        if (review_config is not None and review_config.mode in {"extract", "active"}
-                                and review_config.extraction == "auto_extract" and rebuttal):
+                        if (
+                            review_config is not None
+                            and review_config.mode in {"extract", "active"}
+                            and review_config.extraction == "auto_extract"
+                            and rebuttal
+                        ):
                             job = self.review_memory_store.create_extraction_job([review_id])
                         else:
                             job = None
-                        result["review_memory_items"].append({
-                            "review_id": review_id,
-                            "extraction_status": record["status"],
-                            **({"extraction_status": "queued", "job_id": job["job_id"]} if job else {}),
-                        })
+                        result["review_memory_items"].append(
+                            {
+                                "review_id": review_id,
+                                "extraction_status": record["status"],
+                                **(
+                                    {"extraction_status": "queued", "job_id": job["job_id"]}
+                                    if job
+                                    else {}
+                                ),
+                            }
+                        )
                     except Exception as exc:
                         result["review_memory_errors"].append(str(exc))
             elif status == "validated" and self.review_memory_store is not None:
@@ -1139,6 +1194,7 @@ class ReportFeedbackService:
             result["final_reports_scanned"] += 1
             try:
                 from ..reporting.json_io import read_report
+
                 report = read_report(final_path)
             except (OSError, json.JSONDecodeError):
                 continue

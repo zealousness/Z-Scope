@@ -1,0 +1,38 @@
+{
+  "captured_at": "2026-10-16T01:28:50.323138+08:00",
+  "logical_task": "COORD-COVERAGE-PROJECTION-R21",
+  "coordinator_checks_passed": true,
+  "independent_static_review_passed": true,
+  "independent_functional_execution": false,
+  "root_intaken": false,
+  "root_joint_verification": false,
+  "evidence": "artifacts/coordinator-coverage-projection-r21-final-20261016/review.json",
+  "static_review": "artifacts/coverage-projection-review-r21-20261016/final-staged-review.json",
+  "static_review_sha256": "48e37b0422b43a02f4e784fef7fedb7caec13a2a5252ff0011d268014fa3aa59",
+  "files": [
+    {
+      "path": "zscope/reporting/acceptance.py",
+      "previous_sha256": "8f9e329e4152e6b9bfabccb2b0bb509c10500176fd02b857b5f298839a49f7ed",
+      "sha256": "b29a0bddedb22d315153c07aded8d20280496a1a48c5d145ae393b26c94f3f2a",
+      "readonly": true
+    },
+    {
+      "path": "tests/test_coverage_gap_provenance.py",
+      "previous_sha256": null,
+      "sha256": "0bde4a83255e6d63b5afa5ff6d4415570032bad87e8f30f63dd57490cbd221f4",
+      "readonly": true
+    },
+    {
+      "path": "docs/modules/interfaces-reporting.md",
+      "previous_sha256": "553653706e91d63c99e6a28075e539564ee8e9a0625be95945318b1637d142d0",
+      "sha256": "cf42efbdc8894c42c0ffc612c9d9ec1eb0a88feeafdbc5cef6a08d9aaabc9a81",
+      "readonly": true
+    },
+    {
+      "path": "tests/test_agent_integration_boundaries.py",
+      "previous_sha256": "a4723117e7809716740b2f29c7e5377c3e0759246472b5f261c29ca62d839d49",
+      "sha256": "d10ad855a318caca5ccc3fc4935fe091d3ad25197e1002c0655cfc28ed2c2a7b",
+      "readonly": true
+    }
+  ]
+}

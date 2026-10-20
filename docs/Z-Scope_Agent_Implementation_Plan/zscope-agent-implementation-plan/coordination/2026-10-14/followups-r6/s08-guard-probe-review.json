@@ -1,0 +1,19 @@
+{
+  "recorded_at": "2026-10-14T20:47:05.7487641+08:00",
+  "integrated": false,
+  "junit": "artifacts/coordinator-s08-guard-probe-r6-20261014/results.xml",
+  "sha256": "8bdd96a8fb11023f4eda2b07fd05edc08113ca437913cfe4bead78d2c59ba96e",
+  "task_id": "task_28a929d996",
+  "result": {
+    "failed": 3,
+    "skipped": 0,
+    "tests": 3
+  },
+  "source": ".coordination/20261014/workspaces/s08-session-r6/zscope/orchestration/jobs/session_scheduler.py",
+  "status": "provisional_real_sqlite_probe_failed_not_intaken",
+  "findings": [
+    "stale claim token rejected after discoveries were already enqueued",
+    "live input_revision changed; old callbacks completed and expanded queue",
+    "owner_token changed in callback; old callback still completed and enqueued child before next loop guard"
+  ]
+}

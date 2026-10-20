@@ -12,7 +12,14 @@ from dataclasses import asdict, dataclass, field
 import re
 from typing import Any, Mapping
 
-from .contract_conditions import compare, conjunction, negate, predicate_errors, legacy_predicate
+from .contract_conditions import (
+    compare,
+    conjunction,
+    negate,
+    predicate_errors,
+    legacy_predicate,
+    predicates_overlap,
+)
 from .contracts import (
     ApiContract,
     ContractRegistry,
@@ -117,6 +124,16 @@ def reference(
     aliases = aliases or {}
     if not tokens:
         return None
+    if tokens[0] == "&":
+        base = reference(unparen(tokens[1:]), parameters, aliases)
+        if (
+            base
+            and base.get("kind") == "argument"
+            and base.get("member_path")
+            and not base.get("address_of")
+        ):
+            return {**base, "address_of": True}
+        return None
     if len(tokens) == 1:
         name = tokens[0]
         if name in aliases:
@@ -136,6 +153,7 @@ def reference(
         if (
             base
             and base.get("kind") == "argument"
+            and not base.get("address_of")
             and re.fullmatch(r"(?:(?:\.|->)[A-Za-z_]\w*|\[\d+\])+", tail)
         ):
             return {**base, "member_path": str(base.get("member_path") or "") + tail}
@@ -202,6 +220,18 @@ def read_source_facts(context: Mapping[str, Any], registry: ContractRegistry) ->
     """Read block/if/return structure, preserving the guards on each operation."""
     tokens = code_tokens(str(context.get("code") or ""))
     facts = FunctionFacts(parameter_names(context))
+    from .call_context import callee_usr_map
+    from .build_scope import source_scope_problem
+
+    if source_scope_problem(context):
+        facts.complete = False
+        return facts
+    registry = registry.for_context(context)
+    # Each callee token resolves through this body's own native call receipts:
+    # a pinned publication is only known for a callee whose exact USR the
+    # facts name, and a callee without a receipt stays unknown regardless of
+    # how many records share its name.
+    callee_usr = callee_usr_map(context)
     name = str(context.get("func_name") or "")
     start = next(
         (i + 1 for i, token in enumerate(tokens[:-1]) if token == name and tokens[i + 1] == "("), -1
@@ -224,7 +254,13 @@ def read_source_facts(context: Mapping[str, Any], registry: ContractRegistry) ->
         if tokens[i + 1] == "("
         and re.fullmatch(r"[A-Za-z_]\w*", token)
         and token not in {"if", "while", "for", "switch", "sizeof", "return", "alignof", "_Alignof"}
-        and (not registry.find(token) or any(not c.effects_trusted for c in registry.find(token)))
+        and (
+            not registry.find_for_call(token, usr=callee_usr.get(token, ""))
+            or any(
+                not c.effects_trusted
+                for c in registry.find_for_call(token, usr=callee_usr.get(token, ""))
+            )
+        )
     }
     if any(tokens[i : i + 2] == ["(", "*"] for i in range(start, len(tokens) - 1)):
         facts.unknown_calls.add("<indirect>")
@@ -265,7 +301,7 @@ def read_source_facts(context: Mapping[str, Any], registry: ContractRegistry) ->
             facts.return_offsets.append(begin)
         i = begin
         while i + 1 < end:
-            known = bool(registry.find(tokens[i]))
+            known = bool(registry.find_for_call(tokens[i], usr=callee_usr.get(tokens[i], "")))
             if tokens[i + 1] != "(" or not (known or tokens[i] in facts.unknown_calls):
                 i += 1
                 continue
@@ -314,7 +350,10 @@ def read_source_facts(context: Mapping[str, Any], registry: ContractRegistry) ->
             if (
                 cursor + 1 < end
                 and tokens[cursor + 1] == "("
-                and (registry.find(tokens[cursor]) or tokens[cursor] in facts.unknown_calls)
+                and (
+                    registry.find_for_call(tokens[cursor], usr=callee_usr.get(tokens[cursor], ""))
+                    or tokens[cursor] in facts.unknown_calls
+                )
             ):
                 stop = closing(tokens, cursor + 1)
                 if stop >= end:
@@ -430,6 +469,8 @@ def _parameter_alias_expression(
     if not isinstance(index, int) or not 0 <= index < len(parameters):
         return expression, False
     replacement = parameters[index] + str(ref.get("member_path") or "")
+    if ref.get("address_of"):
+        replacement = "&" + replacement
     words[root : root + 1] = code_tokens(replacement)
     return "".join(words), True
 
@@ -505,7 +546,14 @@ def _map_predicate(
                 index = ref.get("index", -1)
                 result[side] = (
                     reference(
-                        code_tokens(call.arguments[index] + str(ref.get("member_path") or "")),
+                        code_tokens(
+                            ObjectBinding(
+                                "argument",
+                                index,
+                                str(ref.get("member_path") or ""),
+                                address_of=bool(ref.get("address_of")),
+                            ).resolve(call.arguments)
+                        ),
                         facts.parameters,
                         call.aliases_at_call,
                     )
@@ -533,7 +581,9 @@ def _map_composite_protocol(
         valid = True
         for action in transition.get("actions", []):
             mapped = {"kind": action["kind"]}
-            for key in ("object", "old", "new"):
+            if "lock_mode" in action:
+                mapped["lock_mode"] = action["lock_mode"]
+            for key in ("object", "old", "new", "callback", "context"):
                 if key not in action:
                     continue
                 original = ObjectBinding.from_value(action[key])
@@ -746,6 +796,8 @@ def transparent_pair_compatible(
         return False
     if not acquire.effects_trusted or not release.effects_trusted:
         return False
+    if acquire.symbol.build_context_id != release.symbol.build_context_id:
+        return False
     return any(
         a.get("transparent") is True
         and b.get("transparent") is True
@@ -758,11 +810,18 @@ def transparent_pair_compatible(
     )
 
 
-def _source_pair_compatible(acquire: str, release: str, registry: ContractRegistry) -> bool:
+def _source_pair_compatible(
+    acquire: str,
+    release: str,
+    registry: ContractRegistry,
+    *,
+    acquire_usr: str = "",
+    release_usr: str = "",
+) -> bool:
     return registry.allows(acquire, release) or any(
         transparent_pair_compatible(a, b, registry)
-        for a in registry.find(acquire)
-        for b in registry.find(release)
+        for a in registry.find_for_call(acquire, usr=acquire_usr)
+        for b in registry.find_for_call(release, usr=release_usr)
     )
 
 
@@ -844,8 +903,46 @@ def _release_can_reach_return(
 def derive_contracts(
     context: Mapping[str, Any], registry: ContractRegistry
 ) -> list[dict[str, Any]]:
-    from .contract_review import proof_key
+    from .native_wrappers import infer_native_wrapper
 
+    native = infer_native_wrapper(context, registry)
+    return _combine_wrapper_contracts(context, registry, native)
+
+
+def _combine_wrapper_contracts(
+    context: Mapping[str, Any], registry: ContractRegistry, native: Any
+) -> list[dict[str, Any]]:
+    from .build_scope import context_symbol_usr
+
+    source = _derive_source_contracts(context, registry)
+    if not native["attempted"]:
+        return source
+    # A failed native check must not re-authorize its resource through tokens.
+    rows = [
+        row
+        for row in source
+        if row["role"] not in {"allocator", "calloc", "reallocator", "deallocator"}
+    ]
+    # Native wrapper rows publish under the checked body's owner receipt, the
+    # same authority every other publication path uses; direct row consumers
+    # get the exact native USR instead of a name-level record.
+    owner_usr = context_symbol_usr(context)
+    for row in native["contracts"]:
+        symbol = row.get("symbol")
+        if owner_usr and isinstance(symbol, dict) and not symbol.get("usr"):
+            row = dict(row, symbol={**symbol, "usr": owner_usr})
+        rows.append(row)
+    return rows
+
+
+def _derive_source_contracts(
+    context: Mapping[str, Any], registry: ContractRegistry
+) -> list[dict[str, Any]]:
+    from .contract_review import proof_key
+    from .build_scope import context_build_id, context_symbol_usr
+    from .call_context import callee_usr_map
+
+    registry = registry.for_context(context)
     facts = read_source_facts(context, registry)
     if not facts.complete:
         return []
@@ -855,26 +952,40 @@ def derive_contracts(
         file_path=context.get("file_path"),
         signature=context.get("signature"),
         symbol_type="macro" if context.get("is_macro") else "function",
+        build_context_id=context_build_id(context),
+        usr=context_symbol_usr(context),
     )
+    callee_usr = callee_usr_map(context)
     returned_names = {expr for expr, _ in facts.returns}
     lifecycle_calls = [
         call
         for call in facts.calls
-        if any(c.role in ACQUIRE_ROLES | RELEASE_ROLES for c in registry.find(call.name))
+        if any(
+            c.role in ACQUIRE_ROLES | RELEASE_ROLES
+            for c in registry.find_for_call(call.name, usr=callee_usr.get(call.name, ""))
+        )
     ]
     internal_calls: set[int] = set()
     for acquire in lifecycle_calls:
         for release in lifecycle_calls:
             if not (
                 acquire.token_offset < release.token_offset
-                and _source_pair_compatible(acquire.name, release.name, registry)
+                and _source_pair_compatible(
+                    acquire.name,
+                    release.name,
+                    registry,
+                    acquire_usr=callee_usr.get(acquire.name, ""),
+                    release_usr=callee_usr.get(release.name, ""),
+                )
             ):
                 continue
             success_guards = [
                 conjunction(
                     [acquire.guard, _map_predicate(case["when"], acquire, facts, returned=False)]
                 )
-                for contract in registry.find(acquire.name)
+                for contract in registry.find_for_call(
+                    acquire.name, usr=callee_usr.get(acquire.name, "")
+                )
                 if contract.role == "lock"
                 for case in _base_cases(contract)
                 if case["effect"] == "applies"
@@ -903,12 +1014,12 @@ def derive_contracts(
                 continue
             acquired_objects = {
                 c.carrier.resolve(acquire.arguments, acquire.result)
-                for c in registry.find(acquire.name)
+                for c in registry.find_for_call(acquire.name, usr=callee_usr.get(acquire.name, ""))
                 if c.role == "lock"
             }
             released_objects = {
                 c.carrier.resolve(release.arguments, release.result)
-                for c in registry.find(release.name)
+                for c in registry.find_for_call(release.name, usr=callee_usr.get(release.name, ""))
                 if c.role == "unlock"
             }
             if (acquired_objects & released_objects) - {""}:
@@ -934,7 +1045,7 @@ def derive_contracts(
             # The destination was overwritten or transformed. No alias/return
             # proof can be obtained from the final source assignment map.
             result_aliases = set()
-        for base in registry.find(call.name):
+        for base in registry.find_for_call(call.name, usr=callee_usr.get(call.name, "")):
             carrier: ObjectBinding | None = None
             frozen_parameter_alias = False
             outward_return = call.result == "$return" or bool(result_aliases & returned_names)
@@ -982,12 +1093,20 @@ def derive_contracts(
                         carrier = None
                 if carrier and any(
                     c.token_offset > call.token_offset
-                    and _source_pair_compatible(call.name, c.name, registry)
+                    and _source_pair_compatible(
+                        call.name,
+                        c.name,
+                        registry,
+                        acquire_usr=callee_usr.get(call.name, ""),
+                        release_usr=callee_usr.get(c.name, ""),
+                    )
                     and any(
                         release.role in RELEASE_ROLES
                         and release.carrier.resolve(c.arguments)
                         in {ObjectBinding("return").resolve([], alias) for alias in result_aliases}
-                        for release in registry.find(c.name)
+                        for release in registry.find_for_call(
+                            c.name, usr=callee_usr.get(c.name, "")
+                        )
                     )
                     and (
                         carrier.kind != "return"
@@ -1138,7 +1257,12 @@ def derive_contracts(
                     [asdict(p.release) for p in registry.pairs if p.acquire == base.symbol]
                     if base.role in ACQUIRE_ROLES
                     and sum(
-                        any(c.role in ACQUIRE_ROLES for c in registry.find(other.name))
+                        any(
+                            c.role in ACQUIRE_ROLES
+                            for c in registry.find_for_call(
+                                other.name, usr=callee_usr.get(other.name, "")
+                            )
+                        )
                         for other in lifecycle_calls
                         if other.token_offset not in internal_calls
                     )
@@ -1286,6 +1410,18 @@ def validate_contract(raw: Mapping[str, Any], context: Mapping[str, Any]) -> lis
             )
     if any({"applies", "no_effect"} <= effects for effects in effects_by_condition.values()):
         errors.append("conflicting_effect_cases")
+    for index, first in enumerate(contract.effect_cases):
+        if not isinstance(first, dict) or first.get("effect") not in {"applies", "no_effect"}:
+            continue
+        for second in contract.effect_cases[index + 1 :]:
+            if (
+                isinstance(second, dict)
+                and {first["effect"], second.get("effect")} == {"applies", "no_effect"}
+                and predicates_overlap(
+                    contract.preconditions, first.get("when"), second.get("when")
+                )
+            ):
+                errors.append("conflicting_effect_cases")
     if not raw.get("evidence"):
         errors.append("missing_contract_evidence")
     elif not any(
@@ -1320,10 +1456,19 @@ def compile_snapshot(
     terminal_submissions: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Replace transparent proposals with source composition; validate all others."""
+    from .build_scope import context_build_id, context_symbol_usr
+
+    registry = registry.for_context(context)
+    if context_build_id(context):
+        snapshot["build_context_id"] = context_build_id(context)
+    snapshot["usr"] = context_symbol_usr(context)
     raw = snapshot.get("interface_contracts")
     if not isinstance(raw, list):
         return ["missing_interface_contracts"]
-    derived = derive_contracts(context, registry)
+    from .native_wrappers import infer_native_wrapper
+
+    native = infer_native_wrapper(context, registry)
+    derived = _combine_wrapper_contracts(context, registry, native)
     facts = read_source_facts(context, registry)
     derived_roles = {item["role"] for item in derived}
     # A known calloc/reallocator cannot be downgraded to a generic allocator.
@@ -1332,19 +1477,32 @@ def compile_snapshot(
     accepted = list(derived)
     errors: list[str] = []
     diagnostics: list[dict[str, Any]] = []
+    if native["attempted"]:
+        diagnostics.append(
+            {
+                "action": "native_value_flow",
+                "errors": native["reasons"],
+                "status": "source_verified" if native["contracts"] else "unsupported",
+            }
+        )
     for item in raw:
         if not isinstance(item, dict):
             errors.append("invalid_interface_contract")
             continue
         problems = validate_contract(item, context)
         if item.get("protocol"):
-            from .pool_protocols import verify_pool_contract
+            from .retention_protocols import verify_resource_protocol
 
-            verified = verify_pool_contract(item, context)
+            verified = verify_resource_protocol(item, context)
             if verified is not None and not problems:
                 accepted.append(verified)
                 diagnostics.append(
-                    {"role": item.get("role"), "action": "source_protocol", "errors": []}
+                    {
+                        "role": item.get("role"),
+                        "published_role": verified["role"],
+                        "action": "source_protocol",
+                        "errors": [],
+                    }
                 )
                 continue
         if item.get("role") in derived_roles:
@@ -1400,6 +1558,8 @@ def compile_snapshot(
                             file_path=context.get("file_path"),
                             signature=context.get("signature"),
                             symbol_type="macro" if context.get("is_macro") else "function",
+                            build_context_id=context_build_id(context),
+                            usr=context_symbol_usr(context),
                         )
                     ),
                     "source": "inferred:semantic_modeling",
@@ -1436,9 +1596,9 @@ def compile_snapshot(
                 if proposal_id in seen_proposals:
                     continue
                 seen_proposals.add(proposal_id)
-                from .pool_protocols import verify_pool_contract
+                from .retention_protocols import verify_resource_protocol
 
-                verified = verify_pool_contract(proposal, context)
+                verified = verify_resource_protocol(proposal, context)
                 discovery_audit.append(
                     {
                         "proposal": deepcopy(proposal),
@@ -1501,6 +1661,8 @@ def complete_transparent_pairs(snapshots: list[dict[str, Any]], registry: Contra
         for _other, _release_raw, release in rows:
             if release is None or release.role not in RELEASE_ROLES:
                 continue
+            if acquire.symbol.build_context_id != release.symbol.build_context_id:
+                continue
             from .pool_protocols import pool_pair_compatible
 
             pool_pair = pool_pair_compatible(acquire, release)
@@ -1530,6 +1692,9 @@ def deterministic_contract_snapshot(
     context: Mapping[str, Any], registry: ContractRegistry
 ) -> dict[str, Any] | None:
     """Only completely understood adapters bypass discovery; unknown pools do not."""
+    from .build_scope import context_build_id
+
+    registry = registry.for_context(context)
     facts = read_source_facts(context, registry)
     if not facts.complete:
         return None
@@ -1572,4 +1737,6 @@ def deterministic_contract_snapshot(
         ),
         code=context.get("code", ""),
     )
+    if context_build_id(context):
+        snapshot["build_context_id"] = context_build_id(context)
     return snapshot

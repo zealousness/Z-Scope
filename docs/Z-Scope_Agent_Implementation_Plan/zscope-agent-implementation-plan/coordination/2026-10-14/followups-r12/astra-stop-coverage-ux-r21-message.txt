@@ -1,0 +1,34 @@
+新的逻辑项 ASTRA-STOP-COVERAGE-UX-R21；复用实际原生子任务 /root/astra_instance_ui_r18。旧 R18 UI/native 交付与 R21 只读审计冻结，不重做旧工作，不操作归档 S06-R02。
+
+仅在 C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope\.coordination\20261014\workspaces\astra-stop-coverage-ux-r21 开发。Linux 路径为 /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/astra-stop-coverage-ux-r21。Root 产品不得写。
+
+先核对 Root coordination/2026-10-14/NEXT_UI_CONTRACT_R21.md、followups-r12/astra-stop-coverage-ux-r21-baseline.json 及 astra-stop-coverage-ux-r21-dependencies.json。CURRENT-JOINT-R22 已于2026-10-16 01:11:29完成169文件2539项、零失败/错误/跳过及六命令0，1056输入/native稳定；这只开放本次依赖工作，不授予整包或真实项目效果。协调者投影四文件作为已检查、独立静读复核的只读依赖交付；不得修改这些依赖。第四项是 tests/test_agent_integration_boundaries.py 的过期原因断言窄迁移，保留显式 variant 缺口及原 HTTP/owner 行为。
+
+你独占且仅可修改八个产品/测试路径：
+zscope/web/static/index.html
+zscope/web/static/dashboard_workbench.js
+tests/test_agent_workbench_ui.py
+tests/fixtures/agent_workbench_ui.cjs
+tests/test_instance_coverage_ui.py
+tests/fixtures/instance_coverage_ui.cjs
+tests/test_ux_capability_boundaries_ui.py（新）
+tests/fixtures/ux_capability_boundaries_ui.cjs（新）
+可写本副本 DELIVERY.md 和 artifacts/stop-coverage-ux-r21/**。共享 HTTP/投影/config/runtime/queue/native/模块文档/资源锁全部只读。所有权需扩大时先报告具体调用依赖，不能自行写共享文件。
+
+实现你此前审计确认的两个 P2：
+1. 作业创建留空会用已保存 v3 配置停止窗口（如有），浏览器显式绝对时间覆盖，合法无窗口与 resume 清空要分开说明。配置 timezone/stop_at 已被实际共享令牌及持久作业消费，不再笼统标“仅声明”；max_workers/focus/reproduction/platform 仍保留声明状态，多目标执行禁启。停止是停止新工作、协作收尾与记录未决；仍不保证只分析剩余项或完整逐实例候选/义务恢复。按当前真实服务/CLI语义核对，不按标签猜测。
+2. 覆盖 False 不能推断分析未接入。只读 acceptance 投影已将一般 False 改为 entry_instance_coverage_incomplete；生产者明确 entry_instance_analysis_unwired 及其他原因继续转发。UI 为一般缺口给出准确中文，不制造完整能力/安全结论，unknown/null 保留，计划/调度/已分析/本轮执行/复用保持分开。不得把原一般 False synthetic fixture 改成注入 unwired 以维持旧错误断言；旧错误文字断言需按真实新合同迁移，再另加明确生产者 unwired 正例。
+
+保留全部既有实际 HTTP、owner、SQLite、job/run/input/report/scope 绑定、409与草稿、失效报告、desktop/mobile、未知分母和 native 两宏实例分析断言。为新行为增加有意义的正反例，并使现有 native owner/HTTP/browser 流验证 analyzed=2 但 scan incomplete 时不虚报 unwired；这仍是受限 native fixture，不是真实项目或真实模型验收。仅改已核实过期的文案断言，不删测试、不放宽超时、不改捕获、不跳过门槛。
+
+测试/质量只在 WSL Ubuntu zeal、/home/zeal/venv313/bin/python，bash -lc 登录 PATH 中执行。Root coordination/2026-10-14/test_slot.py 每条命令只包装一层，--workspace 指向本副本，默认 fd/ext4 临时目录/两个共享槽；不得嵌套。PYTHONPATH 明确指本副本。实际 native 只读 /home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer，SHA d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399；不重建/修改工具。Playwright module /mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright，Chromium /home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome。所有新浏览器/native/owner/config证据环境变量指向本副本的新 artifacts/stop-coverage-ux-r21/self/ 子目录，不能覆盖历史收据。当前工具和执行命令按已有 UI 自验方式核对。
+
+至少完整运行旧 UI 验收相关文件加新专用文件：test_agent_workbench_ui、test_instance_coverage_ui、test_protocol_review_ui、test_config_editor_http、test_project_preparation、test_config_v3_preparation、test_acceptance_projection、test_coverage_gap_provenance、test_agent_integration_boundaries、test_job_result_http_binding、test_job_result_projection、test_tool_registry；保留原 native/browser 必备环境，零失败/错误/跳过才记本切片自验通过。运行 compileall -f -q zscope scripts test tests、mypy zscope、Black --check 三个自有 Python 测试文件，并核对修改的 JS/CJS 语法。不得用原生 Windows Python 给测试结论。
+
+尽量沿用既有 Tailwind 类；若确须新类先报告。资源锁归协调者：你不能改 lock、vendor、CSS 或运行 web_assets.py --update 下载/重建资源来扩展所有权。静态文字/JS最终字节冻结后，协调者会按真实字节统一刷新 first_party 摘要并做完整资源门禁；任何尚未执行的资源检查准确记 pending，不能伪称通过或自行降低门槛。
+
+不改外部模型/凭据/provider配置/全局环境/系统时钟，不恢复会话，不启动 Bridge，不 reset/clean/commit/push，不执行真实模型扫描、formal benchmark或读取ground truth。可启动并在 finally 中关闭本项既有受控测试 HTTP/owner。平台拦截准确停止，不换路由绕过。
+
+收到后先在本副本 artifacts/stop-coverage-ux-r21/execution-start.json 记录逻辑项、实际子任务ID、真实开始时间、已读取的四项只读依赖SHA与当前八路径基线，再开始修改；协调者据此区分派发与实际执行。
+
+交付 DELIVERY.md、结构化审查/自验 JSON、最终八路径（含未改者）的 SHA、完整前后输入SHA、实际命令/JUnit/起止时间/范围与限制。只把最终字节上的结果记为最终验收，不相加历史计数，不宣称整包/真实项目完成。交付后停止所有写入，等待协调者独验、资源锁集成与联合验证。

@@ -1,0 +1,9 @@
+{
+  "recorded_at": "2026-10-15T08:16:22.815932+00:00",
+  "path": "tests/test_scan_session_instances.py",
+  "actual_sha256": "a7cf11925283ae238e7d5ddeacfacb04df1ebc4e4a2864d6ab21c322f5d27266",
+  "actual_length": 64,
+  "coordinator_prior_length_claim_was_wrong": true,
+  "worker_hash_is_valid": true,
+  "source_changed": false
+}

@@ -1,0 +1,1 @@
+{"id": "current-8698ada089bf-s01-tool_call-tool_call_update-121", "tool": "get_transcript", "arguments": {"session_id": "sess_13e7fecbfc", "offset": 121, "limit": 1000, "kinds": "tool_call,tool_call_update"}}

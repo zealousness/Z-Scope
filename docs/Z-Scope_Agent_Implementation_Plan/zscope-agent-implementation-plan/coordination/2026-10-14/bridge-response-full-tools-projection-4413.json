@@ -1,0 +1,412 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T03:52:29.699002+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:29.893296+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:29.993342+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:30.145892+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:30.294449+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:30.446084+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:30.596034+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:30.744447+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:30.899716+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:31.046444+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:31.194860+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:31.347169+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:31.499659+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:31.644804+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:31.795442+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:32.096035+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:32.490904+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash",
+        "tool_call_id": "0:Bash_74",
+        "kind": "execute",
+        "status": "pending"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:32.699605+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:32.891533+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:33.085367+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:33.286731+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:33.388981+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:33.494635+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:33.595342+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:33.753076+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:33.896202+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:34.092387+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:34.194781+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:34.390497+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:34.495211+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:34.699784+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:34.795524+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:34.943990+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:35.093188+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:35.244932+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:35.394743+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:35.544360+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:35.695943+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:35.847224+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:35.994743+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:36.294516+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_74",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:37.003542+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Running: diff -rq zscope .coordination/20261014/workspaces/…",
+        "tool_call_id": "0:Bash_73",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:37.004068+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Running: file .coordination/20261014/workspaces/u02-project…",
+        "tool_call_id": "0:Bash_74",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T03:52:39.062543+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_73",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 4413,
+  "count": 44,
+  "next_offset": 4457,
+  "has_more": true,
+  "total_matching": 4548
+}

@@ -101,7 +101,7 @@ def test_composite_effects_map_swapped_wrapper_arguments():
     assert effects[0]["applicability"] == "applies"
     assert effects[0]["actions"] == [
         {"kind": "release", "object": "&mu"},
-        {"kind": "acquire", "object": "&mu"},
+        {"kind": "acquire", "object": "&mu", "lock_mode": "exclusive"},
     ]
 
 

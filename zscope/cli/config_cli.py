@@ -1,4 +1,4 @@
-"""Validate public config v2 and convert legacy Z-SCOPE YAML explicitly."""
+"""Validate public config v2/v3 and convert legacy Z-SCOPE YAML explicitly."""
 
 from __future__ import annotations
 
@@ -9,7 +9,12 @@ import click
 import yaml
 
 from ..config.config import ConfigLoader
-from ..config.v2 import PUBLIC_CONFIG_VERSION, load_yaml_unique
+from ..config.v2 import (
+    PUBLIC_CONFIG_VERSION,
+    PUBLIC_CONFIG_VERSION_V3,
+    load_yaml_unique,
+)
+from ..config.v3 import DECLARED_ONLY, compose_effective_config, parse_user_config_v3
 
 
 _LEGACY_TOP_LEVEL = {
@@ -580,7 +585,7 @@ def migrate_legacy_document(raw: Mapping[str, Any]) -> Tuple[Dict[str, Any], Lis
 
 @click.group()
 def main() -> None:
-    """Manage strict Z-SCOPE public configuration v2."""
+    """Manage strict Z-SCOPE public configuration v2/v3."""
 
 
 @main.command("validate")
@@ -591,8 +596,15 @@ def main() -> None:
     required=True,
 )
 def validate_command(config_path: Path) -> None:
-    """Validate a v2 YAML file and its internal runtime-spec composition."""
+    """Validate a v2 or v3 YAML file; document validity is distinct from execution."""
 
+    try:
+        raw = load_yaml_unique(config_path)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    if raw.get("config_version") == PUBLIC_CONFIG_VERSION_V3:
+        _validate_v3_document(config_path)
+        return
     try:
         config = ConfigLoader.load(str(config_path))
     except Exception as exc:
@@ -605,6 +617,145 @@ def validate_command(config_path: Path) -> None:
     )
     for warning in config.rule_validation_warnings:
         click.echo(f"Warning: {warning}", err=True)
+
+
+def _validate_v3_document(config_path: Path) -> None:
+    """Validate a v3 document through the formal model, then report execution separately.
+
+    Parsing checks every declared target without composing the single-target
+    execution chain, so a multi-target document is reported as a valid
+    document whose execution is currently refused — never as a v2 document
+    and never as silently first-target.
+    """
+
+    try:
+        model = parse_user_config_v3(str(config_path))
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        "Valid config v3: "
+        f"language={model.project.language} platform={model.project.platform} "
+        f"targets={len(model.project.targets)} preset={model.scan.preset}"
+    )
+    click.echo(f"  preset mapping: {model.scan.mapping_note}")
+    for target in model.project.targets:
+        if target.compile_commands is not None:
+            click.echo(f"  target {target.id}: {target.compile_commands}")
+        else:
+            click.echo(f"  target {target.id}: no compile database (Java)")
+    declared_only = [note.field for note in model.wiring if note.state == DECLARED_ONLY]
+    if declared_only:
+        click.echo("Declared, not yet consumed: " + ", ".join(declared_only))
+    try:
+        effective = compose_effective_config(model)
+    except ValueError as exc:
+        click.echo(f"Execution: not startable — {exc}")
+    else:
+        click.echo(
+            "Execution: composes into the current single-target chain "
+            f"(depth={effective.scan.depth})."
+        )
+    click.echo(
+        "Validation checks the document only; run 'zscope-config prepare' for "
+        "read-only readiness without scanning."
+    )
+
+
+@main.command("prepare")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=Path("zscope.yaml"),
+    show_default=True,
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Return the same preparation data as the local WebUI."
+)
+def prepare_command(config_path: Path, as_json: bool) -> None:
+    """Inspect project paths, build variants and local prerequisites without scanning."""
+    import json
+    from ..config.v3_preparation import prepare_saved_config
+
+    try:
+        payload = prepare_saved_config(str(config_path))
+    except (OSError, ValueError, TypeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    _echo_preparation(payload)
+
+
+def _echo_preparation(payload: Dict[str, Any]) -> None:
+    version3 = payload.get("version3")
+    click.echo(f"配置：{payload['config_path']}")
+    if version3 is not None:
+        _echo_v3_preparation(payload, version3)
+    else:
+        click.echo(f"工程：{payload['project']['root']}")
+        click.echo(f"语言/后端：{payload['project']['language']} / {payload['project']['backend']}")
+        click.echo(f"编译数据库：{payload['build']['status']}；链接目标归属尚未核验")
+        if "compilation_instances" in payload["build"]:
+            click.echo(
+                f"编译实例：{payload['build']['compilation_instances']}；"
+                f"源文件：{payload['build']['sources']}"
+            )
+        click.echo(
+            f"扫描深度：{payload['scan']['depth']}；自动复现：{payload['scan']['reproduction']}"
+        )
+        click.echo(f"产物：{payload['scan']['artifact_directory']}")
+    for tool in payload["tools"]:
+        click.echo(f"工具 {tool['name']}：{'已找到' if tool['available_on_path'] else '未找到'}")
+    if version3 is not None:
+        capability = version3["start_capability"]
+        if capability["startable"]:
+            click.echo("启动：当前配置可启动扫描")
+        else:
+            click.echo("启动：不可用")
+            for reason in capability["reasons"]:
+                click.echo(f"  - {reason['code']}：{reason['message']}")
+    click.echo("仅检查本地配置和文件；模型连接、工具运行及扫描完整性尚未验证。")
+    for message in payload["messages"]:
+        click.echo(message["message"])
+
+
+def _echo_v3_preparation(payload: Dict[str, Any], version3: Mapping[str, Any]) -> None:
+    click.echo(
+        f"工程（v3）：{version3['project_root']}"
+        f"（语言/后端：{payload['project']['language']} / {payload['project']['backend']}；"
+        f"平台：{version3['platform']}）"
+    )
+    targets = version3["targets"]
+    for index, target in enumerate(targets, start=1):
+        database = target["compile_commands"]
+        if database is None:
+            state = "不适用"
+        else:
+            state = "存在" if target["database_exists"] else "缺失"
+        click.echo(
+            f"目标 {index}/{len(targets)} {target['id']}："
+            f"数据库 {database or '—'}（{state}）；构建：{target['build']['status']}"
+        )
+        for message in target["messages"]:
+            click.echo(f"  - {message['message']}")
+    preset = version3["preset"]
+    click.echo(
+        f"预设：{preset['preset']}（临时映射到内部深度 {preset['mapped_depth']}；"
+        f"来源 {preset['depth_source']}）"
+    )
+    declared = version3["declared_not_consumed"]
+    if declared:
+        click.echo("已声明未消费（仅解析与展示）：" + "、".join(declared))
+    execution = version3["execution"]
+    if execution["resolved_stop_time"] is not None:
+        click.echo(
+            f"停止边界：{execution['timezone']} {execution['stop_at_local']} -> "
+            f"{execution['resolved_stop_time']}（本轮一次；调度消费未接线）"
+        )
+    else:
+        click.echo("停止边界：未配置")
+    click.echo(f"产物：{payload['scan']['artifact_directory']}")
 
 
 @main.command("migrate")

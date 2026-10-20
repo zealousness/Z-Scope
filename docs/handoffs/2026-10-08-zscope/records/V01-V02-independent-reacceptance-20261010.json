@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "role": "independent acceptance",
+  "date": "2026-10-10",
+  "timezone": "Etc/UTC",
+  "host": "CINDALA",
+  "project_root": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+  "source_thread": "01a11e1c-b0bf-731c-a0a7-551a6447700f",
+  "original_task": "01a119b6-40a8-71b0-a6a7-cf0644a14119",
+  "verdict": {
+    "V01": "not_accepted",
+    "V02": "blocked",
+    "reason": "Four reproducible proof-lifecycle file-drift failures; real sanitizer acceptance not independently executed"
+  },
+  "counts": {
+    "ordinary_distinct_passed": 1711,
+    "new_failures": 4,
+    "compatibility_distinct_passed": 1543,
+    "remaining_compatibility_skipped": 0,
+    "initial_compatibility_passed": 1509,
+    "initial_compatibility_skipped": 34,
+    "supplement_passed": 34
+  },
+  "quality": {
+    "compileall_exit": 0,
+    "mypy_exit": 0,
+    "mypy_source_files": 307,
+    "git_diff_check": "not_run; previous access denial not retried"
+  },
+  "tracked_inputs": {
+    "count": 403,
+    "changed_files": [],
+    "combined_sha256": "66c1ab9a6272d854a12ff7e332a2f09e302a6f5cee9a1913f3e781e1cac9d63e",
+    "scope": "Frozen 18, selected compatibility tests, nonhidden zscope Python files, project rules/config and acceptance documents/regressions; not a full Git/repository snapshot"
+  },
+  "failures": [
+    {
+      "id": "source_drift_before_registration",
+      "nodes": [
+        "test_drift_between_last_execution_and_registration_never_confirms[mutate]",
+        "test_drift_between_last_execution_and_registration_never_confirms[delete]"
+      ],
+      "expected": "No confirm after accepted execution source changes/disappears",
+      "actual": "DecisionProof outcome confirm",
+      "locations": [
+        1434,
+        1446,
+        1451,
+        1497,
+        3560
+      ],
+      "cause": "Registration freezes current files rather than verifying accepted execution snapshot; missing files are omitted"
+    },
+    {
+      "id": "binary_drift_after_registration",
+      "nodes": [
+        "test_binary_drift_after_registration_revokes_confirmation[mutate]",
+        "test_binary_drift_after_registration_revokes_confirmation[delete]"
+      ],
+      "expected": "No confirm after binary changes/disappears",
+      "actual": "DecisionProof outcome confirm",
+      "locations": [
+        1446,
+        1473,
+        1497
+      ],
+      "cause": "Frozen liveness file list omits binary_path; final proof check does not rehash binary"
+    }
+  ],
+  "test_limits": "Pure fake, test-only production promotion control, never launched fake binary; isolates lifecycle behind a satisfied trust gate, not proof that ordinary fake can bypass production trust",
+  "real_execution": {
+    "asan": "not_run; pending exact-scope review",
+    "tsan": "not_run; V01 prerequisite failed; historical author container runtime probe failed is not a fresh runtime check",
+    "cbmc": "not_implemented",
+    "image_inspect_only": {
+      "chunk_id": "ad4098",
+      "wall_time_seconds": 0.941526007,
+      "exit_code": 0,
+      "original_token_count": 131,
+      "output": "{\"architecture\": \"amd64\", \"configured_user\": null, \"image\": \"docker.io/library/python@sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a\", \"image_id\": \"1cbbca32768c3c2d7c0dfa6888790808c05672438f20718472f43f0ac8d9707c\", \"inspect_exit_code\": 0, \"os\": \"linux\", \"podman_available\": true, \"repo_digests\": [\"docker.io/library/python@sha256:a05a0a9cfe9db7d6af4daf0c31de1aca499d067eb2da574d6afad8a92615f267\", \"docker.io/library/python@sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a\"]}\n"
+    },
+    "proposed_nodes": [
+      "test_asan_positive_fixture_confirms_through_shared_adjudication",
+      "test_asan_negative_fixture_is_not_reproduced_and_never_rejects",
+      "test_asan_unrelated_crash_never_confirms_the_candidate",
+      "test_asan_build_generated_binary_confirms_without_a_declared_digest",
+      "test_asan_build_failure_stays_undecided"
+    ],
+    "execution_authorized": false
+  },
+  "safety": {
+    "all_current_wsl_calls": "specific require_escalated approval; no prefix_rule",
+    "auto_review_rejections_this_phase": 0,
+    "git_retried": false,
+    "permissions_modified": false,
+    "credentials_read": false,
+    "model_requests_sent": false,
+    "deepseek_resumed": false,
+    "original_flag": "This content was flagged for possible cybersecurity risk.",
+    "original_flag_details": null,
+    "original_flag_specific_operation": "unknown; no command/messages recorded",
+    "separate_routing_error": "unsupported placement region 4",
+    "parent_intermediate_delivery": "Local app send_message_to_thread returned thread not found; commentary delivered in current task"
+  },
+  "tool_evidence": {
+    "preflight": {
+      "command": "@'\nimport importlib.util, json, platform, sys\nfrom pathlib import Path\nroot = Path(\"/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope\")\nprint(json.dumps({\"python\":sys.executable,\"version\":sys.version,\"platform\":platform.platform(),\"pytest_available\":importlib.util.find_spec(\"pytest\") is not None,\"cwd\":str(Path.cwd()),\"project_exists\":root.is_dir(),\"pyproject_exists\":(root/\"pyproject.toml\").is_file(),\"unit_test_exists\":(root/\"tests/test_dynamic_reproduction.py\").is_file()},sort_keys=True))\n'@ | wsl -d Ubuntu --cd /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope -- /usr/bin/env PYTHONDONTWRITEBYTECODE=1 /home/zeal/venv313/bin/python -",
+      "result": {
+        "chunk_id": "e932e6",
+        "wall_time_seconds": 0.463662763,
+        "exit_code": 0,
+        "original_token_count": 87,
+        "output": "{\"cwd\": \"/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope\", \"platform\": \"Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39\", \"project_exists\": true, \"pyproject_exists\": true, \"pytest_available\": true, \"python\": \"/home/zeal/venv313/bin/python\", \"unit_test_exists\": true, \"version\": \"3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]\"}\n"
+      }
+    },
+    "marker": {
+      "command": {
+        "cmd": "wsl -d Ubuntu -- /usr/bin/printf 'WSL_PERMISSION_CHECK\\n'",
+        "tool": "exec_command",
+        "workdir": "C:\\Users\\10273\\Documents\\Codex\\2026-10-09\\task-3",
+        "sandbox_permissions": "require_escalated",
+        "prefix_rule": null
+      },
+      "result": {
+        "chunk_id": "cb0f50",
+        "wall_time_seconds": 0.31610717,
+        "exit_code": 0,
+        "original_token_count": 6,
+        "output": "WSL_PERMISSION_CHECKn"
+      }
+    },
+    "ordinary_launch": {
+      "command": "wsl -d Ubuntu --cd /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope -- /usr/bin/env PYTHONDONTWRITEBYTECODE=1 /home/zeal/venv313/bin/python /mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-independent-acceptance-20261010.py",
+      "result": {
+        "chunk_id": "034f9f",
+        "wall_time_seconds": 1.000938495,
+        "session_id": 54658,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    "clang_preflight": {
+      "command": "@'\nimport json, pathlib, subprocess\np=pathlib.Path('/usr/lib/llvm-18/bin/clang')\nout={'clang_path':str(p),'exists':p.is_file()}\nif p.is_file():\n r=subprocess.run([str(p),'--version'],capture_output=True,text=True,timeout=15)\n out.update(exit_code=r.returncode,version=r.stdout[:1000],stderr=r.stderr[:500])\nprint(json.dumps(out))\n'@ | wsl -d Ubuntu -- /usr/bin/env PYTHONDONTWRITEBYTECODE=1 /home/zeal/venv313/bin/python -",
+      "result": {
+        "chunk_id": "3a460b",
+        "wall_time_seconds": 0.776880503,
+        "exit_code": 0,
+        "original_token_count": 58,
+        "output": "{\"clang_path\": \"/usr/lib/llvm-18/bin/clang\", \"exists\": true, \"exit_code\": 0, \"version\": \"Ubuntu clang version 18.1.3 (1ubuntu1)\\nTarget: x86_64-pc-linux-gnu\\nThread model: posix\\nInstalledDir: /usr/lib/llvm-18/bin\\n\", \"stderr\": \"\"}\n"
+      }
+    },
+    "clang_supplement": {
+      "command": "wsl -d Ubuntu --cd /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope -- /usr/bin/env PYTHONDONTWRITEBYTECODE=1 /home/zeal/venv313/bin/python /mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-compatibility-skips-20261010.py",
+      "initial_result": {
+        "chunk_id": "22040e",
+        "wall_time_seconds": 1.001357274,
+        "session_id": 63411,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    "archive": {
+      "command": "@'\nimport hashlib,json,shutil\nfrom pathlib import Path\nlocal=Path('/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3')\nbase=json.loads((local/'V01-V02-independent-acceptance-20261010-ag7xwe18.json').read_text())\nsupp=json.loads((local/'V01-V02-compatibility-skips-20261010.json').read_text())\nwork=Path(base['work'])\ndest=local/'V01-V02-independent-evidence-20261010-ag7xwe18'\ndest.mkdir(exist_ok=False)\nsources=[]\nfor c in base['checks']:\n for k in ('stdout','stderr','junit'):\n  if k in c: sources.append(Path(c[k]))\nsources.extend(Path(v['path']) for v in supp['files'].values())\nmanifest={}\nfor source in sources:\n assert source.parent==work and source.is_file()\n assert source.name.endswith(('.stdout.log','.stderr.log','.xml'))\n target=dest/source.name\n assert not target.exists()\n shutil.copyfile(source,target)\n original=hashlib.sha256(source.read_bytes()).hexdigest()\n actual=hashlib.sha256(target.read_bytes()).hexdigest()\n assert original==actual\n manifest[source.name]={'source':str(source),'sha256':actual,'bytes':target.stat().st_size}\n(dest/'evidence-manifest.json').write_text(json.dumps(manifest,indent=2)+'\\n')\nroot=Path(base['project_root'])\nchanges=[]\nfor rel,h in base['inputs_before']['files'].items():\n p=root/rel\n current=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else 'missing'\n if current!=h: changes.append(rel)\nprint(json.dumps({'copied_files':len(manifest),'destination':str(dest),'mypy_stdout':(dest/'mypy.stdout.log').read_text(),'changed_inputs_final_archive':changes}))\n'@ | wsl -d Ubuntu -- /usr/bin/env PYTHONDONTWRITEBYTECODE=1 /home/zeal/venv313/bin/python -",
+      "result": {
+        "chunk_id": "e30142",
+        "wall_time_seconds": 2.206453169,
+        "exit_code": 0,
+        "original_token_count": 60,
+        "output": "{\"copied_files\": 25, \"destination\": \"/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-independent-evidence-20261010-ag7xwe18\", \"mypy_stdout\": \"Success: no issues found in 307 source files\\n\", \"changed_inputs_final_archive\": []}\n"
+      }
+    }
+  },
+  "artifacts": {
+    "report": "V01-V02-independent-reacceptance-20261010.md",
+    "main_result": "V01-V02-independent-acceptance-20261010-ag7xwe18.json",
+    "clang_supplement": "V01-V02-compatibility-skips-20261010.json",
+    "evidence_directory": "V01-V02-independent-evidence-20261010-ag7xwe18",
+    "main_driver": "V01-V02-independent-acceptance-20261010.py",
+    "supplement_driver": "V01-V02-compatibility-skips-20261010.py",
+    "new_regression": "test_v01_v02_independent_drift.py"
+  },
+  "repair_proposal_sent": false,
+  "repair_scope": "Accepted execution snapshot versus current source/harness/input; binary path and post-build digest checked at final use; preserve production/TTL/scoped cleanup/default-off/budget/cancellation/replay gates; necessary regressions/docs only"
+}

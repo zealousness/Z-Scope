@@ -1,0 +1,7 @@
+{
+  "id": "s01-instance-semantics-min-r23-dispatch-active-check",
+  "tool": "list_sessions",
+  "arguments": {
+    "active_only": true
+  }
+}

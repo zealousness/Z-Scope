@@ -1,0 +1,142 @@
+{
+  "recorded_utc": "2026-10-11T21:12:43.637273+00:00",
+  "V01": "done",
+  "V02": "blocked",
+  "common_image_promoted": false,
+  "image_id": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "standalone_probe": {
+    "attempts": 1,
+    "exit_code": 0,
+    "claim_preserved": true
+  },
+  "TSAN": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ASAN": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ordinary_expected": {
+    "passed": 1736,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ordinary_prior_passed": 193,
+  "ordinary_compatibility": null,
+  "ordinary_actual": {
+    "passed": 1734,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2
+  },
+  "ordinary_compatibility_accounting": {
+    "passed": 1541,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2
+  },
+  "ordinary_compiler_repair": [
+    {
+      "label": "compatibility-clang-repair",
+      "command": [
+        "/usr/local/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "--basetemp=/tmp/compatibility-clang-repair",
+        "--junitxml=/work/compatibility-clang-repair.xml",
+        "tests/test_review_runtime.py::test_checked_parent_rejection_still_validates_related_candidate",
+        "tests/test_review_runtime.py::test_checkpoint_replay_retains_exact_prior_result_and_evidence",
+        "tests/test_review_runtime.py::test_feature_measurement_flags_injected_on_live_and_replay",
+        "tests/test_review_fact_checks.py::test_pages_preserve_complete_underlying_ast_and_cfg_function_identity",
+        "tests/test_review_fact_checks.py::test_type_identity_proof_and_stale_or_forged_receipt_rejected",
+        "tests/test_review_fact_checks.py::test_ownership_all_success_failure_exits[void *node = malloc(8); if (!node) return; free(node);-supported]",
+        "tests/test_review_fact_checks.py::test_ownership_all_success_failure_exits[void *node = malloc(8); if (fail) return; free(node);-unknown]",
+        "tests/test_review_fact_checks.py::test_ownership_all_success_failure_exits[void *node = malloc(8); if (!node) return; retain(node);-unknown]",
+        "tests/test_review_fact_checks.py::test_ownership_all_success_failure_exits[void *node = malloc(8); if (!node) return; maybe_retain(node, fail);-unknown]",
+        "tests/test_review_fact_checks.py::test_ownership_all_success_failure_exits[void *node = malloc(8); owner = node; owner = 0;-unknown]",
+        "tests/test_review_fact_checks.py::test_parent_release_does_not_prove_owned_member_cleanup",
+        "tests/test_review_fact_checks.py::test_related_ownership_requires_actual_factory_assignment_and_groups_parent",
+        "tests/test_review_fact_checks.py::test_model_complete_cannot_replace_compiler_origin_and_inline_bytes_are_not_heap",
+        "tests/test_review_fact_checks.py::test_user_defined_free_and_per_invocation_mutex_cannot_supply_proof",
+        "tests/test_review_fact_checks.py::test_canonical_loop_induction_is_bound_to_capacity_and_integer_semantics[i<8-supported]",
+        "tests/test_review_fact_checks.py::test_canonical_loop_induction_is_bound_to_capacity_and_integer_semantics[i<n+1-unknown]",
+        "tests/test_review_fact_checks.py::test_canonical_loop_induction_is_bound_to_capacity_and_integer_semantics[i<=8-unknown]",
+        "tests/test_review_fact_checks.py::test_numeric_overflow_and_conversions_never_assumed_safe[2-supported]",
+        "tests/test_review_fact_checks.py::test_numeric_overflow_and_conversions_never_assumed_safe[8-contradicted]",
+        "tests/test_review_fact_checks.py::test_numeric_overflow_and_conversions_never_assumed_safe[n+1-unknown]",
+        "tests/test_review_fact_checks.py::test_numeric_overflow_and_conversions_never_assumed_safe[(unsigned char)300-unknown]",
+        "tests/test_review_fact_checks.py::test_lock_success_macro_expansion_and_neighbor_access[if (pthread_mutex_lock(&m) != 0) return; shared++; pthread_mutex_unlock(&m);-supported]",
+        "tests/test_review_fact_checks.py::test_lock_success_macro_expansion_and_neighbor_access[if (pthread_mutex_trylock(&m) == 0) { shared++; pthread_mutex_unlock(&m); }-supported]",
+        "tests/test_review_fact_checks.py::test_lock_success_macro_expansion_and_neighbor_access[pthread_mutex_trylock(&m); shared++;-unknown]",
+        "tests/test_review_fact_checks.py::test_lock_success_macro_expansion_and_neighbor_access[if (pthread_mutex_lock(&m) != 0) return; shared++; pthread_mutex_unlock(&m); shared++;-unknown]",
+        "tests/test_review_fact_checks.py::test_lock_success_macro_expansion_and_neighbor_access[shared++;-unknown]",
+        "tests/test_review_fact_checks.py::test_lock_success_macro_expansion_and_neighbor_access[if (pthread_mutex_lock(&m) != 0) return; (pthread_mutex_unlock(&m), shared++);-unknown]",
+        "tests/test_review_fact_checks.py::test_mutex_reset_or_escape_outside_access_function_prevents_proof[void reset(void) { m = 0; }]",
+        "tests/test_review_fact_checks.py::test_mutex_reset_or_escape_outside_access_function_prevents_proof[static int *escaped = &m;]",
+        "tests/test_review_fact_checks.py::test_macro_branches_current_target_redefinitions_aliases",
+        "tests/test_review_fact_checks.py::test_known_guarded_callers_never_close_unknown_indirect_or_public_api",
+        "tests/test_review_fact_checks.py::test_substituted_build_compiler_cannot_certify_current_configuration",
+        "tests/test_review_fact_checks.py::test_target_architecture_selects_actual_macro_branch",
+        "tests/test_review_fact_checks.py::test_implicit_cpp_cleanup_paths_remain_unknown"
+      ],
+      "exit_code": 0,
+      "counts": {
+        "passed": 34,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "expected_passed": 34,
+      "PATH": "/tmp/zscope-ordinary-clang:/usr/local/bin:/usr/bin:/bin"
+    }
+  ],
+  "original_java_nodes_blocked": [
+    {
+      "node": "tests/test_java_source_backend.py::test_spoon_structure_frontend_lombok_processor_real_cli_contract",
+      "reason": "real Java sidecar contract requires Maven and Java"
+    },
+    {
+      "node": "tests/test_java_source_backend.py::test_javaparser_structure_frontend_real_cli_contract",
+      "reason": "real Java sidecar contract requires Maven and Java"
+    }
+  ],
+  "quality_exit_codes": {
+    "compileall-final": 0,
+    "mypy": 0
+  },
+  "ordinary_status": "failed_or_blocked",
+  "first_failures_preserved": true,
+  "frozen_input_count": 403,
+  "changed_frozen_inputs": [],
+  "product_and_test_changes_this_execution": false,
+  "owned_container_names": [
+    "zscope-v02-common-cq38zka2",
+    "zscope-common-tsan-f5ulni66",
+    "zscope-common-tsan-h_jgiqr1",
+    "zscope-common-asan-a8lga4np",
+    "zscope-common-ordinary-5av2bgq7",
+    "zscope-common-ordinary-1oofs_h6",
+    "zscope-common-ordinary-f_cz3sgi",
+    "zscope-common-ordinary-_z84d9_f",
+    "zscope-common-ordinary-v8qg2gqr"
+  ],
+  "owned_containers_remaining": [],
+  "host_aslr": "2",
+  "parent_personality": "0",
+  "default_seccomp_unchanged": true,
+  "exception_lifetime": "Only removed selected TSAN containers; runtime actually re-executed after disabling its own ASLR; later ASAN/ordinary default policy",
+  "new_toolchain_downloads_installs_builds": 0,
+  "model_requests_this_execution": 0,
+  "scope": "bounded original V01/V02 fixtures; no generator, CBMC, formal Range, release or unapproved stress group"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "r6-u01-delivered-783e270c5b",
+  "arguments": {
+    "task_id": "task_9abeb34f8f",
+    "max_chars": 60000
+  },
+  "tool": "get_result"
+}

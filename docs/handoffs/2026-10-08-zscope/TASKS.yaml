@@ -1,0 +1,385 @@
+# Task status only. Not a Z-Scope runtime/config file.
+handoff_version: 1
+created_on: '2026-10-08'
+timezone: Asia/Taipei
+repository: zealousness/Z-Scope
+reference_branch: v1.3.1_feat/llm-wiki
+reference_commit: 010f40210b54ba0f79a088312ce5d8be3a82ace0
+local_head: 010f40210b54ba0f79a088312ce5d8be3a82ace0
+local_baseline_verified: true
+default_initial_batch:
+- B00
+- T01
+- T02
+- T03
+status_values:
+- not_started
+- in_progress
+- blocked
+- done
+- deferred
+status_policy:
+  source_of_truth: This file stores task status; Markdown defines requirements.
+  done_requires: Actual implementation/checks and a records/ result file; skipped mandatory checks are
+    not passed.
+  blocked_policy: Record the missing requirement; continue independent tasks.
+  research_policy: Research and optional integrations are deferred until their local prerequisites and
+    permissions are met.
+  git_policy: No automatic commit, push, branch reset, or overwrite of user changes.
+  update_owner: One integrating agent edits this file; workers submit result records.
+tasks:
+- id: B00
+  title: 本地基线与缺口对齐
+  milestone: M0
+  priority: P0
+  depends_on: []
+  kind: delivery
+  code_map:
+  - CM01
+  - CM02
+  - CM03
+  acceptance:
+  - AC01
+  - AC16
+  - AC17
+  status: done
+  specification: WORK_PACKAGES.md (B00)
+  result_record: records/B00-baseline.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: T01
+  title: 全文／文件搜索接入现有六工具
+  milestone: M1
+  priority: P0
+  depends_on:
+  - B00
+  kind: delivery
+  code_map:
+  - CM02
+  acceptance:
+  - AC02
+  - AC03
+  - AC07
+  - AC17
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (T01)
+  result_record: records/T01-text-search.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: T02
+  title: 严格只读的语义上下文查询
+  milestone: M1
+  priority: P0
+  depends_on:
+  - B00
+  kind: delivery
+  code_map:
+  - CM02
+  - CM04
+  acceptance:
+  - AC02
+  - AC04
+  - AC07
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (T02)
+  result_record: records/T02-cache-only.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: T03
+  title: 只读 MCP 消费方案及 Codex 接入 smoke
+  milestone: M1
+  priority: P0
+  depends_on:
+  - T01
+  - T02
+  kind: delivery
+  code_map:
+  - CM02
+  - CM07
+  acceptance:
+  - AC05
+  - AC07
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (T03)
+  result_record: records/T03-readonly-mcp.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: D01
+  title: 动态取证的程序登记与版本绑定
+  milestone: M2
+  priority: P1
+  depends_on:
+  - T01
+  - T02
+  kind: delivery
+  code_map:
+  - CM02
+  - CM03
+  - CM06
+  acceptance:
+  - AC06
+  - AC07
+  - AC10
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (D01)
+  result_record: records/D01-investigation-evidence.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: D02
+  title: 可升级的有界主动调查 Worker
+  milestone: M2
+  priority: P1
+  depends_on:
+  - D01
+  kind: delivery
+  code_map:
+  - CM03
+  - CM02
+  - CM06
+  acceptance:
+  - AC07
+  - AC08
+  - AC10
+  - AC16
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (D02)
+  result_record: records/D02-bounded-investigation.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: D03
+  title: 审计单元与覆盖粒度增强
+  milestone: M2
+  priority: P1
+  depends_on:
+  - D01
+  - D02
+  kind: delivery
+  code_map:
+  - CM03
+  - CM05
+  acceptance:
+  - AC09
+  - AC10
+  - AC16
+  - AC17
+  status: done
+  specification: WORK_PACKAGES.md (D03)
+  result_record: records/D03-audit-coverage.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: P01
+  title: 构建变体清单与增量－全量差分
+  milestone: M3
+  priority: P1
+  depends_on:
+  - B00
+  kind: delivery
+  code_map:
+  - CM05
+  - CM08
+  acceptance:
+  - AC12
+  - AC16
+  - AC17
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (P01)
+  result_record: records/P01-incremental-replay.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: V01
+  title: ASAN 可执行验证最小闭环
+  milestone: M3
+  priority: P1
+  depends_on:
+  - D01
+  kind: delivery
+  code_map:
+  - CM06
+  - CM09
+  acceptance:
+  - AC06
+  - AC10
+  - AC11
+  - AC17
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (V01)
+  result_record: records/V01-current-ASAN-acceptance-20261010.md
+  blocking_reason: null
+  updated_at: '2026-10-10'
+- id: K01
+  title: 建模怀疑点的条件性 shadow 回收
+  milestone: M4
+  priority: P2
+  depends_on:
+  - D01
+  - D03
+  kind: experiment
+  code_map:
+  - CM03
+  - CM04
+  - CM06
+  acceptance:
+  - AC07
+  - AC10
+  - AC13
+  - AC16
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (K01)
+  result_record: records/K01-conditional-observation-shadow.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: K02
+  title: 条件接口契约与资格校验
+  milestone: M4
+  priority: P2
+  depends_on:
+  - B00
+  - D01
+  kind: experiment
+  code_map:
+  - CM04
+  - CM06
+  acceptance:
+  - AC06
+  - AC13
+  - AC17
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (K02)
+  result_record: records/K02-conditional-contracts.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: P02
+  title: 按义务需求进行语义建模试验
+  milestone: M4
+  priority: P2
+  depends_on:
+  - P01
+  - D03
+  - K02
+  kind: experiment
+  code_map:
+  - CM04
+  - CM05
+  acceptance:
+  - AC09
+  - AC12
+  - AC13
+  - AC14
+  - AC16
+  status: done
+  specification: WORK_PACKAGES.md (P02)
+  result_record: records/P02-shadow-planner.md
+  blocking_reason: null
+  updated_at: '2026-10-08'
+- id: A01
+  title: 外部 Coding Agent 的受限调查适配器
+  milestone: M4
+  priority: P2
+  depends_on:
+  - T03
+  - D01
+  - D02
+  kind: optional_integration
+  code_map:
+  - CM02
+  - CM03
+  - CM07
+  acceptance:
+  - AC06
+  - AC07
+  - AC08
+  - AC15
+  - AC18
+  status: deferred
+  specification: WORK_PACKAGES.md (A01)
+  result_record: records/A01-offline-adapter.md
+  blocking_reason: fake/离线接口 G1/G2 已通过；真实外部执行器无已核验的强制权限接口，保持 unsupported/not_run，离线验证不替代真实接入验收。
+  updated_at: '2026-10-08'
+- id: A02
+  title: Codex Security 独立对照与离线结果接入
+  milestone: M4
+  priority: P2
+  depends_on:
+  - B00
+  - D01
+  kind: optional_integration
+  code_map:
+  - CM06
+  - CM07
+  acceptance:
+  - AC06
+  - AC15
+  - AC16
+  - AC17
+  status: deferred
+  specification: WORK_PACKAGES.md (A02)
+  result_record: records/A02-offline-import.md
+  blocking_reason: 离线实现 G1/G2 已通过；真实供应商版本、许可、资格、认证和扫描授权尚未核验，真实对照未执行。
+  updated_at: '2026-10-08'
+- id: V02
+  title: 扩展 TSAN／CBMC 验证适配
+  milestone: M4
+  priority: P2
+  depends_on:
+  - V01
+  kind: optional_integration
+  code_map:
+  - CM06
+  - CM09
+  acceptance:
+  - AC06
+  - AC11
+  - AC15
+  - AC18
+  status: done
+  specification: WORK_PACKAGES.md (V02)
+  result_record: records/V02-java-maven-closure-20261012.md
+  updated_at: '2026-10-12'
+- id: R01
+  title: 增量 SVF 分析的可行性研究
+  milestone: R
+  priority: P3
+  depends_on:
+  - P01
+  kind: research
+  code_map:
+  - CM05
+  acceptance:
+  - AC12
+  - AC15
+  - AC16
+  status: deferred
+  specification: WORK_PACKAGES.md (R01)
+  result_record: records/R01-readiness.md
+  blocking_reason: 尚无获准代表性工程的独占阶段测量证明 WPA 为值得研究的瓶颈；不启动原型。
+  updated_at: '2026-10-08'
+- id: R02
+  title: 历史修复到受限检查器的试验
+  milestone: R
+  priority: P3
+  depends_on:
+  - K02
+  - P01
+  kind: research
+  code_map:
+  - CM06
+  - CM10
+  acceptance:
+  - AC13
+  - AC15
+  - AC16
+  - AC17
+  status: deferred
+  specification: WORK_PACKAGES.md (R02)
+  result_record: records/R02-readiness.md
+  blocking_reason: 缺少获准修复样本和预先隔离的保留评测集；不生成或安装规则。
+  updated_at: '2026-10-08'

@@ -1,0 +1,612 @@
+{
+  "verified": true,
+  "checks": {
+    "nonroot": true,
+    "readonly_root": true,
+    "readonly_inputs": true,
+    "owned_output_writable": true,
+    "tmpfs_512MiB": true,
+    "tmpfs_executable": true,
+    "network_none": true,
+    "no_new_privileges": true,
+    "all_capabilities_dropped": true,
+    "seccomp_filter": true,
+    "memory_2GiB": true,
+    "pids_256": true,
+    "cpu_2": true,
+    "aslr_original": true
+  },
+  "limits": {
+    "memory.max": "2147483648",
+    "pids.max": "256",
+    "cpu.max": "200000 100000"
+  },
+  "mounts": {
+    "/": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "overlay",
+      "super_options": [
+        "rw",
+        "lowerdir=/home/zeal/.local/share/containers/storage/overlay/l/L7VIUI5Z6DF3R3J2YC3CPADR2O:/home/zeal/.local/share/containers/storage/overlay/l/L7VIUI5Z6DF3R3J2YC3CPADR2O/../diff1:/home/zeal/.local/share/containers/storage/overlay/l/VYDUKROMZNZORVKVACXDV6YNMA:/home/zeal/.local/share/containers/storage/overlay/l/GUOH3YU6EZ424CGVYPSHFTSV3G:/home/zeal/.local/share/containers/storage/overlay/l/6MGTPPOMNRBPRJXUEQSILFZ765:/home/zeal/.local/share/containers/storage/overlay/l/YT3KNF2QEIPE7Q77HBJJZJR4QN:/home/zeal/.local/share/containers/storage/overlay/l/Y6OEU7LA2NPYOWE6YCGQZ5KKNF:/home/zeal/.local/share/containers/storage/overlay/l/MYN4XNJ6DEA67EVZ7U2F2ZBOEP:/home/zeal/.local/share/containers/storage/overlay/l/RIDFKJK6LYU363NLCTI5R7UNI5:/home/zeal/.local/share/containers/storage/overlay/l/ZQDGZTFOFWNTTNXJILSIYJICX4",
+        "upperdir=/home/zeal/.local/share/containers/storage/overlay/4dd4c9cea9566d56eb4d74561bc05e9fb357a0384c65eca055a21d17b752939f/diff",
+        "workdir=/home/zeal/.local/share/containers/storage/overlay/4dd4c9cea9566d56eb4d74561bc05e9fb357a0384c65eca055a21d17b752939f/work",
+        "redirect_dir=nofollow",
+        "uuid=on",
+        "volatile",
+        "userxattr"
+      ]
+    },
+    "/dev": {
+      "options": [
+        "rw",
+        "nosuid"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=65536k",
+        "mode=755",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/run": {
+      "options": [
+        "rw",
+        "nosuid",
+        "nodev",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "mode=755",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/tmp": {
+      "options": [
+        "rw",
+        "nosuid",
+        "nodev",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=524288k",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/java-inputs": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/repo": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/control": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/sys": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "sysfs",
+      "super_options": [
+        "rw"
+      ]
+    },
+    "/work": {
+      "options": [
+        "rw",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/proc": {
+      "options": [
+        "rw",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "proc",
+      "super_options": [
+        "rw"
+      ]
+    },
+    "/dev/pts": {
+      "options": [
+        "rw",
+        "nosuid",
+        "noexec",
+        "relatime"
+      ],
+      "type": "devpts",
+      "super_options": [
+        "rw",
+        "gid=100005",
+        "mode=620",
+        "ptmxmode=666"
+      ]
+    },
+    "/var/tmp": {
+      "options": [
+        "rw",
+        "nosuid",
+        "nodev",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/dev/mqueue": {
+      "options": [
+        "rw",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "mqueue",
+      "super_options": [
+        "rw"
+      ]
+    },
+    "/etc/hosts": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=3267800k",
+        "nr_inodes=816950",
+        "mode=700",
+        "uid=1000",
+        "gid=1000"
+      ]
+    },
+    "/dev/shm": {
+      "options": [
+        "rw",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=64000k",
+        "uid=1000",
+        "gid=1000"
+      ]
+    },
+    "/etc/passwd": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/etc/group": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/run/.containerenv": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=3267800k",
+        "nr_inodes=816950",
+        "mode=700",
+        "uid=1000",
+        "gid=1000"
+      ]
+    },
+    "/etc/hostname": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=3267800k",
+        "nr_inodes=816950",
+        "mode=700",
+        "uid=1000",
+        "gid=1000"
+      ]
+    },
+    "/sys/fs/cgroup": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "cgroup2",
+      "super_options": [
+        "rw",
+        "nsdelegate"
+      ]
+    },
+    "/venv/lib/python3.13/site-packages": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "ext4",
+      "super_options": [
+        "rw",
+        "discard",
+        "errors=remount-ro",
+        "data=ordered"
+      ]
+    },
+    "/dev/null": {
+      "options": [
+        "rw",
+        "nosuid",
+        "noexec",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/dev/zero": {
+      "options": [
+        "rw",
+        "nosuid",
+        "noexec",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/dev/full": {
+      "options": [
+        "rw",
+        "nosuid",
+        "noexec",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/dev/tty": {
+      "options": [
+        "rw",
+        "nosuid",
+        "noexec",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/dev/random": {
+      "options": [
+        "rw",
+        "nosuid",
+        "noexec",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/dev/urandom": {
+      "options": [
+        "rw",
+        "nosuid",
+        "noexec",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/proc/acpi": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=0k",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/proc/kcore": {
+      "options": [
+        "ro",
+        "nosuid",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/proc/keys": {
+      "options": [
+        "ro",
+        "nosuid",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/proc/latency_stats": {
+      "options": [
+        "ro",
+        "nosuid",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/proc/timer_list": {
+      "options": [
+        "ro",
+        "nosuid",
+        "relatime"
+      ],
+      "type": "devtmpfs",
+      "super_options": [
+        "rw",
+        "size=16333992k",
+        "nr_inodes=4083498",
+        "mode=755"
+      ]
+    },
+    "/proc/scsi": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=0k",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/sys/firmware": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=0k",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/sys/fs/selinux": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=0k",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/sys/dev/block": {
+      "options": [
+        "ro",
+        "relatime"
+      ],
+      "type": "tmpfs",
+      "super_options": [
+        "rw",
+        "size=0k",
+        "uid=100000",
+        "gid=100000"
+      ]
+    },
+    "/proc/bus": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "proc",
+      "super_options": [
+        "rw"
+      ]
+    },
+    "/proc/fs": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "proc",
+      "super_options": [
+        "rw"
+      ]
+    },
+    "/proc/irq": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "proc",
+      "super_options": [
+        "rw"
+      ]
+    },
+    "/proc/sys": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "proc",
+      "super_options": [
+        "rw"
+      ]
+    },
+    "/proc/sysrq-trigger": {
+      "options": [
+        "ro",
+        "nosuid",
+        "nodev",
+        "noexec",
+        "relatime"
+      ],
+      "type": "proc",
+      "super_options": [
+        "rw"
+      ]
+    }
+  }
+}

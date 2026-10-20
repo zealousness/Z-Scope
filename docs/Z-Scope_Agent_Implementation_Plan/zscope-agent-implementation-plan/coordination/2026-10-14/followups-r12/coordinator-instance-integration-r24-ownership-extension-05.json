@@ -1,0 +1,41 @@
+{
+  "coordinator_authorized": true,
+  "authorized_by": "Human current instruction: integrate the independently accepted consumer repair into Stage",
+  "write_paths": [
+    "tests/test_instance_builtin_consumers.py",
+    "zscope/core/candidates/clang_ast_cfg.py",
+    "zscope/core/candidates/cpp_domains/concurrency_shared_state.py",
+    "zscope/core/candidates/cpp_domains/memory_bounds_integer.py",
+    "zscope/core/candidates/cpp_domains/protocol_ownership_logic.py",
+    "zscope/core/candidates/cpp_domains/resource_lifecycle.py",
+    "zscope/core/candidates/cpp_domains/shared_access.py",
+    "zscope/core/candidates/cpp_domains/typed_resources.py",
+    "zscope/core/candidates/graph.py",
+    "zscope/core/candidates/regex.py",
+    "zscope/rules/builtin_catalog.yaml",
+    "tests/test_lock_modes.py",
+    "tests/test_rule_runtime_governance.py",
+    "tests/test_analyzer_semantics.py"
+  ],
+  "source_sha256": {
+    "tests/test_instance_builtin_consumers.py": "e53d27cdffc8295d08b3329a37477c6219929b3f164e467d498f532a5055aa9e",
+    "zscope/core/candidates/clang_ast_cfg.py": "daefea22f764a5a046df0a5c19e6d265206867a56516d794c36a6c679be71d57",
+    "zscope/core/candidates/cpp_domains/concurrency_shared_state.py": "46c70cf7e9da373634cb06f97d54edda6ebd62ad61ff7db4cf8894c532813819",
+    "zscope/core/candidates/cpp_domains/memory_bounds_integer.py": "8aef9d50140cf6cb258f58184bc5b899e64e52bc27270bd5689fabdbb38a1072",
+    "zscope/core/candidates/cpp_domains/protocol_ownership_logic.py": "02881c9607070e9c8e927b0f6eece575805ac0f694374f096844ee78dc1d0594",
+    "zscope/core/candidates/cpp_domains/resource_lifecycle.py": "599dd0124d4cb73ab84ec142cc2e99a4789f5de26ee771387944d6e90ea52094",
+    "zscope/core/candidates/cpp_domains/shared_access.py": "dfcd26ee31d26764db5a9250dad486983c13c1a8fe62a4040d1100d384a32e00",
+    "zscope/core/candidates/cpp_domains/typed_resources.py": "2f492667d389e0b5cf8f92c61ad6049e2a3953c9c208f294157119f8ef09431a",
+    "zscope/core/candidates/graph.py": "2c4a8fc9ab2b15efff3c78bb4a6b89040872b35eed5036ca89421341269bcbbb",
+    "zscope/core/candidates/regex.py": "b64d287acdb86052af0bb98bb5a6ab13d76254fbd2274bd2ad1dcaf1b1f0bc13",
+    "zscope/rules/builtin_catalog.yaml": "9a352b2ea41affebe435774d216d34758a116db18e2eb8577596fb1e120a84c7",
+    "tests/test_lock_modes.py": "fb1ebfe0b5aac9b8f1fa570d7a551097bc6754c921b7111c98dea4c298b1e9ed",
+    "tests/test_rule_runtime_governance.py": "1d26d019ef31efc5374eec6c1424d47eb40deb0994b5106cb4421f9088dd874b",
+    "tests/test_analyzer_semantics.py": "f173a8d5a026d94a8bda4ba34ab739d0cdde96e41272d9a9bc1cb624e0284446"
+  },
+  "actual_original_producer_task": "/root/astra_design_contract_r23",
+  "actual_repair_producer_task": "/root/consumer_exact_repair_r29",
+  "acceptance": "artifacts/coordinator-consumer-acceptance-r29-20261017/review.json",
+  "acceptance_sha256": "5505439eede938ec36ac1e173b6c8106d53d260f9535f3429896941530a07a6c",
+  "reason": "Coordinator-only Stage intake of11accepted consumer files and3matching coordinator-controlled dependency tests; no Root copy, no S01 copy or resumption."
+}

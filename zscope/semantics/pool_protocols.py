@@ -20,6 +20,10 @@ def verify_pool_contract(
     raw: Mapping[str, Any], context: Mapping[str, Any]
 ) -> dict[str, Any] | None:
     from .contract_compiler import closing, parameter_names, split_tokens
+    from .build_scope import context_build_id, source_scope_problem
+
+    if source_scope_problem(context):
+        return None
 
     protocol = raw.get("protocol")
     if not isinstance(protocol, dict) or protocol.get("kind") != "intrusive_freelist":
@@ -132,6 +136,7 @@ def verify_pool_contract(
                 file_path=context.get("file_path"),
                 signature=context.get("signature"),
                 symbol_type="function",
+                build_context_id=context_build_id(context),
             )
         ),
         "role": role,
@@ -166,8 +171,18 @@ def verify_pool_contract(
 
 def pool_pair_compatible(acquire: ApiContract, release: ApiContract) -> bool:
     """Compatibility of logical return obligations, never heap destruction."""
+    same_protocol = (
+        acquire.protocol.get("kind") == "intrusive_freelist"
+        and acquire.protocol == release.protocol
+    ) or (
+        acquire.protocol.get("kind") == release.protocol.get("kind") == "standard_api_effects"
+        and acquire.protocol.get("family") == release.protocol.get("family") == "single_slot_pool"
+        and bool(acquire.protocol.get("pool_identity"))
+        and acquire.protocol.get("pool_identity") == release.protocol.get("pool_identity")
+    )
     return bool(
-        acquire.effects_trusted
+        acquire.symbol.build_context_id == release.symbol.build_context_id
+        and acquire.effects_trusted
         and release.effects_trusted
         and acquire.source.startswith("inferred")
         and release.source.startswith("inferred")
@@ -175,8 +190,7 @@ def pool_pair_compatible(acquire: ApiContract, release: ApiContract) -> bool:
         and not release.verification.get("assumptions")
         and acquire.role == "allocator"
         and release.role == "deallocator"
-        and acquire.protocol.get("kind") == "intrusive_freelist"
-        and acquire.protocol == release.protocol
+        and same_protocol
         and acquire.resource_family == release.resource_family
         and acquire.resource_domain
         and release.resource_domain

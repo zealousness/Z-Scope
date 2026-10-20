@@ -1,0 +1,134 @@
+{
+  "at": "2026-10-14T23:07:43+08:00",
+  "root_joint": "artifacts/coordinator-r9-s01-s08-intaken-20261014/review.json",
+  "root_result": {
+    "passed": 726,
+    "failed": 0,
+    "skipped": 0,
+    "commands": 6,
+    "input_files": 996
+  },
+  "tasks": [
+    {
+      "id": "S01-SYMBOL",
+      "packages": [
+        "S01"
+      ],
+      "title": "构建作用域贯穿类型/宏/图/调用契约",
+      "depends_on": [
+        "S01-INST",
+        "S01-INST-EXEC",
+        "CURRENT-JOINT-R9"
+      ],
+      "owner": "kimi",
+      "requested_model": "volceapi/kimi-k3",
+      "difficulty": "high",
+      "risk": "high",
+      "status": "actual_execution_running",
+      "write_paths": [
+        "zscope/retrieval/knowledge_db.py",
+        "zscope/retrieval/code_index.py",
+        "zscope/retrieval/instance_index.py",
+        "zscope/semantics/contracts.py",
+        "tests/test_full_symbol_build_scope.py",
+        "tests/test_instance_symbol_native.py"
+      ],
+      "input": "多变体调度及native callee USR",
+      "output": "剩余导航/图/契约消费者不串TU、目标、重载",
+      "acceptance": "ID01-04；全部消费者与unknown链接报告",
+      "estimated_work_hours": [
+        12,
+        24
+      ],
+      "enable_condition": null,
+      "bridge_task_id": "task_9579265ee7",
+      "observed_model": null,
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-symbol-r10",
+      "baseline_receipt": "followups-r10/s01-symbol-r10-baseline.json",
+      "checked_at": "2026-10-14T23:07:43+08:00",
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "whole_package_complete": false,
+      "agent_kind": "agent_bridge",
+      "bridge_session_id": "sess_261a55289f",
+      "accepted_model": "volceapi/kimi-k3",
+      "request_id": "66014c06-529a-4620-84ea-cd3020d36ba4",
+      "dispatch_evidence": "route-check\\bridge-response-s01-symbol-r10.json",
+      "actual_execution_at": "2026-10-14T15:04:34.203044+00:00",
+      "execution_evidence": "route-check/bridge-response-r10-current-kimi-5a4213c29c.json"
+    },
+    {
+      "id": "U01-MCP-JOBS",
+      "packages": [
+        "U01",
+        "S08"
+      ],
+      "title": "U01-MCP-JOBS",
+      "depends_on": [
+        "CURRENT-JOINT-R9"
+      ],
+      "whole_package_complete": false,
+      "owner": "zcode",
+      "requested_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u01-mcp-r10",
+      "write_paths": [
+        "zscope/mcp/provider.py",
+        "zscope/mcp/jobs_adapter.py",
+        "tests/test_mcp_http_server.py",
+        "tests/test_mcp_policy.py",
+        "tests/test_mcp_read_only.py",
+        "tests/test_mcp_security.py",
+        "tests/test_mcp_jobs.py"
+      ],
+      "baseline_receipt": "followups-r10/u01-mcp-r10-baseline.json",
+      "status": "actual_execution_running",
+      "checked_at": "2026-10-14T23:07:43+08:00",
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "agent_kind": "agent_bridge",
+      "bridge_task_id": "task_2f3f99db9b",
+      "bridge_session_id": "sess_a0adb99b15",
+      "accepted_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+      "request_id": "d3c0ea49-7962-441d-aae0-cdf0026e2964",
+      "dispatch_evidence": "route-check\\bridge-response-u01-mcp-r10.json",
+      "actual_execution_at": "2026-10-14T15:04:34.248433+00:00",
+      "observed_model": null,
+      "execution_evidence": "route-check/bridge-response-r10-current-zcode-3a1073e2b0.json"
+    },
+    {
+      "id": "ASTRA-UX-R10",
+      "packages": [
+        "U01",
+        "U02"
+      ],
+      "title": "ASTRA-UX-R10",
+      "depends_on": [
+        "CURRENT-JOINT-R9"
+      ],
+      "whole_package_complete": false,
+      "owner": "Astra",
+      "requested_model": "gpt-6-astra",
+      "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\astra-ux-r10",
+      "write_paths": [
+        "zscope/web/static/**",
+        "tests/test_agent_workbench_ui.py",
+        "tests/fixtures/agent_workbench_ui.cjs"
+      ],
+      "baseline_receipt": "followups-r10/astra-ux-r10-baseline.json",
+      "status": "actual_execution_running",
+      "checked_at": "2026-10-14T23:07:23.618243+08:00",
+      "independent_acceptance": false,
+      "integrated": false,
+      "joint_verification": false,
+      "agent_kind": "native_subagent",
+      "agent_task_id": "/root/astra_v3_editor_r6",
+      "requested_at": "2026-10-14T23:04:34+08:00",
+      "execution_evidence": "followups-r10/astra-execution.json",
+      "actual_execution_at": "2026-10-14T23:07:23.618243+08:00"
+    }
+  ],
+  "scope": "Dispatched/actual execution only. No R10 source intaken or independently accepted.",
+  "blocking": "Full ScanSession/queue/checkpoint/consumer migration pending; real model/project/formal/portable and conditional extensions separate."
+}

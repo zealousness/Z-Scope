@@ -1,0 +1,78 @@
+{
+  "at": "2026-10-14T19:58:24.100043+00:00",
+  "producer_task": "task_658717aaa6",
+  "producer_quiescence": {
+    "workspace": "scan-session-r12",
+    "processes": []
+  },
+  "files": [
+    {
+      "path": "zscope/retrieval/code_index.py",
+      "previous_sha256": "13768903e1acebeeeaeba78c164aa074bcf7d7474511f2bdc37ecd5743c1d7a5",
+      "sha256": "03b70069342b4658637b903f6dff91ad12b8e1b35a16ff68102a7c5c7d8768b9",
+      "authority": "artifacts/intake-coordinator-source-roots-r13-20261015/receipt.json",
+      "readonly": true
+    },
+    {
+      "path": "zscope/orchestration/jobs/owner.py",
+      "previous_sha256": "6d125c4c989c690136ef21ca6104ca1e178dc3921ac010b7be5f89b716efef9c",
+      "sha256": "4e2d833426ae5d2e2a983f3533a2146071ed486cbc5abf71127531cf7e48dbf0",
+      "authority": "artifacts/intake-coordinator-queue-web-r14-20261015/receipt.json",
+      "readonly": true
+    },
+    {
+      "path": "zscope/orchestration/jobs/store.py",
+      "previous_sha256": "247fb3d3ebece096a7dfe26fa672ac4a942a99ee02f1eae88e482759f41a2777",
+      "sha256": "c24b67ea55557a86dff977b623fbc5059bbd63052b838a68190dc8472354ded6",
+      "authority": "artifacts/intake-coordinator-queue-web-r14-20261015/receipt.json",
+      "readonly": true
+    },
+    {
+      "path": "zscope/orchestration/jobs/work_queue.py",
+      "previous_sha256": "342ae336a28dc00df128d4e427e33b63156878e769c5f130e2153492f3ac1ad6",
+      "sha256": "3402130084e38ce644000f5d70f2471ddd9e444a80fdfe56ebef87586368af98",
+      "authority": "artifacts/intake-coordinator-remaining-r12-20261015/receipt.json",
+      "readonly": true
+    },
+    {
+      "path": "tests/test_scan_job_execution.py",
+      "previous_sha256": "a69d0284e487cb7b80f0fefec0c3e06380915769cfde0f87718208c64c38e98b",
+      "sha256": "d62fdca9205758cad255b2d90d1d9a094f803dba73c02f341044b2725b40fdec",
+      "authority": "artifacts/intake-coordinator-remaining-r12-20261015/receipt.json",
+      "readonly": true
+    },
+    {
+      "path": "tests/test_job_remaining.py",
+      "previous_sha256": null,
+      "sha256": "49ea701e1387f4ada76e1aa5dcf972a8a94f41b88073325f73d66048da336c09",
+      "authority": "artifacts/intake-coordinator-remaining-r12-20261015/receipt.json",
+      "readonly": true
+    },
+    {
+      "path": "tests/test_native_source_roots.py",
+      "previous_sha256": null,
+      "sha256": "5f8c14e9162ea5f91f9d80a4fdfaff073e1919137ccb6ff4a00331c2f6441297",
+      "authority": "artifacts/intake-coordinator-source-roots-r13-20261015/receipt.json",
+      "readonly": true
+    },
+    {
+      "path": "tests/test_job_queue_receipts.py",
+      "previous_sha256": null,
+      "sha256": "2481a631a6796e53d5602cc4a70e3774a91b87d16a9e577cd19c8ec2cfa2b30b",
+      "authority": "artifacts/intake-coordinator-queue-web-r14-20261015/receipt.json",
+      "readonly": true
+    },
+    {
+      "path": "tests/test_scan_session_resume_svf.py",
+      "previous_sha256": "9f1daf9c330a9d06dd78aa46badaad4edb3b3d299e0b7ea1083100b4c175a5e5",
+      "sha256": "0e4ea44ba124f3f67f6b9bc134821a5190b77e00158f734610f78cda34e78f0c",
+      "authority": "artifacts/coordinator-main-migration-r16-20261015/review.json",
+      "authority_scope": "coordinator validated test migration staged with producerR3; not root-intaken",
+      "readonly": true
+    }
+  ],
+  "original_baseline_preserved": true,
+  "contract_dependency_pending": "CONTRACT-VALIDATION-R12; not copied from an unaccepted active writer",
+  "migration_refresh_at": "2026-10-15T14:43:35.725812+08:00",
+  "prior_receipt": "followups-r12/scan-session-r12-dependencies-before-migration-r16.json"
+}

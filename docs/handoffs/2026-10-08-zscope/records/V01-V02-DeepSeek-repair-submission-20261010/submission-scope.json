@@ -1,0 +1,85 @@
+{
+  "consent_received": true,
+  "new_headless_session_authorized": true,
+  "necessary_context_bytes": 84910,
+  "prompt_bytes": 86726,
+  "prompt_sha256": "dcb23273d5d6a68df4dd39eb612154fcc8250b313145b44c36f327d3e14dda71",
+  "source_sha256": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+  "source_file": "zscope/core/validation/dynamic_reproduction.py",
+  "source_spans": [
+    [
+      1,
+      95
+    ],
+    [
+      350,
+      455
+    ],
+    [
+      577,
+      651
+    ],
+    [
+      727,
+      837
+    ],
+    [
+      1028,
+      1190
+    ],
+    [
+      1259,
+      1345
+    ],
+    [
+      1410,
+      1510
+    ],
+    [
+      2034,
+      2102
+    ],
+    [
+      2175,
+      2265
+    ],
+    [
+      2436,
+      2457
+    ],
+    [
+      2699,
+      2813
+    ],
+    [
+      2867,
+      2898
+    ],
+    [
+      3027,
+      3119
+    ],
+    [
+      3280,
+      3400
+    ],
+    [
+      3413,
+      3590
+    ]
+  ],
+  "test_scope": [
+    "helper definitions used by four fake regressions",
+    "four exact fake drift failures and their log"
+  ],
+  "not_included": [
+    "credentials",
+    "unrelated repository files",
+    "original DeepSeek conversation history",
+    "ASAN/TSAN fixture code or execution logs",
+    "range/truth"
+  ],
+  "execution_guard": "all model tool calls disabled; no product filesystem access",
+  "original_session_unchanged": true,
+  "followup1_sha256": "ce7467026e79bc7c16a4dd8dbc825da7a55756491e0d703f836dbcba7f530b4f"
+}

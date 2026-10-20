@@ -1,0 +1,51 @@
+{
+  "parentContextDigest": "b68a6b1b87508151539897f0ca51d132a6dd9b2a34cf46ee3cf7c9e16a9fc652",
+  "sourceDigest": "fcec3fcc0f8de809b2dbc02f82abff7a3092abf074812524ed1a569513f54172",
+  "promptDigest": "f8013fd3d81b0756057c46784374555d7dd7535a898a408dc17f42081f5de768",
+  "promptBytes": 66225,
+  "sourceSpans": [
+    [
+      1,
+      95
+    ],
+    [
+      350,
+      455
+    ],
+    [
+      577,
+      651
+    ],
+    [
+      727,
+      837
+    ],
+    [
+      1028,
+      1190
+    ],
+    [
+      1259,
+      1345
+    ],
+    [
+      1410,
+      1510
+    ],
+    [
+      2699,
+      2813
+    ],
+    [
+      3280,
+      3400
+    ],
+    [
+      3413,
+      3590
+    ]
+  ],
+  "scope": "source snapshot defect; subset of previously authorized packet",
+  "credentialValuesExcluded": true,
+  "newUnrelatedSourceExcluded": true
+}

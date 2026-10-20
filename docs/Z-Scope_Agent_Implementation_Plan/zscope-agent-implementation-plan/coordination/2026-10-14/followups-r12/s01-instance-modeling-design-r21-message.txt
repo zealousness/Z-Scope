@@ -1,0 +1,14 @@
+用户授权的后续并行工作，当前 Root R22 完整选定联合集合及六条严格 Linux 命令已通过，收据 C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope\artifacts\coordinator-r22-unchanged-union-20261016\review.json。你是 ZCode，模型必须固定 97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3。普通非 UI 优先 ZCode；Kimi 暂停新派单，已有成果冻结；UI/前端/用户体验由 Astra 独占。不要重做已验收 S01 实例索引/contract 消费、S08 队列/window/token 或 R20 CLI/SQL/首次取消原因成果。
+这是只读依赖设计审计，不是功能实现。只在下述新隔离目录的 DELIVERY.md 和指定 artifacts 目录写审计产物，所有复制源码/旧测试/文档/native/配置/资源锁只读，不写 Root 或其他副本，不创建任何产品/测试代码。不得启动服务、Bridge、扫描、真实模型或 benchmark，不查看 ground truth，不操作 task_0947f2854f 或恢复任何归档 S06-R02 会话，不更改平台/凭据/环境/时钟，不 reset/clean/stash/commit/push。出现平台拦截准确停止，不换模型/会话绕过。
+先读隔离副本 AGENTS.md、docs/architecture.md 和对应 docs/modules；再读 C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope\docs\Z-Scope_Agent_Implementation_Plan\zscope-agent-implementation-plan\coordination\2026-10-14\DISPATCH_POLICY.md 与 C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope\docs\Z-Scope_Agent_Implementation_Plan\zscope-agent-implementation-plan\coordination\2026-10-14\NEXT_BACKEND_CONTRACT_R21.md，不能在副本相对目录找不到后忽略 Root 合同。严格以当前源码、真实调用与已有执行收据为准，文档可能过期。不能把源码审计、声明字段、合成数据或一个切片通过标为完整包/真实项目效果已验收。
+请在限定审计范围形成可执行的最小后续开发合同：逐项给源码路径、行号、完整 SHA、调用链、真实已实现能力、当前缺口、非缺陷、接口、所有权、依赖、精确正反例和未覆盖范围。必须追踪消费者实际调用与身份/缓存/发布/重用边界，不能仅凭字段名推断。引用 native 证明只读已有真实收据，不执行/重建 native。标准库读取和 SHA 可用 WSL Ubuntu zeal /home/zeal/venv313/bin/python；本项不要求新测试，未运行记为0，不能给伪通过数。必要短探针须先说明理由，并以 WSL login 环境经 Root test_slot.py 单层两槽、默认 fd/ext4 执行，不降低门禁。
+交付 DELIVERY.md 与指定 artifacts/audit.json，audit 至少包含 task_id、started_at、finished_at、status、source_hashes_before/after、findings、capabilities、non_defects、proposed_slices、dependencies、exclusive_write_paths、shared_coordinator_paths、acceptance_examples、executed_commands、limits。未执行就是未执行；结论为只读设计成果，不是实现验收。完成后停止所有写入。
+
+本项 S01-INSTANCE-MODELING-DESIGN-R21。隔离 Windows 目录 C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope\.coordination\20261014\workspaces\s01-instance-modeling-design-r21；Linux 目录 /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-instance-modeling-design-r21。仅可写本副本 DELIVERY.md 与 artifacts/instance-modeling-design-r21/。重点合同如下：
+
+
+- 当前 `ScanSessionRunner._build_instance_analyzer` 不传 semantic_result；`ParallelAnalyzer._analyze_single_entry` 对精确实例使用空 LocalPatternSemantics/overlay；`Analyzer.prepare_semantics` 明确跳过。不能仅移除保护条件或回退全局索引、全局语义来声称接入。
+- `GlobalModeler.FunctionKey` 当前公开键为 name/file/signature。审计须追踪真实图、上下文、snapshot inputs、registry 和模型发布的全部身份链；键字段本身不证明当前泄漏，现有下游校验与跳过保护可能已经阻止消费。明确区分“当前缺口”和“若直接启用会产生的风险”。
+- 对精确 BuildContext/native USR、同源双宏、同名不同 TU/目标、callee 选择和未知身份分别给出合同；未知构建不能是通配符。
+- 核对模型输出如何经当前 AST/native/契约核验发布、不同实例并发写入同一 workbook/store 的责任，以及缓存如何携带构建、回答与版本身份。源码注释或模型 metadata 不授予 must 效果。
+- 最小后续开发包必须使真实消费者执行，而非只增加 identity 标签；同时列出仍不支持的 graph/link/backend/规则范围。

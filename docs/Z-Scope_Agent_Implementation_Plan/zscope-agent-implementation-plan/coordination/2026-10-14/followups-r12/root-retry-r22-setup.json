@@ -1,0 +1,17 @@
+{
+  "at": "2026-10-16T00:38:15.067027+08:00",
+  "created_launchers": {
+    "verify_current_root_r22.py": "18c2af9685e68ee047634c9fc450cc5275bd11c17b7f4c85026e9dfeb8129390",
+    "verify_joint_retry_with_clock_r22.py": "00c1534636989ccf28eeafbba4ecda18d44df7a66c5b4dc3cd54ec9312ee899e",
+    "publish_joint_r22.py": "6b24e252a9e8a7ae2310296e8329895bfb77388faae0aa5d3b9356c6a70f9eab",
+    "publish_current_root_checked_r22.py": "5c3bd60984d662e7a97961244d387a9c74a3caac9ed58d539ef4055cb61b6090"
+  },
+  "prior_source_inputs_unchanged": 1053,
+  "product_or_test_changed": false,
+  "test_files": 169,
+  "test_case_floor": 2539,
+  "original_0_18_assertion_retained": true,
+  "six_commands_required": true,
+  "automatic_retry_until_green": false,
+  "reason": "Original parallel probe observed4 overlapping workers and passed; explicit serial negative control failed; one full unchanged-product trial, all failures retained"
+}

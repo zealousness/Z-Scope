@@ -1,0 +1,23 @@
+{
+  "session_id": "sess_0dfdf879d4",
+  "kinds": "tool_call,tool_call_update",
+  "start_offset": 77,
+  "next_offset": 171,
+  "pages": 3,
+  "total_matching": 171,
+  "has_more": false,
+  "events_read": 94,
+  "latest_at": "2026-10-14T05:28:17.250841+00:00",
+  "failed_tools": [],
+  "completed_tail": [
+    {
+      "ts": "2026-10-14T05:28:17.250841+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_2_1e9252f0",
+        "status": "completed"
+      }
+    }
+  ]
+}

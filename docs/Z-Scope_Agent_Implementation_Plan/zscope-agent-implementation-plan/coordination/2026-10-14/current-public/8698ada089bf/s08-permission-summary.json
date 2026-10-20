@@ -1,0 +1,13 @@
+{
+  "session_id": "sess_4b386346c6",
+  "kinds": "permission",
+  "start_offset": 0,
+  "next_offset": 1,
+  "pages": 1,
+  "total_matching": 1,
+  "has_more": false,
+  "events_read": 1,
+  "latest_at": "2026-10-14T06:15:02.661126+00:00",
+  "failed_tools": [],
+  "completed_tail": []
+}

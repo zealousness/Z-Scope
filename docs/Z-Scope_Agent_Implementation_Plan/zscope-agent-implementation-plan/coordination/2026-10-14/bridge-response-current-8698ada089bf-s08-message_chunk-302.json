@@ -1,0 +1,482 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:18:30.733072+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " flake:"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:30.933441+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " `owner"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:31.131503+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ".state =="
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:31.331219+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " \"exited\"` raced"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:31.680113+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " with"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:31.756869+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the owner's"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:31.927922+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " actual"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:32.127343+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " process exit"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:32.327070+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " ("
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:32.532487+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "status write"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:32.829942+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " preced"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:32.923173+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "es process"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:33.126951+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " exit/re"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:33.321418+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "aping by init"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:33.520388+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "). The"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:33.719457+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " honest"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:33.977349+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " fix"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:34.120565+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " is to wait"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:34.332142+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " for the owner to"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:34.754168+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " be verifiably gone before"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:18:34.754168+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " asserting:"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:19:30.629201+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Fixed"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:19:30.747203+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:19:30.932443+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " race."
+      }
+    },
+    {
+      "ts": "2026-10-14T06:19:31.118048+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " Re-running the full suite twice"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:19:31.311987+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " to confirm"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:19:31.490008+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " stability:"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:20:51.630636+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Stable:"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:20:51.817222+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 53/53 twice"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:20:52.007113+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ","
+      }
+    },
+    {
+      "ts": "2026-10-14T06:20:52.194684+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " no str"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:20:52.382678+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "ays. Regenerating"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:20:52.569640+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " the final evidence log:"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:22:29.734954+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "All"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:22:29.956417+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " green. Align"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:22:30.186724+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "ing the"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:22:30.417239+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " DELIVERY evidence"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:22:30.646822+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " section with the final evidence log"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:22:30.879123+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ", then closing"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:22:31.160719+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " out"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:22:31.361738+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ":"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:50.304933+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "恢复"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:50.533755+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "完成"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:50.868766+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "，"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:50.990615+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "S"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:51.224068+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "08-OWNER"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:51.449241+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 分支已补齐"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:51.677645+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "并"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:51.905687+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "全部"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:52.135026+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "实测"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:52.382825+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "通过"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:52.592734+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:52.825081+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "摘要"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:53.057587+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "：\n\n**"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:53.279867+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "接续"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:53.508499+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "核对"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:53.737912+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "**\n- 8 个"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:53.966357+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "既有"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:23:54.261810+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " jobs"
+      }
+    }
+  ],
+  "offset": 302,
+  "count": 59,
+  "next_offset": 361,
+  "has_more": true,
+  "total_matching": 669
+}

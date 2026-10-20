@@ -1,0 +1,8 @@
+{
+  "applied": false,
+  "rejected": true,
+  "reasons": [
+    "Fake execute never captures source snapshot; empty snapshot would preserve the new failures.",
+    "Real snapshot is rehashed after execution instead of preserving accepted input identity."
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "actual_task": "/root",
+  "owner": "coordinator",
+  "observed_at": "2026-10-17T11:39:59.846955+08:00",
+  "isolated_workspace": ".coordination/20261014/workspaces/coordinator-contract-tests-r33",
+  "added_paths": [
+    "zscope/core/validation/review_checks.py",
+    "tests/test_review_current_revisions_r33.py"
+  ],
+  "old_probe_must_finish_before_WORK_change": true,
+  "no_native_worker_ownership_overlap": true,
+  "stage_write": false,
+  "root_write": false,
+  "rule_catalog_changed": false,
+  "reason": "R29 current rule revisions are unintentionally rejected by unchanged Review checker revision table; independent source audit and actual probe required"
+}

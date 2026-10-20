@@ -1,0 +1,49 @@
+{
+  "id": "MCP-FINDINGS-R12",
+  "workspace": "mcp-findings-r12",
+  "isolated_workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\mcp-findings-r12",
+  "isolated_workspace_linux": "/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/mcp-findings-r12",
+  "agent": "zcode",
+  "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+  "session_id": "sess_3b6b9a19b2",
+  "depends_on": [
+    "CURRENT-JOINT-R12"
+  ],
+  "owns": [
+    "zscope/mcp/provider.py",
+    "zscope/mcp/jobs_adapter.py",
+    "zscope/reporting/job_result_projection.py",
+    "tests/test_mcp_jobs.py",
+    "tests/test_job_result_projection.py"
+  ],
+  "title": "Bound persistent-job findings projection for MCP",
+  "packages": [
+    "U01",
+    "U02"
+  ],
+  "owner": "zcode",
+  "requested_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+  "write_paths": [
+    "zscope/mcp/provider.py",
+    "zscope/mcp/jobs_adapter.py",
+    "zscope/reporting/job_result_projection.py",
+    "tests/test_mcp_jobs.py",
+    "tests/test_job_result_projection.py"
+  ],
+  "status": "dispatched_execution_observed",
+  "bridge_task_id": "task_a3a56d31b4",
+  "bridge_session_id": "sess_3b6b9a19b2",
+  "accepted_model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+  "observed_model": null,
+  "request_id": "8f5ec979-5edf-4ed6-9c24-08464e51b46b",
+  "actual_execution_at": "2026-10-14T18:33:00.159020+00:00",
+  "dispatch_evidence": "route-check/bridge-response-mcp-findings-r12.json",
+  "execution_evidence": "route-check/bridge-response-r12-current-mcp-21b5ffbbdd.json",
+  "baseline_receipt": "followups-r12/mcp-findings-r12-baseline.json",
+  "checked_at": "2026-10-15T02:35:22.855910+08:00",
+  "artifact_available": false,
+  "independent_acceptance": false,
+  "integrated": false,
+  "joint_verification": false,
+  "whole_package_complete": false
+}

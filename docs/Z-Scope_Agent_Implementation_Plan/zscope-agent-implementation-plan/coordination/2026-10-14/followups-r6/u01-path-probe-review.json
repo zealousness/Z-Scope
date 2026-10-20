@@ -1,0 +1,16 @@
+{
+  "source": ".coordination/20261014/workspaces/u01-entrypoints-r6/zscope/cli/init.py",
+  "result": {
+    "tests": 2,
+    "skipped": 0,
+    "failed": 2
+  },
+  "repair_needed": "quote/serialize all user-controlled YAML scalars including root,target_id,compile_commands; no weaker parser",
+  "status": "provisional_actual_cli_probe_failed_not_intaken",
+  "cause": "unquoted project root scalar: space+# truncates, colon+space invalid YAML",
+  "integrated": false,
+  "recorded_at": "2026-10-14T20:42:25.6183511+08:00",
+  "task_id": "task_9abeb34f8f",
+  "junit": "artifacts/coordinator-editor-probe-r6-20261014/init-paths.xml",
+  "sha256": "0728fae1ffb3b869d921ddc8aa29df3ae09f11d959ca07282108043fce45f30a"
+}

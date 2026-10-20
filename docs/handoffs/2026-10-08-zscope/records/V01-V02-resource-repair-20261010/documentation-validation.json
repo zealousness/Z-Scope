@@ -1,0 +1,71 @@
+{
+  "checks": [
+    {
+      "label": "agent-docs",
+      "command": [
+        "/home/zeal/venv313/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--basetemp=/tmp/zscope-resource-docs-y9ph07qq/tmp",
+        "--junitxml=/mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/docs/handoffs/2026-10-08-zscope/records/V01-V02-resource-repair-20261010/agent-docs.xml",
+        "tests/test_agent_docs.py"
+      ],
+      "exit_code": 0,
+      "stdout": "agent-docs.stdout.log",
+      "stderr": "agent-docs.stderr.log"
+    },
+    {
+      "label": "linux-diff-check",
+      "command": [
+        "git",
+        "-c",
+        "core.whitespace=cr-at-eol",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "linux-diff-check.stdout.log",
+      "stderr": "linux-diff-check.stderr.log"
+    },
+    {
+      "label": "black-product-ranges",
+      "command": [
+        "/home/zeal/.cache/zscope-p1-black-venv/bin/black",
+        "--check",
+        "--line-ranges",
+        "2257-2307",
+        "--line-ranges",
+        "2606-2810",
+        "--line-ranges",
+        "2870-2900",
+        "zscope/core/validation/dynamic_reproduction.py"
+      ],
+      "exit_code": 1,
+      "stdout": "black-product-ranges.stdout.log",
+      "stderr": "black-product-ranges.stderr.log"
+    },
+    {
+      "label": "black-new-tests",
+      "command": [
+        "/home/zeal/.cache/zscope-p1-black-venv/bin/black",
+        "--check",
+        "--line-ranges",
+        "2401-2900",
+        "tests/test_dynamic_reproduction.py"
+      ],
+      "exit_code": 0,
+      "stdout": "black-new-tests.stdout.log",
+      "stderr": "black-new-tests.stderr.log"
+    }
+  ],
+  "docs_counts": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "utf8_no_bom_lf": true
+}

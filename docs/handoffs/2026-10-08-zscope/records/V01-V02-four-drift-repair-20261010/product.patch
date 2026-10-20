@@ -1,0 +1,205 @@
+--- a/zscope/core/validation/dynamic_reproduction.py
++++ b/zscope/core/validation/dynamic_reproduction.py
+@@ -765,6 +765,10 @@
+     artifact_root: str = ""
+     inputs_verified: bool = False
+     input_verification_digest: str = ""
++    # Execution-time snapshot of the accepted source/harness/input files. It is
++    # captured when the plan identity is accepted and carried unchanged into the
++    # record/receipt, so registration compares these digests instead of re-hashing.
++    source_digests: tuple[tuple[str, str], ...] = ()
+     # How the executed program's identity was established: ``plan_declared`` when
+     # the plan named the digest, ``post_build_output`` when this plan's own
+     # authorized build produced the artifact and it was hashed afterwards.
+@@ -831,6 +835,7 @@
+             "artifact_root": self.artifact_root,
+             "inputs_verified": self.inputs_verified,
+             "input_verification_digest": self.input_verification_digest,
++            "source_digests": [[path, digest] for path, digest in self.source_digests],
+             "binary_identity_source": self.binary_identity_source,
+             "limitations": list(self.limitations),
+             "detail": self.detail,
+@@ -1048,6 +1053,10 @@
+     inputs_verified: bool
+     witness_digest: str
+     expires_at: float
++    binary_path: str = ""
++    binary_evidence_digest: str = ""
++    binary_bound: bool = False
++    binary_required: bool = False
+ 
+     @property
+     def production(self) -> bool:
+@@ -1111,6 +1120,27 @@
+             + record.plan_digest.encode("utf-8")
+             + record.digest().encode("utf-8")
+         ).hexdigest()
++        # Freeze the actual binary accepted at execution time. Real production
++        # runs must have a still-matching file; test runs may be symbolic, but
++        # any real file they used is bound for later drift checks.
++        binary_path = str(getattr(record, "binary_path", "") or "")
++        recorded_digest = str(getattr(record, "binary_digest", "") or "")
++        measured = ""
++        if binary_path:
++            try:
++                if os.path.isfile(binary_path):
++                    measured = hash_file(binary_path)[0]
++            except OSError:
++                measured = ""
++        binary_required = trust == TRUST_PRODUCTION
++        if binary_required:
++            binary_bound = (
++                bool(measured) and bool(recorded_digest) and measured == recorded_digest
++            )
++            binary_evidence = recorded_digest if binary_bound else ""
++        else:
++            binary_bound = bool(measured)
++            binary_evidence = measured
+         with self._lock:
+             self._prune()
+             self._live[token] = _ExecutionEntry(
+@@ -1129,6 +1159,10 @@
+                 inputs_verified=bool(inputs_verified),
+                 witness_digest=str(witness_digest),
+                 expires_at=time.monotonic() + max(1, int(ttl_seconds)),
++                binary_path=binary_path,
++                binary_evidence_digest=binary_evidence,
++                binary_bound=binary_bound,
++                binary_required=binary_required,
+             )
+         return token
+ 
+@@ -1470,6 +1504,37 @@
+     return True
+ 
+ 
++def binary_binding_holds(path: str, digest: str) -> bool:
++    """Whether the accepted binary still has exactly the recorded content.
++
++    Missing, unreadable and changed files all fail: the check reads the actual
++    bytes and never treats an absent file as a reason to stop checking.
++    """
++
++    if not path or not digest:
++        return False
++    try:
++        if not os.path.isfile(path):
++            return False
++        return hash_file(path)[0] == digest
++    except OSError:
++        return False
++
++
++def execution_binary_holds(entry: "_ExecutionEntry") -> bool:
++    """Whether a live execution's accepted binary still backs confirmation.
++
++    An execution that bound a real binary file must still match the digest
++    accepted at execution time. An execution that bound nothing only qualifies
++    when it never required binding, i.e. the symbolic test-only fixture; a real
++    production execution always requires a bound binary.
++    """
++
++    if entry.binary_bound:
++        return binary_binding_holds(entry.binary_path, entry.binary_evidence_digest)
++    return not entry.binary_required
++
++
+ def dynamic_witness_proof_is_live(
+     proof: Mapping[str, Any], issue: Mapping[str, Any] | None = None
+ ) -> bool:
+@@ -1492,7 +1557,10 @@
+     entry = CONFIRMATION_AUTHORITY.lookup(proof)
+     if entry is None:
+         return False
+-    if not EXECUTION_AUTHORITY.is_live(entry.execution_token):
++    execution = EXECUTION_AUTHORITY.entry(entry.execution_token)
++    if execution is None:
++        return False
++    if not execution_binary_holds(execution):
+         return False
+     if entry.source_digests and not source_digests_hold(entry.source_digests):
+         return False
+@@ -2122,13 +2190,23 @@
+         def finish(*_args: Any, **kwargs: Any) -> ExecutionRecord:
+             # ``plan`` and ``started`` are already bound here; the positional
+             # arguments some call sites still pass are intentionally ignored.
+-            return self._record(plan, started, workdir=workdir, **kwargs)
++            return self._record(
++                plan,
++                started,
++                workdir=workdir,
++                source_digests=accepted_source_digests,
++                **kwargs,
++            )
+ 
+         notes: list[str] = []
+         limitations: list[str] = []
+         build_result: _RunResult | None = None
+         build_argv: tuple[str, ...] = ()
+         env: dict[str, str] = {}
++        # Freeze the accepted source/harness/input snapshot as soon as the plan
++        # identity is accepted, before any build or run: a later re-hash must
++        # never become the execution-time baseline.
++        accepted_source_digests: tuple[tuple[str, str], ...] = ()
+         try:
+             problems = self.authorization_problems(
+                 plan, workdir, require_binary=plan.build is None
+@@ -2142,6 +2220,7 @@
+                     notes=["no_process_was_started"],
+                     limitations=list(problems) + ["unverified_plan_never_launched"],
+                 )
++            accepted_source_digests = frozen_source_digests(plan.binding, plan)
+             # Isolation is decided once and applied to the build and the run: a
+             # requested boundary that cannot be provided stops the plan instead
+             # of silently executing without it.
+@@ -2716,6 +2795,7 @@
+         isolation_verified: bool = True,
+         inputs_verified: bool = False,
+         input_verification_digest: str = "",
++        source_digests: Sequence[tuple[str, str]] = (),
+         notes: Sequence[str] = (),
+         limitations: Sequence[str] = (),
+         binary_digest: str = "",
+@@ -2805,6 +2885,9 @@
+             artifact_root=artifact_root,
+             inputs_verified=bool(inputs_verified),
+             input_verification_digest=str(input_verification_digest),
++            source_digests=tuple(
++                (str(path), str(digest)) for path, digest in source_digests
++            ),
+             binary_identity_source=str(binary_identity_source),
+             limitations=tuple(dict.fromkeys([*limitations, *artifact_notes])),
+             detail=detail,
+@@ -3083,6 +3166,7 @@
+                 ),
+             ),
+             inputs_verified=False,
++            source_digests=frozen_source_digests(plan.binding, plan),
+             binary_identity_source="plan_declared" if plan.binary_digest else "",
+             limitations=("fake_runner", "no_process_started"),
+             detail=run.outcome,
+@@ -3556,8 +3640,22 @@
+         # that record never carries the confirmation facts and never reaches the
+         # shared adjudication.
+         authority_reasons = replay_production_problems(plan.binding, replay)
+-        authoritative = bool(entry is not None and entry.production and not authority_reasons)
+-        frozen = frozen_source_digests(plan.binding, plan)
++        # Use the *execution-time* snapshot carried by the record; a fresh
++        # re-hash at registration must never accept a file that changed after the
++        # accepted execution, and a missing file must forbid authority.
++        frozen = tuple(record.source_digests)
++        snapshot_holds = source_digests_hold(frozen)
++        # The binary accepted at execution time must still be present and
++        # unchanged; a symbolic test execution that bound no real file qualifies
++        # only because it never required binding.
++        binary_holds = entry is not None and execution_binary_holds(entry)
++        authoritative = bool(
++            entry is not None
++            and entry.production
++            and not authority_reasons
++            and snapshot_holds
++            and binary_holds
++        )
+         proof = dynamic_witness_proof_record(
+             plan.binding,
+             plan,

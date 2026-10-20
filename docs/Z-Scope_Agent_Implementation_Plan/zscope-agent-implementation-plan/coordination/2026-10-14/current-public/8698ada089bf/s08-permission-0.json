@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:15:02.661126+00:00",
+      "type": "permission",
+      "data": {
+        "decision": "selected",
+        "option_id": "approve_once",
+        "tool_call": {
+          "toolCallId": "0:Bash_77",
+          "title": "Bash",
+          "content": [
+            {
+              "content": {
+                "text": "Requesting approval to Running: cd .coordination/20261014/workspaces/s08-owner && …",
+                "type": "text"
+              },
+              "type": "content"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 1,
+  "next_offset": 1,
+  "has_more": false,
+  "total_matching": 1
+}

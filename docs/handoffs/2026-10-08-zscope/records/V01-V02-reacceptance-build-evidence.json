@@ -1,0 +1,289 @@
+{
+  "record": {
+    "schema_version": "zscope.dynamic-execution-record.v2",
+    "record_id": "dynrepro-asan-33da63e66c7c2be3-99ab2e3497d7",
+    "plan_digest": "e047ca61bbb835bb7fb59dcf2df295a38d3d30455803af2e6792054a4f264ef9",
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "provider_kind": "asan",
+    "outcome": "witness_observed",
+    "run_argv": [
+      "/tmp/pytest/test_build_generated_binary_ca0/built-positive",
+      "64"
+    ],
+    "run_cwd": "/tmp/pytest/test_build_generated_binary_ca0",
+    "environment": [
+      [
+        "ASAN_OPTIONS",
+        "abort_on_error=0:halt_on_error=1:detect_leaks=0:symbolize=1:print_summary=1:exitcode=1:max_allocation_size_mb=512"
+      ],
+      [
+        "HOME",
+        "/tmp/zscope-asan-run-opaksp32"
+      ],
+      [
+        "LANG",
+        "C.UTF-8"
+      ],
+      [
+        "PATH",
+        "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      [
+        "TMPDIR",
+        "/tmp/zscope-asan-run-opaksp32"
+      ]
+    ],
+    "isolation": "process",
+    "isolation_verified": true,
+    "isolation_notes": [
+      "isolation=process",
+      "process_group_isolated",
+      "subprocess_is_not_a_container_sandbox"
+    ],
+    "build_argv": [
+      "/usr/bin/cc",
+      "-fsanitize=address",
+      "-g",
+      "-O0",
+      "-fno-omit-frame-pointer",
+      "-o",
+      "/tmp/pytest/test_build_generated_binary_ca0/built-positive",
+      "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c"
+    ],
+    "build_exit_code": 0,
+    "build_stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "build_stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "build_stdout_excerpt": "",
+    "build_stderr_excerpt": "",
+    "exit_code": 1,
+    "signal_number": null,
+    "timed_out": false,
+    "oom_killed": false,
+    "binary_digest": "ec0e44b79ec2782a2e4e48a10998a84c53664e4ea99bbae92eb83da58051438b",
+    "binary_path": "/tmp/pytest/test_build_generated_binary_ca0/built-positive",
+    "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_digest": "92637698b19ee9756e7b6368e2001f3ea2880ba8fb40e3755ef8ac2390610fc1",
+    "stdout_excerpt": "",
+    "stderr_excerpt": "=================================================================\n==156==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x502000000020 at pc 0x613a9e3b2231 bp 0x7ffcfc65ba30 sp 0x7ffcfc65ba28\nWRITE of size 1 at 0x502000000020 thread T0\n    #0 0x613a9e3b2230 in zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19\n    #1 0x613a9e3b22fb in main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29\n    #2 0x7d460a547ca7  (/lib/x86_64-linux-gnu/libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)\n    #3 0x7d460a547d64 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x29d64) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)\n    #4 0x613a9e3b20e0 in _start (/tmp/pytest/test_build_generated_binary_ca0/built-positive+0x10e0) (BuildId: 267d2a0fedda85f2fad3e9dc848cb58ec814f570)\n\n0x502000000020 is located 0 bytes after 16-byte region [0x502000000010,0x502000000020)\nallocated by thread T0 here:\n    #0 0x7d460a806c57 in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69\n    #1 0x613a9e3b21bd in zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11\n    #2 0x613a9e3b22fb in main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29\n    #3 0x7d460a547ca7  (/lib/x86_64-linux-gnu/libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)\n\nSUMMARY: AddressSanitizer: heap-buffer-overflow /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19 in zscope_dynamic_repro_positive\nShadow bytes around the buggy address:\n  0x501ffffffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n=>0x502000000000: fa fa 00 00[fa]fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000080: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\n  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa\nShadow byte legend (one shadow byte represents 8 application bytes):\n  Addressable:           00\n  Partially addressable: 01 02 03 04 05 06 07 \n  Heap left redzone:       fa\n  Freed heap region:       fd\n  Stack left redzone:      f1\n  Stack mid redzone:       f2\n  Stack right redzone:     f3\n  Stack after return:      f5\n  Stack use after scope:   f8\n  Global redzone:          f9\n  Global init order:       f6\n  Poisoned by user:        f7\n  Container overflow:      fc\n  Array cookie:            ac\n  Intra object redzone:    bb\n  ASan internal:           fe\n  Left alloca redzone:     ca\n  Right alloca redzone:    cb\n==156==ABORTING\n",
+    "findings": [
+      {
+        "kind": "heap-buffer-overflow",
+        "access": "write",
+        "frames": [
+          "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "allocation_frames": [
+          "malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69",
+          "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+          "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "object_ref": "0x502000000020",
+        "site": "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+        "source_mapping": [
+          "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+          "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+        ],
+        "raw_digest": "a08a113accf33c0deae3ae9b16749192bc88467b0cfa46385db1e02885f9a2b0",
+        "thread": "T0"
+      }
+    ],
+    "replay_classifications": [
+      "heap-buffer-overflow",
+      "heap-buffer-overflow"
+    ],
+    "replay_count": 2,
+    "duration_ms": 140,
+    "memory_limit_mode": "sanitizer_allocation_cap",
+    "runs": [
+      {
+        "index": 0,
+        "outcome": "observed",
+        "detail": "heap-buffer-overflow",
+        "exit_code": 1,
+        "signal_number": null,
+        "timed_out": false,
+        "oom_killed": false,
+        "classifications": [
+          "heap-buffer-overflow"
+        ],
+        "findings": [
+          {
+            "kind": "heap-buffer-overflow",
+            "access": "write",
+            "frames": [
+              "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "allocation_frames": [
+              "malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69",
+              "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+              "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "object_ref": "0x502000000020",
+            "site": "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "source_mapping": [
+              "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "raw_digest": "a08a113accf33c0deae3ae9b16749192bc88467b0cfa46385db1e02885f9a2b0",
+            "thread": "T0"
+          }
+        ],
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_digest": "a08a113accf33c0deae3ae9b16749192bc88467b0cfa46385db1e02885f9a2b0",
+        "stdout_bytes": 0,
+        "stderr_bytes": 2984,
+        "output_truncated": false,
+        "artifacts": []
+      },
+      {
+        "index": 1,
+        "outcome": "observed",
+        "detail": "heap-buffer-overflow",
+        "exit_code": 1,
+        "signal_number": null,
+        "timed_out": false,
+        "oom_killed": false,
+        "classifications": [
+          "heap-buffer-overflow"
+        ],
+        "findings": [
+          {
+            "kind": "heap-buffer-overflow",
+            "access": "write",
+            "frames": [
+              "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "allocation_frames": [
+              "malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69",
+              "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+              "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "object_ref": "0x502000000020",
+            "site": "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "source_mapping": [
+              "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "raw_digest": "92637698b19ee9756e7b6368e2001f3ea2880ba8fb40e3755ef8ac2390610fc1",
+            "thread": "T0"
+          }
+        ],
+        "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_digest": "92637698b19ee9756e7b6368e2001f3ea2880ba8fb40e3755ef8ac2390610fc1",
+        "stdout_bytes": 0,
+        "stderr_bytes": 2984,
+        "output_truncated": false,
+        "artifacts": []
+      }
+    ],
+    "artifact_refs": [],
+    "artifact_root": "",
+    "inputs_verified": true,
+    "input_verification_digest": "58182ea587d1d0c23d810d0afaf86ce147caf54d8f01aada2651abbfee693fad",
+    "limitations": [
+      "binary_identity_bound_after_build",
+      "rlimit_as_not_applied_to_sanitizer_runtime",
+      "memory_limit_enforced_by_sanitizer_allocation_cap",
+      "memory_limit_is_per_allocation_not_total_rss",
+      "execution_logs_not_published"
+    ],
+    "detail": "sanitizer_report"
+  },
+  "replay": {
+    "plan_digest": "e047ca61bbb835bb7fb59dcf2df295a38d3d30455803af2e6792054a4f264ef9",
+    "binary_digest": "ec0e44b79ec2782a2e4e48a10998a84c53664e4ea99bbae92eb83da58051438b",
+    "classifications": [
+      "heap-buffer-overflow",
+      "heap-buffer-overflow"
+    ],
+    "consistent": true,
+    "provider_name": "asan-runner",
+    "provider_version": "1",
+    "runs": [
+      {
+        "index": 0,
+        "record_id": "dynrepro-asan-33da63e66c7c2be3-a2867d54be2d",
+        "outcome": "witness_observed",
+        "classifications": [
+          "heap-buffer-overflow",
+          "heap-buffer-overflow"
+        ],
+        "findings": [
+          {
+            "kind": "heap-buffer-overflow",
+            "access": "write",
+            "frames": [
+              "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "allocation_frames": [
+              "malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69",
+              "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+              "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "object_ref": "0x502000000020",
+            "site": "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "source_mapping": [
+              "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "raw_digest": "bc49e450caf9b9e86b12f4298edc5c9b54a75c762a9820cf407113a953092a15",
+            "thread": "T0"
+          }
+        ],
+        "binary_digest": "ec0e44b79ec2782a2e4e48a10998a84c53664e4ea99bbae92eb83da58051438b"
+      },
+      {
+        "index": 1,
+        "record_id": "dynrepro-asan-33da63e66c7c2be3-b3596c81dee6",
+        "outcome": "witness_observed",
+        "classifications": [
+          "heap-buffer-overflow",
+          "heap-buffer-overflow"
+        ],
+        "findings": [
+          {
+            "kind": "heap-buffer-overflow",
+            "access": "write",
+            "frames": [
+              "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "allocation_frames": [
+              "malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69",
+              "zscope_dynamic_repro_positive /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:11",
+              "main /repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "object_ref": "0x502000000020",
+            "site": "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+            "source_mapping": [
+              "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:19",
+              "/repo/tests/fixtures/dynamic_reproduction/heap_overflow_positive.c:29"
+            ],
+            "raw_digest": "a26fce3160f1a53d612e80361d823bc44dbefce6cc1a6ea8de189fbbb900918a",
+            "thread": "T0"
+          }
+        ],
+        "binary_digest": "ec0e44b79ec2782a2e4e48a10998a84c53664e4ea99bbae92eb83da58051438b"
+      }
+    ]
+  },
+  "qualification": {
+    "qualified": false,
+    "facts": {
+      "candidate_object_matched": true,
+      "candidate_site_matched": true,
+      "defect_family_matched": true,
+      "binary_identity_bound": false,
+      "source_identity_bound": true,
+      "replay_consistent": true
+    },
+    "reasons": [
+      "binary_identity_unbound"
+    ]
+  }
+}

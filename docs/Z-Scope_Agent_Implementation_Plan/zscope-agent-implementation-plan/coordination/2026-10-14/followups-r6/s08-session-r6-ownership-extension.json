@@ -1,0 +1,17 @@
+{
+  "authorized_at": "2026-10-14T13:32:17.173665+00:00",
+  "task": "S08-SESSION-SCHEDULER-R2",
+  "workspace": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-session-r6",
+  "added_owned_paths": [
+    "zscope/orchestration/jobs/work_queue.py",
+    "zscope/orchestration/jobs/store.py",
+    "tests/test_scan_job_work_queue.py"
+  ],
+  "root_integration_owner": "coordinator",
+  "basis": "User-authorized dependency-driven isolated repair; no other worker owns these paths. Original baseline remains unchanged.",
+  "original_hashes": {
+    "zscope/orchestration/jobs/work_queue.py": "915ed0953eb9a30f692f70a1ca5b8659c8d6943bd0b36f856453a0719dfbbd41",
+    "zscope/orchestration/jobs/store.py": "0fbc20b1e05dffcecd7f67013633eb73ede1128e86f0ac493cbcc9399bf365cb",
+    "tests/test_scan_job_work_queue.py": "721160a837f5ea21345492e73a87967f193b4ece676d4814c0e15c6374ab6e28"
+  }
+}

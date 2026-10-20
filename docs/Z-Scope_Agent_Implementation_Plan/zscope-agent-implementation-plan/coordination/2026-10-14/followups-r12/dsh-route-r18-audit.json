@@ -1,0 +1,20 @@
+{
+  "recorded_at": "2026-10-15T17:37:13.582304+08:00",
+  "installation_version": "0.2.0-rc.2",
+  "version_source": "app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/package.json",
+  "provider": "deepseek",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "entry_sha256": "c6c38be7f9f66a7bfb96d5ac9490618f9713df5ffb552cb7e66b831affb20ab9",
+  "acp_sha256": "23259e019f6a7293ebb429654d7cc223414d3651d5be542968a81fc6265fc38b",
+  "environment_reference_names": [],
+  "root_cause": "Registered dedicated native owner exited; normal ZCode client deliberately requires --dsh-native for DSH. dsh-model=unset and cmd.exe version are not ACP configuration/version failures.",
+  "external_configuration_changed": false,
+  "credentials_copied": false,
+  "normal_owner_restarted": false,
+  "prior_native_tasks_terminal": true,
+  "dedicated_owner_restoration": "dsh-native/r18-owner-restoration.json",
+  "public_agents": "dsh-native/bridge-response-r18-public-agents.json",
+  "public_sessions": "dsh-native/bridge-response-r18-public-sessions.json",
+  "dispatch": "dsh-native/bridge-response-doc-identity-r18.json",
+  "actual_execution": "pending public tool evidence"
+}

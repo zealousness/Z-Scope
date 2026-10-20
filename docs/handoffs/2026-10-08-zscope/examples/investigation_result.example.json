@@ -1,0 +1,23 @@
+{
+  "example_only": true,
+  "schema_status": "design_draft_not_product_api",
+  "task_id": "example-task-not-runtime-id",
+  "execution_status": "not_run",
+  "observations": [],
+  "hypotheses": [],
+  "program_registered_evidence_refs": [],
+  "unresolved_facts": [
+    "本文件只是格式样例，尚未读取被测源码或执行调查。"
+  ],
+  "coverage": {
+    "state": "not_assessed",
+    "completed_scope": [],
+    "uncovered_scope": []
+  },
+  "usage": {
+    "provider_reported": false,
+    "prompt_tokens": null,
+    "completion_tokens": null
+  },
+  "has_program_proof": false
+}

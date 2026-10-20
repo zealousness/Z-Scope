@@ -1,0 +1,41 @@
+{
+  "at": "2026-10-10T05:22:38.603169+00:00",
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/zscope-v01-v02-resource-review-docs-20261010-p4rjjiam/tmp",
+    "--junitxml=/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/V01-V02-resource-review-blocked-docs-20261010.xml",
+    "tests/test_agent_docs.py"
+  ],
+  "exit_code": 0,
+  "counts": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "input_count": 406,
+  "changed_existing_inputs": [],
+  "implementation_changes": false,
+  "sanitizer_execution": false,
+  "DeepSeek_requests": 0,
+  "files": {
+    "V01-V02-resource-review-blocked-docs-20261010.stdout.log": {
+      "bytes": 98,
+      "sha256": "3fbc54f30b4afa299814cecc428ca188a2dd28af23535cda236e88c3cd59add3"
+    },
+    "V01-V02-resource-review-blocked-docs-20261010.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "V01-V02-resource-review-blocked-docs-20261010.xml": {
+      "bytes": 956,
+      "sha256": "88e6b7bf7d6fb94fa0cfaf092fd2ead4b8de40438ff22092e52e78b781e18e03"
+    }
+  }
+}

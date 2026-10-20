@@ -1,0 +1,13 @@
+{
+  "session_id": "sess_13e7fecbfc",
+  "kinds": "message_chunk",
+  "start_offset": 0,
+  "next_offset": 49,
+  "pages": 2,
+  "total_matching": 49,
+  "has_more": false,
+  "events_read": 49,
+  "latest_at": "2026-10-14T06:50:06.395161+00:00",
+  "failed_tools": [],
+  "completed_tail": []
+}

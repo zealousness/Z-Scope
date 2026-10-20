@@ -1,0 +1,9 @@
+{
+  "coordinator_authorized": true,
+  "at": "2026-10-16T11:11:27.219187+08:00",
+  "write_paths": [
+    "zscope/orchestration/instance_semantics_context.py",
+    "tests/test_instance_semantics_context.py"
+  ],
+  "reason": "Coordinator-only workbook/dependency/snapshot-manifest glue reused by ScanSession and ParallelAnalyzer; no worker grant, no inferred authority or contract version change"
+}

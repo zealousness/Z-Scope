@@ -1,0 +1,1392 @@
+{
+  "at": "2026-10-10T11:37:41.981253+00:00",
+  "kernel": "6.6.87.2-microsoft-standard-WSL2",
+  "machine": "x86_64",
+  "os_release": "PRETTY_NAME=\"Ubuntu 24.04.4 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.4 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo\n",
+  "tools": [
+    {
+      "path": "/usr/lib/llvm-18/bin/clang",
+      "exists": true,
+      "resolved": "/usr/lib/llvm-18/bin/clang",
+      "bytes": 140592,
+      "sha256": "8ef402d453d1ba4902e4ee0f0f847f6cfa01400c95aa43c24e97818b9c0e3f45",
+      "elf": "ELF Header:\n  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - System V\n  ABI Version:                       0\n  Type:                              DYN (Position-Independent Executable file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0xe230\n  Start of program headers:          64 (bytes into file)\n  Start of section headers:          138608 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           56 (bytes)\n  Number of program headers:         10\n  Size of section headers:           64 (bytes)\n  Number of section headers:         31\n  Section header string table index: 30\n",
+      "ldd": {
+        "argv": [
+          "ldd",
+          "/usr/lib/llvm-18/bin/clang"
+        ],
+        "exit_code": 0,
+        "stdout": "\tlinux-vdso.so.1 (0x00007fff51fa9000)\n\tlibclang-cpp.so.18.1 => /usr/lib/llvm-18/bin/../lib/libclang-cpp.so.18.1 (0x00007ce2da800000)\n\tlibLLVM.so.18.1 => /usr/lib/llvm-18/bin/../lib/libLLVM.so.18.1 (0x00007ce2d3000000)\n\tlibstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007ce2d2c00000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007ce2d2800000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007ce2de5df000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007ce2de6f5000)\n\tlibffi.so.8 => /lib/x86_64-linux-gnu/libffi.so.8 (0x00007ce2da7f4000)\n\tlibedit.so.2 => /lib/x86_64-linux-gnu/libedit.so.2 (0x00007ce2da7ba000)\n\tlibz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (0x00007ce2da79e000)\n\tlibzstd.so.1 => /lib/x86_64-linux-gnu/libzstd.so.1 (0x00007ce2da6e4000)\n\tlibtinfo.so.6 => /lib/x86_64-linux-gnu/libtinfo.so.6 (0x00007ce2da6b0000)\n\tlibxml2.so.2 => /lib/x86_64-linux-gnu/libxml2.so.2 (0x00007ce2d2a1e000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ce2da680000)\n\tlibbsd.so.0 => /lib/x86_64-linux-gnu/libbsd.so.0 (0x00007ce2da66a000)\n\tlibicuuc.so.74 => /lib/x86_64-linux-gnu/libicuuc.so.74 (0x00007ce2d2400000)\n\tliblzma.so.5 => /lib/x86_64-linux-gnu/liblzma.so.5 (0x00007ce2da638000)\n\tlibmd.so.0 => /lib/x86_64-linux-gnu/libmd.so.0 (0x00007ce2da629000)\n\tlibicudata.so.74 => /lib/x86_64-linux-gnu/libicudata.so.74 (0x00007ce2d0600000)\n",
+        "stderr": ""
+      },
+      "needed": "\nDynamic section at offset 0x20d10 contains 30 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000003 (PLTGOT)             0x21fe8\n 0x0000000000000002 (PLTRELSZ)           8952 (bytes)\n 0x0000000000000017 (JMPREL)             0x86f0\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000007 (RELA)               0x8240\n 0x0000000000000008 (RELASZ)             1200 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x000000006ffffff9 (RELACOUNT)          19\n 0x0000000000000015 (DEBUG)              0x0\n 0x0000000000000006 (SYMTAB)             0x308\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000005 (STRTAB)             0x2ba0\n 0x000000000000000a (STRSZ)              20751 (bytes)\n 0x000000006ffffef5 (GNU_HASH)           0x7cb0\n 0x0000000000000001 (NEEDED)             Shared library: [libclang-cpp.so.18.1]\n 0x0000000000000001 (NEEDED)             Shared library: [libLLVM.so.18.1]\n 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x000000000000000c (INIT)               0xa9e8\n 0x000000000000000d (FINI)               0x1e3b0\n 0x000000000000001a (FINI_ARRAY)         0x21c48\n 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)\n 0x0000000000000019 (INIT_ARRAY)         0x21c50\n 0x000000000000001b (INIT_ARRAYSZ)       16 (bytes)\n 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib]\n 0x000000006ffffffb (FLAGS_1)            Flags: PIE\n 0x000000006ffffff0 (VERSYM)             0x7e08\n 0x000000006ffffffe (VERNEED)            0x816c\n 0x000000006fffffff (VERNEEDNUM)         3\n 0x0000000000000000 (NULL)               0x0\n"
+    },
+    {
+      "path": "/usr/lib/llvm-18/bin/llvm-symbolizer",
+      "exists": true,
+      "resolved": "/usr/lib/llvm-18/bin/llvm-symbolizer",
+      "bytes": 101720,
+      "sha256": "1f93f7c4930615a121903afa61c0544b99f3e1da18d7ed4fb9fb3a2056924dd1",
+      "elf": "ELF Header:\n  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - System V\n  ABI Version:                       0\n  Type:                              DYN (Position-Independent Executable file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x8760\n  Start of program headers:          64 (bytes into file)\n  Start of section headers:          99736 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           56 (bytes)\n  Number of program headers:         10\n  Size of section headers:           64 (bytes)\n  Number of section headers:         31\n  Section header string table index: 30\n",
+      "ldd": {
+        "argv": [
+          "ldd",
+          "/usr/lib/llvm-18/bin/llvm-symbolizer"
+        ],
+        "exit_code": 0,
+        "stdout": "\tlinux-vdso.so.1 (0x00007ffe789c2000)\n\tlibLLVM.so.18.1 => /usr/lib/llvm-18/bin/../lib/libLLVM.so.18.1 (0x00007e1db2200000)\n\tlibcurl.so.4 => /lib/x86_64-linux-gnu/libcurl.so.4 (0x00007e1db9837000)\n\tlibstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007e1db1e00000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007e1db1a00000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007e1db991c000)\n\tlibffi.so.8 => /lib/x86_64-linux-gnu/libffi.so.8 (0x00007e1db982b000)\n\tlibedit.so.2 => /lib/x86_64-linux-gnu/libedit.so.2 (0x00007e1db21c6000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007e1db20dd000)\n\tlibz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (0x00007e1db980d000)\n\tlibzstd.so.1 => /lib/x86_64-linux-gnu/libzstd.so.1 (0x00007e1db1d46000)\n\tlibtinfo.so.6 => /lib/x86_64-linux-gnu/libtinfo.so.6 (0x00007e1db20a9000)\n\tlibxml2.so.2 => /lib/x86_64-linux-gnu/libxml2.so.2 (0x00007e1db181e000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007e1db1d18000)\n\tlibnghttp2.so.14 => /lib/x86_64-linux-gnu/libnghttp2.so.14 (0x00007e1db207e000)\n\tlibidn2.so.0 => /lib/x86_64-linux-gnu/libidn2.so.0 (0x00007e1db1cf6000)\n\tlibrtmp.so.1 => /lib/x86_64-linux-gnu/librtmp.so.1 (0x00007e1db1cd8000)\n\tlibssh.so.4 => /lib/x86_64-linux-gnu/libssh.so.4 (0x00007e1db1c66000)\n\tlibpsl.so.5 => /lib/x86_64-linux-gnu/libpsl.so.5 (0x00007e1db1c50000)\n\tlibssl.so.3 => /lib/x86_64-linux-gnu/libssl.so.3 (0x00007e1db1774000)\n\tlibcrypto.so.3 => /lib/x86_64-linux-gnu/libcrypto.so.3 (0x00007e1db1200000)\n\tlibgssapi_krb5.so.2 => /lib/x86_64-linux-gnu/libgssapi_krb5.so.2 (0x00007e1db1720000)\n\tlibldap.so.2 => /lib/x86_64-linux-gnu/libldap.so.2 (0x00007e1db11a2000)\n\tliblber.so.2 => /lib/x86_64-linux-gnu/liblber.so.2 (0x00007e1db1c40000)\n\tlibbrotlidec.so.1 => /lib/x86_64-linux-gnu/libbrotlidec.so.1 (0x00007e1db1c30000)\n\tlibbsd.so.0 => /lib/x86_64-linux-gnu/libbsd.so.0 (0x00007e1db1c1a000)\n\tlibicuuc.so.74 => /lib/x86_64-linux-gnu/libicuuc.so.74 (0x00007e1db0e00000)\n\tliblzma.so.5 => /lib/x86_64-linux-gnu/liblzma.so.5 (0x00007e1db1170000)\n\tlibunistring.so.5 => /lib/x86_64-linux-gnu/libunistring.so.5 (0x00007e1db0c53000)\n\tlibgnutls.so.30 => /lib/x86_64-linux-gnu/libgnutls.so.30 (0x00007e1db0a58000)\n\tlibhogweed.so.6 => /lib/x86_64-linux-gnu/libhogweed.so.6 (0x00007e1db1128000)\n\tlibnettle.so.8 => /lib/x86_64-linux-gnu/libnettle.so.8 (0x00007e1db10d3000)\n\tlibgmp.so.10 => /lib/x86_64-linux-gnu/libgmp.so.10 (0x00007e1db104f000)\n\tlibkrb5.so.3 => /lib/x86_64-linux-gnu/libkrb5.so.3 (0x00007e1db098f000)\n\tlibk5crypto.so.3 => /lib/x86_64-linux-gnu/libk5crypto.so.3 (0x00007e1db1023000)\n\tlibcom_err.so.2 => /lib/x86_64-linux-gnu/libcom_err.so.2 (0x00007e1db171a000)\n\tlibkrb5support.so.0 => /lib/x86_64-linux-gnu/libkrb5support.so.0 (0x00007e1db1016000)\n\tlibsasl2.so.2 => /lib/x86_64-linux-gnu/libsasl2.so.2 (0x00007e1db0975000)\n\tlibbrotlicommon.so.1 => /lib/x86_64-linux-gnu/libbrotlicommon.so.1 (0x00007e1db0952000)\n\tlibmd.so.0 => /lib/x86_64-linux-gnu/libmd.so.0 (0x00007e1db0943000)\n\tlibicudata.so.74 => /lib/x86_64-linux-gnu/libicudata.so.74 (0x00007e1daea00000)\n\tlibp11-kit.so.0 => /lib/x86_64-linux-gnu/libp11-kit.so.0 (0x00007e1db079f000)\n\tlibtasn1.so.6 => /lib/x86_64-linux-gnu/libtasn1.so.6 (0x00007e1db0789000)\n\tlibkeyutils.so.1 => /lib/x86_64-linux-gnu/libkeyutils.so.1 (0x00007e1db100f000)\n\tlibresolv.so.2 => /lib/x86_64-linux-gnu/libresolv.so.2 (0x00007e1db0777000)\n",
+        "stderr": ""
+      },
+      "needed": "\nDynamic section at offset 0x17cf0 contains 31 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000003 (PLTGOT)             0x18fe8\n 0x0000000000000002 (PLTRELSZ)           3072 (bytes)\n 0x0000000000000017 (JMPREL)             0x6a78\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000007 (RELA)               0x4b28\n 0x0000000000000008 (RELASZ)             8016 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x000000006ffffff9 (RELACOUNT)          287\n 0x0000000000000015 (DEBUG)              0x0\n 0x0000000000000006 (SYMTAB)             0x308\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000005 (STRTAB)             0x19e8\n 0x000000000000000a (STRSZ)              11364 (bytes)\n 0x000000006ffffef5 (GNU_HASH)           0x4650\n 0x0000000000000001 (NEEDED)             Shared library: [libLLVM.so.18.1]\n 0x0000000000000001 (NEEDED)             Shared library: [libcurl.so.4]\n 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-x86-64.so.2]\n 0x000000000000000c (INIT)               0x7678\n 0x000000000000000d (FINI)               0x12930\n 0x000000000000001a (FINI_ARRAY)         0x17260\n 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)\n 0x0000000000000019 (INIT_ARRAY)         0x17268\n 0x000000000000001b (INIT_ARRAYSZ)       32 (bytes)\n 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib]\n 0x000000006ffffffb (FLAGS_1)            Flags: PIE\n 0x000000006ffffff0 (VERSYM)             0x47c0\n 0x000000006ffffffe (VERNEED)            0x49a8\n 0x000000006fffffff (VERNEEDNUM)         5\n 0x0000000000000000 (NULL)               0x0\n"
+    },
+    {
+      "path": "/usr/bin/x86_64-linux-gnu-gcc-13",
+      "exists": true,
+      "resolved": "/usr/bin/x86_64-linux-gnu-gcc-13",
+      "bytes": 1023032,
+      "sha256": "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26",
+      "elf": "ELF Header:\n  Magic:   7f 45 4c 46 02 01 01 03 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - GNU\n  ABI Version:                       0\n  Type:                              EXEC (Executable file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x4383d0\n  Start of program headers:          64 (bytes into file)\n  Start of section headers:          1020792 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           56 (bytes)\n  Number of program headers:         14\n  Size of section headers:           64 (bytes)\n  Number of section headers:         35\n  Section header string table index: 34\n",
+      "ldd": {
+        "argv": [
+          "ldd",
+          "/usr/bin/x86_64-linux-gnu-gcc-13"
+        ],
+        "exit_code": 0,
+        "stdout": "\tlinux-vdso.so.1 (0x00007ffff2f82000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x0000765828e00000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007658291c7000)\n",
+        "stderr": ""
+      },
+      "needed": "\nDynamic section at offset 0xf7dd8 contains 25 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-x86-64.so.2]\n 0x000000000000000c (INIT)               0x403000\n 0x000000000000000d (FINI)               0x465e84\n 0x0000000000000019 (INIT_ARRAY)         0x4f6a98\n 0x000000000000001b (INIT_ARRAYSZ)       24 (bytes)\n 0x000000000000001a (FINI_ARRAY)         0x4f6ab0\n 0x000000000000001c (FINI_ARRAYSZ)       16 (bytes)\n 0x000000006ffffef5 (GNU_HASH)           0x400460\n 0x0000000000000005 (STRTAB)             0x4012d0\n 0x0000000000000006 (SYMTAB)             0x4004c0\n 0x000000000000000a (STRSZ)              1658 (bytes)\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000015 (DEBUG)              0x0\n 0x0000000000000003 (PLTGOT)             0x4f7fe8\n 0x0000000000000002 (PLTRELSZ)           3192 (bytes)\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000017 (JMPREL)             0x401c80\n 0x0000000000000007 (RELA)               0x401ba8\n 0x0000000000000008 (RELASZ)             216 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x000000006ffffffe (VERNEED)            0x401a78\n 0x000000006fffffff (VERNEEDNUM)         2\n 0x000000006ffffff0 (VERSYM)             0x40194a\n 0x0000000000000000 (NULL)               0x0\n"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-linux-gnu/13/cc1",
+      "exists": false
+    },
+    {
+      "path": "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.so",
+      "exists": true,
+      "resolved": "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.so",
+      "bytes": 1217672,
+      "sha256": "dfb5ab5d511f84a08fbb380b04b2d3d30db69ee8817c427e73c131ff7e7c596b",
+      "elf": "ELF Header:\n  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - System V\n  ABI Version:                       0\n  Type:                              DYN (Shared object file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x0\n  Start of program headers:          64 (bytes into file)\n  Start of section headers:          1215752 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           56 (bytes)\n  Number of program headers:         9\n  Size of section headers:           64 (bytes)\n  Number of section headers:         30\n  Section header string table index: 29\n",
+      "ldd": {
+        "argv": [
+          "ldd",
+          "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.so"
+        ],
+        "exit_code": 0,
+        "stdout": "\tlinux-vdso.so.1 (0x00007ffd54dee000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007c85d0400000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007c85d0717000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007c85d1cef000)\n",
+        "stderr": ""
+      },
+      "needed": "\nDynamic section at offset 0x121d00 contains 30 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000003 (PLTGOT)             0x122fe8\n 0x0000000000000002 (PLTRELSZ)           1032 (bytes)\n 0x0000000000000017 (JMPREL)             0x33b40\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000007 (RELA)               0x32130\n 0x0000000000000008 (RELASZ)             6672 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x000000006ffffff9 (RELACOUNT)          262\n 0x0000000000000006 (SYMTAB)             0x260\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000005 (STRTAB)             0x13a30\n 0x000000000000000a (STRSZ)              92430 (bytes)\n 0x000000006ffffef5 (GNU_HASH)           0x2a340\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]\n 0x000000000000000e (SONAME)             Library soname: [libclang_rt.tsan-x86_64.so]\n 0x000000000000000c (INIT)               0x33f48\n 0x000000000000000d (FINI)               0xe59f0\n 0x000000000000001a (FINI_ARRAY)         0x122500\n 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)\n 0x0000000000000019 (INIT_ARRAY)         0x122508\n 0x000000000000001b (INIT_ARRAYSZ)       16 (bytes)\n 0x000000000000001e (FLAGS)              STATIC_TLS\n 0x000000006ffffffb (FLAGS_1)            Flags: NODELETE\n 0x000000006ffffff0 (VERSYM)             0x30684\n 0x000000006ffffffc (VERDEF)             0x32080\n 0x000000006ffffffd (VERDEFNUM)          1\n 0x000000006ffffffe (VERNEED)            0x3209c\n 0x000000006fffffff (VERNEEDNUM)         2\n 0x0000000000000000 (NULL)               0x0\n"
+    },
+    {
+      "path": "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.a",
+      "exists": true,
+      "resolved": "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.a",
+      "bytes": 3320036,
+      "sha256": "2252b875dd1f3bdcf67417a43497f8b0e418b9218e33031bf332c63f679917d4",
+      "elf": "\nFile: /usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.a(interception_linux.cpp.o)\nELF Header:\n  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - System V\n  ABI Version:                       0\n  Type:                              REL (Relocatable file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x0\n  Start of program headers:          0 (bytes into file)\n  Start of section headers:          1160 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           0 (bytes)\n  Number of program headers:         0\n  Size of section headers:           64 (bytes)\n  Number of section headers:         14\n  Section header string table index: 13\n\nFile: /usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.a(interception_mac.cpp.o)\nELF Header:\n  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - System V\n  ABI Version:                       0\n  Type:                              REL (Relocatable file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x0\n  Start of program headers:          0 (bytes into file)\n  Start of section headers:          360 (bytes into file)\n  Fl"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-linux-gnu/13/libtsan.so",
+      "exists": true,
+      "resolved": "/usr/lib/x86_64-linux-gnu/libtsan.so.2.0.0",
+      "bytes": 8980352,
+      "sha256": "91c5ff35dc6f180a0f0d82bcff5f6d74b1af0cd7e6cdafb36ae69ea7b6fcfa8c",
+      "elf": "ELF Header:\n  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - System V\n  ABI Version:                       0\n  Type:                              DYN (Shared object file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x0\n  Start of program headers:          64 (bytes into file)\n  Start of section headers:          8977728 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           56 (bytes)\n  Number of program headers:         12\n  Size of section headers:           64 (bytes)\n  Number of section headers:         41\n  Section header string table index: 40\n",
+      "ldd": {
+        "argv": [
+          "ldd",
+          "/usr/lib/gcc/x86_64-linux-gnu/13/libtsan.so"
+        ],
+        "exit_code": 0,
+        "stdout": "\tlinux-vdso.so.1 (0x00007ffc6fdb7000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007aba86f0f000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007aba86c00000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007aba86ee1000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007aba8809e000)\n",
+        "stderr": ""
+      },
+      "needed": "\nDynamic section at offset 0x13f9c0 contains 28 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]\n 0x000000000000000e (SONAME)             Library soname: [libtsan.so.2]\n 0x000000000000000c (INIT)               0x3a000\n 0x000000000000000d (FINI)               0x10a950\n 0x0000000000000019 (INIT_ARRAY)         0x13f7c0\n 0x000000000000001b (INIT_ARRAYSZ)       16 (bytes)\n 0x000000000000001a (FINI_ARRAY)         0x13f7d0\n 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)\n 0x000000006ffffef5 (GNU_HASH)           0x3a0\n 0x0000000000000005 (STRTAB)             0x19fc0\n 0x0000000000000006 (SYMTAB)             0x6700\n 0x000000000000000a (STRSZ)              71135 (bytes)\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000003 (PLTGOT)             0x142fe8\n 0x0000000000000002 (PLTRELSZ)           16584 (bytes)\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000017 (JMPREL)             0x35db8\n 0x0000000000000007 (RELA)               0x2d0a0\n 0x0000000000000008 (RELASZ)             36120 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x000000000000001e (FLAGS)              STATIC_TLS\n 0x000000006ffffffe (VERNEED)            0x2cfb0\n 0x000000006fffffff (VERNEEDNUM)         3\n 0x000000006ffffff0 (VERSYM)             0x2b5a0\n 0x000000006ffffff9 (RELACOUNT)          358\n 0x0000000000000000 (NULL)               0x0\n"
+    }
+  ],
+  "containers_started": 0,
+  "TSAN_executions": 0,
+  "images": [
+    {
+      "Id": "ad654b7a9f4193f4d4f34a7faee9a3e21d1616416fe77fbfca2aa84645281e55",
+      "Digest": "sha256:7a90852cba1b6b7ac627d515fc88e0a1150ea777b2508c53cf09a9f4270b9f19",
+      "RepoDigests": [
+        "localhost/zscope-portable-builder@sha256:7a90852cba1b6b7ac627d515fc88e0a1150ea777b2508c53cf09a9f4270b9f19"
+      ],
+      "Architecture": "arm64",
+      "Os": "linux",
+      "Size": 913069363,
+      "Created": "2026-09-06T08:53:45.35972363Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2",
+          "sha256:628c832e7079baf60c9af137b307d3574e5a0d32c917f2e124409e7f21734e88",
+          "sha256:059296e94bdcd00cc7e59b42192bb85045c4105017c860c2cba528274f0d2b7c",
+          "sha256:d22c256bee0a17f82b914e4a44ad9890a9761f4e9ace1c551dbeddbe7ef13d38"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "LowerDir": "/home/zeal/.local/share/containers/storage/overlay/298b35b654c3744040a5dfbb6a98f3331352eb43a0c12fa9b49bc661c9aa88aa/diff:/home/zeal/.local/share/containers/storage/overlay/22a84a0b6cd417e940f4ed4c322b06dcac126a766a98a0b59e5acaffdfb76809/diff:/home/zeal/.local/share/containers/storage/overlay/515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2/diff",
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/e2faf38f472c3843cd782605f6874369cfcfe1104f1114113eeec7dc3ad2155a/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/e2faf38f472c3843cd782605f6874369cfcfe1104f1114113eeec7dc3ad2155a/work"
+        }
+      },
+      "names": [
+        "localhost/zscope-portable-builder:aarch64"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/e2faf38f472c3843cd782605f6874369cfcfe1104f1114113eeec7dc3ad2155a/diff/var/lib/dpkg/status",
+          "sha256": "019917922009c801cd8e68486ff5caa5ea143e675b22cd7b23fc8081ce349d34",
+          "packages": [
+            {
+              "Package": "gcc",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "4:13.2.0-1ubuntu1"
+            },
+            {
+              "Package": "gcc-13",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libtsan2",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/298b35b654c3744040a5dfbb6a98f3331352eb43a0c12fa9b49bc661c9aa88aa/diff/var/lib/dpkg/status",
+          "sha256": "4d92b71cc60d1f614193fb0e5ff59ff408d1c425b8f627e68417c8c8fd10f83e",
+          "packages": [
+            {
+              "Package": "gcc",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "4:13.2.0-1ubuntu1"
+            },
+            {
+              "Package": "gcc-13",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libtsan2",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2/diff/var/lib/dpkg/status",
+          "sha256": "8605828079148a4da1dc9367e2710dc4c4d7bec430f01eca758fb0471069104d",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "e227baaabba60a035b4261ca85016b57c3c8baeb1b9872f9d0d22db1eadb81fb",
+      "Digest": "sha256:e3d5c529007020f20e1b778ee6741505aec1dc9a2eb325020ba935a3dc0db740",
+      "RepoDigests": [
+        "localhost/zscope-portable-builder@sha256:e3d5c529007020f20e1b778ee6741505aec1dc9a2eb325020ba935a3dc0db740"
+      ],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 910961957,
+      "Created": "2026-09-06T08:52:44.104530607Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c",
+          "sha256:8cb7ac07678da50f66f3c0b4a08f618700052bc0e97093085fd9bfe2ce2255aa",
+          "sha256:f5677ea9464e826b3e16674f9ba93ce4a6092c840cae6fdb8285240854e341b0",
+          "sha256:c8adbb5fc576d341cd2d1f0ee7e9fc9e68f52f70c51c1744dd371bc0b5c0471f"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "LowerDir": "/home/zeal/.local/share/containers/storage/overlay/291ded44bac1682e5ff484994ad92148df23b221c0cca7c9971fbed07d7e6800/diff:/home/zeal/.local/share/containers/storage/overlay/6622654f23cbd07eb2645c7b16d3bc789cbb0442f0b06c974fd1a11e0ebc96af/diff:/home/zeal/.local/share/containers/storage/overlay/97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c/diff",
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/79696dcd59275449bafcacdfeccb2b23bb75272df30cd62e973bd69c69e76a86/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/79696dcd59275449bafcacdfeccb2b23bb75272df30cd62e973bd69c69e76a86/work"
+        }
+      },
+      "names": [
+        "localhost/zscope-portable-builder:x86_64"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/79696dcd59275449bafcacdfeccb2b23bb75272df30cd62e973bd69c69e76a86/diff/var/lib/dpkg/status",
+          "sha256": "3a713b6ebaa6b64a8b2f8fda6df41449f350ed7afc1e008efe944e4fff03f5d5",
+          "packages": [
+            {
+              "Package": "gcc",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "4:13.2.0-1ubuntu1"
+            },
+            {
+              "Package": "gcc-13",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libtsan2",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/291ded44bac1682e5ff484994ad92148df23b221c0cca7c9971fbed07d7e6800/diff/var/lib/dpkg/status",
+          "sha256": "23c3f64b940d16463e20ad5f58ed22a22cde582b0593f73a7bc57a9cc781c9c4",
+          "packages": [
+            {
+              "Package": "gcc",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "4:13.2.0-1ubuntu1"
+            },
+            {
+              "Package": "gcc-13",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libtsan2",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c/diff/var/lib/dpkg/status",
+          "sha256": "33b2e7790a5adf436d46054bb2ab6b985088ad9f8776bce730a051a6b3087d6b",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "6ac895ca6a60dec0fd67da5b5c0b56541ba2c3876c2aa998e5aea79eb578947c",
+      "Digest": "sha256:b41fa20596a086dec1628384258c7d9a102958557efd711c7d3e68313f77fd88",
+      "RepoDigests": [],
+      "Architecture": "arm64",
+      "Os": "linux",
+      "Size": 1703293030,
+      "Created": "2026-09-06T08:47:25.07991857Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2",
+          "sha256:628c832e7079baf60c9af137b307d3574e5a0d32c917f2e124409e7f21734e88",
+          "sha256:059296e94bdcd00cc7e59b42192bb85045c4105017c860c2cba528274f0d2b7c"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "LowerDir": "/home/zeal/.local/share/containers/storage/overlay/22a84a0b6cd417e940f4ed4c322b06dcac126a766a98a0b59e5acaffdfb76809/diff:/home/zeal/.local/share/containers/storage/overlay/515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2/diff",
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/298b35b654c3744040a5dfbb6a98f3331352eb43a0c12fa9b49bc661c9aa88aa/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/298b35b654c3744040a5dfbb6a98f3331352eb43a0c12fa9b49bc661c9aa88aa/work"
+        }
+      },
+      "names": null,
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/298b35b654c3744040a5dfbb6a98f3331352eb43a0c12fa9b49bc661c9aa88aa/diff/var/lib/dpkg/status",
+          "sha256": "4d92b71cc60d1f614193fb0e5ff59ff408d1c425b8f627e68417c8c8fd10f83e",
+          "packages": [
+            {
+              "Package": "gcc",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "4:13.2.0-1ubuntu1"
+            },
+            {
+              "Package": "gcc-13",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libtsan2",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2/diff/var/lib/dpkg/status",
+          "sha256": "8605828079148a4da1dc9367e2710dc4c4d7bec430f01eca758fb0471069104d",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "cef0a0a2aefcf4ec30ae9f0274543034de606cecc0bc7fb5c5466ba3a68adb80",
+      "Digest": "sha256:67ca52cccb40cedf12e30b5c9f7ad5cdd2b1359efc8b048ca612890d6473f706",
+      "RepoDigests": [],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 1721793112,
+      "Created": "2026-09-06T08:31:58.718808229Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c",
+          "sha256:8cb7ac07678da50f66f3c0b4a08f618700052bc0e97093085fd9bfe2ce2255aa",
+          "sha256:f5677ea9464e826b3e16674f9ba93ce4a6092c840cae6fdb8285240854e341b0"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "LowerDir": "/home/zeal/.local/share/containers/storage/overlay/6622654f23cbd07eb2645c7b16d3bc789cbb0442f0b06c974fd1a11e0ebc96af/diff:/home/zeal/.local/share/containers/storage/overlay/97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c/diff",
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/291ded44bac1682e5ff484994ad92148df23b221c0cca7c9971fbed07d7e6800/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/291ded44bac1682e5ff484994ad92148df23b221c0cca7c9971fbed07d7e6800/work"
+        }
+      },
+      "names": null,
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/291ded44bac1682e5ff484994ad92148df23b221c0cca7c9971fbed07d7e6800/diff/var/lib/dpkg/status",
+          "sha256": "23c3f64b940d16463e20ad5f58ed22a22cde582b0593f73a7bc57a9cc781c9c4",
+          "packages": [
+            {
+              "Package": "gcc",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "4:13.2.0-1ubuntu1"
+            },
+            {
+              "Package": "gcc-13",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            },
+            {
+              "Package": "libtsan2",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c/diff/var/lib/dpkg/status",
+          "sha256": "33b2e7790a5adf436d46054bb2ab6b985088ad9f8776bce730a051a6b3087d6b",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "30babc5871e7b4e3c786e88420730e5dc605a1653a519444f9e7fe07f30bbaa1",
+      "Digest": "sha256:12a43ec758d18bebbb030d2ad72a268be896e4f40000178279dcfd6b8848a65e",
+      "RepoDigests": [],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 122196682,
+      "Created": "2026-08-31T13:35:20.352715316Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:6f94328331290cbd81edab450664d42da7b64c191416c9346cd5d28c84f76035",
+          "sha256:fbb9b549523b19d576c07bd8543c7f5b6595b58323baca906a1b753dae1e1598",
+          "sha256:f564df232f3c8227b05a9c4b3ab41a6d252072a52668d51bc2549c29f1ef9691",
+          "sha256:fa61e5121d04964e542f254d0ca32e8b7c4c5d6c13302d98ff566e90ff21fe8b",
+          "sha256:daf50404fb076ada0b72bfe4ecefc4740ba8abbc004b39ebff37e3ce2f322dc8"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "LowerDir": "/home/zeal/.local/share/containers/storage/overlay/b173254311d8e6678e0876871243692d04edc0cc64338aacd6f05423bd21f51f/diff:/home/zeal/.local/share/containers/storage/overlay/8814c6831a63c5b10ba015f7764181c76ee262ce12f5151dbfebcb3c44618aea/diff:/home/zeal/.local/share/containers/storage/overlay/ed4b88b7b789134f2cc8388ea473f91cb4d3de8059d761c5d954c9d2ed06acd5/diff:/home/zeal/.local/share/containers/storage/overlay/6f94328331290cbd81edab450664d42da7b64c191416c9346cd5d28c84f76035/diff",
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/db5a4c3405c8e8a059845ee7ffb3f8d0d6509d908dc010a746ad73c847009c1c/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/db5a4c3405c8e8a059845ee7ffb3f8d0d6509d908dc010a746ad73c847009c1c/work"
+        }
+      },
+      "names": null,
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/8814c6831a63c5b10ba015f7764181c76ee262ce12f5151dbfebcb3c44618aea/diff/var/lib/dpkg/status",
+          "sha256": "bf9047fda39f946244cd3ad5927a27f3e0701178be911b09601ccb3f1b2d04e6",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/ed4b88b7b789134f2cc8388ea473f91cb4d3de8059d761c5d954c9d2ed06acd5/diff/var/lib/dpkg/status",
+          "sha256": "1b0f162530478835568ea9983e9acc147147b14bb6ba774568503e57facb10b4",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/6f94328331290cbd81edab450664d42da7b64c191416c9346cd5d28c84f76035/diff/var/lib/dpkg/status",
+          "sha256": "4c5d94eb6d6effe61d5fa69b2e978939b898a5783fda9736650d6d5af17cd658",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "1cbbca32768c3c2d7c0dfa6888790808c05672438f20718472f43f0ac8d9707c",
+      "Digest": "sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a",
+      "RepoDigests": [
+        "docker.io/library/python@sha256:a05a0a9cfe9db7d6af4daf0c31de1aca499d067eb2da574d6afad8a92615f267",
+        "docker.io/library/python@sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a"
+      ],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 1134474201,
+      "Created": "2026-08-25T03:42:06.029686996Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:31631a95db7cd650d1c826f269b9e93b57d9f418128bf7c5499b4403be4d44d0",
+          "sha256:7c367ef8c1ea18872336c6bc0672b2ff7fee5dc56c055ce54e62f2ccfde4f847",
+          "sha256:144ea2bdbdf828c7c9867865b4eeffc5ec977e8e686cdfd1e240a890e9d4cf8e",
+          "sha256:758a60093d45fcab0f50466c34253fcdaea5dbb0bacd6495bda7d4e8d90e61d6",
+          "sha256:84b0afd215c3e13701394efb0bdb8a8531f2e22694d73e11e3adeb39d6ae4c65",
+          "sha256:a83cc35ef069fa85e67f49f853449c3d4c02c11b87ea18dac66158254bf4339c",
+          "sha256:ad2fbc52b666e286b02e91fafe3c7ea13b34815551b50aea6889f84c04b0bb97"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "LowerDir": "/home/zeal/.local/share/containers/storage/overlay/dfa89c43bc0e1f9c0e4014e0ca1b2a84e598cb070749e104c9459f6dcaaf14d8/diff:/home/zeal/.local/share/containers/storage/overlay/03f59dc290d123a61274177f67f2bfe96f533981f2ba96f4101576302b751114/diff:/home/zeal/.local/share/containers/storage/overlay/6b1db3dc7833bdb2776cd3d0d013007ee7ac274296b50ddef848c586a0714c60/diff:/home/zeal/.local/share/containers/storage/overlay/abce7b4d75c26952553f58c292fd2978b78fc4a523fdeff0ed52a3be089771e8/diff:/home/zeal/.local/share/containers/storage/overlay/06cf3978b555df2f405329654304093ab0161ad682d03387975a5467edce7ca0/diff:/home/zeal/.local/share/containers/storage/overlay/31631a95db7cd650d1c826f269b9e93b57d9f418128bf7c5499b4403be4d44d0/diff",
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/2fa7a579a1effa9ba54b2a25812b24d11b011a790d7cb479e83212f2a3c780dc/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/2fa7a579a1effa9ba54b2a25812b24d11b011a790d7cb479e83212f2a3c780dc/work"
+        }
+      },
+      "names": [
+        "docker.io/library/python:3.13",
+        "docker.io/library/python@sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/03f59dc290d123a61274177f67f2bfe96f533981f2ba96f4101576302b751114/diff/var/lib/dpkg/status",
+          "sha256": "f673e2d242ed3f0881f146f676e49465334ccb477ea231746ee66d92fb6ff56d",
+          "packages": [
+            {
+              "Package": "gcc",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "4:14.2.0-1"
+            },
+            {
+              "Package": "gcc-14",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            },
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            },
+            {
+              "Package": "libtsan2",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/6b1db3dc7833bdb2776cd3d0d013007ee7ac274296b50ddef848c586a0714c60/diff/var/lib/dpkg/status",
+          "sha256": "33fe966aa51b21792e6dcdde5e4f57032306e1064520b23b80ac9c4971e9eb3f",
+          "packages": [
+            {
+              "Package": "gcc",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "4:14.2.0-1"
+            },
+            {
+              "Package": "gcc-14",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            },
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            },
+            {
+              "Package": "libtsan2",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/abce7b4d75c26952553f58c292fd2978b78fc4a523fdeff0ed52a3be089771e8/diff/var/lib/dpkg/status",
+          "sha256": "3a1ac557d267328fb3daf62117bf5909b9a655449de72fef56151ca2ce65ddef",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/06cf3978b555df2f405329654304093ab0161ad682d03387975a5467edce7ca0/diff/var/lib/dpkg/status",
+          "sha256": "8c93ad3fcb1b7d5c2d3441e170157670b130f746e6a557adf670281dd0cb826a",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/31631a95db7cd650d1c826f269b9e93b57d9f418128bf7c5499b4403be4d44d0/diff/var/lib/dpkg/status",
+          "sha256": "55993c5c8081659525d0916459734501e283dfad9771dbcb9c031fc2601efec8",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "32d322b19846336d25f755f73618a448e3621982d52c48064e95af8b3dcbc2d9",
+      "Digest": "sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f",
+      "RepoDigests": [
+        "docker.io/library/debian@sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f"
+      ],
+      "Architecture": "arm64",
+      "Os": "linux",
+      "Size": 100231670,
+      "Created": "2026-08-24T00:00:00Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:13a56b6535801be2adde694dabaf1c2df1d862a390661907dac821c42cd565cc"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/13a56b6535801be2adde694dabaf1c2df1d862a390661907dac821c42cd565cc/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/13a56b6535801be2adde694dabaf1c2df1d862a390661907dac821c42cd565cc/work"
+        }
+      },
+      "names": [
+        "docker.io/library/debian@sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/13a56b6535801be2adde694dabaf1c2df1d862a390661907dac821c42cd565cc/diff/var/lib/dpkg/status",
+          "sha256": "437c37c0391ace1b7376ad3ae9cae0ab55e81d111ccc72fca8f5d0f4226992c8",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.36-9+deb12u14"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "12.2.0-14+deb12u1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "160466e67bb85a4099d9d9c2356b4a6a64747b281a22c142efbd4539db1b8525",
+      "Digest": "sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867",
+      "RepoDigests": [
+        "docker.io/library/debian@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867"
+      ],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 77898175,
+      "Created": "2026-08-24T00:00:00Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:1d69a5fd31932841d7825ef4780c06f008eea65aaa9f3110fe09d5832ed5c7d8"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/1d69a5fd31932841d7825ef4780c06f008eea65aaa9f3110fe09d5832ed5c7d8/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/1d69a5fd31932841d7825ef4780c06f008eea65aaa9f3110fe09d5832ed5c7d8/work"
+        }
+      },
+      "names": [
+        "docker.io/library/debian@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/1d69a5fd31932841d7825ef4780c06f008eea65aaa9f3110fe09d5832ed5c7d8/diff/var/lib/dpkg/status",
+          "sha256": "f837965a67204a8e632f02d3de84aea3155fcd2cfa6d75627e7aa039ad8b222c",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.36-9+deb12u14"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "12.2.0-14+deb12u1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "5b8c0c14690ed170da4e663fe0bae0d58efe59661e791296ffab28ed2113b650",
+      "Digest": "sha256:95fa486768020359141f1318720f43e7982ef926c792891d984aef9aaf05e7ea",
+      "RepoDigests": [
+        "docker.io/library/ubuntu@sha256:95fa486768020359141f1318720f43e7982ef926c792891d984aef9aaf05e7ea"
+      ],
+      "Architecture": "arm64",
+      "Os": "linux",
+      "Size": 206411619,
+      "Created": "2026-08-17T13:11:34.47448671Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:646eea22414270d74b0c9e9d6d3b9550701ae62e658a099825d4d15045a3630b"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/646eea22414270d74b0c9e9d6d3b9550701ae62e658a099825d4d15045a3630b/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/646eea22414270d74b0c9e9d6d3b9550701ae62e658a099825d4d15045a3630b/work"
+        }
+      },
+      "names": [
+        "docker.io/library/ubuntu@sha256:95fa486768020359141f1318720f43e7982ef926c792891d984aef9aaf05e7ea"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/646eea22414270d74b0c9e9d6d3b9550701ae62e658a099825d4d15045a3630b/diff/var/lib/dpkg/status",
+          "sha256": "08b0a3fff543941204d235677c2e9d89ac70f8e773ae32d8f8483f2df7438f97",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.39-0ubuntu8.8"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "14.2.0-4ubuntu2~24.04.1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "a6f81fb630d51837271b89f8193810a5fc493fa4f30a55d7ebcdb3a66f3cc63a",
+      "Digest": "sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316",
+      "RepoDigests": [
+        "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316"
+      ],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 161338196,
+      "Created": "2026-08-17T13:09:51.011020914Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:b9a65b3c65ab22d490085bd0bf5490e2409da8748b406870f2463bdc41cd6795"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/b9a65b3c65ab22d490085bd0bf5490e2409da8748b406870f2463bdc41cd6795/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/b9a65b3c65ab22d490085bd0bf5490e2409da8748b406870f2463bdc41cd6795/work"
+        }
+      },
+      "names": [
+        "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/b9a65b3c65ab22d490085bd0bf5490e2409da8748b406870f2463bdc41cd6795/diff/var/lib/dpkg/status",
+          "sha256": "e198b5ed0a64a090abce7b39481dd402ed0dc89d6c1ba96c448f4ba6ea75b6ed",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.39-0ubuntu8.8"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-4ubuntu2~24.04.1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "9351a9a0a697a69e156f8bd067dd5ef3f9fa9b110abbdbbda1f343c622c7adc0",
+      "Digest": "sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a",
+      "RepoDigests": [
+        "docker.io/library/python@sha256:8fef26df932191825664e4957ff488c96dfe64918327634a357a55facbc994d3",
+        "docker.io/library/python@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a"
+      ],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 122195374,
+      "Created": "2026-08-10T21:12:47.939613614Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:6f94328331290cbd81edab450664d42da7b64c191416c9346cd5d28c84f76035",
+          "sha256:fbb9b549523b19d576c07bd8543c7f5b6595b58323baca906a1b753dae1e1598",
+          "sha256:f564df232f3c8227b05a9c4b3ab41a6d252072a52668d51bc2549c29f1ef9691",
+          "sha256:fa61e5121d04964e542f254d0ca32e8b7c4c5d6c13302d98ff566e90ff21fe8b"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "LowerDir": "/home/zeal/.local/share/containers/storage/overlay/8814c6831a63c5b10ba015f7764181c76ee262ce12f5151dbfebcb3c44618aea/diff:/home/zeal/.local/share/containers/storage/overlay/ed4b88b7b789134f2cc8388ea473f91cb4d3de8059d761c5d954c9d2ed06acd5/diff:/home/zeal/.local/share/containers/storage/overlay/6f94328331290cbd81edab450664d42da7b64c191416c9346cd5d28c84f76035/diff",
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/b173254311d8e6678e0876871243692d04edc0cc64338aacd6f05423bd21f51f/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/b173254311d8e6678e0876871243692d04edc0cc64338aacd6f05423bd21f51f/work"
+        }
+      },
+      "names": [
+        "docker.io/library/python@sha256:8fef26df932191825664e4957ff488c96dfe64918327634a357a55facbc994d3",
+        "docker.io/library/python:3.13-slim"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/8814c6831a63c5b10ba015f7764181c76ee262ce12f5151dbfebcb3c44618aea/diff/var/lib/dpkg/status",
+          "sha256": "bf9047fda39f946244cd3ad5927a27f3e0701178be911b09601ccb3f1b2d04e6",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/ed4b88b7b789134f2cc8388ea473f91cb4d3de8059d761c5d954c9d2ed06acd5/diff/var/lib/dpkg/status",
+          "sha256": "1b0f162530478835568ea9983e9acc147147b14bb6ba774568503e57facb10b4",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        },
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/6f94328331290cbd81edab450664d42da7b64c191416c9346cd5d28c84f76035/diff/var/lib/dpkg/status",
+          "sha256": "4c5d94eb6d6effe61d5fa69b2e978939b898a5783fda9736650d6d5af17cd658",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.41-12+deb13u3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "14.2.0-19"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "e73ad192a7527e2cf15c43162c1a875d0378a087f87d578f3885a06a6c225c47",
+      "Digest": "sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866",
+      "RepoDigests": [
+        "docker.io/library/ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866"
+      ],
+      "Architecture": "arm64",
+      "Os": "linux",
+      "Size": 72236900,
+      "Created": "2026-08-10T17:38:38.183518317Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:bf05b9274099653dfa3f182aeace25591e8de4215f625d8f58da1fba0e34036a"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/bf05b9274099653dfa3f182aeace25591e8de4215f625d8f58da1fba0e34036a/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/bf05b9274099653dfa3f182aeace25591e8de4215f625d8f58da1fba0e34036a/work"
+        }
+      },
+      "names": [
+        "docker.io/library/ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/bf05b9274099653dfa3f182aeace25591e8de4215f625d8f58da1fba0e34036a/diff/var/lib/dpkg/status",
+          "sha256": "bf3e4a027110696e217bc0c15ee6009c3fe07123acd3d35645905713c7e2db8a",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.35-0ubuntu3.14"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "12.3.0-1ubuntu1~22.04.3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "4d0600e5088ac5da5119401c70292ea3a9d9dc71f76a234ad5390c1f6a8e5669",
+      "Digest": "sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d",
+      "RepoDigests": [
+        "docker.io/library/ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d"
+      ],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 80628050,
+      "Created": "2026-08-10T17:38:12.40741989Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:c0359c5b6ede84d4a083d06d35ee77f0b338dfb17423771854d007d89953fb3e"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/c0359c5b6ede84d4a083d06d35ee77f0b338dfb17423771854d007d89953fb3e/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/c0359c5b6ede84d4a083d06d35ee77f0b338dfb17423771854d007d89953fb3e/work"
+        }
+      },
+      "names": [
+        "docker.io/library/ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/c0359c5b6ede84d4a083d06d35ee77f0b338dfb17423771854d007d89953fb3e/diff/var/lib/dpkg/status",
+          "sha256": "cc4c4c98d6e79597dc5103826d607a1d6ef5f43242a01ed565976ece6075dbbe",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.35-0ubuntu3.14"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "12.3.0-1ubuntu1~22.04.3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "77081d4f1e7217ffd2b55df73979d33fd493ad941b3c1f67f1e2364b9ee7672f",
+      "Digest": "sha256:c57e8a329cd805f341ed7ee7fcc010761b29b9b8771b02a4f74fc794f1d7eac5",
+      "RepoDigests": [
+        "docker.io/library/ubuntu@sha256:c57e8a329cd805f341ed7ee7fcc010761b29b9b8771b02a4f74fc794f1d7eac5"
+      ],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 147163209,
+      "Created": "2024-05-30T04:40:50.784239043Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c/work"
+        }
+      },
+      "names": [
+        "docker.io/library/ubuntu@sha256:c57e8a329cd805f341ed7ee7fcc010761b29b9b8771b02a4f74fc794f1d7eac5"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/97f383acf79d194e4b447b5c631e3abc4470c56fa29ed3bb37730a727c70662c/diff/var/lib/dpkg/status",
+          "sha256": "33b2e7790a5adf436d46054bb2ab6b985088ad9f8776bce730a051a6b3087d6b",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "amd64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "e9ba2bc085030d6d70a7361cd2dcbfa62d90628bda1bbc5081ef895027b5f2f0",
+      "Digest": "sha256:72c9c923b9807a752ba9c8ba41432e62bb88312de9d15b536caeaf3ea5965ad5",
+      "RepoDigests": [
+        "docker.io/library/ubuntu@sha256:72c9c923b9807a752ba9c8ba41432e62bb88312de9d15b536caeaf3ea5965ad5"
+      ],
+      "Architecture": "arm64",
+      "Os": "linux",
+      "Size": 191634522,
+      "Created": "2024-05-30T04:35:53.692935032Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2/work"
+        }
+      },
+      "names": [
+        "docker.io/library/ubuntu@sha256:72c9c923b9807a752ba9c8ba41432e62bb88312de9d15b536caeaf3ea5965ad5"
+      ],
+      "layer_package_records": [
+        {
+          "path": "/home/zeal/.local/share/containers/storage/overlay/515943894f381bdc03a3d88e1145c1701d602f2e101233c6e28f76fef6d465c2/diff/var/lib/dpkg/status",
+          "sha256": "8605828079148a4da1dc9367e2710dc4c4d7bec430f01eca758fb0471069104d",
+          "packages": [
+            {
+              "Package": "libc6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "2.38-1ubuntu6.3"
+            },
+            {
+              "Package": "libstdc++6",
+              "Status": "install ok installed",
+              "Architecture": "arm64",
+              "Version": "13.2.0-4ubuntu3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Id": "9cc24f05f309508aa852967ab1e3b582b302afc92605c24ce27715c683acd805",
+      "Digest": "sha256:d644d203142cd5b54ad2a83a203e1dee68af2229f8fe32f52a30c6e1d3c3a9e0",
+      "RepoDigests": [
+        "docker.io/library/rockylinux@sha256:d644d203142cd5b54ad2a83a203e1dee68af2229f8fe32f52a30c6e1d3c3a9e0"
+      ],
+      "Architecture": "amd64",
+      "Os": "linux",
+      "Size": 362660450,
+      "Created": "2023-11-28T20:08:58Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:44343de3ea1d3f71f143967c71a91df76138a17a21ac56642f3c0f2a64b07dce"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/44343de3ea1d3f71f143967c71a91df76138a17a21ac56642f3c0f2a64b07dce/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/44343de3ea1d3f71f143967c71a91df76138a17a21ac56642f3c0f2a64b07dce/work"
+        }
+      },
+      "names": [
+        "docker.io/library/rockylinux@sha256:d644d203142cd5b54ad2a83a203e1dee68af2229f8fe32f52a30c6e1d3c3a9e0"
+      ],
+      "layer_package_records": []
+    },
+    {
+      "Id": "60c8e2290c74b125914947f699c34947f0512281f51589fc21b66514d28111bc",
+      "Digest": "sha256:370b6bd1851d5023c5c673535c85cdc5c1d8a59416ad83380a8db7ce3691bd45",
+      "RepoDigests": [
+        "docker.io/library/rockylinux@sha256:370b6bd1851d5023c5c673535c85cdc5c1d8a59416ad83380a8db7ce3691bd45"
+      ],
+      "Architecture": "arm64",
+      "Os": "linux",
+      "Size": 396552806,
+      "Created": "2023-11-28T19:41:56Z",
+      "RootFS": {
+        "Type": "layers",
+        "Layers": [
+          "sha256:fd4d3cdea43d6989fcbb2647c6b5652df2472fd222f26af1c3504543855d1dea"
+        ]
+      },
+      "GraphDriver": {
+        "Name": "overlay",
+        "Data": {
+          "UpperDir": "/home/zeal/.local/share/containers/storage/overlay/fd4d3cdea43d6989fcbb2647c6b5652df2472fd222f26af1c3504543855d1dea/diff",
+          "WorkDir": "/home/zeal/.local/share/containers/storage/overlay/fd4d3cdea43d6989fcbb2647c6b5652df2472fd222f26af1c3504543855d1dea/work"
+        }
+      },
+      "names": [
+        "docker.io/library/rockylinux@sha256:370b6bd1851d5023c5c673535c85cdc5c1d8a59416ad83380a8db7ce3691bd45"
+      ],
+      "layer_package_records": []
+    }
+  ],
+  "seccomp_profile": {
+    "path": "/usr/share/containers/seccomp.json",
+    "sha256": "cc374cf23846ce1f62f4dc807a8e2b8673c783c6f56cb475467621035d281e6c",
+    "defaultAction": "SCMP_ACT_ERRNO",
+    "personality_rules": [
+      {
+        "names": [
+          "personality"
+        ],
+        "action": "SCMP_ACT_ALLOW",
+        "args": [
+          {
+            "index": 0,
+            "value": 0,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ],
+        "comment": "",
+        "includes": {},
+        "excludes": {}
+      },
+      {
+        "names": [
+          "personality"
+        ],
+        "action": "SCMP_ACT_ALLOW",
+        "args": [
+          {
+            "index": 0,
+            "value": 8,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ],
+        "comment": "",
+        "includes": {},
+        "excludes": {}
+      },
+      {
+        "names": [
+          "personality"
+        ],
+        "action": "SCMP_ACT_ALLOW",
+        "args": [
+          {
+            "index": 0,
+            "value": 131072,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ],
+        "comment": "",
+        "includes": {},
+        "excludes": {}
+      },
+      {
+        "names": [
+          "personality"
+        ],
+        "action": "SCMP_ACT_ALLOW",
+        "args": [
+          {
+            "index": 0,
+            "value": 131080,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ],
+        "comment": "",
+        "includes": {},
+        "excludes": {}
+      },
+      {
+        "names": [
+          "personality"
+        ],
+        "action": "SCMP_ACT_ALLOW",
+        "args": [
+          {
+            "index": 0,
+            "value": 4294967295,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ],
+        "comment": "",
+        "includes": {},
+        "excludes": {}
+      }
+    ]
+  },
+  "denied_read_preserved": {
+    "path": "/proc/sys/vm/mmap_rnd_bits",
+    "error": "PermissionError: [Errno 13] Permission denied: '/proc/sys/vm/mmap_rnd_bits'",
+    "entropy_value": "unknown",
+    "alternative_read_or_elevation": false
+  },
+  "product_sha256": "77fdcd1671849348bffcbff643e711b2c260d3ff73907f3d9ac4297b19f6aba7"
+}

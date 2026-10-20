@@ -1,0 +1,70 @@
+{
+  "at": "2026-10-15T09:15:11.045738+00:00",
+  "tasks": [
+    {
+      "id": "VALIDATION-CONTEXT-R18",
+      "workspace": "validation-context-r18",
+      "owner": "zcode",
+      "session_id": "sess_a0adb99b15",
+      "owns": [
+        "zscope/core/validation/runner.py",
+        "zscope/core/validation/evidence_completion.py",
+        "zscope/agents/validator_agent/agent.py",
+        "zscope/core/validation/execution_context.py",
+        "tests/test_validation_context_workers.py"
+      ],
+      "depends_on": [
+        "CONTRACT-VALIDATION-R12"
+      ],
+      "overlay": "contract"
+    },
+    {
+      "id": "U01-STOP-AT-R18",
+      "workspace": "config-stop-at-r18",
+      "owner": "zcode",
+      "owns": [
+        "zscope/config/v3.py",
+        "zscope/config/v3_preparation.py",
+        "zscope/cli/cli.py",
+        "zscope/orchestration/jobs/service.py",
+        "zscope/orchestration/execution_profile.py",
+        "tests/test_config_stop_at_consumers.py"
+      ],
+      "depends_on": [
+        "U01-CONFIG"
+      ],
+      "overlay": "root"
+    },
+    {
+      "id": "DOC-IDENTITY-R18",
+      "workspace": "doc-identity-r18",
+      "owner": "dsh",
+      "session_id": "sess_bdab8c13fb",
+      "owns": [
+        "docs/modules/configuration-state.md",
+        "docs/modules/retrieval-backends.md"
+      ],
+      "depends_on": [
+        "SCAN-SESSION-R12",
+        "CONTRACT-VALIDATION-R12"
+      ],
+      "overlay": "contract_main"
+    },
+    {
+      "id": "ASTRA-INSTANCE-UI-R18",
+      "workspace": "astra-instance-ui-r18",
+      "owner": "Astra",
+      "owns": [
+        "zscope/web/static/dashboard_workbench.js",
+        "zscope/web/static/index.html",
+        "tests/test_instance_coverage_ui.py",
+        "tests/fixtures/instance_coverage_ui.cjs"
+      ],
+      "depends_on": [
+        "SCAN-SESSION-R12",
+        "ASTRA-JOB-PROJECTION-R15"
+      ],
+      "overlay": "main"
+    }
+  ]
+}

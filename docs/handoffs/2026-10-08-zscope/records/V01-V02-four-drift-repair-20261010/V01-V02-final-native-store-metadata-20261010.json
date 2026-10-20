@@ -1,0 +1,40 @@
+{
+  "at": "2026-10-10T04:42:55.487Z",
+  "metadataOnly": true,
+  "credentialValuesRead": false,
+  "before": [
+    {
+      "file": "C:/Users/10273/.dsh/.credentials.yaml",
+      "bytes": 224,
+      "mtime": "2026-09-04T07:48:03.310Z"
+    },
+    {
+      "file": "C:/Users/10273/.dsh/profiles/desktop/cordis.patch.yml",
+      "bytes": 1363,
+      "mtime": "2026-10-05T12:06:02.907Z"
+    },
+    {
+      "file": "C:/Users/10273/.dsh/profiles/desktop/package.json",
+      "bytes": 211,
+      "mtime": "2026-10-05T12:05:55.080Z"
+    }
+  ],
+  "after": [
+    {
+      "file": "C:/Users/10273/.dsh/.credentials.yaml",
+      "bytes": 224,
+      "mtime": "2026-09-04T07:48:03.310Z"
+    },
+    {
+      "file": "C:/Users/10273/.dsh/profiles/desktop/cordis.patch.yml",
+      "bytes": 1363,
+      "mtime": "2026-10-05T12:06:02.907Z"
+    },
+    {
+      "file": "C:/Users/10273/.dsh/profiles/desktop/package.json",
+      "bytes": 211,
+      "mtime": "2026-10-05T12:05:55.080Z"
+    }
+  ],
+  "unchanged": true
+}

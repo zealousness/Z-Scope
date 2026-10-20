@@ -1,0 +1,66 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T05:28:17.072919+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_2_1e9252f0",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:28:17.073431+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_2_1e9252f0",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:28:17.073431+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_2_1e9252f0",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:28:17.073431+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_2_1e9252f0",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:28:17.109707+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Running: ls -la .coordination/20261014/ 2>&1; echo \"---work…",
+        "tool_call_id": "0:Bash_2_1e9252f0",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T05:28:17.250841+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_2_1e9252f0",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 165,
+  "count": 6,
+  "next_offset": 171,
+  "has_more": false,
+  "total_matching": 171
+}

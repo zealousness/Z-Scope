@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:50:06.253154+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "已定型。先确认 DB 层 `get_function_build_contexts` 的签名与 `_relative` 的"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:50:06.395161+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "基准，然后落 DELIVERY 记录所有权，再实现。"
+      }
+    }
+  ],
+  "offset": 47,
+  "count": 2,
+  "next_offset": 49,
+  "has_more": false,
+  "total_matching": 49
+}

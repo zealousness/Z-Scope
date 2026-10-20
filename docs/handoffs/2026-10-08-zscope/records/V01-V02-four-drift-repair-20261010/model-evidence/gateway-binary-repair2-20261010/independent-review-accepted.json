@@ -1,0 +1,13 @@
+{
+  "accepted": true,
+  "sessionId": "session-fb6a18a8-ffa9-4f68-9bcd-5d7c0bceed47",
+  "sourceDigest": "d78417fb96b22380f43e3611e841fa75a15f39a8b0af41057cbc6e7f230775ca",
+  "candidateDigest": "511c33409b4f9abf283c7a9c8719cff21c2f6c79101e2f121d746064d3487e0e",
+  "scope": "binary liveness in private execution authority, registration and final adjudication",
+  "review": [
+    "Production requires a file measured against the actual execution record digest, including post-build outputs.",
+    "Frozen binary-bound flag survives deletion and test-only trust promotion; current absence is never a skip condition for an accepted actual file.",
+    "Exact-object authority, receipt lookup/TTL, full candidate identity, source snapshot checks, replay and budgets retained.",
+    "Original test assertions unchanged; symbolic fake fixtures retain the explicit promotion requirement."
+  ]
+}

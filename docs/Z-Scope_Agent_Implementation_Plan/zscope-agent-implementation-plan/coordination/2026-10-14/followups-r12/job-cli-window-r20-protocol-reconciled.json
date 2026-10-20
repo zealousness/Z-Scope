@@ -1,0 +1,44 @@
+{
+  "inspected_at": "2026-10-15T22:17:30.696302+08:00",
+  "blocked_request": {
+    "request": "job-cli-window-r20-sql-protocol-recovery",
+    "ok": false,
+    "error": "branch_occupied; inspect_public_task_and_execution_before_retry"
+  },
+  "original_retry_not_entered_journal": true,
+  "public_failed_receipt": "route-check/bridge-response-r20-protocol-get_result-7ee481d698.json",
+  "closed_session_receipt": "route-check/bridge-response-r20-protocol-recovery-end-failed-session.json",
+  "current_dead_session_receipt": "route-check/bridge-response-r20-reconcile-sessions-d25d38f9cd.json",
+  "linux_process_inspection": "inspect_workspace_processes.py job-cli-window-r20 returned [] before recovery; public end_session plus fresh dead-state confirms no active old ACP writer",
+  "owned_source_unchanged": {
+    "zscope/cli/cli.py": "9964cc77ce1527d8f543153b98bb4b757492429e2da7569d82c8647921376b15",
+    "zscope/orchestration/execution_profile.py": "170b0158115dc5f7e8c2cfb0e4ac1fc1dedbd08599b1d5a203419440114fac87",
+    "tests/test_job_cli_stop_window.py": "4b163140dfa6295a098914ce43f268ab3957343ffc61124d1260d7bbf4e50543"
+  },
+  "journal_before": [
+    [
+      "2a04a634-6cf3-4c40-bb00-4046dc58da3a",
+      "job-cli-window-r20",
+      "accepted",
+      "task_14643c6dda"
+    ]
+  ],
+  "journal_after": [
+    [
+      "2a04a634-6cf3-4c40-bb00-4046dc58da3a",
+      "job-cli-window-r20",
+      "failed",
+      "task_14643c6dda"
+    ]
+  ],
+  "journal_api": "DispatchJournal.terminal(task_14643c6dda, failed)",
+  "branch_or_policy_changed": false,
+  "owner_restarted": false,
+  "model_or_provider_changed": false,
+  "counts_as_glm_actual_delivery_failure": false,
+  "development_failure_streak": 1,
+  "accepted_at": "2026-10-15T22:17:31.208498+08:00",
+  "new_task_id": "task_d98c531060",
+  "new_session_id": "sess_e10155a00c",
+  "accepted_receipt": "route-check/bridge-response-job-cli-window-r20-sql-reconciled.json"
+}

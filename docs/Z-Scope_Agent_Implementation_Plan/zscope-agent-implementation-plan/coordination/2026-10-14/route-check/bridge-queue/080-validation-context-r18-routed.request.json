@@ -1,0 +1,15 @@
+{
+  "id": "validation-context-r18-routed",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "VALIDATION-CONTEXT-R18",
+    "message": "ZCode glm-5.3：开始 VALIDATION-CONTEXT-R18，唯一可写 .coordination/20261014/workspaces/validation-context-r18。你上一轮contract-validation-r12 task_0dc5e073f3已独验1016/0+四命令0、native及探针哈希稳定；旧目录冻结，不恢复写入。新副本基于根R16+已独验契约R5和四只读测试迁移，Scope/USR接口已满足，不等待整个S01。\n独占五路径：zscope/core/validation/runner.py、evidence_completion.py、zscope/agents/validator_agent/agent.py、可新增zscope/core/validation/execution_context.py、可新增tests/test_validation_context_workers.py。其余semantics/ScanSession/ParallelAnalyzer/jobs/config/UI/docs/旧测试及独立探针只读。\n目标是实际ValidatorAgent和EvidenceCompletionQueue内部工作者的精确构建/调用上下文。当前R5只覆盖外层Runner executor/scheduler，EvidenceCompletionQueue._run_requested_fact_providers提交lambda未显式绑定；Validator内部Registry消费也未全接通。复用已验收ScopedCodeIndex.scope、当前native完整function facts、bind_build_scope/bind_call_context；不要把候选/evidence自报字符串、普通JSON或环境残留当授权。未知/冲突候选保持拒绝，direct legacy/unscoped调用不得继承另一个实例的ambient scope。每个实际线程显式绑定并finally恢复，timeout/cancel/异常和迟到provider结果不借另一variant。冻结单次provider输入，不让父线程修改issue导致跨请求。进程内proof资格不从序列化恢复。\n必须跑真实ValidationRunner.run→实际ValidatorAgent.run→实际fact-provider executor；只控制模型响应/等待边界，不能把整个Validator换成stub后称内层已验收。真实native双宏BASE/ALT、同名/重载callee正反例，两个并发父Runner及pool复用、wrong/unknown build、异常/cancel/timeout恢复；验证当前build和callee USR，非只测一个ContextVar或构造器。保留原24边界、test_validation_runner/evidence_completion/validation_pipeline/protocol反馈/candidate_build_identity及相关Validator tests。不得改只读旧测试或降低标准；确有迁移/外部接口需要交精确方案给协调者。\n仅WSL Ubuntu zeal bash -lc、venv313，经根coordination/2026-10-14/test_slot.py --workspace <新副本Linux绝对路径> -- <argv>，两槽/defaultfd/ext4tmp；native只读d39cbe72fafad1fbfa989a51346cdf4785101e32855c0ee0d11a1e2748263399。compileall zscope scripts test tests、mypy zscope、必要Black。读AGENTS/architecture/模块和实施11/16/19/20/21。最终DELIVERY+稳定SHA/JUnit/日志/UTC+8时间/未测、后台清空停写。无根/其他目录/旧S06/重复服务/provider/凭据/权限/commit/push/reset/clean；不绕过审批/平台/额度限制。属于S01后续切片，不能关闭全包。\n",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "request_id": "3eb1fd92-35be-48bc-a348-e193c52c8bd7",
+    "user_requested": true,
+    "session_id": "sess_a0adb99b15"
+  },
+  "branch": "validation-context-r18"
+}

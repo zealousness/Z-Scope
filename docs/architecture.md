@@ -8,6 +8,22 @@ Z-SCOPE 是面向大型 C/C++ 项目的证据优先静态分析平台，并提�
 
 Review 完整事实实验默认关闭：底层保留绑定编译配置的完整相关事实，模型按需分页，程序检查器独立核对候选义务。V3 可实验性构建 uncertain 项的正面案例，V2b 审查旧拒绝；版本化复核封套经过验收后仍由统一 ValidationPipeline 分流。关联发现进入最多一代的独立追加 Ledger，原主 Ledger 保持冻结。具体边界见[分析流水线](modules/analysis-pipeline.md)和[Benchmark](modules/benchmarking.md)。
 
+Native 编译事实已新增按 BuildContext 隔离的持久化与精确查询，保留同一源码的不同编译实例。单实例内的同名函数通过 native USR 消歧，函数事实身份绑定 BuildContext 与 USR；未消歧时仅提供函数选项，不合并证明事件。旧函数导航投影尚不覆盖全部变体，完整扫描消费者仍在迁移；歧义程序事实不能作为单一实例证明，未知链接归属不能推出跨 TU 路径完整。具体合同见[代码检索与后端](modules/retrieval-backends.md#编译实例事实与导航投影)。
+
+受限跨 TU 对象路径通过显式本地构建记录核对实际 C executable 成员，保留各 TU 的 BuildContext，并按 USR/签名连接调用与具体对象。只读、完整初始化的有限 ops 表可以按已知选择解析；未知目标或选择仍为缺口。链接产物与全部成员参与当前性检查和 Validator 重放，不把普通调用图或同名符号当作链接证明。该切片复用既有单槽池/留存路径，实验规则维持默认关闭。
+
+非原子引用计数沿用同一契约发布、对象路径和验收链。源码核验只描述受限计数变化，实际终结效果由当前 callback 路径与对象代次确定；池逻辑归还与物理 free 分开。首批只消费 signed 32-bit 计数和内嵌单槽池，非并发执行及业务清理前提分别保留，不能从顺序计数推断线程安全。
+
+有界自定义句柄表同样沿用此链：整数值携带获取代次，dup 创建新的描述符 ObjectRef 并共享底层对象身份，close 根据当前源码和槽状态消费实际描述符。错误返回不能单独决定消费效果，同值重开不能重用旧身份；物理析构与命名空间并发语义仍是独立边界，不将该路径推广为 OS fd 求解器。
+
+锁契约沿同一发布链保存 shared/exclusive/unknown、成功条件及释放/重获转换。共享访问候选与 Validator 分别消费：前者不把读锁当写保护，后者从当前编译器 AST/CFG 核对非逃逸静态锁的声明身份和全部本地访问，透明包装器重新检查当前实现。签名反证只作用于原 race 义务；词法调用方摘要、递归计数、等待、升级与尚未支持的锁 guard 不能补造强保护或排除 UAF。
+
+有限 RAII 由既有 LifecycleAnalysis 与 ReviewClaimChecker 消费：native 构造/析构 USR 和管理器身份，与同一构建的完整 AST、构造映射及析构分支共同核验。单指针 scoped heap guard 的作用域退出与明确捕获的 throw 展开各自清理保存的获取对象，空 guard 不解除其他对象义务。当前事实、标准契约、工具与依赖摘要进入进程内收据；原始事件、序列化分析或模型文本不具证明权限。其他消费者继续将未支持的 C++ 生命周期保留为 unknown。
+
+当前证据重用同时约束正向与否定性依赖。native 头文件存在性查询参与 BuildContext；完整 AST/CFG 热载入复核实际预处理输出；Review 收据持有当前契约注册表依赖，变更或重放中失效便撤回授权。新增访问者、头文件或失效构建不能借助旧缓存继续排除候选。原 S04 回答 revision 和链接清单仍由各自检查器验证，局部等价性不替代完整扫描与异步调度覆盖。
+
+实验性单槽对象协议扫描已连接业务前提验收：用户声明与来源保存在现有项目状态库，按对象、构建、路径及源码/契约依赖隔离。当前源码重放与全部必要声明共同成立后，仍由统一 ValidationPipeline 的程序 proof 分流确认。回答变更使依赖它的历史结论重新进入候选台账和验证；历史报告不直接改写，否定前提也不等于安全证明。范围与数据职责见[分析流水线](modules/analysis-pipeline.md)及[配置与状态](modules/configuration-state.md)。
+
 Z-SCOPE 的定位可以归纳为三个层面：
 
 | 层面 | 定位 |
@@ -24,6 +40,8 @@ Z-SCOPE 的定位可以归纳为三个层面：
 | 资源生命周期 | 内存泄漏、fd/socket/mmap stale、初始化/释放不匹配、跨 handler 所有权转移 |
 | 并发安全 | 数据竞争、refcount 竞态、缺失解锁、死锁、条件变量误用、对象提前发布 |
 | 输入与逻辑安全 | 格式串、命令构造、TOCTOU、空指针、失败返回未检查 |
+
+受限 pthread 回调寿命复用 native CFG、ObjectRef、契约发布与 S04 裁决。标准效果分开保存创建、取消请求、释放 join 句柄和等待完成；单槽队列路径进一步保留工作者首次解锁时的局部任务引用，在调用方取消排队项、停止接收后于 join 期间继续。提交/取消 helper 由当前同 TU CFG 重放，不将名称或 active 标记当作完成证明。native opaque mutex/cond 收据、实际锁实例和共享字段访问随路径核验；同锁不能排除 UAF。单等待者 cond_wait 可暂停实际调用，释放 mutex 后接收匹配条件实例的通知，重获锁后才返回并重检条件。仅选定有界调度，首个非法访问后停止并记录真实恢复位置；未匹配通知、一般唤醒/超时场景、取消模式切换/任意取消点、多工作者和完整 drain 调度仍有缺口。默认延迟取消复用当前宏/AST 收据解释受限 C/glibc cleanup，先重获等待锁再按注册栈逆序重放实际回调；原获取对象、正常 pop、取消投递和 join 完成分别记录。同一 C 文件中的工作者直接 helper 复用有界 CFG 调用帧；暂停恢复保留嵌套路径和独立局部状态，返回值仅在函数返回后发布，取消清理归属于注册帧。未知/间接目标、局部地址逃逸和 cleanup 内 helper 不扩大证明范围。业务前提在现有验收阶段集中确认，规则默认关闭。
 
 ## 2. 设计目标
 
@@ -132,7 +150,7 @@ Validator 上下文使用。
 
 总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof 或分层 Validator 改变终态，模型 hypothesis 不能直接确认漏洞。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore 与 ReviewMemory 保留中间产物、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
 
-跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.4` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。
+跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.5` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。
 
 v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、精度和可审计性：diff impact 从反向入口枚举收敛为语义义务与覆盖计划；Unified/SVF 增加入口聚类、互斥/共享 bitcode pool 与缓存 manifest；Clang/KnowledgeDB 强化增量缓存、macro 和删除文件处理；Validator、alert-verify 与 LLM 客户端增加并行、fast-path、endpoint 容量控制和成本统计。v1.0 已经把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
 
@@ -634,7 +652,7 @@ MCP 暴露三类能力，并统一经过 `ToolPolicy` 过滤：
 
 - Resources：`zscope://config`、`zscope://knowledge/stats`、`zscope://knowledge/functions`、`zscope://snapshots/list`
 - Prompts：`zscope.entry_discovery`、`zscope.resource_lifecycle_audit`、`zscope.concurrency_audit`
-- Tools：六个证据工具 `zscope.code.search`、`zscope.code.read`、`zscope.semantic.context`、`zscope.graph.query`、`zscope.flow.trace`、`zscope.findings.query`，以及 `zscope.knowledge.query`、`zscope.entries.discover`、`zscope.scan.run`、`zscope.scan.status`、`zscope.wiki.status`、`zscope.wiki.query` 六个管理工具；不暴露 raw 名称或重复 alias
+- Tools：六个证据工具 `zscope.code.search`、`zscope.code.read`、`zscope.semantic.context`、`zscope.graph.query`、`zscope.flow.trace`、`zscope.findings.query`，以及 `zscope.knowledge.query`、`zscope.entries.discover`、`zscope.scan.run`、`zscope.scan.status`、`zscope.wiki.status`、`zscope.wiki.query` 和五个持久作业工具 `zscope.jobs.list/events/result/cancel/resume`；作业工具在 Linux/default profile 复用保存配置对应的 ScanJobService，read_only/candidate_blind 不创建作业服务，不暴露 raw 名称或重复 alias
 
 stdio MCP 适合作为本地 IDE/Agent 接入。协议优先协商 `2025-06-18`，此时 tool list 携带原生 `inputSchema/outputSchema`，调用结果同时返回 text 和 `structuredContent`；兼容 `2024-11-05` 时省略后两项新能力但仍使用 namespaced 名称。HTTP MCP 是显式开启的远程实验入口：默认绑定 loopback；当绑定非 loopback 地址时，CLI 会强制要求 `--mcp-auth-token-env` 和至少一个 `--mcp-client-allowlist`，HTTP 层再做 Bearer token 与客户端 IP allowlist 校验。
 
@@ -724,3 +742,7 @@ C/C++ 所有档位执行：入口确定 → 索引/Wiki 就绪 → 增量并发�
 契约证明图先静态求闭包，再选择剩余根协议供 `contract_review` 审核。pending 行不生效；confirmed 行作为明确人工契约导入，撤销审核会移除对应导入行。确认只沿已核验的映射传播，不授权不透明释放端，也不证明某次调用成功。外层透明包装可以静态重建，原始人工配置不被自动覆盖。
 
 报告逻辑视图不变，默认持久化改用单文件共享对象表，公共读取层解引用后向评分、回放、SARIF 和 Web 提供原逻辑数据。完整证据和源码不裁剪；检查点复用不可变内容对象。只读访问不会使共享引用失效，嵌套修改保持投影隔离；契约和决策事实的序列化边界避免把内部 tuple 带入 JSON 证据池而触发整份复制。详见接口与报告模块。
+
+受限等待结果探索沿用原路径解释器，默认通知路径未闭合时才运行至多两个额外有界路径（各自一次无通知唤醒或超时），选择实际非法访问见证，次选已闭合路径；任何无告警结果仍不证明安全。timedwait/clockwait 的本地 timespec 布局、系统 ETIMEDOUT 与显式 CLOCK_REALTIME/CLOCK_MONOTONIC 常量出处由当前 native 收据核对，时钟和截止条件显式进入见证与验收。旧源码、宏、契约或 native 工具变化通过原当前性/增量链失效，不增加用户配置或独立调度平台。
+
+受限 caller cond_wait 与 worker 调度共用已有精确对象/锁身份、native CFG 和 S04 证明链。等待暂时释放调用方锁，工作者按真实通知及原锁释放推进；返回后由实际条件分支决定是否再等，不能从 helper 名称、通知或活动标志推定 callback 完成。调度边保留入口到 caller helper 的路径，cleanup 根展开也使用该真实前缀；后续访问和 join 继续沿原生命周期解释。有限闭合不等于完整 drain/unregister 或全交错验证。

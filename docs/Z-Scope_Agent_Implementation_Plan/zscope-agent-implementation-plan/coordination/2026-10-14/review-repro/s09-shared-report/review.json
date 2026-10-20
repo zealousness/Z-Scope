@@ -1,0 +1,8 @@
+{
+  "synthetic_only": true,
+  "actual_product_writer_used": true,
+  "logical_schema": 2,
+  "loaded_schema": null,
+  "loaded_storage_schema": "zscope.shared-json.v1",
+  "logical_report_decoded": false
+}

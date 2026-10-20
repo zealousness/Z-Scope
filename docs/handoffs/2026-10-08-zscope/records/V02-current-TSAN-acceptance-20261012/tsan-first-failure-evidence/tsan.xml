@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.104" timestamp="2026-10-11T20:51:12.391853+00:00" hostname="c52966289cb0"><testcase classname="tests.test_dynamic_reproduction_execution" name="test_tsan_positive_fixture_confirms_through_shared_adjudication" time="0.354"><failure message="AssertionError: df82)&#10;      #2 &lt;null&gt; &lt;null&gt; (libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)&#10;  &#10;    Thread T1 (tid=12, finished) created by main thread at:&#10;      #0 &lt;null&gt; &lt;null&gt; (race+0x605df) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)&#10;      #1 &lt;null&gt; &lt;null&gt; (race+0xdebfe) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)&#10;      #2 &lt;null&gt; &lt;null&gt; (libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)&#10;  &#10;  SUMMARY: ThreadSanitizer: data race (/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race+0xded18) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82) &#10;  ==================&#10;  &#10;assert 'engine_failed' == 'witness_observed'&#10;  &#10;  - witness_observed&#10;  + engine_failed">tests/test_dynamic_reproduction_execution.py:608: in test_tsan_positive_fixture_confirms_through_shared_adjudication
+    assert record.outcome == "witness_observed", _tsan_diagnosis(record.stderr_excerpt)
+E   AssertionError: df82)
+E         #2 &lt;null&gt; &lt;null&gt; (libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)
+E     
+E       Thread T1 (tid=12, finished) created by main thread at:
+E         #0 &lt;null&gt; &lt;null&gt; (race+0x605df) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)
+E         #1 &lt;null&gt; &lt;null&gt; (race+0xdebfe) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82)
+E         #2 &lt;null&gt; &lt;null&gt; (libc.so.6+0x29ca7) (BuildId: c495b62edadd6c356265942ec1282d98058a7b41)
+E     
+E     SUMMARY: ThreadSanitizer: data race (/tmp/pytest-tsan/test_tsan_positive_fixture_con0/race+0xded18) (BuildId: 02a3e29591941b22558304922ce2c9f1c845df82) 
+E     ==================
+E     
+E   assert 'engine_failed' == 'witness_observed'
+E     
+E     - witness_observed
+E     + engine_failed</failure></testcase></testsuite></testsuites>

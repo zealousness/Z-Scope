@@ -1,0 +1,13 @@
+{
+  "tool": "dispatch_task",
+  "id": "s08-owner",
+  "arguments": {
+    "agent": "kimi",
+    "model": "kimi-k3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "title": "S08 持久作业与独立 owner（隔离分支）",
+    "user_requested": true,
+    "request_id": "ecb81653-6a6a-464e-8468-6f6eae4a9a03",
+    "message": "你是用户本轮明确授权的外部开发分支。项目原根 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope；Agent-Bridge cwd 必须为此根，但所有开发只在指定项目内隔离目录进行，严禁修改原根 zscope/tests/docs/README/shared files。隔离目录从当前未提交源码字节快照复制（不是旧HEAD），基线 manifest SHA256 41d9c25a0e259457164b68191ed6d797b5d7e1e5a8b748b501fd79df37deabd1。先读隔离目录 AGENTS.md、docs/architecture.md、modules/README.md，计划包11/16/21/22和coordination/2026-10-14/API_CONTRACT.md。以21最新已验收记录覆盖旧待办，但切片不当整包完成。\n不reset/clean/stash/commit/push，不修改工作区外文件/凭据或持续访问配置。不实现前端/UI/UX，zscope/web/static/**只由Astra亲自实现。不读取或改写用户保留任务task_0947f2854f；不得派发/续发/重试/改写/代做其调用方一次无通知返回与受限超时。不要修改async_paths/lifecycle_paths/protocol_assessment/native/规则目录或其测试，不触碰其占用共享协议与文档。遇到平台/权限拒绝停止受影响分支，不換模型或会话绕过。\n所有测试/compileall/mypy须在WSL Ubuntu Linux用户态，现有Python /home/zeal/venv313/bin/python，Node可用；使用隔离cwd和PYTHONPATH=隔离根，不能改共享venv安装绑定；普通Windows解释器不能形成产品测试结论。每个分支使用自己的tmp/artifact路径，最多一个pytest进程，不重建任何共享native输出、不跑并发大回归、不启动formal扫描。Markdown UTF8无BOM/LF/末尾换行。开发可正常使用已授权工具；新的拒绝准确报告。\n输出仅可写范围的实际代码/测试、精确命令/JUnit/raw日志、pass/fail/error/skip、限制，和一份隔离交付说明DELIVERY.md。不要改官方README/模块/21，由协调者集成。不要把合成/fake/契约消费者结果冒充真实后台/线程/Sanitizer/LLM/formal。\n本任务 S08-OWNER：隔离目录 C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s08-owner（Linux /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s08-owner）。\n所有权仅新增 zscope/orchestration/jobs/**、tests/test_scan_jobs.py、tests/test_scan_job_execution.py 及DELIVERY.md/本分支artifacts；不要修改现有scan_request/scan_session/CLI/Web文件，给协调者必要接线说明。\n实际实现持久JobStore/事件与脱离UI的owner进程；一份状态真源，saved config绑定真实输入版本/attempt，SQLite原子revision和request_id幂等；同项目扫描互斥，独立项目可并行。提供 ScanJobService(config_path,...) 的 start/list/detail/events/cancel/resume/result 接口，直接符合API_CONTRACT HTTP envelope，至少充分说明集成调用。Owner本身独立Python模块入口，从当前有效配置建立ScanSession或合规调用现有CLI，运行资料/原始日志持久保存；子进程组归本owner，UI/服务断开继续运行，重连真实状态。\n进程身份要核验启动时间/owner token/输入版本，PID重用/已退出/崩溃不能误杀、重复执行、伪造completed；恢复输入/工具/构建变化需撤回旧确认与重验，JSON动态receipt不能复活。cancel停止新调度并清理自己owned group、有界结束，run_id新attempt，保留旧结果。使用真实Linux子进程做断开/恢复/取消/进程身份反例测试，不能全fake。\nstop_at为带时区本轮绝对边界，记录resolved_stop_time，窗口结束输出partial/未完成，不能把kill scanner代停止新工作完整验收；本分支可提供scan session scheduler的hook合同和pending持久化，现有session接线由协调者，未接线则明确JOB04/06未完整交付。业务未知questions排队，不waiting_user；phase/progress只能来自实际事件，未知分母/未测值null，禁止虚报百分比。report只绑定当前attempt真实资料，不能读旧root报告冒充新成果；可用性/503错误具体且无凭据。\n测试JOB01、JOB05、DYN07和所有本分支实际行为，窗口/公平批次剩余接线准确说明。本分支不改public config版本或默认复现off，不宣称完整S08。"
+  }
+}

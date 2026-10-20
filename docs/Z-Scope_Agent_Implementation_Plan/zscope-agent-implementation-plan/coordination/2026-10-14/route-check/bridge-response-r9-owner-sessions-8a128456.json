@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "scope": "current_instance",
+  "other_live_instances": 6,
+  "sessions": [
+    {
+      "session_id": "sess_261a55289f",
+      "agent": "kimi",
+      "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+      "native_session_id": "session_099d9f9d-3243-4d0c-8283-3e4a2d707505",
+      "proc_state": "ready",
+      "turns": 4,
+      "title": "S01-INST-EXEC-R4",
+      "model": "volceapi/kimi-k3",
+      "effort": null,
+      "last_active_at": "2026-10-14T14:48:19.039170+00:00"
+    }
+  ]
+}

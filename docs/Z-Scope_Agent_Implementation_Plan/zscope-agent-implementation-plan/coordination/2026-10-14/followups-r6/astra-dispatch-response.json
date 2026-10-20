@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "invalid turn/start params: AbsolutePathBuf deserialized without a base path"
+    }
+  ],
+  "isError": true
+}

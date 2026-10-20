@@ -1,0 +1,81 @@
+{
+  "at": "2026-10-10T05:09:09.713Z",
+  "report": {
+    "path": "V01-V02-resource-repair-readiness-20261010.md",
+    "sha256": "13552c573484cbade3abfdc916ddab05ad863a9b93c45f0e5ab0b8c642741c1e"
+  },
+  "files": {
+    "packet-manifest.json": {
+      "bytes": 858,
+      "sha256": "ed2c76dff5220d8798fd3bf09555c24a772822cefffd8390b193651da264e1cc"
+    },
+    "readiness-and-blocker.json": {
+      "bytes": 2802,
+      "sha256": "699b9bca0d60ff07b57c287da1e8d986d2fa58145cf91c0c6e56f910dcad8c47"
+    },
+    "repair-prompt.txt": {
+      "bytes": 34007,
+      "sha256": "aee9134833f696a600a714010bb5b76510dd5944bf581abd52763b21d0357dd6"
+    },
+    "run-resource-regressions-20261010.py": {
+      "bytes": 2395,
+      "sha256": "9d584a814d0805afa6852ae6f1963a71e7d445414907e63ef3d8a3e9f548bf79"
+    },
+    "test_v01_v02_resource_bounds.py": {
+      "bytes": 4310,
+      "sha256": "73afe4850d485a2b8ddeca3f53be31972ab4dcbdfed1e1f7edd14c4543f834db"
+    },
+    "toolchain-inventory-evidence/container.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "toolchain-inventory-evidence/container.stdout.log": {
+      "bytes": 1476,
+      "sha256": "587a97f38a46bbe595ddec7a652ec057b94828afd1817f4d0513ff38f3fccada"
+    },
+    "toolchain-inventory-evidence/existing-toolchain-inventory.json": {
+      "bytes": 1208,
+      "sha256": "09195929e34c4e145f9af334a66815cb0dbfa6010859d45152e1d66e5273e14a"
+    },
+    "toolchain-inventory-evidence/isolation-verification.json": {
+      "bytes": 3200,
+      "sha256": "0c721a9e00b3658415c65ca7c1f6cd43b39645729bfacb7f594543a246c1e41b"
+    },
+    "toolchain-inventory-evidence/staging-manifest.json": {
+      "bytes": 107,
+      "sha256": "e9b474d9cc5dab8025ebdf6d36ee8d92535a25022c3cfa10e91c1e5b62fcb0ee"
+    },
+    "toolchain-inventory-evidence/toolchain-preflight.json": {
+      "bytes": 563,
+      "sha256": "d7210d1076d85e299c7d32d26b2e563980f9dd7d4b350ebf1b0a04dcfd5f97b6"
+    },
+    "toolchain-inventory-evidence/tsan-inventory-inside.py": {
+      "bytes": 6305,
+      "sha256": "4fcffe611350c7c7a1dd2210fb42bcf8f6840eb5ea18f1647ee10e1dc1c2988c"
+    },
+    "TSAN-existing-host-toolchain-inventory-20261010.json": {
+      "bytes": 1713,
+      "sha256": "c0ed737f357778a8c74c74ae143a037feebde0ecaa00be9e009671dc7dfb34a6"
+    },
+    "V01-V02-resource-regressions-before-20261010.json": {
+      "bytes": 96137,
+      "sha256": "493ed65f2dc56f5a1f7873cf8bc32aa8719e41923f734186747469800422a5e0"
+    },
+    "V01-V02-resource-regressions-before-20261010.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "V01-V02-resource-regressions-before-20261010.stdout.log": {
+      "bytes": 6155,
+      "sha256": "679c383b8822d8218d9df1dae52b8d51a9a8b3bf44cb0e95491976f7ced98a18"
+    },
+    "V01-V02-resource-regressions-before-20261010.xml": {
+      "bytes": 9342,
+      "sha256": "fd4a207acda9cc5c9dc66962d0f7f4ae89840bd85b0072ca0a0e0a212181a647"
+    },
+    "V01-V02-TSAN-inventory-20261010-i7jo5c81.json": {
+      "bytes": 97576,
+      "sha256": "2b54fede864396c929d947865f19d85ac9822c465d5a1db803a28f27f7735dee"
+    }
+  }
+}

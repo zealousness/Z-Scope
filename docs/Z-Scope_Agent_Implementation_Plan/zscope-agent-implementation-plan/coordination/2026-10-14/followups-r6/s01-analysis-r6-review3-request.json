@@ -1,0 +1,15 @@
+{
+  "id": "s01-analysis-r6-review3",
+  "branch": "s01-analysis-r6-review3",
+  "tool": "dispatch_task",
+  "arguments": {
+    "session_id": "sess_261a55289f",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "agent": "kimi",
+    "model": "volceapi/kimi-k3",
+    "title": "S01-INST-EXEC-R3",
+    "message": "S01 协调R3（你交付中的第4轮）真实独立验收返修。继续原sess_261a55289f、s01-analysis-r6、原6文件所有权；R2 task_09da468c8a已21:52:20 completed、observed kimi-k3，完整get_result无failure/warnings。旧7反例由协调者独立重跑全过，不重复返工；源码稳定，未导入根。\n新增3fail已经实际复现，不能再只扩大标签/事后过滤：\n1 真实native双宏→真实ParallelAnalyzer→实际共享验证helper路径，候选已产生、两个实例已分析，但_run_scan_validation_queue约930行重新创建Analyzer(code_index=self.code_index, semantic_result=self.semantic_result)，是未包装base index且复用旧全局semantic_result。前置Analyzer的scope包装不保护后置Validator/工具/反证。协调探针只在真实Analyzer.__init__旁观传参后仍执行原构造/候选/队列，不mock其成功。\n2 同一BuildContext但类型payload的function_identity.usr指向other，get_function_type_context仍返回该类型。\n3 类型/宏payload仅外层build_context_id=当前ctx、子宏ALT无任何身份收据，get_function_symbol_context仍接受。_iter_build_ids的tag检查不是精确native收据；当前入口自身native facts有效不能替代被返回投影的来源核验。\n证据根artifacts/coordinator-s01-r2-acceptance-20261014/{review.json,results-native.xml,initial-delivery}；只读新探针followups-r6/test_instance_validation_scope.py，与原guard/navigation两探针合跑7pass3fail0skip。首轮漏native env的7pass2fail1skip单独保留，最终native轮已显式工具，不用首轮代替native结论。原worker303/JUnit/5改动源码/DELIVERY已归档。\n修复：共享验证必须保持当前精确BuildContext+native USR/范围作用域。可按精确scope分组pending并给每个真实验证helper传InstanceScope与ScopedCodeIndex、semantic_result=None/空语义，或等价正确实现；单次全局ledger冻结/义务一次裁决、缓存/去重/状态/统计生命周期都保留，禁止在无scope helper里先验证再按ID过滤。缺失/多scope/无法核验义务不得走base，应保留明确needs_review/gap。你拥有parallel_analyzer.py/analyzer.py，需直接修复该共享调用位置，不修改协调者scan_session/code_index/验证公共文件。\n类型/宏/metadata收据必须绑定被消费内容自身的native USR、源码范围和当前构建；同构建ID、父对象的tag、字符串名称不授权成员事实。当前base API未提供充分收据时安全拒绝并记consumer gap即可；不必本轮完成S01-SYMBOL。你前轮新增的仅buildID positive是假定不足的正例，需改为真正充分收据的正例或明确unsupported，并保留真实native标准根候选positive。不能通过给数据补USR标签来制造收据。\n保留真实native仅ALT double_free/基线0、全部24+既有foreign/missing/stale/TU/overload/path及closed/close/concurrent反例，默认实验开关不改。新增协调探针只读，自己补拥有测试；native工具只读d39cbe72...，每次native测试显式Z_SCOPE_TEST_CLANG_INDEXER。WSL /home/zeal/venv313/bin/python经根test_slot.py --workspace本副本 --，PYTHONPATH本副本，ext4TMPDIR两槽。完成相关/native完整集合、compileall/mypy、局部Black，旧287/292/303全部保留，新JUnit文件名，最终稳定SHA/时间/未测/接线说明。根目录、其他副本、共享contracts/report/config/provider权限和旧S06只读；不commit/push/reset/clean，不声称整S01完成。最终稳定交付后停写。",
+    "user_requested": true,
+    "request_id": "92e522a7-3301-4ca2-a127-e4cd18f4023c"
+  }
+}

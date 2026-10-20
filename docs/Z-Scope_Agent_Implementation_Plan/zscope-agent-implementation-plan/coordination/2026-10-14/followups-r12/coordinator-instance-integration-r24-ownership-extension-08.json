@@ -1,0 +1,19 @@
+{
+  "actual_task": "/root",
+  "logical_task": "COORD-INSTANCE-INTEGRATION-R24",
+  "observed_at": "2026-10-17T11:25:51.594472+08:00",
+  "owner": "coordinator",
+  "isolated_workspace": ".coordination/20261014/workspaces/coordinator-contract-tests-r33",
+  "added_paths": [
+    "tests/test_parallel_shared_semantics.py",
+    "tests/test_raii_lifecycle.py",
+    "tests/test_rule_cli.py",
+    "docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/followups-r12/test_scan_checkpoint_dependency_boundary.py"
+  ],
+  "writes_only_isolated_until_independent_review": true,
+  "active_native_worker_paths_disjoint": true,
+  "production_fingerprint_rule_catalog_unchanged": true,
+  "stage_write": false,
+  "root_write": false,
+  "reason": "R32 actual failures: three catalog revisions stale and three mandatory semantics inputs absent in synthetic fingerprint probes"
+}

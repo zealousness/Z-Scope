@@ -1,0 +1,265 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T09:26:51.234635+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:52.245777+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:53.255247+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:54.276061+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:55.276246+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:56.284703+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:57.300428+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:58.311832+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:26:59.317783+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:00.321884+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:01.230597+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_ee2d05e6a6ca4da8b4eb67d5",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:21.813225+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: MSYS_NO_PATHCONV=1 wsl.exe -e bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-coverage && mkdir -p artifacts && PYTHONPATH=$PWD Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer /home/zeal/venv313/bin/python -m pytest -q tests/test_entry_instance_coverage.py --junitxml=artifacts/entry-instance-coverage-tests.xml 2>&1 | tail -5 && /home/zeal/venv313/bin/python - <<\"EOF\"\nimport xml.etree.ElementTree as ET\nroot = ET.parse(\"artifacts/entry-instance-coverage-tests.xml\").getroot()\nsuite = root.find(\"testsuite\")\nprint({k: suite.get(k) for k in (\"tests\", \"failures\", \"errors\", \"skipped\", \"time\")})\nEOF'",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"MSYS_NO_PATHCONV=1 wsl.exe -e bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-coverage && mkdir -p artifacts && PYTHONPATH=$PWD Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer /home/zeal/venv313/bin/python -m pytest -q tests/test_entry_instance_coverage.py --junitxml=artifacts/entry-instance-coverage-tests.xml 2>&1 | tail -5 && /home/zeal/venv313/bin/python - <<\\\"EOF\\\"\\nimport xml…"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:21.824581+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:23.925429+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:24.931514+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:25.940999+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:26.952889+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:27.954171+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:28.958114+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:29.967453+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:30.918280+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_40b32a94d2f2415191b65d8f",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:40.567156+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: MSYS_NO_PATHCONV=1 wsl.exe -e bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-coverage && sha256sum zscope/orchestration/entry_instance_coverage.py tests/test_entry_instance_coverage.py artifacts/entry-instance-coverage-tests.xml && ls -d .git 2>/dev/null || echo \"no .git (snapshot workspace)\"'",
+        "tool_call_id": "call_9f9621bfb4bb40f3b67f7020",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"MSYS_NO_PATHCONV=1 wsl.exe -e bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope_1.31/Z-Scope/.coordination/20261014/workspaces/s01-coverage && sha256sum zscope/orchestration/entry_instance_coverage.py tests/test_entry_instance_coverage.py artifacts/entry-instance-coverage-tests.xml && ls -d .git 2>/dev/null || echo \\\"no .git (snapshot workspace)\\\"'\", \"description\": \"Compute SHA-256 of delivered files and check git presence\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:40.577125+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_9f9621bfb4bb40f3b67f7020",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:40.888447+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_9f9621bfb4bb40f3b67f7020",
+        "status": "completed"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:49.451543+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Read: C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\",
+        "tool_call_id": "call_d8f668aaaff44935bf052310",
+        "kind": "read",
+        "status": "pending",
+        "locations": [
+          "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\\zscope\\orchestration\\entry_instance_coverage.py"
+        ],
+        "input": "{\"file_path\": \"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\s01-coverage\\\\zscope\\\\orchestration\\\\entry_instance_coverage.py\"}"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:49.461656+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_d8f668aaaff44935bf052310",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T09:27:49.495692+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "call_d8f668aaaff44935bf052310",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 296,
+  "count": 27,
+  "next_offset": 323,
+  "has_more": true,
+  "total_matching": 340
+}

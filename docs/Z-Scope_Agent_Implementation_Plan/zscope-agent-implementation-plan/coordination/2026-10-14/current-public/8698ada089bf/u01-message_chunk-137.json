@@ -1,0 +1,362 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T06:05:43.943973+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " `\"preset\"` 会使托管 rollout 状态下显式 overnight 被静默降级 fast"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:44.194301+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "。java+overnight 按现有语言门显式拒绝。\n- `stop_at`："
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:44.503971+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "严格 HH:MM + 必须显式 IANA"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:44.794252+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " timezone；解析下一个本地时刻并持有绝对带时区边界；DST gap/fold（PEP 49"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:45.144598+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "5 round-trip 判定）与未知时区保守拒绝；`now` 可注入；不建周期任务。\n- schema"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:45.401929+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 由解析所用的同一批键表/词表机械生成（内置漂移守卫），测试双向断言"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:45.665871+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "一致。\n\n**未接线范围（详见 DELIVERY 的 supported/unwired 表"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:45.918765+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "）**：focus"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:46.176321+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "→skill 域、reproduction 实验、max_workers 调度、stop 窗口 job 消费（S08）、多 target 执行、"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:46.461800+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "platform 行为、CLI/init/MCP/模板/prepare/README 迁"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:46.751577+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "移——均在 `WiringNote` 与 DELIVERY 中显式列出，"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:47.008898+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "未虚构成已完成能力。\n\n**验证**（WSL"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:47.266394+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " Ubuntu `/home/zeal/venv313/bin/python` 3.13.15，cwd=隔离"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:47.515574+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "目录）：`tests/test_config_v3.py` 64 passed；v2/CLI/preparation"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:47.797483+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "/migration/reference/concurrency 回归 69 passed；合计 133 passed，JUnit 在 `artifacts/u01-config"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:48.057584+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "-tests.junit.xml`；`compileall` OK；`mypy zscope` 331 文件 Success；"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:48.323582+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "新文件已 Black 格式化（v2/config 存量偏差为基线历史，"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:48.584487+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "未做无关重排）。测试仅用 dummy 凭据，未运行真实模型/扫描"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:48.708441+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "/formal，未重编 native，未改共享 venv。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:05:48.745523+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "✓ completed · cache 155/156 messages · 150.2k cache-read tokens"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:41:26.726624+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "收到"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:41:27.145055+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "同源 schema 漂移"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:41:27.411631+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "修复指令。先读验收证据 `review.json` 与 `probe_u01_schema.py`，确认四项漂"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:41:27.623442+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "移的确切判定方式，再在隔离目录内修复。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:30.267235+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "证据"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:30.616356+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "明确：probe 用 `re"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:30.871525+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": ".search`（JSON Schema pattern 的非锚定语义）对照 parser `full"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:31.223268+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "match`，四项漂移属实。额外自查还发现同类漂移"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:31.494854+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "：`_string` 先 strip 再校验（`\" 08:00\"` parser "
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:31.812952+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "接受、非容忍空白的锚定 pattern 会拒绝"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:32.120355+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "）、空串字段（api_key/base_urls 项/root"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:32.461709+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 等 parser 拒空串而 schema 无 minLength）、llms 空 profile 名"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:32.737977+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "。一并按\"schema 镜像"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:33.128992+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " parser、无法表达者显式披露\"修复。先看 Black 后的"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:33.170533+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "当前 schema 段。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:45.555869+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "依次"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:45.945951+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "修改 v3.py。先加常量（语言表/target 数据库"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:45.975726+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "规则/loader 约束披露）。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:55.714698+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "Parser"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:55.978386+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": " 改为同一"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:45:56.099967+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "张规则表驱动（错误文案不变）。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:46:10.339615+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "现在"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:46:10.530390+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "重写 schema 生成段。先读当前版本。"
+      }
+    },
+    {
+      "ts": "2026-10-14T06:46:42.246888+00:00",
+      "type": "message_chunk",
+      "data": {
+        "update_type": "AgentMessageChunk",
+        "text": "现在"
+      }
+    }
+  ],
+  "offset": 137,
+  "count": 44,
+  "next_offset": 181,
+  "has_more": true,
+  "total_matching": 197
+}

@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "ldd",
+    "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.tsan-x86_64.so"
+  ],
+  "exit_code": 0,
+  "stdout": "\tlinux-vdso.so.1 (0x00007ffd54dee000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007c85d0400000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007c85d0717000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007c85d1cef000)\n",
+  "stderr": ""
+}

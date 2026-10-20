@@ -1,0 +1,88 @@
+{
+  "checked_utc": "2026-10-11T21:31:30.936159+00:00",
+  "HEAD": "010f40210b54ba0f79a088312ce5d8be3a82ace0",
+  "V01": "done",
+  "V02": "done",
+  "image_id": "60e3b821beb946564925285acdc7c87b55bcdf587f4e3006321728dce2900fff",
+  "common_candidate_accepted_for_approved_scope": true,
+  "TSAN": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ASAN": {
+    "passed": 5,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ordinary": {
+    "passed": 1736,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "new_java_nodes": {
+    "passed": 2,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "compileall_mypy": {
+    "compileall-final": 0,
+    "mypy": 0
+  },
+  "final_documentation": {
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "original_frozen_inputs": 403,
+  "changed_frozen_inputs": [],
+  "new_project_inputs": 398,
+  "new_tool_unique_sources": 3510,
+  "normalized_targets": 3579,
+  "tool_source_and_staged_hashes_verified": true,
+  "jdk_version": "21.0.12.1",
+  "maven_version": "3.8.7",
+  "actual_copy_bytes": {
+    "normalized_tools_cache": 481141439,
+    "project": 11272329,
+    "control": 3386290
+  },
+  "prepared_manifest_sha256": "9eedca30b0cb8c602d43320bec2a43a7ed666a328555e2694833e43bd6403c4f",
+  "old_sealed_evidence_unchanged": true,
+  "product_or_test_changes_this_continuation": false,
+  "old_1734_tests_or_sanitizers_reexecuted": 0,
+  "model_requests_and_material_exports": 0,
+  "protected_config_and_bridge_files_unchanged": true,
+  "host_aslr": "2",
+  "parent_personality": "0",
+  "default_profile_unchanged": true,
+  "owned_container_names": [
+    "zscope-v02-common-cq38zka2",
+    "zscope-common-tsan-f5ulni66",
+    "zscope-common-tsan-h_jgiqr1",
+    "zscope-common-asan-a8lga4np",
+    "zscope-common-ordinary-5av2bgq7",
+    "zscope-common-ordinary-1oofs_h6",
+    "zscope-common-ordinary-f_cz3sgi",
+    "zscope-common-ordinary-_z84d9_f",
+    "zscope-common-ordinary-v8qg2gqr",
+    "zscope-v02-docs-pkc3wd8y",
+    "zscope-common-java-20261012-two-nodes",
+    "zscope-v02-docs-8g94usy0"
+  ],
+  "owned_containers_remaining": [],
+  "owned_tool_snapshot_preserved_for_review": "/home/zeal/.cache/zscope-common-java-20261012",
+  "rollback_script_not_executed": true,
+  "git_diff_check": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "warning: in the working copy of 'zscope/web/static/offline_template.html', LF will be replaced by CRLF the next time Git touches it\n",
+    "configuration": "core.autocrlf=true per command, matching Windows checkout"
+  },
+  "scope_limit": "Approved bounded fixtures/common ordinary matrix; no CBMC/generator/formal Range/portable release claim"
+}

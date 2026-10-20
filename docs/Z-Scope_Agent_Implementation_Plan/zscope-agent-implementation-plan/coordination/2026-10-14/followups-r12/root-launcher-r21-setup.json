@@ -1,0 +1,16 @@
+{
+  "captured_at": "2026-10-15T15:48:13.899820+00:00",
+  "files": {
+    "verify_current_root_r21.py": "eb9af1c522b2c8403f61e006737f27522eafb0f791b41d48406b19026531f72c",
+    "verify_joint_retry_with_clock_r21.py": "5e37248070d19f6b9e433c0e996c46233cfced1fcb8ec94aeb93d26d693cfbf8",
+    "publish_joint_r21.py": "672e288d7eede66bb9e72fd15bc432e384fe2b0af6373322a10eb037036aa5e0"
+  },
+  "root_product_changed": false,
+  "prior_r20_launchers_changed": false,
+  "required_test_case_floor": 2539,
+  "commands_required": 6,
+  "default_fd_capture": true,
+  "exactly_one_external_test_slot": true,
+  "login_shell_required": true,
+  "new_preflight_before_artifact_creation": true
+}

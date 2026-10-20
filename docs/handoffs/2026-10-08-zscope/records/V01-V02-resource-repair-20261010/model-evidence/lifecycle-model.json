@@ -1,0 +1,54 @@
+{
+  "exit_code": 1,
+  "counts": {
+    "passed": 2,
+    "failed": 2,
+    "errors": 0,
+    "skipped": 0
+  },
+  "failures": [
+    {
+      "name": "test_cancellation_kills_descendant_after_leader_exit",
+      "detail": [
+        "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/test_resource_lifecycle.py:86: in test_cancellation_kills_descendant_after_leader_exit\n    _assert_stopped(marker)\n/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/test_resource_lifecycle.py:49: in _assert_stopped\n    while _alive(marker) and time.monotonic() < until:\n          ^^^^^^^^^^^^^^\n/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/test_resource_lifecycle.py:34: in _alive\n    return status.read_text().rsplit(\")\", 1)[1].split()[0] != \"Z\"\n           ^^^^^^^^^^^^^^^^^^\n/usr/lib/python3.13/pathlib/_local.py:546: in read_text\n    return PathBase.read_text(self, encoding, errors, newline)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n/usr/lib/python3.13/pathlib/_abc.py:633: in read_text\n    return f.read()\n           ^^^^^^^^\nE   ProcessLookupError: [Errno 3] No such process"
+      ]
+    },
+    {
+      "name": "test_eof_does_not_leave_an_owned_descendant_alive",
+      "detail": [
+        "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/test_resource_lifecycle.py:99: in test_eof_does_not_leave_an_owned_descendant_alive\n    _assert_stopped(marker)\n/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/test_resource_lifecycle.py:52: in _assert_stopped\n    assert not _alive(marker), \"owned descendant survived the runner cleanup\"\nE   AssertionError: owned descendant survived the runner cleanup\nE   assert not True\nE    +  where True = _alive(PosixPath('/tmp/zscope-resource-candidate-20261010-iw4n6dxa/lifecycle-model/test_eof_does_not_leave_an_own0/child.pid'))"
+      ]
+    }
+  ],
+  "command": [
+    "/home/zeal/venv313/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "--basetemp=/tmp/zscope-resource-candidate-20261010-iw4n6dxa/lifecycle-model",
+    "--junitxml=/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/lifecycle-model.xml",
+    "/mnt/c/Users/10273/Documents/Codex/2026-10-09/task-3/gateway-resource-repair2-20261010/test_resource_lifecycle.py"
+  ],
+  "stage_digest": "77c82832b03cd2e0bb2adacb0dbc19983daaa08912c23a9546ddb9ae0b08d1b4",
+  "product_modified": false,
+  "sanitizer_execution": false,
+  "pressure": false,
+  "max_fixture_output_bytes": 64,
+  "artifacts": {
+    "lifecycle-model.xml": {
+      "sha256": "2221111f4709da853a03b0fa478e26183bbe7427d1e01d332eb7e08784177f4d",
+      "bytes": 2692
+    },
+    "lifecycle-model.stdout.log": {
+      "sha256": "8354b9bd4a345f5c35fceeea1e77079fd02cd1b1ff97058913d6e3cf28082e2b",
+      "bytes": 2412
+    },
+    "lifecycle-model.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  }
+}

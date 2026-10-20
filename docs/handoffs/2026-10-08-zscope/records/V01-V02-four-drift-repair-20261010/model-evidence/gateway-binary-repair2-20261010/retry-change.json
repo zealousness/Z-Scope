@@ -1,0 +1,11 @@
+{
+  "priorSessionId": "session-2e38aacc-bcc9-40b2-a0a4-93bb3bd536f3",
+  "diagnosedReason": "max-tokens",
+  "priorOutputTokens": 32768,
+  "configuredMaxTokens": 65536,
+  "priorExplicitMaxTokens": null,
+  "sameApprovedProviderModelEndpointAndCredentialReference": true,
+  "onlyProcessOverlayChanged": true,
+  "safetyGuardUnchanged": true,
+  "privateReasoningDiscarded": true
+}

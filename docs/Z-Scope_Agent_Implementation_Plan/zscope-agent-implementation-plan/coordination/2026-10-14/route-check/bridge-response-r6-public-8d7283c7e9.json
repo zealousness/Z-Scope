@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T12:20:26.926817+00:00",
+      "type": "tool_call",
+      "data": {
+        "update_type": "ToolCallStart",
+        "title": "Bash: ls \"C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\u01-entrypoints-r6\"",
+        "tool_call_id": "call_2515ce985b544d1caf56ed0d",
+        "kind": "execute",
+        "status": "pending",
+        "input": "{\"command\": \"ls \\\"C:\\\\Users\\\\10273\\\\home\\\\work\\\\Z-Scope_1.31\\\\Z-Scope\\\\.coordination\\\\20261014\\\\workspaces\\\\u01-entrypoints-r6\\\"\", \"description\": \"List isolated workspace directory\"}"
+      }
+    }
+  ],
+  "offset": 0,
+  "count": 1,
+  "next_offset": 1,
+  "has_more": true,
+  "total_matching": 1619
+}

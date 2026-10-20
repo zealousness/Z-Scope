@@ -1,0 +1,15 @@
+{
+  "id": "s01-cdb-coverage-identity-fix",
+  "branch": "S01-CDB-COVERAGE",
+  "tool": "dispatch_task",
+  "arguments": {
+    "agent": "zcode",
+    "model": "97ad75c3-e785-4369-9730-55a5ee47c71c/glm-5.3",
+    "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+    "session_id": "sess_c3c6c01381",
+    "title": "s01-cdb-coverage原会话身份返修",
+    "user_requested": true,
+    "request_id": "dca9baf7-5a7b-49de-992f-c55012893584",
+    "message": "原切片已完成/observed精确hw/glm-5.3，尚未导入root；协调者发现稳定源码下的实际身份边界缺陷，请在同一原session与原隔离目录做最小验收返修，保留此前字节和所有原约束。不要重做盘点、扩大文件所有权或弱化断言。\n只读复现与具体正反例要求：C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\docs\\Z-Scope_Agent_Implementation_Plan\\zscope-agent-implementation-plan\\coordination\\2026-10-14\\NEXT_PRODUCER_REVIEW.md\n只处理本文与你相应的S01-CDB-COVERAGE或S08-QUEUE-CORE节，另一节文件由另一作者独占，不代做。\n隔离目录：C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope\\.coordination\\20261014\\workspaces\\s01-coverage\n仅两个自有新模块/测试与自己DELIVERY/artifacts允许写，根checkout、共同scan_session/owner/store/Web/config/静态/UI/锁/文档以及其他隔离目录不动。\nS01必须缺失/外来BuildContext不补命令覆盖，并保留native正确relative source/双宏，复用既有BuildContext身份；S08 complete/defer必须当前claim token，省略token不得绕过已重新分派的lease，不给尚不存在的兼容调用留洞。\nWSL /home/zeal/venv313/bin/python，绝对隔离PYTHONPATH，native只用已有d39cbe72...263399，不重建、不安装、不真实LLM/formal。最终一个相关稳定集合JUnit/SHA/compileall/mypy/Black，不累加前17或队列测试。旧原生任务/被拦caller分支不查询/恢复/实施，发现新真实拒绝准确停报，不换模型或session绕过。不reset/clean/commit/push/改项目外配置/凭据。默认实验不变；模块依然不冒称共享scanner接线或整个S01/JOB04/JOB06。"
+  }
+}

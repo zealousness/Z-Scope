@@ -1,0 +1,48 @@
+{
+  "ok": true,
+  "events": [
+    {
+      "ts": "2026-10-14T04:38:56.385203+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_0_a50b46d4",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.385715+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_0_a50b46d4",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:56.904904+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "title": "Running: ls -la \".coordination/20261014/workspaces/s08-owne…",
+        "tool_call_id": "0:Bash_0_a50b46d4",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    },
+    {
+      "ts": "2026-10-14T04:38:57.025825+00:00",
+      "type": "tool_call_update",
+      "data": {
+        "update_type": "ToolCallProgress",
+        "tool_call_id": "0:Bash_0_a50b46d4",
+        "status": "completed"
+      }
+    }
+  ],
+  "offset": 44,
+  "count": 4,
+  "next_offset": 48,
+  "has_more": false,
+  "total_matching": 48
+}
