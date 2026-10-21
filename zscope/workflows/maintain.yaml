@@ -5,24 +5,25 @@ steps:
   - id: discover_entries
     scope: session
     handler: discover_entries
+    required: false
     action: classify API, communication, thread, and other user-input entries when requested
-  - id: compare_entry_state
+  - id: wiki_compile
+    scope: session
+    handler: wiki_compile
+    action: compile and pin project Wiki before maintenance analysis and validation
+  - id: compare_hashes
     scope: entry
-    handler: compare_entry_state
     action: compare code and semantic hashes in snapshot.db
-  - id: reuse_unchanged_report
+  - id: reuse_unchanged
     scope: entry
-    handler: reuse_unchanged_report
     stop_policy: stop_if_handler_returns_true
     action: return historical reports for unchanged entries with zero LLM cost
-  - id: reconcile_history
+  - id: reconcile_changed
     scope: entry
-    handler: reconcile_history
-    agent: history_maintenance_agent
+    agent: issue_reconciler_agent
     action: verify whether historical issues still exist after source changes
-  - id: run_changed_entry
+  - id: rescan_changed
     scope: entry
-    handler: run_changed_entry
     stop_policy: stop_if_handler_returns_true
-    agent: hypothesis_hunter
-    action: run the default Candidate Ledger workflow only for changed entries
+    agent: vulnerability_analyzer
+    action: run default vulnerability workflow only for changed entries

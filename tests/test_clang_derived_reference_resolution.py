@@ -159,7 +159,7 @@ def test_one_hundred_thousand_semantic_unique_refs_issue_no_definition(
         db.close()
 
 
-def test_reverse_references_resolve_ambiguous_declaration_without_definition(
+def test_reverse_references_resolve_after_use_site_definition_fails(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -207,7 +207,7 @@ def test_reverse_references_resolve_ambiguous_declaration_without_definition(
         context = db.get_function_symbol_context("f", "use.c")
         assert context["referenced_globals"][0]["file_path"] == "second.h"
         assert sorted(path.name for path in reference_calls) == ["first.h", "second.h"]
-        assert calls == {"semantic": 1, "definition": 0}
+        assert calls == {"semantic": 1, "definition": 1}
     finally:
         db.close()
 
@@ -304,17 +304,18 @@ def test_symbol_and_type_rebuild_share_one_semantic_request_per_file(
 ) -> None:
     source = tmp_path / "shared.cpp"
     text = "int f(T *value) { return g + sizeof(T); }\n"
-    source.write_text(text, encoding="utf-8")
+    source.write_text("struct T {};\nint g;\n" + text, encoding="utf-8")
     type_starts = [text.index("T"), text.rindex("T")]
     global_start = text.index("g")
     data = _semantic_records(
-        0,
+        2,
         [(start, 1, 1) for start in type_starts] + [(global_start, 0, 1)],
     )
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     try:
-        db.insert_function("f", "shared.cpp", 1, 1, signature="int f(T *value)")
-        db.insert_global_variable("g", "int", "shared.cpp", 1)
+        db.insert_function("f", "shared.cpp", 3, 3, signature="int f(T *value)")
+        db.insert_global_variable("g", "int", "shared.cpp", 2)
+
         db.insert_type("T", "struct", "shared.cpp", 1, 1, full_definition="struct T;")
         db.commit()
         extractor = ClangExtractor(project_root=tmp_path)
@@ -325,6 +326,24 @@ def test_symbol_and_type_rebuild_share_one_semantic_request_per_file(
             token_types=["variable", "type"],
             modifiers=["globalScope"],
         )
+        def symbol_details(_path, _line, char):
+            name = "g" if text[char:].startswith("g") else "T"
+            target_line, target_char = (1, 4) if name == "g" else (0, 7)
+            return [
+                {
+                    "usr": "c:@" + name,
+                    "name": name,
+                    "declarationRange": {
+                        "uri": source.as_uri(),
+                        "range": {
+                            "start": {"line": target_line, "character": target_char},
+                            "end": {"line": target_line, "character": target_char + 1},
+                        },
+                    },
+                }
+            ]
+
+        monkeypatch.setattr(extractor, "get_symbol_details", symbol_details)
         monkeypatch.setattr(
             extractor,
             "get_references",
@@ -338,7 +357,7 @@ def test_symbol_and_type_rebuild_share_one_semantic_request_per_file(
         assert extractor.rebuild_function_type_refs(db) >= 1
         assert calls == {"semantic": 1, "definition": 0}
         assert (
-            db.get_function_type_context("f", "shared.cpp", 1)["referenced_types"][0]["name"] == "T"
+            db.get_function_type_context("f", "shared.cpp", 3)["referenced_types"][0]["name"] == "T"
         )
     finally:
         db.close()
@@ -576,8 +595,12 @@ def test_combined_derived_rebuild_uses_one_semantic_request_per_file(
 
         assert result["errors"] == {}
         assert semantic_calls == 1
-        assert extractor.get_last_derived_stats("function_symbol_context")["semantic_requests"] == 1
-        assert extractor.get_last_derived_stats("function_type_refs")["semantic_requests"] == 1
+        assert extractor.get_last_derived_stats("function_symbol_context")[
+            "semantic_requests"
+        ] == 1
+        assert extractor.get_last_derived_stats("function_type_refs")[
+            "semantic_requests"
+        ] == 1
     finally:
         db.close()
 
@@ -697,7 +720,9 @@ def test_reference_cache_eviction_removes_stale_reverse_coordinates(
 
     assert list(semantic_context["reference_cache"]) == [second_key]
     assert first_coordinate not in semantic_context["reference_coordinate_index"]
-    assert semantic_context["reference_coordinate_index"][second_coordinate] == {second_key[1]}
+    assert semantic_context["reference_coordinate_index"][second_coordinate] == {
+        second_key[1]
+    }
     assert stats["reference_cache_evictions"] == 1
 
 
@@ -747,7 +772,7 @@ def test_reference_location_conversion_reads_each_target_file_once(
     assert target_reads == 1
 
 
-def test_usr_groups_redeclarations_before_reverse_reference_lookup(
+def test_usr_groups_only_positive_redeclarations_after_reverse_reference_lookup(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -805,9 +830,9 @@ def test_usr_groups_redeclarations_before_reverse_reference_lookup(
         assert extractor.rebuild_function_symbol_refs(db) == 1
         context = db.get_function_symbol_context("f", "use.c")
         assert context["referenced_globals"][0]["file_path"] == "shared.c"
-        assert sorted(path.name for path in symbol_info_calls) == ["shared.c", "shared.h"]
-        assert [path.name for path in reference_calls] == ["shared.c"]
-        assert calls == {"semantic": 1, "definition": 0}
+        assert sorted(path.name for path in symbol_info_calls) == ["shared.c", "shared.h", "use.c"]
+        assert sorted(path.name for path in reference_calls) == ["shared.c", "shared.h", "use.c"]
+        assert calls == {"semantic": 1, "definition": 1}
         assert all(
             not semantic_context["reference_cache"]
             and not semantic_context["reference_coordinate_index"]
@@ -875,10 +900,12 @@ def test_usr_groups_redeclarations_across_many_occurrences(
 
         assert extractor.rebuild_function_symbol_refs(db) == 1
         stats = extractor.get_last_derived_stats("function_symbol_context")
-        assert len(symbol_info_calls) == 2
-        assert len(reference_calls) == 1
-        assert stats["references_resolved"] == 3
-        assert stats["definition_requests"] == 0
+        assert len(symbol_info_calls) == 5
+        # One forward query per USR/TU, then one query per declaration. Only
+        # the two positive declarations need symbolInfo for alias equivalence.
+        assert len(reference_calls) == 3
+        assert stats["usr_resolved"] == 3
+        assert stats["definition_requests"] == 3
     finally:
         db.close()
 
@@ -1008,7 +1035,8 @@ def test_symbol_rebuild_runs_files_concurrently(tmp_path, monkeypatch) -> None:
         for index in range(2):
             source = tmp_path / f"symbol_{index}.c"
             source.write_text(
-                f"int shared_{index};\n" f"int f{index}(void) {{ return shared_{index}; }}\n",
+                f"int shared_{index};\n"
+                f"int f{index}(void) {{ return shared_{index}; }}\n",
                 encoding="utf-8",
             )
             db.insert_function(f"f{index}", source.name, 2, 2, signature=f"int f{index}(void)")
@@ -1032,9 +1060,9 @@ def test_symbol_rebuild_runs_files_concurrently(tmp_path, monkeypatch) -> None:
                     concurrent.set()
             assert concurrent.wait(2.0), "symbol files were processed serially"
             symbol_name = f"shared_{str(function['name'])[1:]}"
-            aggregated[
-                (function["name"], function_file, symbol_name, "global", function_file, 2)
-            ] = "read"
+            aggregated[(function["name"], function_file, symbol_name, "global", function_file, 2)] = (
+                "read"
+            )
             with lock:
                 active -= 1
 
@@ -1102,9 +1130,9 @@ def test_combined_rebuild_parallelizes_files_but_requests_semantics_once_per_fil
         def collect_symbols(function, function_file, *_args):
             aggregated = _args[4]
             symbol_name = f"shared_{str(function['name'])[1:]}"
-            aggregated[
-                (function["name"], function_file, symbol_name, "global", function_file, 3)
-            ] = "write"
+            aggregated[(function["name"], function_file, symbol_name, "global", function_file, 3)] = (
+                "write"
+            )
 
         def collect_types(function, function_file, _source_path, _lines, types_by_name, *_args):
             type_name = f"ProjectType{str(function['name'])[1:]}"
@@ -1360,9 +1388,9 @@ def test_combined_parallel_failure_stops_only_failed_index(tmp_path, monkeypatch
         def collect_symbols(function, function_file, *_args):
             aggregated = _args[4]
             symbol_name = f"shared_{str(function['name'])[1:]}"
-            aggregated[
-                (function["name"], function_file, symbol_name, "global", function_file, 3)
-            ] = "write"
+            aggregated[(function["name"], function_file, symbol_name, "global", function_file, 3)] = (
+                "write"
+            )
 
         def collect_types(function, *_args):
             if function["name"] == "f0":

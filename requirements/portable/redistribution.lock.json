@@ -1,0 +1,15 @@
+{
+  "schema_version": "zscope.redistribution-sources.v1",
+  "sources": {
+    "jdk": {
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz",
+      "filename": "OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz",
+      "version": "jdk-21.0.12.1+1",
+      "size": 115126841,
+      "sha256": "573057d03584ae793fb7ec9a14c76d826d9187a53efeefd99da47403a5308234",
+      "profiles": [
+        "java"
+      ]
+    }
+  }
+}

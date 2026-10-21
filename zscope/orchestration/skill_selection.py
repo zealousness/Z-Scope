@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 
 @dataclass
 class SkillSelection:
-    """Resolved skill subset for one active-discovery invocation."""
+    """Resolved skill subset for one vulnerability analyzer invocation."""
 
     skills: List[str]
     restricted: bool

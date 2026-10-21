@@ -4,12 +4,30 @@ Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 """
 
 import logging
+import hashlib
+import json
 import os
 import re
 import threading
+import time
+import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
+from bisect import bisect_right
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, List, Sequence, Union, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Optional,
+    Dict,
+    Any,
+    Iterable,
+    Iterator,
+    List,
+    Sequence,
+    Union,
+    Tuple,
+)
 
 from ..common.utils import (
     extract_function_calls,
@@ -18,8 +36,35 @@ from ..common.utils import (
 )
 from ..common.runtime_limits import ensure_linux_nofile_limit
 from .backend_base import CodeBackend
+from .indexing_runtime import observed
+
+if TYPE_CHECKING:
+    from ..orchestration.jobs.instance_results import (
+        InstanceResultPayload,
+        PreparedInstanceResult,
+        RecoveryMiss,
+    )
 
 logger = logging.getLogger(__name__)
+
+_SEMANTIC_MODELING_CONTEXT: ContextVar[bool] = ContextVar(
+    "semantic_modeling_context", default=False
+)
+
+
+@contextmanager
+def semantic_modeling_context() -> Iterator[None]:
+    """Read full dependency facts without changing other threads' tool budgets."""
+    token = _SEMANTIC_MODELING_CONTEXT.set(True)
+    try:
+        yield
+    finally:
+        _SEMANTIC_MODELING_CONTEXT.reset(token)
+
+
+def _context_limit(limit: int) -> int:
+    return sys.maxsize if _SEMANTIC_MODELING_CONTEXT.get() else limit
+
 
 DECLARATION_LINE_RE = re.compile(
     r"^[ \t]*(?!(?:return|if|while|for|switch)\b)"
@@ -114,6 +159,8 @@ class CodeIndex:
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._function_alias_index: Dict[str, str] = {}
         self._ambiguous_function_aliases: set[str] = set()
+        self._function_query_index: Dict[str, set[str]] = {}
+        self._function_record_variants: Dict[str, set[str]] = {}
         self._function_file_index: Dict[str, set[str]] = {}
         self._function_file_resolution_cache: Dict[Tuple[str, str], str] = {}
         self._declaration_comment_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
@@ -125,6 +172,9 @@ class CodeIndex:
         self._svf_parallel_workers = max(1, int(svf_parallel_workers or 1))
         self._index_ready = False
         self._index_epoch = 0
+        self._job_runtime_outputs: Optional["_JobRuntimeOutputs"] = None
+        self._callback_registration_payload: Optional[Dict[str, Any]] = None
+        self._callback_registration_checked_stats: Optional[Dict[str, Any]] = None
         self._cache_lock = threading.RLock()
         self._declaration_comment_index_lock = threading.Lock()
         self._macro_definition_index_lock = threading.Lock()
@@ -289,10 +339,12 @@ class CodeIndex:
 
             cfg = indexing_config
             cb = ClangBackend(
+                frontend=getattr(cfg, "clang_frontend", "auto"),
+                clang_indexer_path=getattr(cfg, "clang_indexer_path", "zscope-clang-indexer"),
                 clangd_path=cfg.clangd_path if cfg else "clangd",
                 db_path=cfg.knowledge_db_path if cfg else ".zscope_knowledge/code_knowledge.db",
                 batch_size=cfg.batch_size if cfg else 50,
-                max_threads=cfg.max_clangd_threads if cfg else 8,
+                max_threads=cfg.max_clangd_threads if cfg else 4,
             )
             cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
             ok = cb.initialize(
@@ -312,10 +364,12 @@ class CodeIndex:
 
             cfg = indexing_config
             ub = UnifiedBackend(
+                clang_frontend=getattr(cfg, "clang_frontend", "auto"),
+                clang_indexer_path=getattr(cfg, "clang_indexer_path", "zscope-clang-indexer"),
                 clangd_path=cfg.clangd_path if cfg else "clangd",
                 db_path=cfg.knowledge_db_path if cfg else ".zscope_knowledge/code_knowledge.db",
                 batch_size=cfg.batch_size if cfg else 50,
-                max_threads=cfg.max_clangd_threads if cfg else 8,
+                max_threads=cfg.max_clangd_threads if cfg else 4,
                 svf_bin_dir=cfg.svf_bin_dir if cfg else "",
                 gclang_path=cfg.gclang_path if cfg else "gclang",
                 get_bc_path=cfg.get_bc_path if cfg else "get-bc",
@@ -496,13 +550,18 @@ class CodeIndex:
             return self._backend.joern_client
         return None
 
+    @observed("function-name-index")
     def _build_index(self) -> None:
         """Build function index from project."""
         with self._cache_lock:
             self._index_epoch += 1
+            self._callback_registration_payload = None
+            self._callback_registration_checked_stats = None
             self._function_index.clear()
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
+            self._function_query_index.clear()
+            self._function_record_variants.clear()
             self._function_file_index.clear()
             self._function_file_resolution_cache.clear()
 
@@ -572,7 +631,14 @@ class CodeIndex:
         with self._cache_lock:
             index_key = self._unique_function_index_key(canonical_name, record)
             record["index_name"] = index_key
+            if index_key in self._function_index:
+                # A lazy backend may replace a signature at the same location.
+                # Its old fast aliases must not outlive the old variant postings.
+                for alias, target in list(self._function_alias_index.items()):
+                    if target == index_key:
+                        self._function_alias_index.pop(alias, None)
             self._function_index[index_key] = record
+            self._register_function_query_index(index_key, record)
             self._register_function_file_index(index_key, record)
             self._function_file_resolution_cache.clear()
 
@@ -679,12 +745,12 @@ class CodeIndex:
         *,
         file_path: str = "",
     ) -> List[Tuple[str, Dict[str, Any]]]:
-        query_variants = set(self._function_query_variants(func_name))
+        ordered_variants = self._function_query_variants(func_name)
+        query_variants = set(ordered_variants)
         if not query_variants:
             return []
 
         if not file_path:
-            ordered_variants = self._function_query_variants(func_name)
             with self._cache_lock:
                 for variant in ordered_variants:
                     info = self._function_index.get(variant)
@@ -695,20 +761,21 @@ class CodeIndex:
                     if alias and alias in self._function_index:
                         return [(alias, dict(self._function_index[alias]))]
 
-        records: List[Tuple[str, Dict[str, Any]]] = []
-        if file_path:
-            records = self._function_records_for_file_hint(file_path)
-        if not records:
-            with self._cache_lock:
-                records = [(key, dict(info)) for key, info in self._function_index.items()]
-
-        matches: List[Tuple[str, Dict[str, Any]]] = []
-        for index_key, info in records:
-            if file_path and not self._record_matches_file_hint(info, file_path):
-                continue
-            record_variants = self._function_record_query_variants(index_key, info)
-            if query_variants.intersection(record_variants):
-                matches.append((index_key, info))
+        # Missing names and ambiguous aliases used to copy and normalize every
+        # function for every query. Preserve all matches in an inverted index.
+        with self._cache_lock:
+            candidate_keys: set[str] = set()
+            for variant in query_variants:
+                candidate_keys.update(self._function_query_index.get(variant, ()))
+            matches = [
+                (key, dict(self._function_index[key]))
+                for key in candidate_keys
+                if key in self._function_index
+                and (
+                    not file_path
+                    or self._record_matches_file_hint(self._function_index[key], file_path)
+                )
+            ]
 
         matches.sort(
             key=lambda item: (
@@ -719,6 +786,29 @@ class CodeIndex:
             )
         )
         return matches
+
+    def _register_function_query_index(self, index_key: str, record: Dict[str, Any]) -> None:
+        """Maintain postings on insert/replace, independently of evictable query caches."""
+        for variant in self._function_record_variants.pop(index_key, ()):
+            keys = self._function_query_index[variant]
+            keys.discard(index_key)
+            if not keys:
+                del self._function_query_index[variant]
+        variants = self._function_record_query_variants(index_key, record)
+        self._function_record_variants[index_key] = variants
+        for variant in variants:
+            self._function_query_index.setdefault(variant, set()).add(index_key)
+
+    def _has_indexed_function(self, name: str) -> bool:
+        """Header enumeration only needs existence, including ambiguous names."""
+        variants = self._function_query_variants(name)
+        with self._cache_lock:
+            return any(
+                variant in self._function_index
+                or self._function_alias_index.get(variant) in self._function_index
+                or bool(self._function_query_index.get(variant))
+                for variant in variants
+            )
 
     def _try_backend_function_lookup(self, func_name: str, *, file_path: str = "") -> bool:
         if not self._backend:
@@ -969,11 +1059,12 @@ class CodeIndex:
 
     def _function_query_variants(self, func_name: str) -> List[str]:
         raw = str(func_name or "").strip()
+        normalized = self._normalize_function_query(raw)
         variants = []
         for candidate in (
             raw,
-            self._normalize_function_query(raw),
-            self._strip_cpp_template_args(self._normalize_function_query(raw)),
+            normalized,
+            self._strip_cpp_template_args(normalized),
         ):
             if candidate and candidate not in variants:
                 variants.append(candidate)
@@ -1046,6 +1137,9 @@ class CodeIndex:
         seen = set()
 
         bases_to_search = self.include_paths if self.include_paths else [self.source_root]
+        # Overlapping include roots otherwise walk the same subtree once per
+        # covering root; drop any base nested inside an already-kept root.
+        bases_to_search = self._dedupe_contained_bases(bases_to_search)
 
         for base in bases_to_search:
             for file_path in base.rglob("*"):
@@ -1060,6 +1154,23 @@ class CodeIndex:
                 files.append(str(file_path))
 
         return sorted(files)
+
+    @staticmethod
+    def _dedupe_contained_bases(bases: Iterable[Path]) -> List[Path]:
+        """Drop include roots nested inside another root (single walk each)."""
+        kept: List[Path] = []
+        for base in sorted({Path(value) for value in bases}, key=lambda p: len(p.parts)):
+            covered = False
+            for parent in kept:
+                try:
+                    base.relative_to(parent)
+                    covered = True
+                    break
+                except ValueError:
+                    continue
+            if not covered:
+                kept.append(base)
+        return kept
 
     def _build_index_regex(self) -> None:
         """Build index using regex pattern matching (fallback)."""
@@ -1077,6 +1188,8 @@ class CodeIndex:
         signature_text: str,
         lines: Optional[Sequence[str]] = None,
         start_line: int = 1,
+        *,
+        class_scope: Optional[str] = None,
     ) -> Optional[Dict[str, str]]:
         """Best-effort parser for C/C++ function, method, constructor, and destructor heads."""
         original = str(signature_text or "").strip()
@@ -1106,7 +1219,8 @@ class CodeIndex:
         if not canonical_name:
             return None
 
-        class_scope = self._enclosing_cpp_type_name(lines or (), start_line)
+        if class_scope is None:
+            class_scope = self._enclosing_cpp_type_name(lines or (), start_line)
         simple_name = self._cpp_simple_name(self._strip_cpp_template_args(canonical_name))
         parent_name = ""
         if "::" in canonical_name:
@@ -1139,31 +1253,42 @@ class CodeIndex:
         line: str,
         lines: Sequence[str],
         line_no: int,
+        *,
+        class_scope: Optional[str] = None,
     ) -> Optional[Dict[str, str]]:
         stripped = str(line or "").strip()
         if not stripped.endswith(";") or "(" not in stripped or "{" in stripped:
             return None
         if stripped.startswith(("#", "typedef ", "using ")):
             return None
-        return self._parse_cpp_function_signature(stripped[:-1], lines, line_no)
+        return self._parse_cpp_function_signature(
+            stripped[:-1], lines, line_no, class_scope=class_scope
+        )
 
     def _enclosing_cpp_type_name(self, lines: Sequence[str], start_line: int) -> str:
         """Return the innermost class/struct name active before start_line."""
         if not lines or start_line <= 1:
             return ""
+        return self._cpp_type_scopes(lines[: max(0, start_line - 1)])[-1]
+
+    @staticmethod
+    def _cpp_type_scopes(lines: Sequence[str]) -> List[str]:
+        """Scope before each line, plus the final scope, in a single file pass."""
+        scopes = [""]
 
         stack: List[Tuple[str, int]] = []
         brace_depth = 0
         pending_type = ""
         in_block_comment = False
 
-        for raw_line in lines[: max(0, start_line - 1)]:
+        for raw_line in lines:
             line = raw_line
             if in_block_comment:
                 if "*/" in line:
                     line = line.split("*/", 1)[1]
                     in_block_comment = False
                 else:
+                    scopes.append(scopes[-1])
                     continue
             while "/*" in line:
                 before, after = line.split("/*", 1)
@@ -1189,12 +1314,14 @@ class CodeIndex:
             brace_depth -= line.count("}")
             while stack and brace_depth < stack[-1][1]:
                 stack.pop()
+            scopes.append("::".join(item[0] for item in stack))
 
-        return "::".join(item[0] for item in stack)
+        return scopes
 
     def _extract_functions_regex(self, file_path: Union[str, Path], content: str) -> None:
         """Extract function definitions using regex."""
         lines = content.split("\n")
+        scopes = self._cpp_type_scopes(lines)
         pending_signature: List[str] = []
         pending_start = 0
         in_block_comment = False
@@ -1245,7 +1372,9 @@ class CodeIndex:
                 continue
 
             before_brace = signature_text.split("{", 1)[0]
-            parsed = self._parse_cpp_function_signature(before_brace, lines, pending_start)
+            parsed = self._parse_cpp_function_signature(
+                before_brace, lines, pending_start, class_scope=scopes[pending_start - 1]
+            )
             if not parsed:
                 pending_signature = []
                 line_no += 1
@@ -1604,8 +1733,11 @@ class CodeIndex:
                 if not lines:
                     continue
 
+                scopes = self._cpp_type_scopes(lines)
                 for line_no, line in enumerate(lines, start=1):
-                    parsed = self._parse_function_declaration_line(line, lines, line_no)
+                    parsed = self._parse_function_declaration_line(
+                        line, lines, line_no, class_scope=scopes[line_no - 1]
+                    )
                     if not parsed:
                         continue
                     block = self._find_leading_c_comment_block(lines, line_no)
@@ -1630,6 +1762,132 @@ class CodeIndex:
                 return self._declaration_comment_index
 
     # ── Core retrieval methods ──
+
+    def linked_targets(self) -> Any:
+        from .link_targets import LinkedTargets
+
+        return LinkedTargets(self)
+
+    def _prepare_job_runtime_outputs(
+        self, *, context: Any, plan: Any, queue_path: Path, report_paths: Sequence[Path]
+    ) -> "_JobRuntimeOutputs":
+        """Issue one live scope from this actual index's complete native inputs."""
+        if self._job_runtime_outputs is not None:
+            raise ValueError("job_runtime_output_scope_already_issued")
+        scope = _JobRuntimeOutputs(
+            self,
+            issuer=_JOB_RUNTIME_ISSUER,
+            context=context,
+            plan=plan,
+            queue_path=queue_path,
+            report_paths=report_paths,
+        )
+        self._job_runtime_outputs = scope
+        try:
+            scope.capture_binding()
+        except BaseException:
+            self._job_runtime_outputs = None
+            raise
+        return scope
+
+    def get_build_contexts(self, file_path: str = "") -> List[Dict[str, Any]]:
+        backend = getattr(self._backend, "_clang", None) or self._backend
+        getter = getattr(backend, "get_build_contexts", None)
+        if not callable(getter):
+            return []
+        values = getter(self._native_fact_path(file_path) if file_path else "")
+        return [dict(value) for value in values] if isinstance(values, list) else []
+
+    def get_function_program_facts(
+        self, func_name: str, file_path: str = "", *, build_context_id: str = ""
+    ) -> Dict[str, Any]:
+        getter = getattr(self._backend, "get_function_program_facts", None)
+        if not callable(getter):
+            getter = getattr(
+                getattr(self._backend, "_clang", None), "get_function_program_facts", None
+            )
+        if not callable(getter):
+            return {"complete": False, "events": [], "accesses": []}
+        # Native USRs contain '@'; stripping a navigation suffix would destroy
+        # the exact identity and could redirect the query to another symbol.
+        name = (
+            str(func_name) if str(func_name).startswith("c:") else str(func_name).split("@", 1)[0]
+        )
+        path = self._native_fact_path(file_path) if file_path else ""
+        if build_context_id:
+            backend = getattr(self._backend, "_clang", None) or self._backend
+            if not callable(getattr(backend, "get_build_contexts", None)):
+                return {
+                    "complete": False,
+                    "events": [],
+                    "accesses": [],
+                    "reason": "build_context_unsupported",
+                }
+            value = getter(name, path, build_context_id=build_context_id)
+        else:
+            value = getter(name, path)
+        return (
+            value if isinstance(value, dict) else {"complete": False, "events": [], "accesses": []}
+        )
+
+    def get_function_build_contexts(
+        self, func_name: str, file_path: str = ""
+    ) -> List[Dict[str, Any]]:
+        """List compile instances whose stored facts contain the exact function.
+
+        Membership comes from the exact-context store only; a function absent
+        from a variant stays absent and no context is inferred from file names.
+        """
+
+        backend = getattr(self._backend, "_clang", None) or self._backend
+        getter = getattr(backend, "get_function_build_contexts", None)
+        if not callable(getter):
+            # Backends expose the exact-context DB through ``db`` while keeping
+            # their own query surface minimal.
+            database = getattr(backend, "db", None) or getattr(backend, "_db", None)
+            getter = getattr(database, "get_function_build_contexts", None)
+        if not callable(getter):
+            return []
+        name = (
+            str(func_name) if str(func_name).startswith("c:") else str(func_name).split("@", 1)[0]
+        )
+        path = self._native_fact_path(file_path) if file_path else ""
+        values = getter(name, path)
+        return [dict(value) for value in values] if isinstance(values, list) else []
+
+    def get_compilation_facts(
+        self,
+        context_id: str,
+        *,
+        kinds: Sequence[str] = (),
+        symbol: str = "",
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Exact-context native receipts; an unknown identity stays empty.
+
+        Unlike the navigation projection, these rows are stored under the
+        content-bound ``BuildContext`` and carry the compiler ``owner`` of the
+        symbol that produced them, so a caller can bind a member fact to the
+        exact instance instead of a first-projection guess.
+        """
+
+        if not str(context_id or "").strip():
+            return []
+        backend = getattr(self._backend, "_clang", None) or self._backend
+        database = getattr(backend, "db", None) or getattr(backend, "_db", None)
+        getter = getattr(database, "get_compilation_facts", None)
+        if not callable(getter):
+            return []
+        try:
+            values = getter(
+                str(context_id),
+                symbol=str(symbol or ""),
+                file_path=self._native_fact_path(file_path) if file_path else "",
+                kinds=tuple(kinds),
+            )
+        except TypeError:
+            values = getter(str(context_id), kinds=tuple(kinds))
+        return [dict(value) for value in (values or []) if isinstance(value, dict)]
 
     def get_function_impl(
         self,
@@ -1890,6 +2148,8 @@ class CodeIndex:
                     "start_line": 1,
                     "end_line": 0,
                     "code": "",
+                    "total_lines": 0,
+                    "truncated": False,
                 }
             if start_line is None or start_line < 1:
                 start_line = 1
@@ -1897,14 +2157,14 @@ class CodeIndex:
                 requested_end_line = int(end_line) if end_line is not None else None
             except (TypeError, ValueError):
                 requested_end_line = None
-            if (
-                requested_end_line is None
-                or requested_end_line < start_line
-                or requested_end_line > total_lines
-            ):
-                end_line = min(total_lines, start_line + default_max_lines - 1)
+            if requested_end_line is None or requested_end_line < start_line:
+                desired_end_line = start_line + default_max_lines - 1
             else:
-                end_line = min(requested_end_line, start_line + max_lines - 1)
+                # An end_line past EOF is a "read to the end of the file"
+                # request: clamp it to EOF (within the hard max_lines ceiling)
+                # instead of silently falling back to the short default window.
+                desired_end_line = min(requested_end_line, total_lines)
+            end_line = min(desired_end_line, start_line + max_lines - 1, total_lines)
             start = max(0, start_line - 1)
             end = min(total_lines, end_line)
             code_lines = lines[start:end]
@@ -1914,6 +2174,8 @@ class CodeIndex:
                 "start_line": start_line,
                 "end_line": end_line,
                 "code": code,
+                "total_lines": total_lines,
+                "truncated": end_line < desired_end_line,
             }
         except Exception as e:
             logger.error(f"Failed to read file snippet: {e}")
@@ -2055,10 +2317,16 @@ class CodeIndex:
             for index_key, info in matches
         ]
 
+    def find_function_metadata(self, func_name: str, file_path: str = "") -> List[Dict[str, Any]]:
+        """Enumerate identities without starting type materialization."""
+        return self.find_function_infos(func_name, file_path, include_type_context=False)
+
     def find_function_infos(
         self,
         func_name: str,
         file_path: str = "",
+        *,
+        include_type_context: bool = True,
     ) -> List[Dict[str, Any]]:
         """Return structured function metadata for every matching function record."""
         raw_query = str(func_name or "").strip()
@@ -2075,7 +2343,10 @@ class CodeIndex:
         strict_matches = self._find_function_matches(raw_query, file_path=file_path)
         if strict_matches:
             return [
-                self._function_info_payload(index_key, info) for index_key, info in strict_matches
+                self._function_info_payload(
+                    index_key, info, include_type_context=include_type_context
+                )
+                for index_key, info in strict_matches
             ]
 
         location_name, _, _, _ = self._function_location_query_parts(raw_query)
@@ -2098,7 +2369,10 @@ class CodeIndex:
         )
         if fallback_matches:
             return [
-                self._function_info_payload(index_key, info) for index_key, info in fallback_matches
+                self._function_info_payload(
+                    index_key, info, include_type_context=include_type_context
+                )
+                for index_key, info in fallback_matches
             ]
 
         macro_impls = self._find_macro_impls(
@@ -2303,13 +2577,45 @@ class CodeIndex:
             referenced_macros,
             extra_macros or [],
         )
+        # Token discovery supplies names only; object identity must come from
+        # indexed declarations. In particular, another TU's static is not visible.
+        if self._backend:
+            getter = getattr(self._backend, "get_global_definitions_batch", None)
+            globals_rows = getter(sorted(candidates)) if callable(getter) else []
+        else:
+            globals_rows = [
+                record
+                for name, rows in self._get_global_definition_index().items()
+                if name in candidates
+                for record in rows
+            ]
+        globals_index: Dict[str, List[Dict[str, Any]]] = {}
+        for record in globals_rows:
+            same_file = self._paths_match_hint(str(record.get("file_path") or ""), file_path)
+            if record.get("storage_class") == "static" and not same_file:
+                continue
+            globals_index.setdefault(str(record.get("name") or ""), []).append(record)
+        referenced_globals = []
+        for name, records in globals_index.items():
+            definitions = [r for r in records if r.get("definition_kind") != "declaration"]
+            selected = self._resolve_macro_symbol_definition(
+                name, definitions or records, file_path, strict=True
+            )
+            if selected is not None and name in candidates:
+                referenced_globals.append(
+                    self._normalize_function_info_global(
+                        {**selected, "reference_lines": candidates[name]["reference_lines"]}
+                    )
+                )
         payload: Dict[str, Any] = {
-            "referenced_globals": [],
+            "referenced_globals": referenced_globals,
         }
-        payload["referenced_macros"] = referenced_macros[:FUNCTION_INFO_MACROS_LIMIT]
-        if len(referenced_macros) > FUNCTION_INFO_MACROS_LIMIT:
+        payload["referenced_macros"] = referenced_macros[
+            : _context_limit(FUNCTION_INFO_MACROS_LIMIT)
+        ]
+        if len(referenced_macros) > _context_limit(FUNCTION_INFO_MACROS_LIMIT):
             payload["referenced_macros_truncation"] = self._truncation_payload(
-                FUNCTION_INFO_MACROS_LIMIT,
+                _context_limit(FUNCTION_INFO_MACROS_LIMIT),
                 len(referenced_macros),
             )
         return payload
@@ -2455,6 +2761,8 @@ class CodeIndex:
         self,
         index_key: str,
         info: Dict[str, Any],
+        *,
+        include_type_context: bool = True,
     ) -> Dict[str, Any]:
         raw_file = str(info.get("file") or info.get("filename") or "")
         function_name = str(info.get("name") or info.get("qualified_name") or index_key)
@@ -2479,13 +2787,14 @@ class CodeIndex:
                 extra_macros=macro_edges,
             )
         )
-        payload.update(
-            self._function_info_type_context(
-                index_key,
-                raw_file,
-                self._safe_int(info.get("start_line") or info.get("lineNumber")),
+        if include_type_context:
+            payload.update(
+                self._function_info_type_context(
+                    index_key,
+                    raw_file,
+                    self._safe_int(info.get("start_line") or info.get("lineNumber")),
+                )
             )
-        )
         return payload
 
     def get_function_type_context(
@@ -2502,6 +2811,12 @@ class CodeIndex:
                 file_path=file_path,
                 allow_simple_fallback=True,
             )
+        if start_line:
+            matches = [
+                (key, info)
+                for key, info in matches
+                if self._safe_int(info.get("start_line") or info.get("lineNumber")) == start_line
+            ]
         if len(matches) != 1:
             return {"referenced_types": []}
         index_key, info = matches[0]
@@ -2531,22 +2846,16 @@ class CodeIndex:
             except TypeError:
                 raw_context = getter(backend_lookup, raw_file)
         except Exception as exc:
+            from .clang_type_state import TypeContextUnavailable
+
+            if isinstance(exc, TypeContextUnavailable):
+                raise
             logger.warning(
                 "[type-context] query failed index_name=%s reason=backend_query_failed error=%s",
                 index_key,
                 exc,
             )
-            return {
-                "referenced_types": [],
-                "unresolved_referenced_types": [
-                    {
-                        "name": "[type-context]",
-                        "reference_kinds": [],
-                        "reference_lines": [],
-                        "reason": "backend_query_failed",
-                    }
-                ],
-            }
+            raise TypeContextUnavailable("backend_query_failed", str(exc)) from exc
         result = self._normalize_and_budget_type_context(raw_context)
         logger.debug(
             "[type-context] query index_name=%s resolved=%d unresolved=%d bytes=%d truncated=%s",
@@ -2849,7 +3158,7 @@ class CodeIndex:
         truncated = False
         for item in candidates:
             item_bytes = len(str(item["full_definition"]).encode("utf-8"))
-            if item_bytes > REFERENCED_TYPE_DEFINITION_BYTES_LIMIT:
+            if item_bytes > _context_limit(REFERENCED_TYPE_DEFINITION_BYTES_LIMIT):
                 add_unresolved(
                     item["_name"],
                     "definition_too_large",
@@ -2858,10 +3167,12 @@ class CodeIndex:
                 )
                 truncated = True
                 continue
-            if len(returned) >= REFERENCED_TYPES_LIMIT:
+            if len(returned) >= _context_limit(REFERENCED_TYPES_LIMIT):
                 truncated = True
                 continue
-            if definition_bytes + item_bytes > REFERENCED_TYPES_DEFINITION_BYTES_LIMIT:
+            if definition_bytes + item_bytes > _context_limit(
+                REFERENCED_TYPES_DEFINITION_BYTES_LIMIT
+            ):
                 truncated = True
                 continue
             returned.append({key: value for key, value in item.items() if key != "_name"})
@@ -2878,7 +3189,7 @@ class CodeIndex:
                 "returned": len(returned),
                 "total": len(candidates),
                 "definition_bytes_returned": definition_bytes,
-                "definition_bytes_limit": REFERENCED_TYPES_DEFINITION_BYTES_LIMIT,
+                "definition_bytes_limit": _context_limit(REFERENCED_TYPES_DEFINITION_BYTES_LIMIT),
             }
         return result
 
@@ -2965,9 +3276,11 @@ class CodeIndex:
                 except TypeError:
                     callees = getter(backend_lookup)
             else:
-                callees = self._backend.get_callees(backend_lookup, limit=1_000_000)
+                callees = self._backend.get_callees(backend_lookup, limit=_context_limit(1_000_000))
         except Exception as exc:
             logger.debug("Callee lookup failed for %s: %s", index_key, exc)
+            if _SEMANTIC_MODELING_CONTEXT.get():
+                raise
             return []
         aggregated = self._aggregate_function_info_callees(callees)
         return aggregated
@@ -2997,12 +3310,14 @@ class CodeIndex:
             macro_edges,
         ) = self._split_function_info_callees(rows)
         payload: Dict[str, Any] = {
-            "project_callees": project_callees[:FUNCTION_INFO_CALLEES_LIMIT],
-            "external_callees": external_callees[:FUNCTION_INFO_EXTERNAL_CALLEES_LIMIT],
+            "project_callees": project_callees[: _context_limit(FUNCTION_INFO_CALLEES_LIMIT)],
+            "external_callees": external_callees[
+                : _context_limit(FUNCTION_INFO_EXTERNAL_CALLEES_LIMIT)
+            ],
         }
         if unresolved_callees:
             payload["unresolved_callees"] = unresolved_callees[
-                :FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT
+                : _context_limit(FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT)
             ]
         if len(project_callees) > len(payload["project_callees"]):
             payload["project_callees_truncation"] = self._truncation_payload(
@@ -3012,7 +3327,7 @@ class CodeIndex:
             payload["external_callees_truncation"] = self._truncation_payload(
                 len(payload["external_callees"]), len(external_callees)
             )
-        if len(unresolved_callees) > FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT:
+        if len(unresolved_callees) > _context_limit(FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT):
             payload["unresolved_callees_truncation"] = self._truncation_payload(
                 len(payload["unresolved_callees"]), len(unresolved_callees)
             )
@@ -3101,6 +3416,8 @@ class CodeIndex:
                 raw_context = getter(backend_lookup, raw_file)
             except Exception as exc:
                 logger.debug("Symbol context lookup failed for %s: %s", index_key, exc)
+                if _SEMANTIC_MODELING_CONTEXT.get():
+                    raise
                 return context
 
         globals_result = [
@@ -3120,16 +3437,18 @@ class CodeIndex:
         )
         globals_result.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
 
-        context["referenced_globals"] = globals_result[:FUNCTION_INFO_GLOBALS_LIMIT]
-        context["referenced_macros"] = macros_result[:FUNCTION_INFO_MACROS_LIMIT]
-        if len(globals_result) > FUNCTION_INFO_GLOBALS_LIMIT:
+        context["referenced_globals"] = globals_result[
+            : _context_limit(FUNCTION_INFO_GLOBALS_LIMIT)
+        ]
+        context["referenced_macros"] = macros_result[: _context_limit(FUNCTION_INFO_MACROS_LIMIT)]
+        if len(globals_result) > _context_limit(FUNCTION_INFO_GLOBALS_LIMIT):
             context["referenced_globals_truncation"] = self._truncation_payload(
-                FUNCTION_INFO_GLOBALS_LIMIT,
+                _context_limit(FUNCTION_INFO_GLOBALS_LIMIT),
                 len(globals_result),
             )
-        if len(macros_result) > FUNCTION_INFO_MACROS_LIMIT:
+        if len(macros_result) > _context_limit(FUNCTION_INFO_MACROS_LIMIT):
             context["referenced_macros_truncation"] = self._truncation_payload(
-                FUNCTION_INFO_MACROS_LIMIT,
+                _context_limit(FUNCTION_INFO_MACROS_LIMIT),
                 len(macros_result),
             )
         return context
@@ -3618,6 +3937,13 @@ class CodeIndex:
         """Classify one raw edge as a project function, macro, external, or unresolved."""
         clean_name = str(callee_name or "").strip()
         matches = self._find_function_matches(clean_name, file_path=callee_file)
+        if len(matches) > 1 and callee_signature:
+            expected = self._normalize_signature_query(callee_signature)
+            matches = [
+                (key, info)
+                for key, info in matches
+                if self._normalize_signature_query(str(info.get("signature") or "")) == expected
+            ]
         if len(matches) == 1:
             index_name, info = matches[0]
             return "project_function", {
@@ -3635,6 +3961,33 @@ class CodeIndex:
                 "definition": str(macro_impl.get("code") or ""),
                 "is_function_like": True,
             }
+        # Native call edges often point to a declaration in a header, while
+        # the implementation index contains only definitions. A declaration
+        # location must not hide a unique project implementation. Never relax
+        # a source-file constraint or merge static homonyms/overloads.
+        from ..snapshots.modeling_input import is_header_like_path
+
+        if not matches and callee_file and is_header_like_path(callee_file):
+            definitions = [
+                (index_name, info)
+                for index_name, info in self._find_function_matches(clean_name)
+                if not self._function_record_is_static(info) and not info.get("is_declaration")
+            ]
+            if callee_signature:
+                expected = self._normalize_signature_query(callee_signature)
+                definitions = [
+                    (index_name, info)
+                    for index_name, info in definitions
+                    if self._normalize_signature_query(str(info.get("signature") or "")) == expected
+                ]
+            if len(definitions) == 1:
+                index_name, info = definitions[0]
+                return "project_function", {
+                    "callee_index_name": index_name,
+                    "callee_signature": str(info.get("signature") or ""),
+                    "is_static": False,
+                    "callee_summary": "unknown",
+                }
         # Signature is accepted only when a backend explicitly marks it as the callee's
         # declaration. The projection must not infer it from a bare function name.
         external_signature = str(callee_signature or "").strip()
@@ -3817,25 +4170,143 @@ class CodeIndex:
     ) -> List[Dict[str, Any]]:
         """Get functions that call the given function."""
         if not self._backend:
-            return []
+            return [
+                {**e, "name": e["caller_name"], "filename": e["caller_file"]}
+                for e in self.callback_registrations()
+                if e["callee_name"] == func_name.split("@", 1)[0]
+                and (
+                    not callee_file or self._paths_match_hint(e.get("callee_file", ""), callee_file)
+                )
+            ][: max(0, limit)]
         lookup_name = self._resolve_function_name(func_name, file_path=callee_file)
         with self._cache_lock:
             info = self._function_index.get(lookup_name) or {}
         backend_lookup = str(info.get("qualified_name") or lookup_name)
         backend_callee_file = str(info.get("file") or callee_file or "")
         try:
-            return self._backend.get_callers(
+            records = self._backend.get_callers(
                 backend_lookup,
                 limit=limit,
                 callee_file=backend_callee_file,
             )
         except TypeError:
-            return self._backend.get_callers(backend_lookup, limit=limit)
+            records = self._backend.get_callers(backend_lookup, limit=limit)
+        callbacks = [
+            {**e, "name": e["caller_name"], "filename": e["caller_file"]}
+            for e in self.callback_registrations()
+            if e["callee_name"] == backend_lookup
+            and (
+                not backend_callee_file
+                or self._paths_match_hint(e.get("callee_file", ""), backend_callee_file)
+            )
+        ]
+        return [*records, *callbacks][:limit]
+
+    def publish_callback_registrations(self, edges: List[Dict[str, Any]], files: List[str]) -> None:
+        """Persist registration reachability separately from executable calls."""
+        dependencies = {}
+        for file in sorted(set(files)):
+            path = Path(file)
+            path = path if path.is_absolute() else self.project_root / path
+            try:
+                dependencies[str(path.resolve())] = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                return  # Incomplete discovery cannot replace valid persisted evidence.
+        payload = {
+            "schema_version": "zscope.callback-registrations.v1",
+            "dependencies": dependencies,
+            "edges": edges,
+        }
+        self._callback_registration_payload = payload
+        self._callback_registration_checked_stats = None
+        backend = getattr(self._backend, "_clang", None) or self._backend
+        db = getattr(backend, "_db", None)
+        if db is not None:
+            db.set_metadata("callback_registrations", json.dumps(payload, sort_keys=True))
+
+    def callback_registrations(self) -> List[Dict[str, Any]]:
+        payload = getattr(self, "_callback_registration_payload", None)
+        if payload is None:
+            backend = getattr(self._backend, "_clang", None) or self._backend
+            db = getattr(backend, "_db", None)
+            try:
+                payload = (
+                    json.loads(db.get_metadata("callback_registrations") or "{}") if db else {}
+                )
+                if any(
+                    hashlib.sha256(Path(p).read_bytes()).hexdigest() != h
+                    for p, h in payload.get("dependencies", {}).items()
+                ):
+                    payload = {}
+            except (ValueError, OSError, TypeError):
+                payload = {}
+            self._callback_registration_payload = payload
+        try:
+            current_stats = {}
+            for path in payload.get("dependencies", {}):
+                stat = Path(path).stat()
+                current_stats[path] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            if current_stats != getattr(self, "_callback_registration_checked_stats", None):
+                if any(
+                    hashlib.sha256(Path(p).read_bytes()).hexdigest() != h
+                    for p, h in payload.get("dependencies", {}).items()
+                ):
+                    self._callback_registration_payload = {}
+                    return []
+                self._callback_registration_checked_stats = current_stats
+        except OSError:
+            self._callback_registration_payload = {}
+            return []
+        return [dict(e) for e in payload.get("edges", [])]
+
+    def call_model_status(self, name: str, caller: str = "", record: Any = None) -> str:
+        """Classify origin from indexed definitions/declarations, never a prefix."""
+        clean = str(name or "")
+        matches = self._find_function_matches(clean)
+        if any(not info.get("is_declaration") for _, info in matches):
+            return "project"
+        if self._function_info_project_macro_matches(clean, ""):
+            return "project"
+        records = [record] if isinstance(record, dict) else []
+        if caller:
+            records.extend(
+                r
+                for r in self.get_callees(caller, limit=1_000_000)
+                if str(r.get("name") or r.get("callee_name") or "") == clean
+            )
+        if not any(r.get("callee_kind") or r.get("callee_signature") for r in records):
+            backend = getattr(self, "_backend", None)
+            backend = getattr(backend, "_clang", None) or backend
+            database = getattr(backend, "_db", None)
+            if database is not None:
+                records = [
+                    dict(row)
+                    for row in database._conn.execute(
+                        "SELECT DISTINCT callee_kind,callee_signature FROM call_edges WHERE callee_name=?",
+                        (clean,),
+                    ).fetchall()
+                ]
+        kinds = {str(r.get("callee_kind") or "") for r in records}
+        if "system_function" in kinds:
+            from ..semantics.defaults import default_local_pattern_semantics
+
+            return (
+                "standard_model"
+                if default_local_pattern_semantics().contracts.find(clean)
+                else "external_model_missing"
+            )
+        if "external_function" in kinds or any(r.get("callee_signature") for r in records):
+            return "external_model_missing"
+        return "source_unavailable"
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Get functions called by the given function."""
         if not self._backend:
-            return []
+            return [
+                {**e, "name": e["callee_name"], "filename": e.get("callee_file", "")}
+                for e in self.callback_registrations()
+                if e["caller_name"] == func_name.split("@", 1)[0]
+            ][: max(0, limit)]
         requested_limit = max(0, int(limit))
         if requested_limit == 0:
             return []
@@ -3848,12 +4319,21 @@ class CodeIndex:
         while True:
             records = list(self._backend.get_callees(backend_lookup, limit=raw_limit) or [])
             filtered = self._filter_callee_records(records)
+            callbacks = [
+                {**e, "name": e["callee_name"], "filename": e.get("callee_file", "")}
+                for e in self.callback_registrations()
+                if e["caller_name"] == backend_lookup
+                and (
+                    not info.get("file")
+                    or self._paths_match_hint(e["caller_file"], str(info["file"]))
+                )
+            ]
             if (
                 len(filtered) >= requested_limit
                 or len(records) < raw_limit
                 or raw_limit >= max_raw_limit
             ):
-                return filtered[:requested_limit]
+                return [*filtered, *callbacks][:requested_limit]
             raw_limit = min(max_raw_limit, raw_limit * 2)
 
     def get_type_info(self, type_name: str) -> Optional[Dict[str, Any]]:
@@ -3928,13 +4408,21 @@ class CodeIndex:
         self, header_files: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """Get functions declared in header files (public API)."""
+        from .indexing_runtime import heartbeat
+
+        started = time.monotonic()
+        progress: Dict[str, Any] = {"stage": "backend", "files": 0, "declarations": 0}
+        logger.info("[entry-headers] started indexed_functions=%d", len(self._function_index))
         results: List[Dict[str, Any]] = []
-        if self._backend:
-            try:
-                results.extend(self._backend.get_header_declared_functions(header_files))
-            except Exception as exc:
-                logger.debug("Backend header declaration lookup failed: %s", exc)
-        results.extend(self._get_header_funcs_regex(header_files))
+        with heartbeat("entry-headers", progress):
+            if self._backend:
+                try:
+                    results.extend(self._backend.get_header_declared_functions(header_files))
+                except Exception as exc:
+                    logger.debug("Backend header declaration lookup failed: %s", exc)
+            progress["backend_declarations"] = len(results)
+            progress["stage"] = "source_headers"
+            results.extend(self._get_header_funcs_regex(header_files, progress=progress))
 
         deduped: Dict[tuple[str, str], Dict[str, Any]] = {}
         for item in results:
@@ -3951,10 +4439,17 @@ class CodeIndex:
             if previous and int(previous.get("lineNumber") or 0) > 0:
                 continue
             deduped[key] = {"name": name, "filename": filename, "lineNumber": line_no}
+        logger.info(
+            "[entry-headers] completed files=%d checked=%d matched=%d elapsed=%.3fs",
+            progress["files"],
+            progress["declarations"],
+            len(deduped),
+            time.monotonic() - started,
+        )
         return list(deduped.values())
 
     def _get_header_funcs_regex(
-        self, header_files: Optional[List[str]] = None
+        self, header_files: Optional[List[str]] = None, *, progress: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         func_decl_re = re.compile(
             r"^\s*(?:extern\s+)?"
@@ -3964,20 +4459,33 @@ class CodeIndex:
             re.MULTILINE | re.DOTALL,
         )
         results = []
+        progress = progress if progress is not None else {"files": 0, "declarations": 0}
+        seen: set[Path] = set()
         globs = self._header_globs(header_files)
         for pattern in globs:
             for fp in self.source_root.rglob(pattern):
+                if fp in seen:
+                    continue
+                seen.add(fp)
+                progress.update(file=str(fp), line=0)
                 try:
                     content = self._read_file_text(fp)
                 except Exception:
                     continue
                 lines = content.splitlines()
+                scopes = self._cpp_type_scopes(lines)
+                line_starts = [0] + [m.end() for m in re.finditer("\n", content)]
                 for line_no, line in enumerate(lines, start=1):
-                    parsed = self._parse_function_declaration_line(line, lines, line_no)
+                    if line_no % 64 == 0:
+                        progress["line"] = line_no
+                    parsed = self._parse_function_declaration_line(
+                        line, lines, line_no, class_scope=scopes[line_no - 1]
+                    )
                     if not parsed:
                         continue
                     name = parsed["name"]
-                    if self._resolve_function_name(name) in self._function_index:
+                    progress["declarations"] += 1
+                    if self._has_indexed_function(name):
                         results.append(
                             {
                                 "name": name,
@@ -3987,10 +4495,11 @@ class CodeIndex:
                         )
                 for m in func_decl_re.finditer(content):
                     name = m.group("name")
-                    line_no = content[: m.start()].count("\n") + 1
-                    if self._enclosing_cpp_type_name(lines, line_no):
+                    line_no = bisect_right(line_starts, m.start())
+                    if scopes[line_no - 1]:
                         continue
-                    if self._resolve_function_name(name) in self._function_index:
+                    progress["declarations"] += 1
+                    if self._has_indexed_function(name):
                         results.append(
                             {
                                 "name": name,
@@ -3998,6 +4507,7 @@ class CodeIndex:
                                 "lineNumber": line_no,
                             }
                         )
+                progress["files"] += 1
         return results
 
     @staticmethod
@@ -4424,6 +4934,15 @@ class CodeIndex:
         """Return the canonical project-relative POSIX representation."""
         return normalize_path(file_path, self.project_root)
 
+    def _native_fact_path(self, file_path: str) -> str:
+        """Resolve exact native rows in the extractor's source-root namespace.
+
+        Navigation paths remain project-relative. The Clang compilation store
+        records paths relative to source_root, which may be a project subdir.
+        Outside paths retain their distinct identity and never become basenames.
+        """
+        return normalize_path(self._resolve_file_path(file_path), self.source_root)
+
     def get_function_location(self, func_name: str) -> Optional[str]:
         """Get function location string (file:line-line)."""
         func_name = self._resolve_function_name(func_name)
@@ -4480,8 +4999,487 @@ class CodeIndex:
             self._declaration_comment_index = None
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
+            self._function_query_index.clear()
+            self._function_record_variants.clear()
             self._macro_definition_index = None
             self._global_definition_index = None
             self._macro_definition_miss_cache.clear()
         if self._backend:
             self._backend.close()
+
+
+_JOB_RUNTIME_ISSUER = object()
+
+
+class _JobRuntimeOutputs:
+    """One live index's exact output namespace and real job transaction fence."""
+
+    def __init__(
+        self,
+        index: "CodeIndex",
+        *,
+        issuer: object,
+        context: Any,
+        plan: Any,
+        queue_path: Path,
+        report_paths: Sequence[Path],
+    ) -> None:
+        from ..orchestration.entry_instances import EntryInstancePlan
+        from ..orchestration.instance_semantics_context import _native_inputs_current
+        from ..orchestration.jobs.scheduler_hook import SessionJobContext
+        from .build_context import context_input_status
+        from .indexing_identity import (
+            _RuntimeNamespaceView,
+            _runtime_lookup_candidates,
+            digest_json,
+        )
+        from .instance_index import instance_scope_from_entry_instance
+
+        if issuer is not _JOB_RUNTIME_ISSUER or not isinstance(index, CodeIndex):
+            raise ValueError("job_runtime_output_factory_required")
+        if not isinstance(context, SessionJobContext) or not isinstance(plan, EntryInstancePlan):
+            raise ValueError("job_runtime_output_binding_required")
+        if not plan.instances or not plan.boundary_coverage_complete:
+            raise ValueError("job_runtime_output_complete_plan_required")
+        self._index = index
+        self._job_id = context.job_id
+        self._run_id = context.run_id
+        self._owner_token = context.owner_token
+        self._store_path = Path(context.store_path)
+        self._run_dir = Path(context.run_dir)
+        self._queue_path = queue_path
+        if queue_path.parent != self._run_dir or not re.fullmatch(
+            r"work-queue\.db\.[0-9a-f]{32}", queue_path.name
+        ):
+            raise ValueError("job_runtime_output_exact_queue_name_required")
+        if any(
+            path.parent != index.project_root
+            or path.suffix not in {".json", ".md"}
+            or not path.name.startswith(("report", "zscope_batch_report"))
+            for path in report_paths
+        ):
+            raise ValueError("job_runtime_output_exact_report_name_required")
+        self._lock = threading.RLock()
+        self._writer_frames: Dict[int, object] = {}
+        self._input_revision = ""
+        self._active = False
+        self._semantics: Any = None
+        self._scopes = tuple(instance_scope_from_entry_instance(item) for item in plan.instances)
+        self._contexts: Dict[str, Dict[str, Any]] = {}
+        self._native_rows: Dict[str, str] = {}
+        self._views: Dict[str, Any] = {}
+        protected: set[Path] = set()
+        provenance: set[Path] = set()
+        candidates: set[Path] = set()
+        all_contexts = index.get_build_contexts()
+        for scope in self._scopes:
+            matching = [
+                row for row in all_contexts if row.get("build_context_id") == scope.build_context_id
+            ]
+            if len(matching) != 1 or context_input_status(matching[0]) != "current":
+                raise ValueError("job_runtime_output_current_native_receipt_required")
+            row = matching[0]
+            # The first job-store connection can create WAL/SHM files. Check
+            # emitting bytes and physical host-header trust before that gate,
+            # using the same verifier retained at every later consumption.
+            if not _native_inputs_current(row):
+                raise ValueError("job_runtime_output_native_inputs_not_current")
+            if row.get("source") != scope.source:
+                raise ValueError("job_runtime_output_exact_native_source_required")
+            facts = index.get_function_program_facts(
+                scope.usr, scope.source, build_context_id=scope.build_context_id
+            )
+            identity = facts.get("function_identity")
+            if (
+                facts.get("complete") is not True
+                or not isinstance(identity, dict)
+                or identity.get("usr") != scope.usr
+                or identity.get("build_context_id") != scope.build_context_id
+            ):
+                raise ValueError("job_runtime_output_exact_native_owner_required")
+            native = index.get_compilation_facts(scope.build_context_id)
+            footer = [value for value in native if value.get("kind") == "complete"]
+            if (
+                len(footer) != 1
+                or footer[0].get("success") is not True
+                or footer[0].get("include_lookups") != row.get("include_lookups")
+                or footer[0].get("include_probes") != row.get("include_probes")
+            ):
+                raise ValueError("job_runtime_output_lookup_native_membership_required")
+            self._contexts[scope.build_context_id] = row
+            self._native_rows[scope.build_context_id] = digest_json(native)
+            candidates.update(_runtime_lookup_candidates(row))
+            for lookup_root in (
+                row["include_lookups"]["search_directories"]
+                + row["include_lookups"]["configured_directories"]
+            ):
+                path = Path(lookup_root["path"])
+                provenance.add(path)
+                provenance.add(path.resolve())
+            protected.update(Path(name) for name in row["dependencies"])
+            protected.add(Path(row["compilation_database"]["path"]))
+            protected.update(Path(name) for name in row["command"]["response_files"])
+            binary = row["tool"]["binary"]
+            protected.add(Path(binary["path"]))
+            protected.update(Path(name) for name in binary["shared_libraries"])
+        # A runtime write may not overwrite bytes the index already read, even
+        # when that translation unit is not part of this entry plan. Protection
+        # is a conservative collision veto only: an unselected context's inputs
+        # join ``protected`` without gaining a scope, a view, a native row or any
+        # semantic authority. Stored receipts are used as written (no currency
+        # re-validation) so this stays a cheap superset; paths that no longer
+        # exist cannot be clobbered and are skipped.
+        unselected_inputs: set[Path] = set()
+        for row in all_contexts:
+            dependencies = row.get("dependencies")
+            if not isinstance(dependencies, dict):
+                continue
+            for name in dependencies:
+                path = Path(name)
+                if path.exists() and path not in protected:
+                    unselected_inputs.add(path)
+            database = row.get("compilation_database")
+            if isinstance(database, dict) and database.get("path"):
+                path = Path(database["path"])
+                if path.exists() and path not in protected:
+                    unselected_inputs.add(path)
+        protected.update(unselected_inputs)
+        self._unselected_inputs = frozenset(unselected_inputs)
+        self._protected = frozenset(protected)
+        self._candidates = frozenset(candidates)
+        identical_views: Dict[str, Any] = {}
+        for key, row in self._contexts.items():
+            view_key = digest_json([row["search_directories"], row["search_excludes"]])
+            if view_key not in identical_views:
+                identical_views[view_key] = _RuntimeNamespaceView(
+                    row["search_directories"],
+                    (Path(name) for name in row["search_excludes"]),
+                    protected,
+                    candidates,
+                    provenance=provenance,
+                    footprint_roots=(self._run_dir,),
+                )
+            self._views[key] = identical_views[view_key]
+        paths = [self._store_path, queue_path]
+        for database in (self._store_path, queue_path):
+            paths.extend(Path(str(database) + suffix) for suffix in ("-wal", "-shm", "-journal"))
+        paths.extend(
+            self._run_dir / name
+            for name in (
+                "pending.json",
+                "pending.json.tmp",
+                "instance-checkpoint.json",
+                "instance-checkpoint.json.tmp",
+                "instance-report.md",
+            )
+        )
+        paths.extend(report_paths)
+        paths.extend(
+            path.with_suffix(".timings.json") for path in report_paths if path.suffix == ".json"
+        )
+        for path in paths:
+            self._declare(path)
+        self._declare(self._run_dir / "instance-results", directory=True)
+        backup_root = index.project_root / ".zscope_knowledge" / "backups"
+        self._declare(backup_root, directory=True)
+        # This is a conservative collision veto, never a subtree allowance.
+        # The codec's UUID temporary is unregistered and exists only under the
+        # shared writer lock; an input anywhere in its publishing directory is
+        # refused before the original codec can open an unpredictable name.
+        result_root = self._run_dir / "instance-results"
+        for path in protected | candidates:
+            if path == result_root or result_root in path.parents:
+                raise ValueError("job_runtime_output_lookup_result_directory_overlap")
+            if path == backup_root or backup_root in path.parents:
+                raise ValueError("job_runtime_output_lookup_backup_directory_overlap")
+        for report in report_paths:
+            for path in protected | candidates:
+                if (
+                    path.parent == report.parent
+                    and path.name.startswith(".report-")
+                    and path.name.endswith(".tmp")
+                ):
+                    raise ValueError("job_runtime_output_lookup_report_temporary_overlap")
+        self._store_identity = self._physical_store()
+
+    @property
+    def input_revision(self) -> str:
+        return self._input_revision
+
+    def _physical_store(self) -> Tuple[int, int, int, int]:
+        value = self._store_path.stat()
+        return value.st_dev, value.st_ino, value.st_uid, value.st_mode
+
+    def _issued(self) -> None:
+        if (
+            self._index._job_runtime_outputs is not self
+            or self._store_identity != self._physical_store()
+        ):
+            raise ValueError("job_runtime_output_foreign_or_replaced_scope")
+
+    def _declare(self, path: Path, *, directory: bool = False) -> None:
+        missing = []
+        for parent in path.parents:
+            if parent.exists():
+                break
+            missing.append(parent)
+        for view in self._views.values():
+            for parent in reversed(missing):
+                view.declare(parent, directory=True)
+            view.declare(path, directory=directory)
+
+    def capture_binding(self) -> str:
+        from ..orchestration.jobs.models import JobError
+        from ..orchestration.jobs.store import JobStore
+
+        self._issued()
+        if self._input_revision:
+            raise ValueError("job_runtime_output_binding_already_captured")
+        store = JobStore(self._store_path)
+        job = store.get_job(self._job_id)
+        revision = job.get("input_revision") if isinstance(job, dict) else None
+        if not isinstance(revision, str) or not revision:
+            raise JobError(
+                "invalid_binding", "a nonempty current input revision is required", status_code=409
+            )
+        # No derived allowance is active here. Closing the initial connection
+        # must leave the original complete raw search digest unchanged.
+        with store.bound_attempt(
+            job_id=self._job_id,
+            run_id=self._run_id,
+            owner_token=self._owner_token,
+            expected_input_revision=revision,
+        ) as bound:
+            self._check_bound(store, bound, revision)
+        from .build_context import context_input_status
+
+        if any(context_input_status(row) != "current" for row in self._contexts.values()):
+            raise ValueError("job_runtime_output_initial_binding_changed_raw_namespace")
+        self._input_revision = revision
+        return revision
+
+    def _check_bound(self, store: Any, job: Dict[str, Any], revision: str) -> None:
+        from ..orchestration.jobs.models import JobError
+
+        connection = store._active_transaction_connection()
+        if not connection.in_transaction or self._store_identity != self._physical_store():
+            raise JobError("invalid_binding", "no current physical transaction", status_code=409)
+        raw_dir = job.get("run_dir")
+        if (
+            not isinstance(raw_dir, str)
+            or Path(raw_dir) != self._run_dir
+            or self._run_dir.resolve() != self._run_dir
+            or any(parent.is_symlink() for parent in (self._run_dir, *self._run_dir.parents))
+        ):
+            raise JobError("invalid_binding", "physical run directory mismatch", status_code=409)
+        attempt = connection.execute(
+            "SELECT input_revision FROM attempts WHERE job_id=? AND run_id=?",
+            (self._job_id, self._run_id),
+        ).fetchone()
+        if attempt is None or attempt["input_revision"] != revision:
+            raise JobError(
+                "invalid_binding", "current attempt input revision mismatch", status_code=409
+            )
+
+    @contextmanager
+    def binding(self) -> Iterator[None]:
+        from ..orchestration.jobs.store import JobStore
+
+        self._issued()
+        if not self._input_revision:
+            raise ValueError("job_runtime_output_binding_not_captured")
+        store = JobStore(self._store_path)
+        with store.bound_attempt(
+            job_id=self._job_id,
+            run_id=self._run_id,
+            owner_token=self._owner_token,
+            expected_input_revision=self._input_revision,
+        ) as job:
+            self._check_bound(store, job, self._input_revision)
+            yield
+
+    def native_current(self) -> bool:
+        from .indexing_identity import digest_json
+
+        self._issued()
+        current = {
+            str(row.get("build_context_id")): row for row in self._index.get_build_contexts()
+        }
+        return all(
+            current.get(key) == row
+            and digest_json(self._index.get_compilation_facts(key)) == self._native_rows[key]
+            for key, row in self._contexts.items()
+        )
+
+    def _namespace_current(self) -> bool:
+        return all(
+            view.current(view.raw)
+            for view in {id(view): view for view in self._views.values()}.values()
+        )
+
+    def activate(self, semantics: Any) -> None:
+        from ..orchestration.instance_semantics_context import InstanceSemanticsContext
+
+        self._issued()
+        if (
+            self._active
+            or not isinstance(semantics, InstanceSemanticsContext)
+            or semantics.code_index is not self._index
+            or set(semantics.scopes.values()) != set(self._scopes)
+            or set(semantics.snapshots) != {scope.identity for scope in self._scopes}
+        ):
+            raise ValueError("job_runtime_output_complete_factory_semantics_required")
+        # Native membership is verified before taking the write fence; the
+        # fence still re-checks the owner binding, so a handoff in between is
+        # refused instead of activating stale outputs.
+        if not self.native_current():
+            raise ValueError("job_runtime_output_native_membership_changed")
+        with self.binding():
+            with self._lock:
+                if not self._namespace_current():
+                    raise ValueError("job_runtime_output_namespace_changed_before_activation")
+                self._semantics = semantics
+                self._active = True
+
+    def validator(self, context: Any) -> Any:
+        from .indexing_identity import _RuntimeInputValidator
+
+        self._issued()
+        key = context.get("build_context_id") if isinstance(context, dict) else None
+        if not self._active or not isinstance(key, str) or self._contexts.get(key) != context:
+            raise ValueError("job_runtime_output_context_not_issued")
+        return _RuntimeInputValidator(self._views[key], self)
+
+    def require_current(self) -> None:
+        if not self._active or not self.native_current():
+            raise ValueError("job_runtime_output_native_membership_not_current")
+        for snapshot in self._semantics.snapshots.values():
+            self._semantics.require(snapshot.scope)
+
+    @contextmanager
+    def writer(self) -> Iterator[None]:
+        # The SQL fence is always acquired before any filesystem publication,
+        # and no SQL or callbacks are permitted inside the pure filesystem
+        # publisher's namespace block.
+        #
+        # The expensive native/semantics currency verification (per-instance
+        # receipts, dependency digests) must not run while the jobs.db write
+        # lock is held: it takes seconds, and it starves every other writer —
+        # including the owner heartbeat, which then aborts the job. Verify
+        # before the fence, then verify again inside it after publishing, so an
+        # input change in between still aborts before anything is accepted.
+        self.require_current()
+        with self.binding():
+            with self._lock:
+                if not self._namespace_current():
+                    raise ValueError("job_runtime_output_namespace_not_current")
+                thread = threading.get_ident()
+                previous = self._writer_frames.get(thread)
+                self._writer_frames[thread] = object()
+                try:
+                    yield
+                    for view in self._views.values():
+                        view.seal_created_directories()
+                    if not self._namespace_current():
+                        raise ValueError("job_runtime_output_publisher_changed_unowned_namespace")
+                finally:
+                    self._writer_frames.pop(thread, None)
+                    if previous is not None:
+                        self._writer_frames[thread] = previous
+            self.require_current()
+
+    def prepare_backup(self, path: Path) -> Dict[str, Tuple[int, int, int, int]]:
+        """Register the producer's exact target inside its real writer fence.
+
+        The surrounding writer already holds the real SQL binding followed by
+        the namespace lock. This method performs filesystem checks only; it
+        must never reacquire SQL from inside the namespace block.
+        """
+        self._issued()
+        if (
+            not self._active
+            or threading.get_ident() not in self._writer_frames
+            or path.parent != self._index.project_root / ".zscope_knowledge" / "backups"
+            or re.fullmatch(r"zscope_batch_report_[0-9]{8}_[0-9]{6}\.json", path.name) is None
+        ):
+            raise ValueError("job_runtime_output_live_backup_writer_required")
+        if not self._namespace_current():
+            raise ValueError("job_runtime_output_backup_namespace_not_current")
+        # Refusal deliberately propagates before the best-effort copy handler.
+        self._declare(path)
+        parents: Dict[str, Tuple[int, int, int, int]] = {}
+        for view in self._views.values():
+            # The backup directory was declared at issuance, before any output
+            # write. Reuse that original chain instead of capturing a new one
+            # after a possible parent rename.
+            for name, device, inode, uid, mode, link in view.output_chains[path.parent]:
+                identity = (device, inode, uid, mode)
+                if link or (name in parents and parents[name] != identity):
+                    raise ValueError("job_runtime_output_backup_parent_conflict")
+                parents[name] = identity
+        return parents
+
+    @contextmanager
+    def sql_writer(self) -> Iterator[None]:
+        """Only fixed proved queue names; never hold namespace across SQL."""
+        with self.binding():
+            self.require_current()
+            with self._lock:
+                if not self._namespace_current():
+                    raise ValueError("job_runtime_output_namespace_not_current")
+            yield
+            with self._lock:
+                if not self._namespace_current():
+                    raise ValueError("job_runtime_output_sql_writer_changed_unowned_namespace")
+            self.require_current()
+
+    def prepare_result(
+        self, payload: "InstanceResultPayload"
+    ) -> "PreparedInstanceResult | RecoveryMiss":
+        """Use the original complete codec validators before registering its path."""
+        from ..orchestration.jobs import instance_results as codec
+
+        if not isinstance(payload, codec.InstanceResultPayload):
+            raise ValueError("job_runtime_output_typed_instance_result_required")
+        snapshot = (
+            self._semantics.snapshots.get(payload.instance.identity) if self._active else None
+        )
+        if (
+            snapshot is None
+            or payload.producer_run_id != self._run_id
+            or payload.identity.job_id != self._job_id
+            or payload.identity.input_revision != self._input_revision
+            or payload.identity.semantics_digest != self._semantics.manifest_digest()
+            or payload.instance.build_context_id != snapshot.scope.build_context_id
+            or payload.instance.usr != snapshot.scope.usr
+            or payload.instance.source != snapshot.scope.source
+            or payload.instance_semantics_digest != snapshot.digest
+        ):
+            raise ValueError("job_runtime_output_result_binding_mismatch")
+        try:
+            codec._require_absolute_run_dir(self._run_dir, "producer_run_dir")
+            document = codec._validated_document(payload)
+            codec._inspect_json_value(document)
+            raw = codec._canonical_bytes(document)
+            if len(raw) > codec._MAX_JSON_BYTES:
+                raise ValueError("assembled artifact document exceeds the byte limit")
+            content_sha256 = codec._sha256_hex(raw)
+            target = (
+                self._run_dir
+                / codec.ARTIFACT_DIR_NAME
+                / codec._artifact_name(payload.instance.identity, content_sha256)
+            )
+        except (OSError, ValueError) as error:
+            return codec.RecoveryMiss(instance=payload.instance, reason=str(error))
+        with self.writer():
+            # This is the only post-issuance path registration. The complete
+            # original codec helpers derive it from the real immutable export.
+            self._declare(target)
+            encoded = codec.prepare_instance_result(payload, producer_run_dir=self._run_dir)
+            if isinstance(encoded, codec.PreparedInstanceResult) and (
+                encoded.artifact_path != target
+                or encoded.content_sha256 != content_sha256
+                or encoded.byte_count != len(raw)
+            ):
+                raise ValueError("job_runtime_output_codec_path_disagreement")
+            return encoded

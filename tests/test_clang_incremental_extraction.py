@@ -1,14 +1,9 @@
-import json
-import shutil
 import threading
 from pathlib import Path
-
-import pytest
 
 from zscope.retrieval.clang_backend import ClangBackend
 from zscope.retrieval.clang_extractor import ClangExtractor
 from zscope.retrieval.knowledge_db import KnowledgeDB
-from zscope.retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
 
 
 class _FakeDB:
@@ -264,10 +259,14 @@ def test_clang_extractor_marks_ph_prototype_as_declaration(tmp_path, monkeypatch
     assert func_rows[0][7] == 1
 
 
-def test_clang_extractor_keeps_header_inline_body_as_implementation(tmp_path, monkeypatch) -> None:
+def test_clang_extractor_keeps_header_inline_body_as_implementation(
+    tmp_path, monkeypatch
+) -> None:
     header = tmp_path / "helpers.h"
     header.write_text(
-        "static inline int helper(void) {\n" "    return 1;\n" "}\n",
+        "static inline int helper(void) {\n"
+        "    return 1;\n"
+        "}\n",
         encoding="utf-8",
     )
     extractor = ClangExtractor(project_root=tmp_path)
@@ -319,7 +318,9 @@ def test_clang_backend_preserves_is_static_in_index_and_method(tmp_path) -> None
         db.close()
 
 
-def test_clang_extractor_rebuilds_direct_function_type_references(tmp_path, monkeypatch) -> None:
+def test_clang_extractor_rebuilds_direct_function_type_references(
+    tmp_path, monkeypatch
+) -> None:
     source = tmp_path / "src" / "plugin.c"
     source.parent.mkdir(parents=True)
     source.write_text(
@@ -331,6 +332,12 @@ def test_clang_extractor_rebuilds_direct_function_type_references(tmp_path, monk
         encoding="utf-8",
     )
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    header = tmp_path / "include" / "types.h"
+    header.parent.mkdir()
+    header_lines = ["\n"] * 120
+    header_lines[89] = "struct Plugin {};\n"
+    header_lines[109] = "struct PluginRegistry {};\n"
+    header.write_text("".join(header_lines), encoding="utf-8")
     try:
         db.insert_function(
             "register_plugin",
@@ -359,16 +366,26 @@ def test_clang_extractor_rebuilds_direct_function_type_references(tmp_path, monk
         extractor = ClangExtractor(project_root=tmp_path)
 
         def definition_for_token(file_path, line, character):
-            token = source.read_text(encoding="utf-8").splitlines()[line - 1][character:]
+            token = source.read_text(encoding="utf-8").splitlines()[line][character:]
             if token.startswith("PluginRegistry"):
-                return [("include/types.h", 110)]
-            if token.startswith("Plugin"):
-                return [("include/types.h", 90)]
-            return []
+                target_line = 109
+            elif token.startswith("Plugin"):
+                target_line = 89
+            else:
+                return []
+            return [
+                {
+                    "uri": header.as_uri(),
+                    "range": {
+                        "start": {"line": target_line, "character": 7},
+                        "end": {"line": target_line, "character": 13},
+                    },
+                }
+            ]
 
         monkeypatch.setattr(extractor, "open_document", lambda path: True)
         monkeypatch.setattr(extractor, "close_document", lambda path: None)
-        monkeypatch.setattr(extractor, "_definition_locations", definition_for_token)
+        monkeypatch.setattr(extractor, "get_definition", definition_for_token)
 
         count = extractor.rebuild_function_type_refs(db)
         context = db.get_function_type_context("register_plugin", "src/plugin.c", 1)
@@ -443,7 +460,9 @@ def test_direct_type_candidates_exclude_parenthesized_values_and_builtin_typedef
     assert {item["kind"] for item in candidates} == {"local", "cast"}
 
 
-def test_clang_extractor_stores_source_signature_in_function_rows(tmp_path, monkeypatch) -> None:
+def test_clang_extractor_stores_source_signature_in_function_rows(
+    tmp_path, monkeypatch
+) -> None:
     source = tmp_path / "executor.c"
     source.write_text(
         "int _executor_validate_command(const char* command) {\n"
@@ -593,7 +612,10 @@ def test_clang_extractor_rebuilds_function_global_and_macro_refs(tmp_path, monke
         db.commit()
 
         extractor = ClangExtractor(project_root=tmp_path)
-        monkeypatch.setattr(extractor, "open_document", lambda _path: False)
+        # The lexical fallback may lack semantic tokens, but definition RPCs
+        # still require an opened document.
+        monkeypatch.setattr(extractor, "open_document", lambda _path: True)
+        monkeypatch.setattr(extractor, "get_semantic_tokens", lambda _path: None)
 
         def definition_for_token(_file_path, line, character=0):
             raw_line = source.read_text(encoding="utf-8").splitlines()[line]
@@ -789,9 +811,9 @@ def test_call_hierarchy_classifies_function_pointer_targets(tmp_path, monkeypatc
     )
 
     rows = []
-    assert (
-        extractor._extract_call_edges_from_call_hierarchy(source, "entry", "demo.c", 1, rows) == 4
-    )
+    assert extractor._extract_call_edges_from_call_hierarchy(
+        source, "entry", "demo.c", 1, rows
+    ) == 4
 
     assert [(row[2], row[5], row[6]) for row in rows] == [
         ("direct_target", "direct", "function"),
@@ -800,530 +822,6 @@ def test_call_hierarchy_classifies_function_pointer_targets(tmp_path, monkeypatc
         ("unknown_target", "direct", "unknown_callable"),
     ]
     assert rows[0][7] == "void direct_target(void)"
-
-
-def _clangd_direct_function_argument(name: str) -> dict:
-    return {
-        "kind": "ImplicitCast",
-        "role": "expression",
-        "detail": "FunctionToPointerDecay",
-        "children": [
-            {
-                "kind": "DeclRef",
-                "role": "expression",
-                "detail": name,
-                "arcana": (
-                    f"DeclRefExpr 0x1 'void (void)' Function 0x2 " f"'{name}' 'void (void)'"
-                ),
-            }
-        ],
-    }
-
-
-def _clangd_pthread_create_ast(callback: dict, *, callback_index: int = 3) -> dict:
-    children = [
-        _clangd_direct_function_argument("pthread_create"),
-        {"kind": "UnaryOperator", "role": "expression", "detail": "&"},
-        {"kind": "IntegerLiteral", "role": "expression", "detail": "0"},
-        {"kind": "IntegerLiteral", "role": "expression", "detail": "0"},
-        {"kind": "IntegerLiteral", "role": "expression", "detail": "0"},
-    ]
-    children[callback_index] = callback
-    return {
-        "kind": "Function",
-        "role": "declaration",
-        "children": [
-            {
-                "kind": "Compound",
-                "role": "statement",
-                "children": [
-                    {
-                        "kind": "Call",
-                        "role": "expression",
-                        "range": {
-                            "start": {"line": 3, "character": 4},
-                            "end": {"line": 3, "character": 50},
-                        },
-                        "children": children,
-                    }
-                ],
-            }
-        ],
-    }
-
-
-def test_typed_pthread_callback_edge_survives_call_hierarchy_path(tmp_path, monkeypatch) -> None:
-    source = tmp_path / "demo.c"
-    source.write_text(
-        "static void *worker(void *value) { return value; }\n"
-        "int entry(void) {\n"
-        "    pthread_t thread;\n"
-        "    pthread_create(&thread, 0, worker, 0);\n"
-        "    return 0;\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    extractor = ClangExtractor(project_root=tmp_path)
-    extractor._call_hierarchy_supported = True
-    monkeypatch.setattr(extractor, "prepare_call_hierarchy", lambda *args: [{"name": "entry"}])
-    monkeypatch.setattr(
-        extractor,
-        "get_outgoing_calls",
-        lambda _item: [
-            {
-                "to": {"name": "pthread_create", "kind": extractor.SK_FUNCTION},
-                "fromRanges": [{"start": {"line": 3, "character": 4}}],
-            }
-        ],
-    )
-    ast_calls = []
-
-    def typed_ast(_file, requested_range):
-        ast_calls.append(requested_range)
-        return _clangd_pthread_create_ast(_clangd_direct_function_argument("worker"))
-
-    monkeypatch.setattr(extractor, "get_ast", typed_ast)
-    sym = {
-        "range": {
-            "start": {"line": 1, "character": 0},
-            "end": {"line": 5, "character": 1},
-        }
-    }
-    rows = []
-
-    extractor._extract_call_edges(
-        source,
-        "entry",
-        "demo.c",
-        2,
-        6,
-        rows,
-        sym,
-        {"entry", "worker"},
-    )
-
-    assert ast_calls == [sym["range"]]
-    assert [row for row in rows if row[5] == "callback"] == [
-        (
-            "entry",
-            "demo.c",
-            "worker",
-            "demo.c",
-            4,
-            "callback",
-            "thread_entry_function",
-            "",
-        )
-    ]
-
-
-def test_typed_pthread_callback_rejects_cast_alias_and_non_third_argument(
-    tmp_path, monkeypatch
-) -> None:
-    source = tmp_path / "demo.c"
-    source.write_text(
-        "int entry(void) { pthread_create(&thread, 0, worker, 0); return 0; }\n",
-        encoding="utf-8",
-    )
-    extractor = ClangExtractor(project_root=tmp_path)
-    sym = {
-        "range": {
-            "start": {"line": 0, "character": 0},
-            "end": {"line": 0, "character": 70},
-        }
-    }
-    rejected = [
-        {
-            "kind": "CStyleCast",
-            "role": "expression",
-            "detail": "BitCast",
-            "children": [_clangd_direct_function_argument("worker")],
-        },
-        {
-            "kind": "ImplicitCast",
-            "role": "expression",
-            "detail": "LValueToRValue",
-            "children": [
-                {
-                    "kind": "DeclRef",
-                    "role": "expression",
-                    "detail": "worker_alias",
-                    "arcana": "DeclRefExpr 0x1 Var 0x2 'worker_alias'",
-                }
-            ],
-        },
-    ]
-    for ast in (
-        *(_clangd_pthread_create_ast(value) for value in rejected),
-        _clangd_pthread_create_ast(_clangd_direct_function_argument("worker"), callback_index=2),
-    ):
-        monkeypatch.setattr(extractor, "get_ast", lambda *_args, value=ast: value)
-        rows = []
-        assert (
-            extractor._extract_typed_thread_callback_edges(
-                source,
-                "entry",
-                "demo.c",
-                1,
-                6,
-                rows,
-                sym=sym,
-                known_local_functions={"entry", "worker"},
-            )
-            == 0
-        )
-        assert rows == []
-
-
-def test_typed_pthread_callback_rejects_local_governed_callee_definition(
-    tmp_path, monkeypatch
-) -> None:
-    source = tmp_path / "collision.c"
-    source.write_text(
-        "int entry(void) { pthread_create(&thread, 0, worker, 0); return 0; }\n",
-        encoding="utf-8",
-    )
-    extractor = ClangExtractor(project_root=tmp_path)
-    monkeypatch.setattr(
-        extractor,
-        "get_ast",
-        lambda *_args: _clangd_pthread_create_ast(_clangd_direct_function_argument("worker")),
-    )
-    sym = {
-        "range": {
-            "start": {"line": 0, "character": 0},
-            "end": {"line": 0, "character": 70},
-        }
-    }
-    rows = []
-
-    assert (
-        extractor._extract_typed_thread_callback_edges(
-            source,
-            "entry",
-            "collision.c",
-            1,
-            2,
-            rows,
-            sym=sym,
-            known_local_functions={
-                "entry": "entry",
-                "worker": "worker",
-                "pthread_create": "pthread_create",
-            },
-        )
-        == 0
-    )
-    assert rows == []
-
-
-def test_direct_callback_names_support_unique_cpp_free_function_and_reject_ambiguity() -> None:
-    def row(name: str, *, declaration: bool = False) -> tuple:
-        return (
-            name,
-            "demo.cpp",
-            1,
-            2,
-            f"void *{name}(void *)",
-            0,
-            0,
-            int(declaration),
-            1,
-        )
-
-    assert ClangExtractor._direct_callback_function_names(
-        Path("demo.cpp"),
-        (row("worker"), row("Box::method"), row("prototype", declaration=True)),
-    ) == {"worker", "method"}
-    assert ClangExtractor._direct_callback_function_targets(
-        Path("demo.cpp"),
-        (row("worker"), row("Box::method"), row("prototype", declaration=True)),
-    ) == {"worker": "worker", "method": "Box::method"}
-    assert (
-        ClangExtractor._direct_callback_function_names(
-            Path("demo.cxx"),
-            (row("worker"), row("worker")),
-        )
-        == set()
-    )
-    assert (
-        ClangExtractor._direct_callback_function_targets(
-            Path("demo.cpp"),
-            (row("Left::worker"), row("Right::worker")),
-        )
-        == {}
-    )
-    assert (
-        ClangExtractor._direct_callback_function_names(
-            Path("demo.hpp"),
-            (row("worker"),),
-        )
-        == set()
-    )
-
-
-def test_typed_pthread_callback_emits_exact_qualified_cpp_method(tmp_path, monkeypatch) -> None:
-    source = tmp_path / "demo.cpp"
-    source.write_text(
-        "struct Worker { static void *run(void *); };\n"
-        "int entry(void) { pthread_create(&thread, 0, Worker::run, 0); return 0; }\n",
-        encoding="utf-8",
-    )
-    extractor = ClangExtractor(project_root=tmp_path)
-    monkeypatch.setattr(
-        extractor,
-        "get_ast",
-        lambda *_args: _clangd_pthread_create_ast(
-            {
-                **_clangd_direct_function_argument("run"),
-                "children": [
-                    {
-                        "kind": "DeclRef",
-                        "role": "expression",
-                        "detail": "run",
-                        "arcana": "DeclRefExpr 0x1 CXXMethod 0x2 'run'",
-                    }
-                ],
-            }
-        ),
-    )
-    sym = {
-        "range": {
-            "start": {"line": 0, "character": 0},
-            "end": {"line": 4, "character": 1},
-        }
-    }
-    rows = []
-
-    added = extractor._extract_typed_thread_callback_edges(
-        source,
-        "entry",
-        "demo.cpp",
-        1,
-        5,
-        rows,
-        sym=sym,
-        known_local_functions={"run": "Worker::run"},
-    )
-
-    assert added == 1
-    assert rows[0][2] == "Worker::run"
-
-
-@pytest.mark.skipif(
-    shutil.which("clangd") is None or shutil.which("clang++") is None,
-    reason="requires real clangd and clang++",
-)
-def test_real_clangd_indexes_exact_qualified_cpp_callback(tmp_path) -> None:
-    source = tmp_path / "method.cpp"
-    source.write_text(
-        "#include <pthread.h>\n"
-        "struct Worker { static void *run(void *value) { return value; } };\n"
-        "int entry() {\n"
-        "  pthread_t thread;\n"
-        "  pthread_create(&thread, nullptr, Worker::run, nullptr);\n"
-        "  return 0;\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "compile_commands.json").write_text(
-        json.dumps(
-            [
-                {
-                    "directory": str(tmp_path),
-                    "file": str(source),
-                    "arguments": [
-                        shutil.which("clang++") or "clang++",
-                        "-std=c++17",
-                        "-Werror",
-                        "-Wall",
-                        "-Wextra",
-                        "-c",
-                        str(source),
-                    ],
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
-    method_evidence = ClangToolingEvidenceProvider(
-        tmp_path / "compile_commands.json",
-        clang_path=shutil.which("clang++") or "clang++",
-        execute=True,
-    ).collect_for_function(
-        func_name="Worker::run",
-        file_path=str(source),
-        start_line=2,
-        end_line=2,
-    )
-    method_ast = method_evidence["ast_dump"]["summary"]
-    assert method_ast["target_function_unique"] is True
-    assert method_ast["target_function"]["name"] == "Worker::run"
-    extractor = ClangExtractor(
-        project_root=tmp_path,
-        clangd_path=shutil.which("clangd") or "clangd",
-        compile_commands_dir=tmp_path,
-        max_threads=1,
-    )
-    assert extractor.start() is True
-    try:
-        assert extractor.open_document(source) is True
-        pending = list(extractor.get_document_symbols(source) or [])
-        symbols = []
-        while pending:
-            item = pending.pop()
-            symbols.append(item)
-            pending.extend(item.get("children") or [])
-        entry = next(item for item in symbols if str(item.get("name") or "").startswith("entry"))
-        rows = []
-        added = extractor._extract_typed_thread_callback_edges(
-            source,
-            "entry",
-            "method.cpp",
-            3,
-            7,
-            rows,
-            sym=entry,
-            known_local_functions={"run": "Worker::run"},
-        )
-    finally:
-        extractor.close_document(source)
-        extractor.stop()
-
-    assert added == 1
-    assert rows == [
-        (
-            "entry",
-            "method.cpp",
-            "Worker::run",
-            "method.cpp",
-            5,
-            "callback",
-            "thread_entry_function",
-            "",
-        )
-    ]
-
-
-@pytest.mark.skipif(
-    shutil.which("clangd") is None or shutil.which("clang") is None,
-    reason="requires real clangd and clang",
-)
-def test_real_clangd_rejects_project_defined_pthread_create_callback_edge(tmp_path) -> None:
-    source = tmp_path / "collision.c"
-    source.write_text(
-        "typedef unsigned long thread_id;\n"
-        "typedef void *(*thread_start)(void *);\n"
-        "static void *worker(void *value) { return value; }\n"
-        "int pthread_create(thread_id *id, const void *attr, thread_start start, void *arg) {\n"
-        "  (void)id; (void)attr; return start(arg) != 0;\n"
-        "}\n"
-        "int entry(void) {\n"
-        "  thread_id id = 0;\n"
-        "  return pthread_create(&id, 0, worker, 0);\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "compile_commands.json").write_text(
-        json.dumps(
-            [
-                {
-                    "directory": str(tmp_path),
-                    "file": str(source),
-                    "arguments": [
-                        shutil.which("clang") or "clang",
-                        "-std=c11",
-                        "-Werror",
-                        "-Wall",
-                        "-Wextra",
-                        "-c",
-                        str(source),
-                    ],
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
-    extractor = ClangExtractor(
-        project_root=tmp_path,
-        clangd_path=shutil.which("clangd") or "clangd",
-        compile_commands_dir=tmp_path,
-        max_threads=1,
-    )
-    assert extractor.start() is True
-    try:
-        assert extractor.open_document(source) is True
-        pending = list(extractor.get_document_symbols(source) or [])
-        symbols = []
-        while pending:
-            item = pending.pop()
-            symbols.append(item)
-            pending.extend(item.get("children") or [])
-        entry = next(item for item in symbols if str(item.get("name") or "").startswith("entry"))
-        rows = []
-        added = extractor._extract_typed_thread_callback_edges(
-            source,
-            "entry",
-            "collision.c",
-            7,
-            10,
-            rows,
-            sym=entry,
-            known_local_functions={
-                "entry": "entry",
-                "worker": "worker",
-                "pthread_create": "pthread_create",
-            },
-        )
-    finally:
-        extractor.close_document(source)
-        extractor.stop()
-
-    assert added == 0
-    assert rows == []
-
-
-def test_clang_backend_reverse_pointer_query_includes_only_indirect_and_callback_edges(
-    tmp_path,
-) -> None:
-    db = KnowledgeDB(str(tmp_path / "callback.db"))
-    backend = ClangBackend()
-    backend._db = db
-    try:
-        db.insert_call_edges_batch(
-            [
-                (
-                    "creator",
-                    "demo.c",
-                    "worker",
-                    "demo.c",
-                    9,
-                    "callback",
-                    "thread_entry_function",
-                    "",
-                ),
-                (
-                    "indirect_caller",
-                    "demo.c",
-                    "worker",
-                    "",
-                    12,
-                    "indirect",
-                    "function_pointer_variable",
-                    "",
-                ),
-                ("ordinary", "demo.c", "worker", "demo.c", 15, "direct", "function", ""),
-            ]
-        )
-        db.commit()
-
-        assert backend.find_function_pointers("worker") == [
-            {"caller": "creator", "file": "demo.c", "line": 9},
-            {"caller": "indirect_caller", "file": "demo.c", "line": 12},
-        ]
-    finally:
-        backend._db = None
-        db.close()
 
 
 def test_regex_call_extraction_classifies_member_and_local_function_pointers(
@@ -1481,7 +979,10 @@ def test_run_batch_extraction_collects_concurrently_and_publishes_in_one_batch(
     sources = [tmp_path / "first.c", tmp_path / "second.c"]
     for source in sources:
         source.write_text("int value(void) { return 1; }\n", encoding="utf-8")
-    prescanned = {str(source.resolve()): (index + 1, True) for index, source in enumerate(sources)}
+    prescanned = {
+        str(source.resolve()): (index + 1, True)
+        for index, source in enumerate(sources)
+    }
     events = []
     active_calls = 0
     max_active_calls = 0
@@ -1566,7 +1067,86 @@ def test_run_batch_extraction_collects_concurrently_and_publishes_in_one_batch(
     assert extractor.get_last_base_stats()["files_extracted"] == 2
 
 
-def test_clang_backend_passes_prescanned_tus_to_batch_extraction(tmp_path, monkeypatch) -> None:
+def test_run_batch_extraction_continues_when_index_barrier_fails(
+    tmp_path, monkeypatch
+) -> None:
+    """A failed index barrier degrades to skipping call edges, never aborts."""
+    sources = [tmp_path / "first.c", tmp_path / "second.c"]
+    for source in sources:
+        source.write_text("int value(void) { return 1; }\n", encoding="utf-8")
+    prescanned = {
+        str(source.resolve()): (index + 1, True)
+        for index, source in enumerate(sources)
+    }
+    events = []
+
+    class BatchDB(_FakeDB):
+        def replace_tu_facts_batch_transaction(self):
+            class Transaction:
+                def __enter__(inner_self):
+                    events.append("batch_begin")
+
+                def __exit__(inner_self, exc_type, exc, traceback):
+                    events.append("batch_end")
+
+            return Transaction()
+
+    extractor = ClangExtractor(project_root=tmp_path, max_threads=2)
+
+    def collect(file_path, _db, tu_id, *, defer_call_queries=False):
+        events.append(("collect", Path(file_path).name, tu_id))
+        return {
+            "func_rows": [],
+            "call_rows": [],
+            "type_rows": [],
+            "global_rows": [],
+            "macro_rows": [],
+            "include_rows": [],
+            "_call_work": [
+                (
+                    Path(file_path),
+                    Path(file_path).stem,
+                    Path(file_path).name,
+                    1,
+                    1,
+                    {},
+                    set(),
+                )
+            ],
+        }
+
+    def publish(_db, tu_id, **facts):
+        events.append(("publish", tu_id))
+
+    def collect_calls(_work):
+        raise AssertionError("deferred call edges must be skipped when the barrier fails")
+
+    monkeypatch.setattr(extractor, "_collect_tu_facts", collect)
+    monkeypatch.setattr(extractor, "_publish_tu_facts", publish)
+    monkeypatch.setattr(extractor, "_extract_deferred_call_edges", collect_calls)
+
+    def index_barrier():
+        events.append("index_barrier")
+        return False
+
+    stats = extractor.run_batch_extraction(
+        sources,
+        BatchDB(),
+        batch_size=2,
+        prescanned_tus=prescanned,
+        index_barrier=index_barrier,
+    )
+
+    assert stats == {"total": 2, "success": 2, "failed": 0, "skipped": 0}
+    assert events[2] == "index_barrier"
+    assert "batch_begin" in events
+    assert events[-1] == "batch_end"
+    assert extractor.get_last_base_stats()["files_extracted"] == 2
+
+
+def test_clang_backend_passes_prescanned_tus_to_batch_extraction(
+    tmp_path, monkeypatch
+) -> None:
     source = tmp_path / "demo.c"
     source.write_text("int demo(void) { return 0; }\n", encoding="utf-8")
 
@@ -1720,7 +1300,9 @@ def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
     assert backend._status == "ready"
 
 
-def test_clang_backend_deletes_missing_tu_without_starting_clangd(tmp_path, monkeypatch) -> None:
+def test_clang_backend_deletes_missing_tu_without_starting_clangd(
+    tmp_path, monkeypatch
+) -> None:
     deleted = tmp_path / "deleted.c"
 
     class DeleteOnlyDB(_FakeDB):
@@ -1758,7 +1340,9 @@ def test_clang_backend_deletes_missing_tu_without_starting_clangd(tmp_path, monk
     assert backend._status == "ready"
 
 
-def test_clang_backend_force_refreshes_callers_of_deleted_tu(tmp_path, monkeypatch) -> None:
+def test_clang_backend_force_refreshes_callers_of_deleted_tu(
+    tmp_path, monkeypatch
+) -> None:
     caller = tmp_path / "caller.c"
     deleted = tmp_path / "deleted.c"
     caller.write_text("int caller(void) { return deleted(); }\n", encoding="utf-8")
@@ -2028,7 +1612,9 @@ def test_clang_backend_combines_both_derived_scans_and_recovers_only_failed_inde
                     ClangBackend.FUNCTION_TYPE_REFS_INDEX: 0,
                 },
                 "errors": {
-                    ClangBackend.FUNCTION_TYPE_REFS_INDEX: RuntimeError("injected type failure")
+                    ClangBackend.FUNCTION_TYPE_REFS_INDEX: RuntimeError(
+                        "injected type failure"
+                    )
                 },
             }
 
@@ -2042,13 +1628,12 @@ def test_clang_backend_combines_both_derived_scans_and_recovers_only_failed_inde
         assert combined.combined_calls == 1
         assert combined.symbol_calls == 0
         assert combined.type_calls == 0
-        assert (
-            db.get_derived_index_state(ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX)["status"]
-            == "current"
-        )
-        assert (
-            db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)["status"] == "failed"
-        )
+        assert db.get_derived_index_state(
+            ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX
+        )["status"] == "current"
+        assert db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)[
+            "status"
+        ] == "failed"
 
         recovery = _BackendSchedulingExtractor()
         backend._extractor = recovery
@@ -2057,9 +1642,9 @@ def test_clang_backend_combines_both_derived_scans_and_recovers_only_failed_inde
         assert recovery.base_calls == []
         assert recovery.symbol_calls == 0
         assert recovery.type_calls == 1
-        assert (
-            db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)["status"] == "current"
-        )
+        assert db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)[
+            "status"
+        ] == "current"
     finally:
         db.close()
 
@@ -2143,7 +1728,9 @@ def test_clang_backend_partial_derived_failure_preserves_independent_state(
         db.close()
 
 
-def test_clang_backend_wait_for_indexing_timeout_is_terminal(tmp_path, monkeypatch) -> None:
+def test_clang_backend_wait_for_indexing_timeout_continues_extraction(
+    tmp_path, monkeypatch
+) -> None:
     source = tmp_path / "timeout.c"
     source.write_text("int timeout(void) { return 0; }\n", encoding="utf-8")
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
@@ -2152,11 +1739,29 @@ def test_clang_backend_wait_for_indexing_timeout_is_terminal(tmp_path, monkeypat
         extractor = _BackendSchedulingExtractor(wait_result=False)
         backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
 
-        assert backend._run_full_extraction() is False
-        assert extractor.base_calls == []
-        assert extractor.symbol_calls == 0
-        assert extractor.type_calls == 0
-        assert backend.status() == "error"
+        assert backend._run_full_extraction() is True
+        assert extractor.wait_calls == 1
+        assert len(extractor.base_calls) == 1
+        assert extractor.symbol_calls == 1
+        assert extractor.type_calls == 1
+        assert backend.status() == "ready"
+    finally:
+        db.close()
+
+
+def test_clang_backend_wait_for_indexing_timeout_does_not_set_error_status(
+    tmp_path, monkeypatch
+) -> None:
+    """A soft index-wait timeout must degrade with a warning, never abort the run."""
+    source = tmp_path / "soft_timeout.c"
+    source.write_text("int soft_timeout(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _set_base_versions_current(db)
+        extractor = _BackendSchedulingExtractor(wait_result=False)
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+        assert backend._run_full_extraction() is True
+        assert backend.status() != "error"
     finally:
         db.close()
 

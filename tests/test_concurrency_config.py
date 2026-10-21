@@ -100,6 +100,6 @@ def test_runtime_deadlines_are_internal_defaults(tmp_path) -> None:
     config = ConfigLoader.load(str(path))
 
     assert config.analysis.request_deadline_seconds == 120.0
-    assert config.analysis.validation_deadline_seconds == 240.0
+    assert config.analysis.validation_deadline_seconds == 600.0
     assert config.analysis.entry_deadline_seconds == 1800.0
     assert config.analysis.budget_exhaustion_policy == "observe"

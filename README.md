@@ -1,35 +1,21 @@
-# Z-SCOPE v1.3.1
+# Z-SCOPE v1.3.2
 
-**Z-SCOPE** 是一款证据优先的 C/C++ 静态分析平台，并提供 Java Preview。它把可插拔代码索引、确定性规则、结构/值流后端信号、SecuritySpec、受限 Hypothesis Hunter、可离线重算的 Proof Engine 与人工反馈结合起来；模型只能选择系统预绑定的规格、假设和证据动作，不能直接确认或否决漏洞。
+**Z-SCOPE** 是一款基于 **多智能体（Multi-Agent）** 协作的 C/C++ 静态分析平台，并提供 Java Preview。它把可插拔代码索引、确定性规则、结构/值流后端信号、项目语义配置、人工反馈记忆与大语言模型（LLM）验证结合起来，模拟资深安全研究员的审计过程。
 
-v1.3.1 是 C/C++ 稳定化、离线交付和 Python 3.9 兼容版本，同时落地 Java Preview 的结构索引与规则候选基础。包内 `1.3.1` 是版本唯一真源，发布标签必须为 `v1.3.1`；`zscope.candidate.v3.3` 等字符串仅代表内部数据协议，不是产品版本。详见 [v1.3.1 发布说明](docs/releases/v1.3.1.md)。
+v1.3.2 在 v1.3.1 稳定线之上引入 LLM Wiki 项目知识层、自适应语义发现与 Validator v3 分层验证，落地 public config v2 与跨语言规则治理，交付 Linux Portable 四包离线发布，并对 Clang 索引与 SVF 值流链路做系统性性能优化。包内 `1.3.2` 是版本唯一真源，发布标签必须为 `v1.3.2`；`zscope.candidate.v3.3` 等字符串仅代表内部数据协议，不是产品版本。详见 [v1.3.2 发布说明](docs/releases/v1.3.2.md)。
 
 ## 核心特性
 
-- **SecuritySpec + Hunter + Proof Engine**：确定性/backend候选走低成本快车道；qualification-backed stable SecuritySpec成为live语义输入，balanced/deep再由candidate-blind Hunter选择系统offer并登记未确认候选。所有来源统一进入冻结Candidate Ledger，只有独立Checker的完整closure可产生终态。
-- **Task 驱动的漏洞 Skill 选择**：`scan.task` 只表达用户审计重点。空串启用当前语言全部适用 Skill；非空文本会结合本地规则与可选 LLM 语义路由选择漏洞方向。
-- **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。Workflow选择由CLI运行模式控制，不允许在`zscope.yaml`中配置。另支持只离线重验冻结proof的告警验证；C/C++明确拒绝`--mode ruledriven`，Java Preview暂保留。
-- **Diff impact 增量影响扫描**：支持 `--diff-base/--diff-head`、`--diff-repo-root` 与可重复 `--diff-path`。内置稳定策略按变更意图生成义务并选择最小必要扫描 root，写出 `entry_functions_diff.json`、覆盖摘要和增量相关性标注。
-- **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries` 或 `project.entry_discovery.enabled`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点，并把候选写入项目根目录的 `entry_functions_list.json`。若未显式配置 `entry_functions_list`，发现结果会作为本轮批量入口。
-- **可审阅用户配置工作簿**：`user_config.xlsx`与`--infer-user-config`可从源码和函数式宏生成resource/lock/dispatcher/module lifecycle/pointer target/function intent候选。运行时把精确绑定且qualification支持的条目编译为SecuritySpec；旧semantic snapshot只供compat/历史只读。
-- **证据优先的候选流水线**：`CandidatePipeline` 汇总本地规则、Clang AST/CFG、SVF/Saber、跨函数图候选与 KnowledgeDB/Joern 后端信号。v1.2 继续扩展协议/运行时形态，覆盖 fd 表示契约、raw/encoded fd 混用、EAGAIN/EINTR 无预算重试、协议元素数与字节数错配、宏锁可能编译为空、部分资源初始化失败回滚等模式。
-- **跨语言规则治理**：Java 与 C/C++ 内置确定性检测器、YAML pack 和 Python provider 共用严格规则目录、canonical ID、Skill 校验与 `EffectiveRuleSet`；SVF/Saber、Joern 等仍保持 backend signal 身份。
-- **扫描级 token 计量**：公共 `fast / balanced / deep` 档位共享线程安全的 call-level usage 账本；账本按 provider usage 结算，但不参与请求准入。2M/12M/30M 仅是 Range Benchmark 完成后的成本验收线。
-- **验证组终态与确定性 proof**：`CandidateEnvelope v3.3`、`DecisionFact`、`SecurityObligation` 和 scan-level validation group 共同保证每个安全义务只验证一次，并闭合为 `confirmed`、`rejected_with_proof`、`needs_review`、`engine_failed` 或 `interrupted`。只有完整、可追溯且无冲突的 proof 能改变安全终态；引擎故障不会伪装成漏洞。
-- **Proof Engine authority协议**：每个cluster只传bounded v3 evidence slice，模型适配器只能选择系统EvidenceAction ID。Provider提出证书，独立Checker从冻结IR重算；每个required executable clause都必须有Checker结果。完整正证、反证或确定needs-review后停止后续调用，每个cluster恰好一个terminal event。
-- **本地与实验性远程 MCP Server**：原生内置 Model Context Protocol (MCP) stdio Server；同时提供实验性的 Streamable HTTP 传输。远程绑定必须显式配置 bearer token 环境变量与客户端 allowlist，避免把代码索引和工具总线无保护暴露到网络。
-- **多模型配置、endpoint 池与路由**：支持多个 LLM profile；用户可把 modeling、analysis、validation 三类资源映射到 profile。同一 profile 可配置多个 `base_urls` 及 endpoint 限流。
-- **按语言隔离的可插拔后端**：C/C++ 默认 `unified`，Java 默认 `java_unified`；Regex/Clang/Java source 等弱后端必须显式选择，深度后端失败不会自动降级。
-- **最多 12 个分析工具与工具策略**：函数源码获取、调用图分析、结构体查询、污点追踪、指针别名查询、深度调用上下文聚合等工具由运行时提供；实际对 Agent 暴露的集合由 `AGENT.md`、后端能力和 `ToolPolicy` 共同决定，并支持参数校验、敏感路径拦截和审计日志记录。
-- **用户辅助配置系统**：通过 WebUI 或 `user_config.xlsx` 管理外部函数描述、配对函数、函数指针指向、dispatcher 分支、模块生命周期和函数意图等信息；手工验证反馈会写入误报抑制与 finding baseline，后续扫描自动复用。
-- **智能增量分析与稳定缺陷身份**：支持断点续扫（`--resume`）和基于语义哈希的增量维护扫描（`--maintain`）。`zscope/common/issue_identity.py` 统一提供 `canonical_issue_key`、`stable_issue_fingerprint` 与 source context fingerprint，让去重、baseline、SARIF partial fingerprints 和 benchmark 匹配使用同一套身份逻辑。
-- **Canonical 报告与结构化根因投影**：`ReportAssembler`只从冻结Candidate Ledger outcomes生成默认视图和含复核视图。`Finding-root v2`仅投影defect family、结构化subject、decision region、代码和proof上下文等价的义务；它不取得proof或terminal authority。CLI支持`--export-sarif`输出SARIF v2.1.0。
-- **Web 仪表盘**：Alpine.js + DaisyUI 构建的交互式界面，集成扫描结果查看、报告视图切换、`validated` / `needs_review` / `uncertain` / `unvalidated` / `pending` / `rejected` 状态标记、用户配置管理和配置告警。
-- **可追踪持久化与反馈记忆**：SecuritySpec、Hunter和Proof artifacts写入独立不可变CAS；最终报告与完整RuntimeAuthorityManifest写入本地snapshot目录。`code_knowledge.db`持久化代码事实、macro、Inspection IR、候选source/sink、资源/锁/共享访问与路径切片；用户领域知识落在`user_config.xlsx`，反馈状态通过旁路state DB和ReviewMemory复用。
-- **自动报告备份护城河**：每次批量生成或覆盖 JSON 分析主报告前，自动创建带时间戳的增量备份至 `.zscope_knowledge/backups/` 目录。
-- **严格编译与类型检查**：开发环境支持 `compileall` 强制编译检查和 `mypy` 静态类型检查，避免 Python 解释执行到冷门分支时才暴露错误。
-- **Benchmark 与发布门禁**：内置 C/C++ 与 Java Range fixture 统一通过 `zscope-benchmark` 的 `smoke`、`trial`、`formal` 三模式执行。扫描输入采用严格 allowlist，truth 只在独立评分阶段可见；历史结果保存在带哈希归档中，不作为当前版本事实。
-- **严格 public config v2**：`zscope.yaml` 只保留 LLM、项目范围、入口发现、审计重点、scan depth、后端拓扑、SVF 规划、并发和规则扩展；Agent 轮数、缓存、报告和稳定算法默认值由可审计 RuntimeSpec 提供。
+- **多智能体协作与声明式编排**：`AGENT.md` 与 `SKILL.md` 契约定义语义建模、漏洞扫描、验证、Issue Reconciler、Wiki Compiler 及聚焦型 Deep Worker 等智能体与技能，`zscope/workflows/*.yaml` 与 `WorkflowRunner` 驱动实际执行步骤。函数源码、调用图、污点追踪、指针别名等 14 个内置工具由 `ToolPolicy` 统一做参数校验、敏感路径拦截与审计日志。
+- **自适应语义发现与分层验证**：确定性/backend 候选走低成本快车道；balanced/deep 额外构建 Security Semantic Map，并用 candidate-blind coverage-gap worker 主动提出 hypothesis。所有来源统一进入全局 Candidate Ledger，再由 V0 确定性 proof、V1 单次结构化判定、V2 定向补证复判和高风险 V3 短调查闭合。
+- **LLM Wiki 项目知识层**：扫描 workflow 在入口分析前执行一次 session 级 `wiki_compile`，把项目内说明性 Markdown 确定性分类、按 heading 切分为稳定 source section，并以不可变 revision 发布 Wiki 知识。批量入口、Validator、Web 与 MCP 共享同一个只读 `ProjectKnowledgeService`；Compiler 不可用或 Wiki 损坏时回退带路径、标题、行号与 digest 的原文摘录查询。`project.wiki.mode` 默认 `off`，`zscope-wiki` CLI 提供独立的状态、查询与维护入口。详见 [LLM Wiki](docs/modules/wiki.md)。
+- **证据优先的候选流水线**：`CandidatePipeline` 汇总本地规则、Clang AST/CFG、SVF/Saber、跨函数图候选与 KnowledgeDB/Joern 后端信号，覆盖 fd 表示契约、raw/encoded fd 混用、EAGAIN/EINTR 无预算重试、协议元素数与字节数错配、宏锁编译为空、部分资源初始化失败回滚等模式。后端按语言隔离：C/C++ 默认 `unified`，Java 默认 `java_unified`；弱后端必须显式选择，深度后端失败不会自动降级。
+- **跨语言规则治理**：Java 与 C/C++ 内置确定性检测器、YAML pack 和 Python provider 共用严格规则目录、canonical ID、Skill 校验与 `EffectiveRuleSet`；SVF/Saber、Joern 等仍保持 backend signal 身份，禁用规则不影响后端信号与 LLM 独立发现。
+- **验证组终态与有界 Validator 协议**：`CandidateEnvelope v3.3`、`SecurityObligation` 和 scan-level validation group 保证每个安全义务只验证一次，并闭合为 `confirmed`、`rejected_with_proof`、`needs_review`、`engine_failed` 或 `interrupted`；只有完整、可追溯且无冲突的 proof 能改变安全终态，引擎故障不会伪装成漏洞。每个 cluster 只传 bounded `ValidatorEvidenceSlice v3`：V1 是无工具、严格 schema 的单次判定，V2 按义务一次补齐事实后单次复判，V3 是最长 50 次模型迭代、仅白名单只读工具的有界调查，可引用事实完全闭合后才进入默认视图。
+- **稳定缺陷身份与 Canonical 报告**：`canonical_issue_key`、`stable_issue_fingerprint` 等统一身份服务去重、baseline、SARIF partial fingerprints 与 benchmark 匹配。`ReportAssembler` 只从冻结的 canonical outcome 集合生成默认视图和含复核视图；`FindingRoot v1` 仅合并 defect family、结构化 subject、decision region、代码与 proof 上下文完全等价的义务。CLI 支持 `--export-sarif` 输出 SARIF v2.1.0，Web 端可导出包含离线阅读器与逐 issue Markdown 的 ZIP 报告包。
+- **运行模式与增量分析**：支持全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）与告警验证（`--mode alert-verify`）；diff impact 扫描（`--diff-base/--diff-head`）按变更意图选择最小必要扫描 root，并区分增量/存量发现。`--discover-entries` 自动识别头文件暴露的公共 API、网络收发、线程入口与用户输入点作为批量入口。
+- **用户配置与反馈记忆**：`user_config.xlsx` 维护外部函数描述、配对函数、函数指针指向、dispatcher 分支、模块生命周期与函数意图；所有 C/C++ 扫描在规则执行前通过增量并发语义建模更新接口契约，`--infer-user-config` 共用该链路并补充 dispatcher 等配置；人工角色和配对优先，运行时只注入当前函数真正引用到的配置。Web 复核状态持久化为误报抑制与 finding baseline，经 `ReviewMemory` 在后续扫描自动复用；分析结果与证据 IR 落入 `.zscope_snapshots/` 与 `code_knowledge.db`。
+- **多入口与多模型接入**：提供 CLI、Alpine.js + DaisyUI Web 仪表盘（审计发现、规则目录、项目配置、用户配置与看板）与 MCP Server（本地 stdio；实验性 Streamable HTTP 远程绑定需显式 bearer token 与客户端 allowlist）。LLM 支持多 profile 并按 modeling/analysis/validation 角色映射，同一 profile 可配置多个 `base_urls` 与 endpoint 限流分摊批量请求。
 
 ## 系统架构
 
@@ -37,8 +23,8 @@ v1.3.1 是 C/C++ 稳定化、离线交付和 Python 3.9 兼容版本，同时落
 CLI / Web / MCP / SARIF 入口层
     │
     ├─→ 默认/批量模式 (WorkflowRunner + Analyzer)
-    ├─→ Java Preview 规则驱动兼容模式 --mode ruledriven（C/C++ 拒绝）
-    ├─→ 告警离线复验模式 --mode alert-verify
+    ├─→ 规则驱动兼容模式 --mode ruledriven（C/C++ 在 1.x 弃用，2.0 删除）
+    ├─→ 告警验证模式 --mode alert-verify
     ├─→ SARIF 标准导出 --export-sarif
     ├─→ 自动入口发现 --discover-entries
     ├─→ Diff impact 扫描 --diff-base/--diff-head [--diff-repo-root] [--diff-path]
@@ -49,7 +35,7 @@ CLI / Web / MCP / SARIF 入口层
 声明式工作流编排 (workflows/ + SpecRegistry)
           │
           ▼
-CodeIndex (可插拔后端 + per-run cache) + SecuritySpecStore + UserConfigStore(XLSX + state DB) + KnowledgeDB IR
+CodeIndex (可插拔后端 + per-run cache) + SnapshotStore + UserConfigStore(XLSX + state DB) + KnowledgeDB IR
           │
           ├─ CodeBackend ABC (backend_base.py)
           │  ├─ JoernBackend    — Java 信号；C/C++ 仅保留 1.x 兼容入口
@@ -58,37 +44,37 @@ CodeIndex (可插拔后端 + per-run cache) + SecuritySpecStore + UserConfigStor
           │  ├─ JavaSource/UnifiedBackend — Java source + SootUp/WALA/Joern signals
           │  └─ RegexBackend    — 正则回退
           │
+          ├─→ LLM Wiki 编译 (wiki_compile, project.wiki) → ProjectKnowledgeService（session 级只读共享）
           ├─→ 确定性候选快车道 (CandidatePipeline)
-          ├─→ Security Semantic Map → authoritative SecuritySpecCompiler
-          ├─→ balanced/deep Attack-surface Planner → Hypothesis Hunter (ID选择)
-          ├─→ 全局 CandidateLedger (全部来源登记 + freeze)
+          ├─→ Security Semantic Map → Coverage-gap Planner → candidate-blind hypotheses
+          ├─→ 全局 CandidateLedger (跨入口去重 + freeze)
           ├─→ ScanTokenUsageLedger (逐调用计量，不参与运行时限流)
           ├─→ 工具总线 (ToolsRuntime + ToolPolicy) ── 外部 MCP 集成
           │
           ▼
-Proof Engine authority
-ProgramProofIR → finite provider → independent Checker → TerminalAuthorityDecision v3
+分层验证 (agents/ + skills/)
+V0 deterministic proof → V1 structured decision → V2 evidence delta recheck → V3 bounded investigation
           │
           ▼
-Finding-root v2 + ReviewMemory + ReportAssembler + Decision Trace + SARIF/Web
+ReviewMemory + ReportAssembler + 归因/预算审计 + SARIF 导出 + Web 反馈闭环
 ```
 
 ## 数据安全与审计留痕
 Z-Scope 内置了多层防丢失和可追溯机制：
-1. **authority级持久化**：单函数报告与SecuritySpec/Hunter/Proof CAS写入`.zscope_snapshots/`；`--resume`和`--maintain`只复用cache epoch、RuntimeAuthorityManifest和完整trace均一致的P5报告。
+1. **快照级持久化**：语义快照与单函数最终报告会写入 `.zscope_snapshots/snapshots.db`，`--resume` 和 `--maintain` 都以该库作为跳过、复用和调和依据。
 2. **热备份轮转**：在汇总合并最终的 `zscope_batch_report.json` 前，旧版本 JSON 会自动加盖时间戳并归档至 `.zscope_knowledge/backups/` 目录。
 3. **证据 IR 与索引留痕**：确定性规则与后端信号产生的候选会将 source/sink、路径切片、资源/锁/共享状态事件写入 `code_knowledge.db` 的 IR 表；Clang 后端还会记录 macro 定义、翻译单元哈希和删除文件影响，便于复查和回归分析。
-4. **人工反馈复用**：Web仪表盘中的状态会持久化为`finding_suppressions`与`finding_baselines`。`ReviewMemory`在proof前以advisory方式复用这些状态；历史反馈和诊断评分都不能替代Checker closure。
-5. **稳定身份、结构化根因与标准报告导出**：`candidate_uid`、`occurrence_uid`、`validation_cluster_uid`、`finding_root_uid` 和 `stable_issue_fingerprint` 分别服务候选、入口溯源、验证复用、报告投影与 baseline/SARIF。v1.3.1 报告保留 alias occurrence、入口路径、decision proof、affected subjects 和聚类遥测，便于复核每次确认、拒绝与合并。Web 前端可导出自包含 HTML 审计报告；CLI 可通过 `--export-sarif` 输出 SARIF v2.1.0。
+4. **人工反馈复用**：Web 仪表盘中的验证状态会持久化为 `finding_suppressions` 与 `finding_baselines`。`ReviewMemory` 会在验证、评分和报告前复用这些状态，后续扫描自动抑制已确认误报，并把历史反馈纳入评分。
+5. **稳定身份、结构化根因与标准报告导出**：`candidate_uid`、`occurrence_uid`、`validation_cluster_uid`、`finding_root_uid` 和 `stable_issue_fingerprint` 分别服务候选、入口溯源、验证复用、报告投影与 baseline/SARIF。v1.3.2 报告保留 alias occurrence、入口路径、decision proof、affected subjects 和聚类遥测，便于复核每次确认、拒绝与合并。Web 前端可导出包含离线阅读器与逐 issue Markdown 的 ZIP 报告包；CLI 可通过 `--export-sarif` 输出 SARIF v2.1.0。
 6. **差异影响留痕**：diff impact 扫描会把 `base_ref`、`head_ref`、路径过滤器、变更函数、分析义务、覆盖摘要、fallback 原因和报告级 `diff_relevance` 写入结构化 JSON，避免把增量审计结论和存量问题混在一起。
 7. **MCP 暴露面约束**：stdio MCP 默认本地使用；HTTP MCP 为实验性能力，远程 bind 需要 `--mcp-auth-token-env` 与 `--mcp-client-allowlist`，工具调用还会经过 `ToolPolicy`。
-8. **模型与证明成本留痕**：LLM客户端记录累计prompt/completion token、工具调用次数和endpoint等待信息；Proof Engine、Hunter和离线告警复验统计汇总进报告或benchmark成本指标。
+8. **模型与验证成本留痕**：LLM 客户端会记录累计 prompt/completion token、工具调用次数和 endpoint 等待信息；Validator fast-path、并行验证和告警验证也会把 token 与命中统计汇总进报告或 benchmark 成本指标。
 
 ## 依赖说明
 
 ### Python 依赖
 
-Z-SCOPE 源码兼容和 CI 门禁覆盖 Python 3.9–3.14；推荐和离线包内置 CPython 3.13。Python 3.9 已于 2025-10-31 结束官方维护，仅作为客户存量环境下限（见 [Python 官方版本状态](https://devguide.python.org/versions/)）。SQLite 运行库最低要求为 3.8.10.2，以实际解释器的 `sqlite3.sqlite_version` 为准；Python 版本本身不保证 Linux 上动态链接的 SQLite 版本。运行时依赖与外部运行库下限以 `pyproject.toml` 为准，每个 Python 小版本的带哈希约束位于 `requirements/constraints/`。
+Z-SCOPE 基于 Python 3.13 开发、测试和交付；源码安装要求 Python 3.13 及以上，离线/Portable 包内置 CPython 3.13，带哈希依赖约束位于 `requirements/constraints/py313.txt`。SQLite 运行库最低要求为 3.8.10.2，以实际解释器的 `sqlite3.sqlite_version` 为准；Python 版本本身不保证 Linux 上动态链接的 SQLite 版本。运行时依赖与外部运行库下限以 `pyproject.toml` 为准。
 
 | 包名 | 用途 |
 |------|------|
@@ -101,7 +87,7 @@ Z-SCOPE 源码兼容和 CI 门禁覆盖 Python 3.9–3.14；推荐和离线包�
 
 开发依赖（可选）：`pytest`、`pytest-cov`、`black`、`mypy`、`types-PyYAML`、`types-requests`。
 
-质量门禁固定使用 `mypy==1.19.1` 与 `black==25.11.0`，两者目标均为 Python 3.9；存量质量债务采用不可扩张基线管理。
+质量门禁固定使用 `mypy==1.19.1` 与 `black==25.11.0`，两者目标均为 Python 3.13；存量质量债务采用不可扩张基线管理。
 
 ### 外部工具依赖（按后端）
 
@@ -115,17 +101,19 @@ Z-SCOPE 源码兼容和 CI 门禁覆盖 Python 3.9–3.14；推荐和离线包�
 
 ## 安装指南
 
-### 1. 隔离网络一键安装（推荐）
+### 1. Linux Portable 解压即用（推荐）
 
-从同一个 GitHub Release 下载 `install.sh`、`SHA256SUMS`、签名、公钥、应用包和所需语言依赖包，放在同一目录：
+按宿主架构（x86_64 / aarch64）与语言（cpp / java）选择一个独立 portable 包，并下载同次发布的校验和、签名、公钥和兼容性报告。包内已安装 Python 及对应分析工具：
 
 ```bash
-./install.sh --profile cpp --asset-dir .
-./install.sh --profile java --asset-dir .
-./install.sh --profile all --asset-dir .
+openssl dgst -sha256 -verify public-key.pem -signature SHA256SUMS.sig SHA256SUMS
+sha256sum -c SHA256SUMS
+tar -xzf zscope-1.3.2-linux-x86_64-cpp-portable.tar.gz
+export PATH="$PWD/zscope-1.3.2-linux-x86_64-cpp-portable/bin:$PATH"
+zscope-doctor --json-output
 ```
 
-安装器校验签名与 SHA-256，默认写入 `~/.local/share/zscope`，不会修改 `/opt`、`/etc/profile`、系统 Python 或 shell profile。升级使用原子 `current` 链接，回滚使用 `./install.sh --rollback 1.3.1`。完整资产布局和制作流程见 [离线安装与发布](docs/offline-installation.md)。Windows 用户使用 WSL2，不支持原生 Windows 离线包。
+构建基线为 glibc 2.38，运行时使用宿主 glibc；符号需求下限和实际测试下限分别记录在逐包 ABI 与 smoke 报告中。C/C++ 包包含 clangd 22.1.7，以及独立的 LLVM 18/SVF 3.2 bitcode 链路；Java 包包含 JDK 21、Maven、预编译分析 JAR 和 Joern Java 功能，不包含 Gradle。两份语言模板不展示工具路径，代码仍保留手工实验覆盖。发布目录支持移动和只读挂载。完整布局、源码安装、旧分体安装器兼容与制作流程见 [离线安装与发布](docs/offline-installation.md)。Windows 用户通过 WSL2 使用 Linux 包。
 
 ### 2. 从源码安装
 
@@ -309,17 +297,51 @@ zscope -c zscope.yaml --plan-entries
 zscope -c zscope.yaml
 ```
 
+首次扫描前可以运行 `zscope-config prepare --config zscope.yaml`，或在 Web“项目配置”页保存配置后点击“检查已保存配置”。两处显示相同的实际配置/工程路径、编译实例数量、本地工具存在性、扫描深度、自动复现状态及产物目录；`--json` 提供相同结构化结果。检查只读，不启动模型、索引、扩展规则或加载历史运行策略；工具可执行性和模型连接仍由 doctor/实际运行确认。编译数据库有多个同源变体时会提示覆盖限制，不把命令数量当作完整扫描覆盖。
+
 `--plan-entries` 只构建配置后端的索引，输出入口候选并写入项目根目录的
 `entry_functions.discovered.json`；它不会调用 LLM 或执行漏洞扫描。若
 `unified` / `java_unified` 缺少配置要求的深度工具链，doctor 和实际索引都会明确失败，不会静默降级到 regex。
 
-#### public config v2
+#### public config v3
 
-运行时只接受 `config_version: 2`。顶层允许
+`zscope-init` 和两语言模板生成严格的 `config_version: 3`。C/C++ 最小结构如下：
+
+```yaml
+config_version: 3
+llms:
+  default:
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
+    models: ["${Z_SCOPE_LLM_MODEL}"]
+    api_key: "${Z_SCOPE_API_KEY}"
+project:
+  language: c_cpp
+  root: .
+  targets:
+    - id: main
+      compile_commands: build/compile_commands.json
+scan:
+  preset: overnight
+```
+
+`root` 相对配置文件目录解析，目标的编译数据库相对 `root`。Java 使用
+[`zscope.java.yaml`](zscope.java.yaml)，不填写编译数据库，预设为 `quick`。
+`zscope-init --preset quick|overnight --target-id main` 可选择生成的预设和目标；
+Java 只接受 `quick`。路径和目标标识按 YAML 字符串序列化，包含空格、`#` 或冒号的目录也可往返读取。
+
+`zscope-config validate` 区分文档有效性与执行能力；多个 target 可完整校验、保存和逐项准备，
+当前执行链一次只支持一个 target。focus、reproduction、platform 和 max_workers
+仍是未消费的声明。配置 execution.stop_at 已由 CLI 和新建持久作业消费；显式作业窗口优先，
+同 request_id 重放保留原窗口，resume 不重新套用配置窗口。作业启动的 CLI 采用该 attempt 保存的窗口；恢复后保存的空窗口表示本轮没有停止窗口。身份或输入已失效时拒绝启动。独立 CLI 仍使用配置窗口。这不表示完整 U01/S08 已完成。
+
+#### 现有 public config v2
+
+已有 v2 配置仍由同一加载器严格校验。v2 顶层允许
 `config_version`、`llms`、`project`、`scan`、`indexing`、
 `concurrency` 和可选 `rules`；未知键、重复 YAML 键、错误类型、跨语言字段和未展开的必需环境变量都会报出完整字段路径。
 
-最小公共结构如下；完整字段和注释以两份参考文件为准：
+下方保留 v2 最小结构；v2 的全部字段、默认值与约束见“配置字段参考”一节，
+不要把 v2 的 indexing/concurrency 等字段直接混入严格 v3 文档：
 
 ```yaml
 config_version: 2
@@ -333,14 +355,14 @@ llms:
 
 project:
   language: c_cpp                 # 只能是 c_cpp 或 java
-  root: .
+  root: .                         # 相对路径基于加载时的当前工作目录解析（CLI/Web/MCP 子进程继承同一 CWD）
   source_root: .
   compile_commands_path: build/compile_commands.json
   include_paths: []
   exclude_paths: [build, third_party]
   entry_discovery:
     enabled: true
-    search_root: .                # 相对 project.root 的待扫模块
+    search_root: .                # 相对 source_root 的待扫模块（相对路径固定基于 source_root 解析）
     interface_files: ["include/**/*.h"] # 相对 search_root 的 POSIX glob
     max_entries: 200
     max_functions: 10000
@@ -365,6 +387,7 @@ concurrency:
   investigator_workers: 1
   evidence_completion_workers: 2
   index_workers: 4
+  wiki_compiler_workers: 4        # 仅 project.wiki 启用时使用
   svf_workers: 2                  # 仅 C/C++
   llm_max_inflight: 4
 ```
@@ -401,6 +424,163 @@ pool 名称在 exclusive/shared 两类之间也必须唯一；每个 pool 的 `p
 `shared_pools[].conflicts_with` 必须引用已声明的 exclusive pool。Java 配置不接受
 SVF、clangd 或 compile database 字段，使用 `indexing.java` 声明结构前端、signals 和外部 provider 命令。
 
+#### 配置字段参考
+
+v3 的 CLI prepare/validate、初始化器和语言模板使用当前正式模型；结构化配置接口按正式 parser 校验文档，允许保存全部 targets，执行组合仍明确拒绝多目标。工程根目录相对配置文件目录解析；时窗解析为一次绝对边界。focus、reproduction、max_workers 和平台意图尚未消费，配置时窗已由 CLI 和新建持久作业消费，resume 不重新套用配置窗口；MCP 与其他消费端迁移仍有剩余，不能把其他已解析意图当作已执行能力。模型与接线边界见[配置模块](docs/modules/configuration-state.md)。
+
+public config v2 的全部字段如下；此表描述已有 v2 文档，不是 v3 的字段扩展。
+所有字符串值支持 `${VAR}` / `$VAR` 环境变量展开，缺失变量在加载时即报错；
+`project.root` 相对进程工作目录解析，其余项目相对路径依据 `project.root` 或
+`source_root` 解析（表中注明）。Agent 启停、分析预算、deadline、缓存与报告策略不在
+用户 YAML 中，由 RuntimeSpec 管理（见“内置 RuntimeSpec”一节）。
+
+**`llms`**（LLM profile 表；`default` 必需，可按需新增命名 profile）
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `base_urls` | 必填 | OpenAI 兼容 endpoint 列表；多 endpoint 按最闲优先分流，故障端点自动冷却 |
+| `models` | 必填 | 模型列表，按序回退；非瞬态 4xx 直接切换下一个模型 |
+| `api_key` | 必填 | 鉴权密钥，建议经 `${Z_SCOPE_API_KEY}` 注入而非写入文件 |
+| `max_tokens` | 4096 | 单次响应 token 上限；不是 scan-wide 预算 |
+| `timeout` | 120 | 单请求超时秒数；`null` 不限 |
+| `max_retries` | 2 | 每个模型的常规重试次数（5xx/429/传输错误） |
+| `retry_until_available` | false | 常规重试耗尽后对瞬态错误继续无限重试，直到成功或扫描取消 |
+| `base_url_rate_limit_per_minute` | 不限 | 单 endpoint 每分钟请求数上限（60 秒滑动窗口） |
+| `base_url_max_concurrent_requests` | 不限 | 单 endpoint 并发在途请求上限，与 `concurrency.llm_max_inflight` 共同生效 |
+| `supports_structured_output` | false | true 时 JSON 输出走 `response_format`，false 时用 tool 强制 |
+
+`scan.llm_profiles` 把 modeling/analysis/validation 三类角色绑定到命名 profile；
+Wiki 编译器固定读取名为 `wiki_compiler` 的 profile（未定义时用 `default`）。
+
+**`project`**
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `language` | 必填 | `c_cpp` 或 `java`，决定其余字段的语言约束 |
+| `root` | 必填 | 项目根目录；相对路径基于加载进程的工作目录解析 |
+| `source_root` | `.` | 源码根；`entry_discovery.search_root`、`include_paths` 相对它解析 |
+| `id` | 空 | 报告与持久化状态的项目标识；空则取项目目录名 |
+| `entry_function` | — | 单入口函数名；与 `entry_functions_list`、自动发现三选一 |
+| `entry_file_path` | — | 可选；多个 TU 存在同名函数时指定实现文件消歧 |
+| `entry_signature` | — | 可选；完整源码签名，用于区分重载/同名声明 |
+| `entry_functions_list` | — | 批量入口 JSON 路径（相对 project.root），优先级最高 |
+| `include_paths` | `[]` | 源码扫描根列表（相对 source_root）；留空扫描整个 source_root，非空则替换扫描根。不是编译器 `-I` 参数 |
+| `exclude_paths` | `[]` | 排除的路径，命中的文件不参与扫描 |
+| `compile_commands_path` | 自动发现 | 仅 C/C++；clang 批量索引与 SVF bitcode 构建依赖。未配置时依次查找 project.root 与 source_root 下的 `compile_commands.json` |
+| `user_config_file` | 运行时默认 | 语义工作簿（.xlsx）路径；默认 `.zscope_snapshots/user_config.xlsx`（相对 project.root） |
+
+`entry_discovery`（入口自动发现）：
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `enabled` | false | 启用入口自动发现；显式 `entry_functions_list` 优先于发现结果 |
+| `search_root` | source_root | 待扫模块根（相对 source_root），必须位于 source_root 之内 |
+| `interface_files` | `[]` | 相对 search_root 的 POSIX glob，限定视为公共接口的文件 |
+| `max_entries` | 200 | 最多选出的入口数，其余候选标记 deferred 留待后续 |
+| `max_functions` | 10000 | 候选函数枚举上限（Java 生效；C/C++ 仅作安全界，不截断入口） |
+
+`project.wiki`（LLM Wiki 项目知识层；默认整体关闭，详见 [LLM Wiki](docs/modules/wiki.md)）：
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `mode` | `off` | `off` 关闭；`build_only` 只构建不注入；`shadow` 记录同样的上下文选择但不改变结论；`active` 注入 Validator |
+| `auto_maintain` | false | 源 manifest 未变化时是否自动重新编译维护 |
+| `state_dir` | `.zscope_knowledge/wiki` | Wiki 状态目录；仅允许 project.root 相对路径 |
+| `compiler_enabled` | false | 允许 LLM 编译器生成约束；false 使用确定性编译器 |
+| `documents.exclude` | `[]` | 排除出 Wiki 语料的 Markdown glob（project.root 相对） |
+| `documents.classify.explanatory` | `[]` | 强制把匹配文档归类为可引用的说明文档 |
+| `documents.classify.generated` | `[]` | 强制把匹配文档归类为生成物排除；同一 glob 不得与 explanatory 重复 |
+| `max_file_bytes` | 10 MiB | 单个语料文件上限，超限跳过并记录 |
+| `max_files` | 10000 | 语料文件数上限 |
+| `max_total_bytes` | 100 MiB | 语料总字节数上限 |
+| `compiler_max_tokens` | 不限 | Wiki LLM 编译器单次请求的 max_tokens 覆盖 |
+| `max_wall_seconds` | 不限 | Wiki 构建的墙钟预算 |
+| `max_constraints` | 不限 | 约束数量上限 |
+
+`project.review_memory`（Validator 人工误报模式记忆；默认关闭，与 Wiki 语义隔离）：
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `mode` | `off` | `off`、`archive`、`extract` 或 `active` |
+| `state_dir` | `.zscope/review-memory` | 项目根相对的 Review Memory 状态目录 |
+| `project_scope` | `project` | 仅允许项目级隔离 |
+| `extraction` | `auto_extract` | `auto_extract` 自动后台抽取；`async_cli` 由 CLI 手动抽取 |
+| `llm_enabled` | true | 是否允许抽取命令调用 LLM；反馈归档不受影响 |
+| `max_patterns_per_finding` | 3 | 单个 finding 最大 advisory hint 数 |
+| `max_context_tokens` | 1200 | Review Memory hint 的独立预算 |
+| `stale_on_source_drift` | true | 源码上下文变化后停止复用模式 |
+| `allow_direct_suppression` | false | 固定禁止 Review Memory 直接抑制 finding |
+
+常用管理命令：
+
+```bash
+zscope-review-memory -c zscope.yaml list
+zscope-review-memory -c zscope.yaml extract --enqueue
+zscope-review-memory -c zscope.yaml jobs
+zscope-review-memory -c zscope.yaml extract --job-id <job-id>
+zscope-review-memory -c zscope.yaml replay <pattern-id> --input report.json --output replay.json
+zscope-review-memory -c zscope.yaml export --output review-memory.json
+```
+
+抽取任务和 replay 结果写入项目级 Review Memory 状态目录；`replay` 是离线
+advisory projection，不会启动 benchmark 扫描，也不会改变 finding verdict。
+
+**`scan`**
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `depth` | fast | `fast`/`balanced`/`deep` 三档分析深度（Java 仅 fast）；CLI `--scan-depth` 优先 |
+| `task` | `""` | 空串启用当前语言全部适用 Skill；非空文本只指定审计重点 |
+| `llm_profiles` | 三角色均 default | modeling/analysis/validation 到 `llms` profile 的映射 |
+
+**`indexing`**
+
+`backend`：C/C++ 为 `unified`（clang 事实 + SVF 值流）、`clang`（仅 clang 事实）、
+`regex`（纯正则索引）；Java 为 `java_unified`（结构前端 + 全部信号 provider）、
+`java_source`（仅结构）、`joern`（仅 Joern CPG）。
+
+| 子段 | 字段 | 作用 |
+|---|---|---|
+| `clang`（仅 C/C++） | `frontend` | `auto`（优先批量工具，缺编译数据库时回退 clangd LSP）、`batch`（严格批量，缺失即报错）、`lsp`；默认 auto |
+| `svf`（仅 C/C++） | `scope` | `full` 全量链接；`auto`/`entry` 按入口可达性裁剪 TU（无入口时仍全量）；默认 auto |
+| | `entry_depth` | 入口可达性裁剪的调用展开深度；默认 4 |
+| | `max_selected_tus` | 单个分析组选中 TU 上限，超限触发 fallback；默认 200 |
+| | `fallback` | `full` 超限/裁剪失败回退全量，`skip` 放弃该组 SVF；默认 full |
+| | `groups_file` | 相对 project.root 的分组规划 JSON（组名到排除子串列表） |
+| | `always_include` | 路径/子串模式，匹配的源文件无条件纳入 SVF 选择集 |
+| | `exclusive_pools` | 互斥变体池 `{name, paths}`；同名符号多实现时按池拆分链接变体 |
+| | `shared_pools` | 共享池 `{name, paths, conflicts_with}`，可出现在多个链接变体中 |
+| | `heap_limit_mb` | 每个 WPA/Saber 子进程的堆上限；并发 worker 按此逐进程预留；默认 32768 |
+| | `timeout_seconds` | 单个 bitcode/SVF 子进程超时秒数；`null` 不限；默认 1800 |
+| `java`（仅 Java） | `structure_frontend` | `auto`/`spoon`/`javaparser`/`builtin` 源码结构前端；auto 按可用性依次尝试 |
+| | `signals` | 图/数据流信号 provider：`joern`/`sootup`/`wala`/`codeql`；`java_unified` 要求全部配置项可用；默认 `[joern]` |
+| | `extractor_command` | 覆盖结构提取 sidecar 命令（实验用；语言模板不展示） |
+| | `provider_commands` | 按 provider 覆盖信号命令，stdout 须为 JSON（实验用） |
+| `tools`（可选） | C/C++ | `clangd`、`clang_indexer`、`gclang`、`get_bc`、`llvm_link`、`svf_bin_dir`（wpa/saber 所在目录）；省略时按 PATH 或包内默认定位，显式配置无效时报错、不回退 |
+| | Java | `joern.command`、`joern.host`、`joern.port`（默认 127.0.0.1:8080）、`joern.heap`（默认 `8g`） |
+
+**`concurrency`**（除注明外必填，全部正整数）
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `entry_workers` | — | 并行分析的入口数，每个入口一套建模+分析会话 |
+| `validator_workers` | — | Validator 并发验证线程数 |
+| `investigator_workers` | — | deep_worker 子代理调查并发（默认由 RuntimeSpec 关闭） |
+| `evidence_completion_workers` | — | 确定性事实补全 worker 数（不调用 LLM） |
+| `index_workers` | — | 索引阶段并行度；C/C++ 同时决定 clangd 线程数 |
+| `wiki_compiler_workers` | 4（可省略） | Wiki 编译并行度，仅 `project.wiki` 启用时使用 |
+| `svf_workers` | — | 仅 C/C++；SVF 分析组并发数，实际按内存预算收缩 |
+| `llm_max_inflight` | — | 进程级 LLM 并发上限，与 profile 的 endpoint 限流共同生效 |
+
+**`rules`**（可选，默认全空；治理语义见“规则目录与禁用”一节）
+
+| 字段 | 作用 |
+|---|---|
+| `packs` | YAML 规则包文件路径（相对 project.root） |
+| `providers` | Python Provider 入口名 |
+| `enabled_ids` | 显式启用默认关闭的规则 |
+| `disabled_ids` | 禁用规则，优先于 `enabled_ids`；不抑制后端信号与 LLM 独立发现 |
+
 #### 配置迁移
 
 产品运行时不读取 v1。旧配置必须显式迁移，迁移器会转换已知别名并列出删除项和需人工复核项；未知旧字段会失败，不会静默丢弃：
@@ -429,6 +609,33 @@ zscope -c zscope.yaml
 
 有效 RuntimeSpec 的版本、来源路径和 SHA-256 会进入配置哈希、缓存身份和最终报告 metadata。
 知识库、快照和默认 `user_config.xlsx` 路径均相对 `project.root` 解析；如需指定工作簿，可设置 `project.user_config_file`。
+
+资源接口未识别或未参与检测时，可查看快照目录中的 `.semantic-modeling/publication.json` 的 `resource_inference_coverage`；报告 metadata 同时提供统计摘要。诊断区分未核验、条件未满足/未检查、缺 native 事实、消费者未支持的载体等原因，实际规则启用/执行情况仍见 rule catalog / engine coverage。其范围是本轮已调度函数；入口外清理路径未测量，零告警不代表全部资源接口已覆盖。此功能无需新增用户配置。
+
+受限跨 TU 对象协议分析需要实际链接记录。在 Linux/WSL 中，可在项目目录显式执行以下准备命令，将参数替换为目标真实使用的对象文件与输出路径：
+
+```bash
+python -m zscope.cli.link_record --project-root . \
+  --compile-commands build/compile_commands.json -- \
+  clang build/a.o build/b.o -o build/app
+# 更新安装后也可使用 zscope-link-record，参数相同。
+```
+
+此命令会按编译数据库重建所列对象并完成链接，记录保存在 `.zscope-link-targets/`；夜间扫描只读记录，不自动重建。当前支持同版本 Clang 编译和 native SDK、相容 ABI/编译参数的 C 对象直接链接；archive、shared library、LTO、复杂链接参数和未核验编译器仍显示缺口。源码、头文件、对象、产物或目标表改变后需重新记录并索引。记录不会开启实验规则；现有对象协议规则仍默认关闭。具体支持范围见[代码检索模块](docs/modules/retrieval-backends.md#已观察链接目标与受限跨-tu)。
+
+资源建模也可核验受限的非原子引用计数，以及成功返回 1、失败返回 0 的单槽池归还接口，无需增加 YAML 字段。当前引用计数限 signed 32-bit 成员和已支持的池对象；drop 不直接表示 free，零计数后会检查实际清理对象与调用路径。显式启用对象协议实验规则时，相关报告会分别列出清理约定和非并发执行前提，集中在验收阶段核实；未知回调、原子/并发计数及未支持协议继续保留缺口。
+
+自定义整数句柄表也支持受限源码核验：2–4 个固定槽，区分 close 失败前未消费与消费后报错、dup 共享底层对象但各自关闭，以及同一整数重开的新代次。句柄 0 可以有效；复制整数不等于 dup，关闭一个副本也不等于销毁底层对象。该能力复用已有实验规则，默认关闭；显式启用后的命名空间顺序独占、关闭责任及责任终点集中在验收时核实，无需新增 YAML。普通 OS fd、dup2/dup3 和并发关闭仍未纳入此具体路径；缺少平台证据时，标准 close 错误后的释放状态保持未知。
+
+锁分析区分读锁与排他锁，并保留 try-lock 成功条件和 EOWNERDEAD 获取效果。读锁不作为写保护；对非逃逸静态锁和受限透明包装器，验证阶段可用当前编译事实核对全部本地访问。重复获取、锁升级、cond_wait、成员/动态锁及 C++ 锁 guard 暂留未决，不从“出现加锁调用”推断安全。相关实验规则仍默认关闭，无新增配置或夜间交互。
+
+有限 C++ RAII 清理可用于核验泄漏候选：单一指针成员的局部 guard，从 malloc/calloc 对象接收指针，在析构中直接 free 或经当前源码核验的简单 deleter 清理。验证同时检查 native 构造/析构身份和当前 AST，区分空 guard、正常退出及函数内明确捕获的 throw；构建不明、move、release/reset、逃逸、未知 deleter 和未知异常仍待验证。它不授予锁保护或通用智能指针能力，也不要求新增 YAML 配置。相关候选规则仍默认关闭，实际核验依赖已有 checked-proofs 运行策略及匹配的 Clang 工具链。
+
+实验性对象路径规则可检查受限 pthread 回调与单工作者队列：工作者取走任务并解锁后，调用方清空队列、停止接收或发出取消请求，仍可能在 join 等待期间访问已释放的旧对象。成功 join 后再释放的路径与之分开；即使两次操作使用同一 mutex，也不能排除串行发生的释放后访问。当前限 Linux glibc LP64、同 TU、默认属性、堆上下文及单槽队列的一个有界调度，按当前源码重放提交/取消 helper。已支持单等待者条件等待：释放锁、匹配通知、重新加锁，再按源码检查队列条件；提前通知不会累积成下一轮可用的通知。默认延迟取消可在 cond_wait/testcancel 处触发受限 C/glibc cleanup：等待锁先重获，清理按后进先出顺序运行，保留注册时的对象代次；pop(0) 仅移除、pop(1) 实际执行。同一 C 文件中的工作者直接 helper 可传递已知堆对象及受限整数，保留嵌套调用和暂停状态；取消时区分实际取消点与注册清理的调用层。缺通知、未取得 mutex、一般唤醒/超时场景、取消模式切换/任意取消点、一般 helper、多工作者或通用 drain 仍保留缺口，无告警不代表并发安全。沿用 `object_protocol_path` 的显式实验启用方式和集中验收页，不新增配置字段，实验规则默认关闭。
+
+复查会重新核对头文件查找结果和当前资源契约。新增可选头文件、替换较高优先级头文件或增加共享变量访问者后，旧的排除结论不能直接沿用；资料不完整时回到待验证。热复查可复用有效 AST/CFG，但仍会运行预处理检查，离线历史报告不自动获得当前代码的证明资格。
+
+动态复现当前仍默认关闭。开发模式启用 `runtime.analysis.dynamic_reproduction_mode` 后，会话服务可尝试唯一编译实例中包含自身 `main` 的原程序入口；计划、二进制及结果位于快照目录的 `reproductions/<session>/<candidate>/`。`shadow` 保存证据但不确认，`on` 也仅接受通过对象/站点/构建身份和独立重放核对的见证。多 TU 链接和通用输入生成尚未完成；构建失败、环境不可用或未复现都不表示程序安全。执行边界见[分析流水线](docs/modules/analysis-pipeline.md)。
 
 #### scan.task 语义
 
@@ -479,6 +686,10 @@ zscope -c zscope.yaml --verbose
 # 本轮启用 C/C++ balanced；token 只在扫描完成后计量
 zscope -c zscope.yaml --scan-depth balanced
 
+# --verbose 会把模型交互与工具调用录制到 .zscope_conversations/，
+# 供事后审计 llm_client 与工具行为（事件字典与调优指南见
+# new_docs/conversation_recorder_events.md）
+
 # 批量扫描模式：从 entry_functions_list JSON 开始
 zscope -c zscope.yaml
 
@@ -507,6 +718,9 @@ zscope -c zscope.yaml --infer-user-config
 # 作为本地 MCP Server 运行（配合 Claude Desktop 等 MCP 客户端使用）
 zscope -c zscope.yaml --mcp-stdio
 
+# Coding Agent 只读盲调查（不初始化后端、不刷新语义、不允许扫描或报告访问）
+zscope -c zscope.yaml --mcp-stdio --mcp-profile candidate_blind
+
 # 作为实验性 Streamable HTTP MCP Server 运行（远程绑定必须提供 token 与 allowlist）
 export ZSCOPE_MCP_TOKEN="replace-me"
 zscope -c zscope.yaml --mcp-http --mcp-host 127.0.0.1 --mcp-port 8765 \
@@ -524,15 +738,6 @@ zscope -c zscope.yaml --export-sarif zscope-results.sarif
 # 仅构建代码索引（预热，不执行分析）
 zscope --build-index -c zscope.yaml
 # --build-cpg 仅是 1.x 弃用别名，2.0 删除
-
-# 扫描后解释一个 validation cluster；不调用 LLM
-zscope-explain --report report.json --cluster <validation_cluster_uid> --format text
-
-# 只在冻结事实之上重跑终态/promotion policy
-zscope-explain --report report.json --cluster <validation_cluster_uid> --mode policy-replay
-
-# 只重放该 cluster 的 verifier 输入；代码 revision 变化时拒绝比较
-zscope-explain --report report.json --cluster <validation_cluster_uid> --mode reverify
 ```
 
 ### Step 3：查看分析结果
@@ -549,23 +754,25 @@ zscope-explain --report report.json --cluster <validation_cluster_uid> --mode re
 | `zscope-results.sarif` | `--export-sarif` 指定路径上的 SARIF v2.1.0 导出结果 |
 | `entry_functions_list.json` | `--discover-entries` 或 `project.entry_discovery.enabled` 生成的候选入口列表 |
 | `entry_functions_diff.json` | `--diff-base` 生成的差异影响入口列表，包含 `diff_impact.path_filters`、`analysis_obligations`、`coverage_summary`、`function_coverage` 和每个入口的 `diff_focus` |
-| `.zscope_snapshots/` | P5报告、authority manifest与各类内容寻址artifact；旧语义快照仅历史只读 |
+| `.zscope_snapshots/` | 语义快照缓存（加速重复扫描） |
 | `.zscope_snapshots/security_map.db` | 只读 Security Semantic Map sidecar；与历史函数 snapshot 分离 |
 | `.zscope_snapshots/security_semantic_map.json` | 本轮安全语义地图、coverage、unknown/conflict 与 audit unit 的只读导出（balanced/deep；实际目录取 `runtime.analysis.snapshot_dir`） |
-| `.zscope_snapshots/security_specs/` | SecuritySpec revision、qualification、authoritative compilation与CAS root |
-| `.zscope_snapshots/hypothesis_hunter/` | Hunter audit unit、offer、选择、coverage observation与CAS root |
-| `.zscope_snapshots/decision_trace_manifest.json` | 本轮 cluster/coverage trace、内容寻址证据、模型结构化事件与 usage sidecar 的完整性清单 |
-| `.zscope_snapshots/decision_traces/` / `coverage_traces/` | 每个 validation cluster 与无候选 audit unit 的 hash-chain 因果时间线 |
-| `.zscope_snapshots/evidence_objects/` / `model_events/` | 去重后的候选、proof、fact、工具结果、policy 输入和模型结构化输入输出；不保存隐藏思维 |
-| `.zscope_snapshots/user_config.xlsx` | `--infer-user-config` 生成的人工可审阅用户配置工作簿 |
-| `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression 与 baseline 的旁路状态库（若 `project.user_config_file` 指向其他 workbook，则与该 workbook 同名） |
+| `.zscope_snapshots/user_config.xlsx` | `--infer-user-config` 生成的人工可审阅用户配置工作簿（含 README sheet） |
+| `.zscope_snapshots/user_config.infer_report.md` | 推理报告：全部 resource/lock 推理行、需人工复核清单、工作簿告警与统计 |
+| `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression、baseline 与版本化业务前提回答（若 `project.user_config_file` 指向其他 workbook，则与该 workbook 同名） |
 | `.zscope_knowledge/code_knowledge.db` | 代码索引、SVF/Saber 信号和候选证据 IR |
+| `.zscope_knowledge/wiki/` | `project.wiki` 启用后的 Wiki revision 状态库与审计事件链（默认关闭；目录由 `project.wiki.state_dir` 决定） |
+| `.zscope/review-memory/` | 人工 rejected finding、模式 proposal、审计和 replay 状态；不属于 Wiki constraint |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划，记录选中的源码、bitcode、可达函数、link variants、重复符号和回退原因；WSL/NTFS 场景可能重定向到 Linux 原生临时目录 |
 | `.zscope_bc/entry_cluster_layout_<group>.json` / `bitcode_manifest.json` | SVF 入口聚类布局与 bitcode/link 缓存 manifest，用于复用未变化的聚类和构建产物 |
 
-单函数最终报告的`metadata`记录effective scan depth、实际consumed token、按agent/stage的usage、候选漏斗、发现/决策归因、SecuritySpec/Hunter/Proof roots、RuntimeAuthorityManifest和rule/candidate/diff/report-view统计。每条finding还包含`decision_trace_ref`、完整文档hash、唯一terminal event、Checker refs、proof root、终态权威、原因码和open clauses。`report_views.default`只包含confirmed primary，`report_views.with_needs_review`额外包含needs-review primary；rejected_with_proof、engine failure与Finding-root aliases只保留在冻结outcome/terminal trace。没有完整Checker反证时，模型拒绝仍是needs-review。
+显式启用实验性 `object_protocol_path` 规则后，部分报告会列出尚待核实的业务前提。在 WebUI 打开该问题的“业务前提验收”，选择“成立／不成立／尚不确定”并填写接口规范或业务约定来源，即可一起保存该问题的回答。回答仅适用于列出的对象、入口、构建和源码版本；不新增 YAML 配置，也不会自动创建误报规则。保存后页面提示待重新核验，下次扫描会检查当前源码和回答版本；历史报告保持扫描时的结果。只有全部必要前提成立且技术证据完整时才能确认，否定前提不代表已证明代码安全。普通离线复核说明和状态修改不会被自动解析为业务回答。
 
-退出码：完整扫描中，默认漏洞报告的 `issues` 非空返回 `1`，无缺陷返回 `0`。阶段因超时、取消、工具失败等原因未完成时，结果仍会保存并标记 `completeness=partial`，CLI 返回 `2`；fast 中未请求的语义/主动发现阶段不会触发 partial。token 成本超出 Benchmark 预期不会截断产品扫描。
+集中验收按服务端证据展示已确认、条件性、待验证、已排除与覆盖缺口；未知覆盖显示未测。独立的重复标记、风险接受、后续待办和撤回记录保存在工程 `.zscope_acceptance/dispositions.sqlite3`，不改变验证结论、业务回答或误报规则。重复目标必须属于当前报告和同一构建；风险接受可过期，后续待办只保存在本地。报告证据或对象变化时，保存返回冲突并保留草稿，重新载入核对后再提交。
+
+单函数最终报告的 `metadata` 会记录 effective scan depth、实际 consumed token、按 agent/stage 的 usage、finish reason、候选漏斗、发现/决策归因、Validator verdict transition、Security Semantic Map coverage、主动发现单元，以及现有 rule/candidate/diff/report-view 统计。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。没有确定性反证时，LLM 的 rejected 也只能成为 needs-review，不能被静默隐藏。
+
+退出码由 `--exit-policy` 控制，默认 `review`：报告中存在确认缺陷或 needs-review 观察项时返回 `1`，`clean` 返回 `0`；`confirmed` 策略只对确认缺陷返回 `1`，`legacy` 沿用 issues 计数语义。阶段因超时、取消、工具失败等原因未完成时，结果仍会保存并标记 `completeness=partial`，CLI 返回 `2`；fast 中未请求的语义/主动发现阶段不会触发 partial。token 成本超出 Benchmark 预期不会截断产品扫描。
 
 ### Step 4：启动 Web 仪表盘（可选）
 
@@ -574,34 +781,63 @@ zscope --dashboard -c zscope.yaml
 # 可选：zscope --dashboard -c zscope.yaml --dashboard-host 127.0.0.1 --dashboard-port 8000
 ```
 
-Dashboard 的 `POST /api/scan` 可按请求传入 `scan_depth`，并以 `GET /api/scan/status?scan_id=...` 查询 effective depth、实际 token usage 与最终 completeness；服务拒绝任意命令、环境或输出路径字段。MCP 对应提供 `zscope.scan.run` / `zscope.scan.status`，以及只读的 `zscope://reports/latest` 与 `zscope://rules/effective`。
+Dashboard 当前作业入口为 `GET/POST /api/jobs`，复用工程侧持久 `ScanJobService`。Linux 上 MCP 的 `zscope.scan.run` 同样创建持久作业，必需 `request_id`，可选 `scan_depth`、带时区的绝对 `stop_at`；返回 `job_id`、`run_id`、`revision` 和输入绑定，重复请求重放同一作业。`zscope.scan.status` 必需 `job_id`。旧 Web `/api/scan` 的内存状态不能替代持久作业状态。接口不接受任意命令、环境、cwd 或输出路径。只读资源 `zscope://reports/latest`、`zscope://rules/effective` 保留。
+
+持久作业使用 `GET/POST /api/jobs` 与 detail/events/result/cancel/resume，SQLite 状态和独立 owner 支持页面断开后重新读取真实作业。结果核对每次运行绑定的报告，未知分母/覆盖保持未测；重新尝试会重核输入，不保证只运行剩余队列，也不沿用旧停止时间。目前窗口是进程级停止，完整协作调度和公平剩余队列尚未接入。
+
+v3 配置页可编辑工程、全部 targets、模型 profiles、preset 和执行意图；保存保留相对路径、环境变量引用及未编辑字段，空密码保留已有设置。保存失败时保留草稿，保存后重新检查配置。准备视图完整列出 targets、preset 映射与未消费设置；多目标可保存但禁止启动。单目标启动默认沿用保存的 preset。配置中的 execution.stop_at 作用于 CLI 和新建持久作业，任务的显式 stop_at 优先；同 request_id 重放保留原窗口，resume 不重新套用配置窗口。focus/reproduction/max_workers/platform 尚不代表已执行。
 
 仪表盘提供五个主要页面：
 
 - **审计发现**：查看缺陷列表、报告视图和 evidence，支持六种验证状态标记，并将 `rejected` 反馈持久化为误报抑制和 baseline
 - **规则目录**：只读查看 canonical ID、CWE、engine、Skill、revision、来源、能力要求和当前启停原因，支持语言/engine/Skill/状态筛选
-- **项目配置**：按 v2 schema 和语言编辑项目、入口发现、审计重点、后端与并发；SVF pool、Java provider 和工具路径位于高级配置
+- **项目配置**：按实际 v2/v3 版本编辑并检查保存的配置；v3 保留全部目标和模型 profiles，v2 高级配置仍提供 SVF pool、Java provider 与工具路径
 - **用户配置**：以 `user_config.xlsx` 为入口维护 resource、lock、dispatcher、module lifecycle、pointer targets 和 function intents，支持保存、导入与下载
 - **看板**：展示验证状态分布、风险概览、配置告警和审计进度
 
-## 分析工具清单（最多 12 个内置 Agent 工具）
+审计发现的详情采用连续 Markdown 报告，提供章节导航、独立纵向滚动、代码文件位置和行号。代码片段来源无法确认时标注“片段内行号”，证据记录编号不会被当成源码行号。
 
-| # | 工具名 | 用途 | 有效数据来源 |
-|---|--------|------|---------|
-| 1 | `get_function_impl` | 获取函数完整源码 | 全部 |
-| 2 | `get_function_snapshot` | 旧语义快照只读查询；不形成P5证据 | 全部 |
-| 3 | `list_known_functions` | 函数发现（正则搜索） | 全部 |
-| 4 | `get_file_snippet` | 读取指定行范围的上下文代码 | 全部 |
-| 5 | `get_callers` | 调用者查询（漏洞可达性分析） | joern/clang/unified；regex 返回空结果 |
-| 6 | `get_type_info` | 结构体/类型定义查询 | joern/clang/unified；regex 返回空结果 |
-| 7 | `get_call_graph` | 调用图聚合（直接调用；unified 可合并 SVF 间接调用） | joern/unified |
-| 8 | `get_data_flow` | 污点追踪 | joern/unified |
-| 9 | `find_function_pointers` | 回调/钩子发现 | joern/unified |
-| 10 | `query_pointer_alias` | 指针别名查询 | unified |
-| 11 | `verify_taint_reachability` | SVF/Saber 内存缺陷查询 | unified |
-| 12 | `get_deep_call_context` | 高聚合查询（调用者+被调用者+间接调用+污点缺陷） | unified |
+离线复核流程：
 
-Agent工具可见性由`AGENT.md`与后端gate共同决定：`hypothesis_hunter`只接收运行时构造的candidate-blind投影且不开放repository tool；`proof_engine`只能选择当前开放clause生成的有限EvidenceAction，并不可见旧snapshot resolver。MCP Server额外暴露`query_knowledge`与`discover_entries`供交互式只读审计；MCP读取snapshot不会赋予其proof或terminal authority。所有stdio/HTTP调用都经过`ToolPolicy`。
+1. 先回写页面中尚未保存的验证改动，再点击“离线导出”，下载 `zscope-report.zip`。解压后包含 `index.html` 和 `issues/*.md`，每条 issue 一个文件。
+2. 离线打开 `index.html`，点击“打开报告目录”选择解压目录。支持文件写入的 Chrome/Edge 可授权后直接保存 Markdown；不支持或授权失败时，使用“选择 Markdown / ZIP”，编辑后下载修改包。
+3. 仅编辑验证状态与**本次人工反驳 / 复核说明**，说明支持 Markdown 预览。Validator 原文及已有人工说明保持只读。保存会检查磁盘文件是否被其他程序修改，失败时保留草稿。
+4. 回到线上点击“导入”选择多个 `.md` 或 ZIP，也可“导入目录”。**本次说明缺失、为空或只有空白的 issue 始终跳过，即使其状态与线上不同。** 无冲突条目自动合并；冲突展示导出时、线上和离线的差异，由用户决定，确认时再次检查版本。
+
+已应用的相同复核不会重复写入。导入只回写状态及本次说明，不导入修改过的证据或 Validator 正文；旧版单 HTML 请重新导出为 Markdown 包。单 `.md` 最大 16 MiB，单次导入总正文最大 128 MiB、最多 10000 条。
+
+完整契约及接口示例见 [离线复核](docs/offline-reviews.md)。
+
+开发者可在 Linux/WSL 虚拟环境中安装 `python -m pip install -e '.[dev,browser-test]'`、运行 `python -m playwright install chromium`，再执行 `python -m pytest -q tests/test_issue_markdown.py tests/test_markdown_report_browser.py` 验证报告与离线交互。
+
+## 分析工具清单（6 个证据导向 Agent 工具）
+
+| Agent 工具 | MCP 名称 | 用途 |
+|---|---|---|
+| `search_code` | `zscope.code.search` | 默认搜索符号并返回稳定 `symbol_id`；`scope=text/files` 独立检索字面内容或文件路径 |
+| `read_code` | `zscope.code.read` | 按 `symbol_id` 或明确的项目相对文件行范围读取带绝对行号的源码 |
+| `get_semantic_context` | `zscope.semantic.context` | 读取或按需重建函数快照；`refresh_policy=cache_only` 禁止刷新；也可查询 Claim、Audit Unit、Semantic Map 摘要、编译实例及对应程序事实 |
+| `query_code_graph` | `zscope.graph.query` | 查询 call、reference、callback 和 resolved indirect-call 关系 |
+| `trace_data_flow` | `zscope.flow.trace` | 基于真实 def-use/CFG 或 Joern 证据追踪有界 source-to-sink 路径 |
+| `query_static_findings` | `zscope.findings.query` | 查询 frozen CandidateLedger 和已持久化 backend signal，不启动新扫描 |
+
+推荐调用链是 `search_code → symbol_id → read/semantic/graph/flow`；已有 `symbol_id` 时必须原样复用。列表结果按 `page.next_offset` 分页。所有调用返回统一的 `success/status/data/coverage/page/warnings/next_actions/error` 信封；`partial`、`unsupported` 和 `unavailable` 都不能解释为“没有问题”，`may` 路径和未验证 finding 也不能提升为已证明结论。
+
+text/files 检索按返回 file/line 续读，分页还需原样携带 view_id；语料扫描完整度独立于结果页。只读消费可选择服务端 read_only/candidate_blind profile，具体语料许可、缓存限制、权限表与 Windows→WSL 项目级 Codex 配置见 [只读 MCP 接入](docs/mcp-read-only.md)。
+
+MCP 的证据工具使用上表中的 namespaced 名称；管理工具按下列接口提供，不暴露 raw 名称或重复 alias。管理工具包括 `zscope.knowledge.query`、`zscope.entries.discover`、`zscope.scan.run`、`zscope.scan.status`、`zscope.wiki.status`、`zscope.wiki.query`，以及 `zscope.jobs.list`、`zscope.jobs.events`、`zscope.jobs.result`、`zscope.jobs.cancel`、`zscope.jobs.resume`。作业工具仅在 `default` profile 提供，要求 Linux 后台和已保存配置；`read_only`、`candidate_blind` 不构造作业服务。events 使用 `job_id` 和可选非负 `after_seq`；cancel/resume 必需 `job_id`、`base_revision`、`request_id`，冲突语义与 Web 相同。显式 null 不是省略字段。result 目前提供本轮报告绑定，尚无 MCP findings 投影。多目标配置仍可编辑、不可执行；完整扫描队列接线和只执行剩余项仍未完成。MCP `2025-06-18` 返回 `outputSchema` 与 `structuredContent`；兼容 `2024-11-05` 时仍使用原生 `name/inputSchema`，但结果仅保留 text content。此次工具面切换是 breaking change，不提供旧名称兼容层。
+
+示例：先找数值宏，再按返回 ID 读取完整定义。
+
+```json
+{"query":"MAX_RETRIES","kinds":["macro"],"match_mode":"exact","limit":20,"offset":0}
+```
+
+```json
+{"symbol_id":"zs1:macro:<search_code 返回的摘要>","max_lines":200}
+```
+
+使用 native batch 索引时，可先向 `zscope.semantic.context` 传入 `{"kind":"build_contexts"}` 枚举编译实例，再传入 `kind=program_facts`、精确函数名 `query` 和原样返回的 `build_context_id` 读取该实例的程序事实。同名重载返回分页 `function_choice`，将选项的 native `usr` 原样作为 `query` 即可精确读取，不混合不同函数的事件。两种查询只读，不调用 LLM；输入变动时返回需重建索引的原因。同源多变体已独立存储，但完整扫描仍有按文件组织的消费者，不能把当前结果当成所有构建目标均已扫描。详见[构建实例边界](docs/modules/retrieval-backends.md#编译实例事实与导航投影)。
 
 ## 用户辅助配置
 
@@ -618,13 +854,13 @@ Agent工具可见性由`AGENT.md`与后端gate共同决定：`hypothesis_hunter`
 | Finding 抑制 | 对已确认误报按函数、位置、类别或规则进行抑制 | `src/demo.c:42` 的 `double_free` |
 | Finding baseline | 记录历史验证结论，影响后续评分与过滤 | `true_positive` / `false_positive` / `needs_review` |
 
-这些信息可以通过Web仪表盘维护，也可以放在`user_config.xlsx`中人工编辑。`--infer-user-config`生成候选行供审阅；精确绑定且通过qualification的条目才会编译为live SecuritySpec。Web保存结果时维护`finding_suppressions`与`finding_baselines`，但历史状态只作advisory过滤/诊断，不能直接形成proof或terminal disposition。
+这些信息可以通过 Web 仪表盘维护，也可以放在 `user_config.xlsx` 中人工编辑。`--infer-user-config` 会生成候选行供审阅，人工确认后的行会在后续扫描中作为项目语义参与确定性候选生成、上下文注入和评分。Web 仪表盘保存验证结果时会自动维护 `finding_suppressions` 与 `finding_baselines`；命中误报抑制或 `false_positive` baseline 的候选会被过滤，命中 `true_positive` 的历史项会提高评分中的历史反馈分。
 
 ## 后端对比
 
 | 特性 | regex（C/C++） | joern（Java；C 仅 1.x 兼容） | clang（C/C++） | unified（C/C++） |
 |------|-------|-------|-------|---------|
-| 外部依赖 | 无 | JDK 21 + Joern | clangd >= 20.1 | clangd >= 20.1 + Go/gllvm + binutils/objcopy + SVF + LLVM/llvm-link/llvm-nm |
+| 外部依赖 | 无 | JDK 21 + Joern | clangd >= 20.1；可选 Clang 批量工具 | Clang 批量工具/clangd + 配套 Clang/LLVM + SVF；包装器兼容路径使用 gllvm |
 | 函数源码提取 | 正则匹配 | CPGQL 精确 | AST 精确 | AST 精确 |
 | 调用图 | 不支持 | 完整 CPG | 直接调用 | 直接 + 间接（SVF 指针分析） |
 | 类型查询 | 不支持 | 完整 | AST 精确 | AST 精确 |
@@ -635,7 +871,11 @@ Agent工具可见性由`AGENT.md`与后端gate共同决定：`hypothesis_hunter`
 | 规则目录/禁用 | Regex 规则受 `disabled_ids` 控制 | Java local 受控；Joern signal 不受控 | Clang CFG/matcher 与 Graph 规则受控 | 确定性规则受控；SVF/Saber 信号不受控 |
 | 内存占用 | 极低 | 高（JVM） | 中 | 中高 |
 
+大项目可安装独立的 `zscope-clang-indexer`，通过 `indexing.clang.frontend: auto|batch|lsp` 切换批量抽取与 clangd 回退。普通 bitcode 编译可直接使用与 SVF 配套的 Clang；覆盖盘点、资源预算、安装与测量命令见 [Clang 批量索引与 SVF 输入验收](docs/clang-batch-indexing.md)。
+
 ## 开发命令
+
+测试与质量命令一律在 Linux 环境执行；Windows 上必须在 WSL Linux 用户态中运行，并在 WSL 虚拟环境中完成安装（`python3 -m pip install -e ".[dev]"`）。不要用原生 Windows 解释器形成测试结论：解释器版本可能低于 3.13 基线，部分测试还依赖 POSIX 路径与文件语义。
 
 ```bash
 # 安装开发依赖
@@ -653,6 +893,26 @@ python -m compileall -f -q zscope scripts test tests
 # 运行测试
 python -m pytest
 
+# 六工具 LLM 可用性评测：离线导出/评分已有 JSONL 轨迹
+python scripts/evaluate_tool_use.py --emit-template /tmp/zscope-tool-use-traces.jsonl
+python scripts/evaluate_tool_use.py --traces /tmp/zscope-tool-use-traces.jsonl --output /tmp/zscope-tool-use-score.json
+
+# 真实 LLM 首次选工具评测；从环境读取 Z_SCOPE_API_KEY、Z_SCOPE_LLM_BASE_URL、Z_SCOPE_LLM_MODEL
+python scripts/evaluate_tool_use.py --run-llm \
+  --trace-output /tmp/zscope-first-tool-traces.jsonl \
+  --output /tmp/zscope-first-tool-score.json
+
+# 对已有真实轨迹仅重算首次工具选择与首次参数合法率
+python scripts/evaluate_tool_use.py --traces /tmp/zscope-first-tool-traces.jsonl \
+  --first-tool-only --output /tmp/zscope-first-tool-score.json
+
+# 存量质量基线校验（mypy/Black 债务只允许缩小；--update 收敛需人工审查）
+python scripts/check_mypy_baseline.py
+python scripts/check_black_baseline.py
+
+# 密钥历史审计（处理单分支用 --ref HEAD；全引用审计不带 --ref）
+python scripts/scan_git_history_secrets.py --current-only
+
 # Benchmark 仓库卫生与 clean-clone 离线 smoke（不调用 LLM）
 python scripts/check_benchmark_hygiene.py
 zscope-benchmark run --language c_cpp --mode smoke
@@ -665,13 +925,19 @@ zscope-benchmark run --language c_cpp --mode formal --runs 5
 python scripts/external_benchmark.py run-prepared --suite-root benchmarks/external/workspace/<suite> --condition candidate_layer --run-kind smoke
 ```
 
+Agent 实施计划的开发评测准备使用 `python scripts/agent_plan_evaluation.py --help`。`plan` 生成无答案的冷/热/增量矩阵，`record` 冻结既有报告与用量账本，`compare` 核对源码、入口、构建、模型、配置与工具身份后比较。工具不启动扫描、不读取 truth、不评分；未知值保留 null、零分母显示 N/A，失败和重试成本保留。声明身份与报告实测绑定会明确区分；冻结记录内容变化会被拒绝。它不替代正式 benchmark 或完整 S09 验收，详情见 [Benchmark 模块说明](docs/modules/benchmarking.md)。
+
 ## 更新日志
 
-### Z-Scope 2.0 P1（已完成）
-- **统一 live 执行路径**：删除旧 Vulnerability Analyzer、Deep Worker、subagent 编排和报告期 LLM 判重；所有 live finding 只来自冻结 Candidate Ledger outcomes 的 Finding-root v2 投影。
-- **中性 workflow**：default、resume、maintain 使用稳定的中性阶段名；每个 step 都必须有 handler 并记录 completed/skipped/failed。
-- **严格兼容边界**：旧配置必须通过 `zscope-config migrate` 显式写入新文件后重新加载；旧报告和 usage 维度只由 `zscope.compat` 做只读展示/映射，不能回流扫描或 proof。
-- **模式收敛**：C/C++ `--mode ruledriven` 被拒绝并指向默认 Candidate Ledger；Java 暂时保留 ruledriven。
+### v1.3.2
+- **LLM Wiki 项目知识层**：新增 `zscope/wiki` 子系统与 `zscope-wiki` CLI。扫描 workflow 在入口分析前执行一次 session 级 `wiki_compile`，把项目说明性 Markdown 确定性分类、按 heading 切分为稳定 source section，经不可变 revision 与原子 active pointer 发布；批量入口、Validator、Web 与 MCP 共享同一只读 `ProjectKnowledgeService`，Compiler 不可用或 Wiki 损坏时回退带路径、行号与 digest 的原文摘录查询。
+- **自适应语义发现与 Validator v3**：balanced/deep 构建 Security Semantic Map，coverage-gap worker 在 candidate-blind 约束下主动提出 hypothesis；验证收敛为 V0 确定性 proof、V1 单次结构化判定、V2 定向补证复判与高风险 V3 有界调查（每 cluster 一个最长 50 次模型迭代的连续会话，仅白名单只读工具）。验证结论保留完整 reasoning，并新增 `user_rebuttal` 人工复议字段。
+- **规则治理与 public config v2**：`zscope.yaml` 收敛为最小公共结构，Agent 拓扑、预算与稳定算法默认值移入可审计 RuntimeSpec；`rules.disabled_ids` 统一覆盖 Java local、C/C++ Regex/Clang/Graph、YAML pack 与 Python provider，且不抑制 backend signal 或 LLM 独立发现。
+- **Clang 索引与 SVF 链路性能**：新增源码构建的 `zscope-clang-indexer` 批量前端（portable 包内随 LLVM 18 安装）与可选多实例 clangd 分片池；include-closure 作用域的部分派生重建、按 use-site 身份解析派生引用显著降低重复索引成本。SVF 支持可选懒 scope-first bitcode 构建、heap 预算内并行 Saber 分组执行，并跳过无法放进预算的 wpa 组。
+- **Linux Portable 四包发布**：按架构（x86_64/aarch64）× 语言（cpp/java）交付四个解压即用的 portable 包，锁定 Ubuntu 23.10/glibc 2.38 构建基线，逐包附带 ABI 报告、SPDX SBOM、smoke 证据与签名校验和；旧 `install.sh` 分体资产仅保留兼容回滚。
+- **可观测性与运维**：conversation-event v2 录制流逐事件记录 llm_client 行为；LLM 4xx 拒绝输出 wire-shape 诊断；批量报告携带 task id 与终端状态标记；SQLite 运行库下限明确为 3.8.10.2；正式 benchmark 与 Release 资产按发布 SHA 绑定。
+- **Python 基线切换到 3.13**：`requires-python` 提升为 `>=3.13`，mypy/Black 目标同步 3.13；移除 Python 3.9–3.14 兼容矩阵、多版本带哈希约束与 CI workflow，规则 provider 的 3.9 `importlib.metadata` 回退一并清理。
+- **用户配置推断增强**：resource/lock 推断覆盖 13 类风险接口角色，LLM 逐行筛选/修订/丢弃，低置信度行独立二轮复核（冲突标记 `llm:needs_review`），歧义符号定向分类，并生成 `user_config.infer_report.md` 审阅汇总；工作簿自带 README sheet。
 
 ### v1.3.1
 - **版本与 Python 门禁**：包版本、CLI/MCP/Web 同步到 `1.3.1`，Python 3.9–3.14 使用独立带哈希约束和真实解释器 CI。
@@ -721,9 +987,9 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 - **报告视图、根因去重与 SARIF 导出**：新增 `report_views.default` / `report_views.with_needs_review`，当时通过根因级去重合并重复 finding；CLI 新增 `--export-sarif`，可把完成后的 Z-SCOPE 报告导出为 SARIF v2.1.0。该去重链路在 v1.0 已统一到 `zscope/common/issue_identity.py`。
 - **人工反馈闭环落地**：`UserConfigStore` 新增 `finding_suppressions` 与 `finding_baselines`。Web 仪表盘支持六种验证状态，并会把 `rejected` 写成误报抑制，把 `validated` / `needs_review` / `uncertain` 写成 baseline，后续扫描自动过滤或调整评分。
 - **用户配置工作簿与推断链路**：移除批量 `prompt_autofill` 流程，新增 `user_config.xlsx`、`UserConfigWorkbook` 和 `--infer-user-config`。系统可推断 resource/lock API、多对多配对、dispatcher 分支、module lifecycle、pointer target 与 function intent，并在扫描时只注入相关配置片段。
-- **入口发现结果落盘**：`--discover-entries` 会把候选入口、exposure、reasons、confidence 和审计提示写入项目根目录 `entry_functions_list.json`；`entry_discovery.search_root` 可把发现范围限制到指定绝对目录。
+- **入口发现结果落盘**：`--discover-entries` 会把候选入口、exposure、reasons、confidence 和审计提示写入项目根目录 `entry_functions_list.json`；`entry_discovery.search_root` 可把发现范围限制到指定目录（支持相对路径，固定基于 `source_root` 解析，且必须位于 `source_root` 之下）。
 - **Range benchmark 回归体系扩展到 v6**：`test/range` 新增全局容器注册生命周期、scheduler/pipe 复合并发失败、嵌套 child-list 清理、AVL key 截断/陈旧节点和宏门控锁场景，总漏洞数提升到 45 个，并由 pytest 回归用例约束确定性候选覆盖率。
-- **索引与构建鲁棒性补强**：Clang/regex 函数识别支持更多 C 声明修饰；`CodeIndex.get_function_impl()` 会附带声明/实现前导注释块，帮助 Agent 看到头文件契约；SVF bitcode 构建自动注入兼容 flag，并支持 `svf_scope` 入口裁剪、`llvm-nm` 符号闭包和 `bitcode_scope_<group>.json` 审计计划；Deep Worker 会接收结构化 evidence，Validator 输出兼容旧 `is_valid` 与新 `verdict` 格式。
+- **索引与构建鲁棒性补强**：Clang/regex 内部源码检索支持更多 C 声明修饰并附带声明/实现前导注释块，帮助 Agent 看到头文件契约；SVF bitcode 构建自动注入兼容 flag，并支持 `svf_scope` 入口裁剪、`llvm-nm` 符号闭包和 `bitcode_scope_<group>.json` 审计计划；Deep Worker 会接收结构化 evidence，Validator 输出兼容旧 `is_valid` 与新 `verdict` 格式。
 
 ### v0.5.0
 - **全架构重构与扁平化**：扁平化了冗余的 `zscope/zscope` 目录结构，统一通过 `pip install -e .` 安装，更贴合标准 Python 打包规范。大幅强化三库同源（`code_knowledge.db`, `snapshots.db`, `user_config.db`）的底层持久化隔离与可观测性。
@@ -733,7 +999,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 - **C 内存/并发确定性候选层**：新增通用候选生成与证据包路径，覆盖边界/整数、资源生命周期、时序内存、栈逃逸、锁与共享状态等高价值缺陷，并接入 Deep Worker、Validator、报告分层和回归评测。
 - **CLI Workflow 自动映射**：`--maintain` 自动选择 `maintain.yaml`，`--resume` 自动选择 `resume.yaml`。`analysis.workflow_name` 是运行时内部字段，禁止写入 `zscope.yaml`；两种 CLI 模式互斥，CLI 会提前拦截非法组合。
 - **Deep Worker 启发式任务规划**：引入 `SubAgentOrchestrator`，基于启发式自动探测函数内的分配、拷贝、加锁等关键操作，先全量收集候选点，再按风险和预算下发给聚焦型 `Deep Worker`。未执行候选、失败/invalid/partial Worker 结果都会回传给主 Agent，避免预算截断造成静默漏检。
-- **智能入口点自动发现**：新增 `--discover-entries` 特性。如果未给定分析列表，通过 `EntryDiscovery` 启发式扫描公共头文件 API、通信 IPC 接口、线程创建函数和标准 IO 输入源，自动推测最优的安全审计切入点。
+- **智能入口点自动发现**：使用 `--discover-entries` 时，`EntryDiscovery` 扫描公共头文件 API、通信 IPC 接口、线程入口、注册回调和标准 IO 输入源。`signal` / `sigaction` 的处理函数及 `atexit` / `at_quick_exit` / `on_exit` 的退出回调作为 `callback` 入口；支持源码可解析的嵌套函数封装和参数转发，信号回调保留异步信号审计上下文。
 - **原生支持 MCP (Model Context Protocol)**：内置本地 MCP stdio Server (`--mcp-stdio`)，对外暴露了 Z-SCOPE 专有的 `CodeIndex` 结构化查询、语义快照索引等能力，允许第三方 MCP 客户端（如 Claude Desktop）安全地调取分析底座的数据与工具链。
 - **递归预建模与并发防护**：引入 `SnapshotLockManager`，在实际漏洞分析前通过 BFS 逆拓扑遍历，提前将所有可达子函数推给 `语义建模Agent` 并在多 Worker 间互斥上锁。彻底消除上下文膨胀问题以及多线程同时并发请求同一个下层函数的复述问题。
 - **平凡函数旁路拦截器**：结合极简代码行数（默认 `≤5`）和危险关键字黑名单正则（杜绝 `alloc`、`lock` 等操作漏网），直接在调度层利用 Python 硬拼装阻断 LLM API 请求，实现零成本微快照注入，整体节约 `20~40%` 并发扫描 Token 开销。
@@ -758,7 +1024,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 ### v0.4.0 (2026-02-28)
 - **UnifiedBackend Facade**：新增 `unified` 后端，组合 ClangBackend + SvfAnalyzer，共享 KnowledgeDB，通过 `(file_path, line)` 坐标缝合 Clang AST 与 SVF LLVM IR 结果。
 - **告警验证模式**：新增 `--mode alert-verify --sarif <file>`，导入外部工具 SARIF 报告，LLM 二次确认。
-- **新增工具**：`get_deep_call_context`（高聚合查询：调用者+被调用者+间接调用+污点缺陷一次返回）。
+- **工具增强**：增加高聚合的调用、间接调用和静态信号调查能力；该历史接口现已由六工具证据契约取代。
 - **KnowledgeDB schema v3**：`indirect_calls` 表增加 `call_file`/`call_line` 坐标列，新增 `find_function_at()` 和 `get_enriched_taint_bugs()` 缝合查询。
 - **废弃 SvfBackend**：独立 SVF 后端已废弃，功能合并至 `unified` 后端。
 
@@ -772,8 +1038,32 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 
 ### v0.2.0 (2026-02-18)
 - **重大重构**：代码索引后端从 clangd LSP 迁移至 Joern CPG。
-- **新增工具**：`get_callers`、`get_type_info`、`get_call_graph`、`get_data_flow`、`find_function_pointers`。
+- **工具增强**：增加调用、类型、图、流和函数指针调查能力；这些历史入口现已收敛到六工具证据契约。
 - **依赖变更**：移除 `libclang`，新增 `cpgqls-client`。
 
 ### v0.1.0
 - 初始版本：多智能体协作、语义建模缓存、模型自动降级。
+
+### 增量接口建模
+
+C/C++ 扫描在入口发现、索引和 Wiki 准备后，先建模入口可达函数及引用宏，再执行规则。普通重扫会自动复用有效语义缓存；只有代码/依赖/人工契约/建模规格变化才重建，callee 对外契约变化才继续向调用者传播。建模并发由 `concurrency.llm_max_inflight` 控制，与入口 worker 数分开。
+
+自动接口契约写入 `project.user_config_file` 并重新读取后生效，人工行优先。resource/lock 支持可选 `file_path`、`signature`、`contract`、`status`；`pair` 兼容逗号列表，也支持含身份的 JSON 数组。`contract.carrier` 支持 return、argument、output_argument、global，参数序号从 0 开始，并可附 member_path；v3 契约使用 `preconditions` 和 `effect_cases` 表达调用前提及条件效果，兼容旧 `conditions`。`resource_domain` 独立绑定池或上下文。多对多配对只使用显式或经实现验证的边，inactive/failed/stale 行不参与规则。
+
+已有底层契约的透明函数和宏优先由静态分析组合。未知池协议仍由 LLM 辅助发现，再由实现证据或人工契约建立底层模型；当前自动实现校验覆盖受限侵入式空闲链表。合法释放必须同时满足配对、同一对象、同一池和适用条件；无法证明的效果保持未知。
+
+模型提出的怀疑点保留在语义快照中，供 Validator 验证已有候选时参考；当前暂停其独立候选入口，缓存重扫也不因此触发验证任务，且没有公共开启开关。建模失败仍记录 partial；模型输出不会直接确认漏洞。规则/验证/报告均记录当前契约版本。
+
+### 共享报告与接口审核
+
+默认 JSON 报告是完整自包含的共享对象格式。Python 集成用 `zscope.reporting.json_io.read_report(Path(...))` 读取，新旧格式均返回相同逻辑字段；外部只支持旧 JSON 的工具可先完整导出：
+
+```bash
+zscope-report export --input report.json --output report.legacy.json --format legacy-json
+```
+
+语义工作簿的 `contract_review` 页列出无法由实现证据消解的根协议。检查源码依据、建议 contract 和适用条件后，可将 status 改为 `confirmed`；下一次扫描导入为人工契约，并沿已经核验的 wrapper 映射静态传播。`pending`、`rejected` 不生效。修改为 pending 会撤销该审核行导入的契约。确认角色不能替代运行时调用成功证据。
+
+条件等待的受限分析还会在默认通知路径未闭合时，尝试最多一次无通知唤醒或 `pthread_cond_timedwait`/`pthread_cond_clockwait` 超时。只处理当前 native 核验的函数局部 timespec、有效纳秒范围，以及 timedwait 默认 CLOCK_REALTIME 或 clockwait 直接系统 CLOCK_REALTIME/CLOCK_MONOTONIC 常量；返回前重获锁，之后按源码检查返回值和队列条件。报告保留选中分支、尝试范围及截止时间/时钟前提，在现有验收页集中确认。自定义时钟、任意截止时间来源、多次唤醒序列和一般错误结果仍未覆盖。
+
+受限单工作者队列分析现可跟踪调用方通过条件变量等待活动任务退出：只接受匹配通知、原锁重获和源码条件重检。报告仍会指出提前清零活动标志、收到通知后工作者继续访问对象，以及 free 后才开始等待的问题；等待返回不会自动视为线程已结束或 join。调用方超时/无通知返回、取消和通用注销协议继续保留覆盖缺口，业务前提仍在现有验收页集中确认，实验规则默认关闭。

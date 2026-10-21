@@ -14,9 +14,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
 from ...retrieval.code_index import CodeIndex
+from ...retrieval.analysis_facts import scan_fact_cache, index_context_key
 from .cpp_domains.models import GraphLine, FunctionView, LockOrderEdge
 from .cpp_domains.resource_lifecycle import GraphResourceLifecycleRules
 from .cpp_domains.memory_bounds_integer import GraphMemoryBoundsIntegerRules
@@ -52,13 +53,23 @@ class GraphCandidateGenerator(
         semantics: Optional["LocalPatternSemantics"] = None,
         semantic_overlay: Optional[Dict[str, Any]] = None,
         rule_policy: Optional[Any] = None,
+        *,
+        restrict_to_semantics: bool = False,
     ):
+        from .regex import _restricted_semantics
+
         self.code_index = code_index
-        self.semantics = self._default_semantics()
-        if semantics is not None:
+        self.restrict_to_semantics = restrict_to_semantics
+        self.semantics = (
+            _restricted_semantics(semantics) if restrict_to_semantics else self._default_semantics()
+        )
+        if semantics is not None and not restrict_to_semantics:
             self.semantics.merge(semantics)
         self.rule_policy = rule_policy
-        self.semantic_overlay = semantic_overlay or {}
+        # The exact instance local is the sole effect input. A parallel overlay
+        # is advisory and must not add roles, carriers or inferred effects.
+        self.semantic_overlay = {} if restrict_to_semantics else (semantic_overlay or {})
+        self.semantics.merge_overlay(self.semantic_overlay)
         self.pointer_target_models = self._pointer_target_models(self.semantic_overlay)
         self.dispatcher_models = self._dispatcher_models(self.semantic_overlay)
         self._impl_cache: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -67,6 +78,18 @@ class GraphCandidateGenerator(
         self.last_deferred_functions: List[Dict[str, Any]] = []
         self.last_query_errors: List[Dict[str, str]] = []
         self._compile_semantic_patterns()
+        self.fact_cache = scan_fact_cache(code_index)
+        self.fact_context = (
+            "graph-facts.v2",
+            index_context_key(code_index),
+            hashlib.sha256(
+                json.dumps(
+                    [vars(self.semantics), self.semantic_overlay, self.restrict_to_semantics],
+                    sort_keys=True,
+                    default=str,
+                ).encode()
+            ).hexdigest(),
+        )
 
     def generate_for_entry(
         self,
@@ -82,6 +105,8 @@ class GraphCandidateGenerator(
         return self.generate_for_views(views)
 
     def _compile_semantic_patterns(self) -> None:
+        from ...semantics.contracts import return_acquisition_names
+
         lock_names = set(self.semantics.lock_apis) | self._checker_defaults("extended_lock_apis")
         unlock_names = set(self.semantics.unlock_apis) | self._checker_defaults(
             "extended_unlock_apis"
@@ -95,22 +120,52 @@ class GraphCandidateGenerator(
         free_names = self._checker_defaults("graph_release_apis") | self._overlay_semantics_names(
             "deallocators"
         )
+        if self.restrict_to_semantics:
+            free_names = set(self.semantics.deallocators)
         self._lock_names = lock_names
         self._unlock_names = unlock_names
         self._alloc_names = alloc_names
         self._free_names = free_names
         self._lock_call_re = re.compile(
-            rf"\b(?:{self._names_pattern(lock_names)})\s*\((?P<arg>[^)]*)\)"
+            rf"\b(?P<api>{self._names_pattern(lock_names)})\s*\((?P<arg>[^)]*)\)"
         )
-        self._unlock_call_re = re.compile(rf"\b(?:{self._names_pattern(unlock_names)})\s*\(")
+        self._unlock_call_re = re.compile(
+            rf"\b(?P<api>{self._names_pattern(unlock_names)})\s*\((?P<arg>[^)]*)\)"
+        )
+        return_allocators = set().union(
+            return_acquisition_names(self.semantics, self.semantics.allocators, "allocator"),
+            return_acquisition_names(self.semantics, self.semantics.calloc_allocators, "calloc"),
+            return_acquisition_names(self.semantics, self.semantics.reallocators, "reallocator"),
+            {
+                name
+                for name in alloc_names
+                if not self.restrict_to_semantics and not self.semantics.contracts.find(name)
+            },
+        )
         self._alloc_assign_re = re.compile(
             rf"(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
-            rf"(?:{self._names_pattern(alloc_names)}|[A-Za-z_]\w*(?:Alloc|AllocZero|Create|New))\s*\("
+            rf"(?P<api>{self._names_pattern(return_allocators)})\s*\("
         )
         self._free_re = re.compile(
-            rf"\b(?:{self._names_pattern(free_names)})\s*\((?P<arg>[^)]*)\)",
-            re.I,
+            rf"\b(?P<api>{self._names_pattern(free_names)})\s*\((?P<arg>[^)]*)\)",
         )
+
+    def _semantic_api_pattern(self, pattern: str) -> str:
+        from .regex import _consumer_api_pattern
+
+        return _consumer_api_pattern(pattern, self.semantics, self.restrict_to_semantics)
+
+    def _literal_api_pattern(self, pattern: str) -> str:
+        from .regex import _consumer_api_pattern
+
+        return _consumer_api_pattern(
+            pattern, self.semantics, self.restrict_to_semantics, expand_slots=False
+        )
+
+    def _semantic_call_allowed(self, name: str, *roles: str) -> bool:
+        from .regex import _semantic_call_allowed
+
+        return _semantic_call_allowed(self.semantics, self.restrict_to_semantics, name, *roles)
 
     @staticmethod
     def _default_semantics() -> "LocalPatternSemantics":
@@ -118,11 +173,10 @@ class GraphCandidateGenerator(
 
         return default_local_pattern_semantics()
 
-    @staticmethod
-    def _checker_defaults(role_name: str) -> set[str]:
+    def _checker_defaults(self, role_name: str) -> set[str]:
         from ...semantics.defaults import default_checker_api_names
 
-        return set(default_checker_api_names(role_name))
+        return set() if self.restrict_to_semantics else set(default_checker_api_names(role_name))
 
     def _overlay_semantics_names(self, attr: str) -> set[str]:
         from ...semantics.defaults import DEFAULT_SEMANTICS_SOURCE
@@ -171,19 +225,42 @@ class GraphCandidateGenerator(
         return self.generate_for_views(views)
 
     def generate_for_views(self, views: Sequence[FunctionView]) -> List[Dict[str, Any]]:
+        self.last_semantic_events = [
+            event
+            for view in views
+            for event in self.semantics.contracts.trace_calls(
+                {
+                    "func_name": view.name,
+                    "file_path": view.file_path,
+                    "signature": view.signature,
+                    "code": "\n".join(line.text for line in view.lines),
+                }
+            )
+        ]
         by_name = {view.name: view for view in views}
         issues: List[Dict[str, Any]] = []
         for view in views:
-            run_detector_plan(
-                "graph",
-                "view",
-                GraphViewRuleContext(
-                    generator=self,
-                    view=view,
-                    by_name=by_name,
-                    issues=issues,
-                ),
-            )
+            from ...semantics.call_context import bind_call_context
+
+            with bind_call_context(
+                {
+                    "func_name": view.name,
+                    "file_path": view.file_path,
+                    "signature": view.signature,
+                    "code": "\n".join(line.text for line in view.lines),
+                },
+                self.semantics.contracts,
+            ):
+                run_detector_plan(
+                    "graph",
+                    "view",
+                    GraphViewRuleContext(
+                        generator=self,
+                        view=view,
+                        by_name=by_name,
+                        issues=issues,
+                    ),
+                )
 
         run_detector_plan(
             "graph",
@@ -280,21 +357,54 @@ class GraphCandidateGenerator(
         if impl is None and func_name in self._view_cache:
             return self._view_cache[func_name]
         impl = impl or self._impl_for(func_name)
+        if impl and impl.get("truncated"):
+            impl = self._impl_for(func_name)
         if not impl:
             self._view_cache[func_name] = None
             return None
-        lines = tuple(self._parse_lines(str(impl.get("code") or "")))
-        file_path = str(impl.get("file") or "")
-        direct_callees = [str(item) for item in impl.get("callees") or [] if item]
-        view = FunctionView(
-            name=func_name,
-            file_path=file_path,
-            signature=self._signature_from_impl(func_name, impl),
-            lines=lines,
-            callees=tuple(self._merged_callee_names(func_name, file_path, lines, direct_callees)),
+        source_hash = hashlib.sha256(
+            json.dumps(impl, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+        def build() -> Any:
+            lines = tuple(self._parse_lines(str(impl.get("code") or "")))
+            file_path = str(impl.get("file") or "")
+            direct_callees = [str(item) for item in impl.get("callees") or [] if item]
+            view = FunctionView(
+                name=func_name,
+                file_path=file_path,
+                signature=self._signature_from_impl(func_name, impl),
+                lines=lines,
+                callees=tuple(
+                    self._merged_callee_names(func_name, file_path, lines, direct_callees)
+                ),
+            )
+            return view, {
+                key: value for key, value in self._callee_evidence.items() if key[0] == func_name
+            }
+
+        view, evidence = self.fact_cache.compute(
+            (self.fact_context, "view", func_name, source_hash), build
         )
+        self._callee_evidence.update(evidence)
         self._view_cache[func_name] = view
-        return view
+        return cast(Optional[FunctionView], view)
+
+    def _function_fact_key(self, func_name: str) -> Any:
+        index = getattr(self.code_index, "_function_index", {})
+        info = index.get(func_name) or {}
+        if not info:
+            aliases = getattr(self.code_index, "_function_alias_index", {}).get(func_name, [])
+            if len(aliases) == 1:
+                info = index.get(next(iter(aliases))) or {}
+        source_file = info.get("file") or info.get("file_path")
+        fingerprint = getattr(self.code_index, "_source_fingerprint", None)
+        token = (
+            fingerprint(source_file)
+            if source_file and callable(fingerprint)
+            else getattr(self.code_index, "_index_epoch", 0)
+        )
+        return self.fact_context, "impl", func_name, token
 
     def _impl_for(self, func_name: str) -> Optional[Dict[str, Any]]:
         if func_name not in self._impl_cache:
@@ -303,10 +413,12 @@ class GraphCandidateGenerator(
                 self._impl_cache[func_name] = None
             else:
                 try:
-                    self._impl_cache[func_name] = getter(
-                        func_name,
-                        warn_missing=False,
+                    self._impl_cache[func_name] = self.fact_cache.compute(
+                        self._function_fact_key(func_name),
+                        lambda: getter(func_name, max_lines=None, warn_missing=False),
                     )
+                    if (self._impl_cache[func_name] or {}).get("truncated"):
+                        raise ValueError("source_truncated")
                 except Exception as exc:
                     self.last_query_errors.append(
                         {
@@ -344,6 +456,10 @@ class GraphCandidateGenerator(
                 records = []
             for record in records or []:
                 if not isinstance(record, dict):
+                    continue
+                if record.get("call_type") == "callback_registration":
+                    # Registration grants external reachability, not a nested
+                    # synchronous acquisition under the registering thread's locks.
                     continue
                 callee = str(record.get("name") or record.get("callee_name") or "").strip()
                 if not callee:
@@ -592,12 +708,12 @@ class GraphCandidateGenerator(
         skip = {"if", "for", "while", "switch", "return", "sizeof"}
         return [m.group(1) for m in cls._CALL_NAME_RE.finditer(text) if m.group(1) not in skip]
 
-    @staticmethod
-    def _names_pattern(names: Iterable[str]) -> str:
+    def _names_pattern(self, names: Iterable[str]) -> str:
         clean = sorted(
             {str(name).strip() for name in names if str(name).strip()}, key=len, reverse=True
         )
-        return "|".join(re.escape(name) for name in clean) or r"a^"
+        pattern = "|".join(re.escape(name) for name in clean) or r"a^"
+        return "(?-i:" + pattern + ")" if self.restrict_to_semantics else pattern
 
     @classmethod
     def _views_share_protocol_terms(cls, left: FunctionView, right: FunctionView) -> bool:
@@ -663,7 +779,15 @@ class GraphCandidateGenerator(
 
     @staticmethod
     def _first_line_matching(view: FunctionView, pattern: re.Pattern[str]) -> Optional[GraphLine]:
-        return next((line for line in view.lines if pattern.search(line.text)), None)
+        return next(
+            (
+                line
+                for line in view.lines
+                if pattern.search(line.text)
+                and not (re.search(rf"\b{re.escape(view.name)}\s*\([^;]*\)\s*\{{\s*$", line.text))
+            ),
+            None,
+        )
 
     @staticmethod
     def _context(lines: Sequence[GraphLine], start: int, end: int) -> str:

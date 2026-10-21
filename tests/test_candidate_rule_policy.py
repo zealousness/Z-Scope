@@ -102,17 +102,19 @@ def test_regex_allowed_skills_uses_catalog_descriptor_not_class_fallback() -> No
 
 
 def test_graph_generator_filters_disabled_rule_before_final_dedupe() -> None:
+    from semantic_fixtures import configured_test_semantics
+    semantics = configured_test_semantics()
     caller = FunctionView(
         name="caller",
         file_path="src/demo.c",
         signature="void caller(void)",
         lines=(
-            GraphLine(1, "pthread_mutex_lock(&g_lock);", "1 | pthread_mutex_lock(&g_lock);", 0),
+            GraphLine(1, "LOCK(&g_lock);", "1 | LOCK(&g_lock);", 0),
             GraphLine(2, "helper();", "2 | helper();", 1),
             GraphLine(
                 3,
-                "pthread_mutex_unlock(&g_lock);",
-                "3 | pthread_mutex_unlock(&g_lock);",
+                "UNLOCK(&g_lock);",
+                "3 | UNLOCK(&g_lock);",
                 2,
             ),
         ),
@@ -125,23 +127,23 @@ def test_graph_generator_filters_disabled_rule_before_final_dedupe() -> None:
         lines=(
             GraphLine(
                 10,
-                "pthread_mutex_lock(&g_lock);",
-                "10 | pthread_mutex_lock(&g_lock);",
+                "LOCK(&g_lock);",
+                "10 | LOCK(&g_lock);",
                 0,
             ),
             GraphLine(
                 11,
-                "pthread_mutex_unlock(&g_lock);",
-                "11 | pthread_mutex_unlock(&g_lock);",
+                "UNLOCK(&g_lock);",
+                "11 | UNLOCK(&g_lock);",
                 1,
             ),
         ),
         callees=(),
     )
 
-    baseline = GraphCandidateGenerator(object()).generate_for_views([caller, callee])
+    baseline = GraphCandidateGenerator(object(), semantics).generate_for_views([caller, callee])
     filtered = GraphCandidateGenerator(
-        object(), rule_policy=_RulePolicy({"cross_function_recursive_lock"})
+        object(), semantics, rule_policy=_RulePolicy({"cross_function_recursive_lock"})
     ).generate_for_views([caller, callee])
     effective = EffectiveRuleSet.build(
         RuleCatalog.builtin(),
@@ -150,7 +152,7 @@ def test_graph_generator_filters_disabled_rule_before_final_dedupe() -> None:
         disabled_ids=["cross_function_recursive_lock"],
     )
     strictly_filtered = GraphCandidateGenerator(
-        object(), rule_policy=effective.policy
+        object(), semantics, rule_policy=effective.policy
     ).generate_for_views([caller, callee])
 
     assert "cross_function_recursive_lock" in _rule_ids(baseline)

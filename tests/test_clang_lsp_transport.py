@@ -54,11 +54,6 @@ def test_start_cleans_up_process_that_exits_immediately(tmp_path, monkeypatch) -
 def test_send_request_is_condition_driven_and_records_latency(tmp_path, monkeypatch) -> None:
     extractor = ClangExtractor(tmp_path)
     written = []
-    monotonic_tick = [100.0]
-
-    def monotonic() -> float:
-        monotonic_tick[0] += 0.001
-        return monotonic_tick[0]
 
     def write_message(message):
         written.append(message)
@@ -71,7 +66,6 @@ def test_send_request_is_condition_driven_and_records_latency(tmp_path, monkeypa
             ).start()
 
     monkeypatch.setattr(extractor, "_write_message", write_message)
-    monkeypatch.setattr("zscope.retrieval.clang_extractor.time.monotonic", monotonic)
     monkeypatch.setattr(
         "zscope.retrieval.clang_extractor.time.sleep",
         lambda _seconds: (_ for _ in ()).throw(AssertionError("send_request must not poll")),
@@ -179,7 +173,7 @@ def test_work_done_progress_tracks_each_token_through_end(tmp_path, monkeypatch)
             "params": {"token": "background-index"},
         }
     )
-    assert extractor._progress_tokens == {"background-index": "created"}
+    assert extractor._progress_token_statuses() == {"background-index": "created"}
     assert written == [{"jsonrpc": "2.0", "id": 7, "result": None}]
 
     extractor._dispatch_message(
@@ -189,7 +183,7 @@ def test_work_done_progress_tracks_each_token_through_end(tmp_path, monkeypatch)
             "params": {"token": "background-index", "value": {"kind": "begin"}},
         }
     )
-    assert extractor._progress_tokens == {"background-index": "begin"}
+    assert extractor._progress_token_statuses() == {"background-index": "begin"}
     extractor._dispatch_message(
         {
             "jsonrpc": "2.0",
@@ -197,7 +191,7 @@ def test_work_done_progress_tracks_each_token_through_end(tmp_path, monkeypatch)
             "params": {"token": "background-index", "value": {"kind": "report"}},
         }
     )
-    assert extractor._progress_tokens == {"background-index": "report"}
+    assert extractor._progress_token_statuses() == {"background-index": "report"}
     extractor._dispatch_message(
         {
             "jsonrpc": "2.0",
@@ -223,7 +217,64 @@ def test_created_progress_token_is_not_active_indexing(tmp_path, monkeypatch) ->
     )
 
     assert extractor.wait_for_indexing(timeout=0.2, idle_threshold=0.01) is True
-    assert extractor._progress_tokens == {"reserved-token": "created"}
+    assert extractor._progress_token_statuses() == {"reserved-token": "created"}
+
+
+def test_stale_progress_token_is_evicted_and_readiness_recovers(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+    extractor._initialized = True
+    extractor._PROGRESS_TOKEN_STALE_SECONDS = 0.01
+    extractor._dispatch_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": "background-index",
+                "value": {"kind": "begin", "title": "indexing"},
+            },
+        }
+    )
+    assert extractor._progress_token_statuses() == {"background-index": "begin"}
+
+    time.sleep(0.05)
+
+    assert extractor._has_active_progress_locked() is False
+    assert extractor._progress_token_statuses() == {}
+    assert extractor.wait_for_indexing(timeout=0.5, idle_threshold=0.01) is True
+
+
+def test_dump_indexing_diagnostics_reports_active_token(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+    extractor._initialized = True
+    extractor._dispatch_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": "background-index",
+                "value": {"kind": "begin", "title": "indexing", "percentage": 1},
+            },
+        }
+    )
+    extractor._dispatch_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": "background-index",
+                "value": {"kind": "report", "message": "50%", "percentage": 50},
+            },
+        }
+    )
+
+    dump = extractor.dump_indexing_diagnostics()
+
+    assert "initialized=True" in dump
+    assert "active_progress_tokens=1" in dump
+    assert "background-index" in dump
+    assert "begin:background-index" in dump
+    assert "report:background-index" in dump
+    assert "50%" in dump
 
 
 def test_wait_for_indexing_observes_progress_end_and_idle_threshold(tmp_path) -> None:
@@ -334,6 +385,62 @@ def test_reader_eof_wakes_pending_request(tmp_path, monkeypatch) -> None:
     assert not thread.is_alive()
     assert result["value"] is None
     assert extractor._transport_closed is True
+
+
+def test_reader_eof_logs_unexpected_exit_diagnostics(tmp_path, caplog) -> None:
+    """Mid-run clangd death must record the exit code and diagnostics (M5 finding)."""
+    import logging as _logging
+
+    extractor = ClangExtractor(tmp_path)
+
+    class FakeStdout:
+        @staticmethod
+        def fileno() -> int:
+            return 99
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def poll(self):
+            return -11  # SIGSEGV-style exit code
+
+    extractor.process = FakeProcess()
+    extractor._running = True
+    with caplog.at_level(_logging.ERROR, logger="zscope.retrieval.clang_extractor"):
+        extractor._read_loop()
+    assert extractor._transport_closed is True
+    unexpected_logs = [
+        record for record in caplog.records if "exited unexpectedly" in record.getMessage()
+    ]
+    assert unexpected_logs, "expected an unexpected-exit diagnostic record"
+    message = unexpected_logs[0].getMessage()
+    assert "returncode=-11" in message
+    assert "transport diagnostics" in message
+
+
+def test_reader_stop_keeps_quiet_when_transport_closes_normally(tmp_path, caplog) -> None:
+    """stop()-driven EOF (generation bumped / _running False) must not log an error."""
+    import logging as _logging
+
+    extractor = ClangExtractor(tmp_path)
+
+    class FakeStdout:
+        @staticmethod
+        def fileno() -> int:
+            return 99
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def poll(self):
+            return 0
+
+    extractor.process = FakeProcess()
+    extractor._running = False  # stop() already ran
+    with caplog.at_level(_logging.ERROR, logger="zscope.retrieval.clang_extractor"):
+        extractor._read_loop()
+    assert extractor._transport_closed is True
+    assert not [record for record in caplog.records if "exited unexpectedly" in record.getMessage()]
 
 
 def test_semantic_capabilities_and_server_legend_are_preserved(tmp_path) -> None:
@@ -772,3 +879,47 @@ def test_symbol_info_ast_and_range_helpers(tmp_path, monkeypatch) -> None:
     capabilities = extractor._client_capabilities()["textDocument"]
     assert capabilities["symbolInfo"] == {}
     assert capabilities["ast"] == {}
+
+
+def test_declaration_fallback_preserves_encoding_and_server_capability(tmp_path, monkeypatch):
+    extractor = ClangExtractor(tmp_path)
+    source = tmp_path / "declaration.cpp"
+    source.write_text("/*名*/ shared;\n", encoding="utf-8")
+    extractor._apply_server_capabilities({"positionEncoding": "utf-8", "declarationProvider": {}})
+    calls = []
+    response = {
+        "targetUri": source.as_uri(),
+        "targetSelectionRange": {
+            "start": {"line": 0, "character": 8},
+            "end": {"line": 0, "character": 14},
+        },
+    }
+    outcome = {"status": "success_nonempty", "error": None}
+
+    def request(method, params, timeout):
+        calls.append((method, params, timeout))
+        extractor._record_rpc_outcome(method, outcome["status"], outcome["error"])
+        return response if outcome["status"].startswith("success") else None
+
+    monkeypatch.setattr(extractor, "send_request", request)
+    assert extractor.get_declaration(source, 0, 6) == [response]
+    assert calls[-1] == (
+        "textDocument/declaration",
+        {"textDocument": {"uri": source.as_uri()}, "position": {"line": 0, "character": 8}},
+        30,
+    )
+    outcome.update(status="rpc_error", error={"code": -32603})
+    assert extractor.get_declaration(source, 0, 6) is None
+    assert extractor._declaration_supported is True
+    outcome["error"] = {"code": -32601}
+    assert extractor.get_declaration(source, 0, 6) is None
+    assert extractor._declaration_supported is False
+    assert extractor.get_declaration(source, 0, 6) is None
+    assert len(calls) == 3
+    # A new initialize response starts a new capability generation.
+    extractor._apply_server_capabilities({"declarationProvider": True})
+    outcome.update(status="success_nonempty", error=None)
+    assert extractor.get_declaration(source, 0, 6) == [response]
+    extractor._apply_server_capabilities({})
+    assert extractor.get_declaration(source, 0, 6) is None
+    assert len(calls) == 4

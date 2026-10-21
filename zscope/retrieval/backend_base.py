@@ -108,13 +108,13 @@ class CodeBackend(ABC):
             stored = str(info.get("file_path") or info.get("filename") or "")
             stored = stored.replace("\\", "/").strip().lstrip("./")
             hint = str(file_path or "").replace("\\", "/").strip().lstrip("./")
-            if not (
-                stored == hint
-                or stored.endswith(f"/{hint}")
-                or hint.endswith(f"/{stored}")
-            ):
+            if not (stored == hint or stored.endswith(f"/{hint}") or hint.endswith(f"/{stored}")):
                 return []
         return [dict(info)]
+
+    def list_type_infos(self) -> List[Dict[str, Any]]:
+        """Return all indexed project type definitions when the backend supports it."""
+        return []
 
     @abstractmethod
     def get_data_flow(
@@ -146,6 +146,10 @@ class CodeBackend(ABC):
 
     def get_macro_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
         """Return macro definitions for a set of symbol names."""
+        return []
+
+    def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        """Return indexed global declarations/definitions, without guessing scope."""
         return []
 
     def get_function_symbol_context(

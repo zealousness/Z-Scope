@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.wiki-ingest-workset.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workset_id",
+    "project_id",
+    "base_revision_id",
+    "source_manifest_digest",
+    "added_source_ids",
+    "changed_source_ids",
+    "removed_source_ids",
+    "allowed_source_refs",
+    "source_ref_catalog",
+    "source_sections",
+    "allowed_subject_ids",
+    "limits",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.wiki-ingest-workset.v1"
+    },
+    "workset_id": {
+      "type": "string",
+      "pattern": "^workset_[a-z0-9_:-]+$"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_revision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "source_manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "added_source_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^docsrc_[a-z0-9_:-]+$"
+      }
+    },
+    "changed_source_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^docsrc_[a-z0-9_:-]+$"
+      }
+    },
+    "removed_source_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^docsrc_[a-z0-9_:-]+$"
+      }
+    },
+    "allowed_source_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^docref_[a-z0-9_:-]+$"
+      }
+    },
+    "source_ref_catalog": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "$ref": "zscope.document-ref.v1"
+      }
+    },
+    "source_sections": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "$ref": "zscope.document-section.v1"
+      }
+    },
+    "allowed_subject_ids": {
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_constraints",
+        "max_wall_seconds"
+      ],
+      "properties": {
+      "max_constraints": {
+        "type": ["integer", "null"],
+        "minimum": 1
+      },
+      "max_wall_seconds": {
+        "type": ["integer", "null"],
+        "minimum": 1
+      }
+      }
+    },
+    "initial": {
+      "type": "boolean",
+      "description": "Program-owned bootstrap marker for the first document compilation."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

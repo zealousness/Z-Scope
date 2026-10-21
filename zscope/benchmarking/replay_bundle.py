@@ -9,7 +9,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Sequence
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 
 REPLAY_BUNDLE_SCHEMA_VERSION = "zscope.validator-replay-bundle.v1"
@@ -37,6 +37,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "canonical_groups",
         "answer_material_present",
         "contract",
+        "review_memory",
         "bundle_sha256",
     }
 )
@@ -52,6 +53,7 @@ _GROUP_FIELDS = frozenset(
         "facts",
         "hashes",
         "group_sha256",
+        "review_memory",
     }
 )
 _CANDIDATE_FIELDS = (
@@ -191,7 +193,13 @@ def _canonical_bytes(value: Any) -> bytes:
 
 
 def _sha256_payload(value: Any) -> str:
-    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    for chunk in encoder.iterencode(value):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def canonical_json_sha256(value: Any) -> str:
@@ -494,7 +502,10 @@ def _evidence_projection(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     return evidence if isinstance(evidence, Mapping) else ticket_evidence
 
 
-def _build_group(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+def _build_group(
+    records: Sequence[Mapping[str, Any]],
+    review_memory: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
     if not records:
         raise ReplayBundleError("cannot build an empty canonical replay group")
     cluster = min(_cluster_uid(raw) for raw in records)
@@ -584,11 +595,15 @@ def _build_group(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "facts": facts,
         "hashes": hashes,
     }
+    if review_memory:
+        group["review_memory"] = _answer_free(dict(review_memory))
     group["group_sha256"] = _sha256_payload(group)
     return group
 
 
-def build_validator_replay_bundle(report: Mapping[str, Any]) -> Dict[str, Any]:
+def build_validator_replay_bundle(
+    report: Mapping[str, Any], *, review_memory: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Any]:
     """Export canonical validation inputs without truth or prior outcomes."""
 
     manifest = report.get("run_manifest")
@@ -610,7 +625,7 @@ def build_validator_replay_bundle(report: Mapping[str, Any]) -> Dict[str, Any]:
         raise ReplayBundleError("replay bundle requires a non-empty source identity")
     source_identity["identity_sha256"] = _sha256_payload(source_identity)
     groups = sorted(
-        (_build_group(raw_group) for raw_group in _canonical_group_records(report)),
+        (_build_group(raw_group, review_memory) for raw_group in _canonical_group_records(report)),
         key=lambda item: item["validation_cluster_uid"],
     )
     payload: Dict[str, Any] = {
@@ -631,6 +646,8 @@ def build_validator_replay_bundle(report: Mapping[str, Any]) -> Dict[str, Any]:
             ],
         },
     }
+    if review_memory:
+        payload["review_memory"] = _answer_free(dict(review_memory))
     payload["bundle_sha256"] = _sha256_payload(payload)
     validate_validator_replay_bundle(payload)
     return payload
@@ -666,7 +683,7 @@ def _find_forbidden_values(value: Any, *, path: str = "$") -> list[str]:
 def validate_validator_replay_bundle(bundle: Mapping[str, Any]) -> None:
     """Fail closed on schema drift, answer leakage, ordering, or hash mismatch."""
 
-    if set(bundle) != _TOP_LEVEL_FIELDS:
+    if set(bundle) not in {_TOP_LEVEL_FIELDS, _TOP_LEVEL_FIELDS - {"review_memory"}}:
         raise ReplayBundleError("replay bundle has missing or unknown top-level fields")
     if bundle.get("schema_version") != REPLAY_BUNDLE_SCHEMA_VERSION:
         raise ReplayBundleError("replay bundle schema_version is invalid")
@@ -720,7 +737,10 @@ def validate_validator_replay_bundle(bundle: Mapping[str, Any]) -> None:
     seen_candidate_uids: set[str] = set()
     seen_occurrence_uids: set[str] = set()
     for index, raw in enumerate(groups):
-        if not isinstance(raw, Mapping) or set(raw) != _GROUP_FIELDS:
+        if not isinstance(raw, Mapping) or set(raw) not in {
+            _GROUP_FIELDS,
+            _GROUP_FIELDS - {"review_memory"},
+        }:
             raise ReplayBundleError(f"canonical_groups[{index}] has invalid fields")
         cluster = str(raw.get("validation_cluster_uid") or "")
         if not cluster:
@@ -823,34 +843,20 @@ def validate_validator_replay_bundle(bundle: Mapping[str, Any]) -> None:
 
 
 def write_validator_replay_bundle(path: Path, report: Mapping[str, Any]) -> Dict[str, Any]:
+    from ..reporting.json_io import write_report_atomic
+
     bundle = build_validator_replay_bundle(report)
-    Path(path).write_text(
-        json.dumps(bundle, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    write_report_atomic(Path(path), bundle)
     return bundle
 
 
 def load_validator_replay_bundle(path: Path) -> Dict[str, Any]:
-    def reject_duplicates(pairs: Sequence[tuple[str, Any]]) -> Dict[str, Any]:
-        result: Dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ReplayBundleError(f"duplicate JSON key in replay bundle: {key}")
-            result[key] = value
-        return result
-
-    def reject_constant(value: str) -> None:
-        raise ReplayBundleError(f"non-finite JSON value in replay bundle: {value}")
+    from ..reporting.json_io import read_report
 
     try:
-        payload = json.loads(
-            Path(path).read_text(encoding="utf-8"),
-            object_pairs_hook=reject_duplicates,
-            parse_constant=reject_constant,
-        )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ReplayBundleError(f"invalid replay bundle: {path}") from exc
+        payload = read_report(Path(path), strict=True)
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ReplayBundleError(f"invalid replay bundle: {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ReplayBundleError("replay bundle must be an object")
     validate_validator_replay_bundle(payload)

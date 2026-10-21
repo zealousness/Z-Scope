@@ -4,25 +4,21 @@ from zscope.agents.base import ToolCallingAgent
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.framework.base import AgentResponse, BaseTool
 from zscope.tools.call_graph import GetCallGraphTool
+from zscope.tools.deep_call_context import GetDeepCallContextTool
+from zscope.tools.list_functions import ListFunctionsTool
+from zscope.tools.pointer_alias import QueryPointerAliasTool
 from zscope.tools.policy import ToolPolicy
 from zscope.tools.registry import build_tool_registry
 from zscope.tools.runtime import ToolsRuntime
+from zscope.tools.taint_reachability import VerifyTaintReachabilityTool
 
 EXPECTED_TOOL_NAMES = [
-    "get_function_impl",
-    "get_function_info",
-    "get_function_snapshot",
-    "get_security_semantics",
-    "list_known_functions",
-    "get_file_snippet",
-    "get_callers",
-    "get_type_info",
-    "get_call_graph",
-    "get_data_flow",
-    "find_function_pointers",
-    "query_pointer_alias",
-    "verify_taint_reachability",
-    "get_deep_call_context",
+    "search_code",
+    "read_code",
+    "get_semantic_context",
+    "query_code_graph",
+    "trace_data_flow",
+    "query_static_findings",
 ]
 
 
@@ -142,9 +138,9 @@ def test_runtime_and_agent_reject_non_object_arguments_before_execution() -> Non
     assert agent_tool.calls == []
 
 
-def test_runtime_updates_location_and_autofills_file_snippet() -> None:
+def test_runtime_does_not_autofill_read_location_from_previous_call() -> None:
     info_tool = RecordingTool(
-        "get_function_info",
+        "search_code",
         {
             "success": True,
             "data": {
@@ -171,7 +167,7 @@ def test_runtime_updates_location_and_autofills_file_snippet() -> None:
         },
     }
     snippet_tool = RecordingTool(
-        "get_file_snippet",
+        "read_code",
         {"success": True, "data": {"file": "src/demo.c"}},
     )
     snippet_tool.get_schema = lambda: {
@@ -196,17 +192,28 @@ def test_runtime_updates_location_and_autofills_file_snippet() -> None:
         tools=[info_tool, snippet_tool],
     )
 
-    runtime.execute_tool("get_function_info", {"value": 1})
-    result = runtime.execute_tool("get_file_snippet", {})
+    runtime.execute_tool("search_code", {"value": 1})
+    result = runtime.execute_tool("read_code", {})
 
-    assert result["success"] is True
-    assert snippet_tool.calls == [{"file_path": "src/demo.c", "start_line": 12}]
+    assert result["success"] is False
+    assert snippet_tool.calls == []
 
 
-def test_runtime_caches_negative_type_info_results() -> None:
+def test_runtime_reuses_only_exact_read_code_calls() -> None:
     tool = RecordingTool(
-        "get_type_info",
-        {"success": False, "error": "Type 'missing' not found"},
+        "read_code",
+        {
+            "success": True,
+            "data": {
+                "source": {
+                    "file": "demo.c",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "code": "1 | int value;\n",
+                }
+            },
+            "warnings": [],
+        },
     )
     tool.get_schema = lambda: {
         "type": "function",
@@ -215,8 +222,12 @@ def test_runtime_caches_negative_type_info_results() -> None:
             "description": tool.description,
             "parameters": {
                 "type": "object",
-                "properties": {"type_name": {"type": "string"}},
-                "required": ["type_name"],
+                "properties": {
+                    "file_path": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                },
+                "required": ["file_path", "start_line", "end_line"],
             },
         },
     }
@@ -226,11 +237,12 @@ def test_runtime_caches_negative_type_info_results() -> None:
         tools=[tool],
     )
 
-    first = runtime.execute_tool("get_type_info", {"type_name": "missing"})
-    second = runtime.execute_tool("get_type_info", {"type_name": "missing"})
+    arguments = {"file_path": "demo.c", "start_line": 1, "end_line": 1}
+    first = runtime.execute_tool("read_code", arguments)
+    second = runtime.execute_tool("read_code", arguments)
 
-    assert first["success"] is False
-    assert second["cached_negative_result"] is True
+    assert first["success"] is True
+    assert "Reused the exact previous read_code result." in second["warnings"]
     assert len(tool.calls) == 1
 
 
@@ -270,13 +282,154 @@ def test_analyzer_uses_registry_backend_grouping() -> None:
     analyzer.snapshot_store = EmptySnapshotStore()
     analyzer.user_config = None
 
-    advanced_tools = analyzer._get_tools()
+    advanced_tools = analyzer._get_tools(enable_on_demand_snapshots=True)
     advanced_names = [tool.name for tool in advanced_tools]
     analyzer.code_index.backend_name = "regex"
-    base_tools = analyzer._get_tools()
+    base_tools = analyzer._get_tools(enable_on_demand_snapshots=False)
     base_names = [tool.name for tool in base_tools]
 
     assert advanced_names == EXPECTED_TOOL_NAMES
-    assert base_names == EXPECTED_TOOL_NAMES[:8]
-    assert advanced_tools[2].resolver is None
+    assert base_names == EXPECTED_TOOL_NAMES
+    assert advanced_tools[2].resolver is not None
     assert base_tools[2].resolver is None
+
+
+def test_call_graph_tool_reports_limit_truncation() -> None:
+    class GraphCodeIndex:
+        def get_callers(self, name, limit=30):
+            return []
+
+        def get_callees(self, name, limit=30):
+            return [
+                {"name": f"callee_{index}", "filename": "callee.c"}
+                for index in range(min(limit, 4))
+            ]
+
+    tool = GetCallGraphTool(GraphCodeIndex())
+
+    truncated = tool.execute({"func_name": "root", "depth": 1, "limit": 3})
+    complete = tool.execute({"func_name": "root", "depth": 1, "limit": 5})
+
+    assert truncated["data"]["truncated"] is True
+    assert "3-node limit" in truncated["data"]["note"]
+    assert [item["name"] for item in truncated["data"]["callees"]] == [
+        "callee_0",
+        "callee_1",
+        "callee_2",
+    ]
+    assert "truncated" not in complete["data"]
+
+
+def test_list_functions_tool_pages_with_offset_and_truncation_flag() -> None:
+    class ListCodeIndex:
+        def __init__(self):
+            self.calls = []
+
+        def list_functions(self, pattern=None, limit=50, offset=0):
+            self.calls.append({"pattern": pattern, "limit": limit, "offset": offset})
+            ordered = [f"func_{index:02d}" for index in range(12)]
+            if pattern:
+                ordered = [name for name in ordered if pattern in name]
+            if limit is None:
+                return ordered[offset:]
+            return ordered[offset : offset + limit]
+
+    tool = ListFunctionsTool(ListCodeIndex())
+
+    page = tool.execute({"pattern": "func", "limit": 5, "offset": 2})
+    last_page = tool.execute({"pattern": "func", "limit": 5, "offset": 10})
+
+    assert page["success"] is True
+    assert page["data"]["functions"] == [f"func_{index:02d}" for index in range(2, 7)]
+    assert page["data"]["count"] == 5
+    assert page["data"]["truncated"] is True
+    assert "offset" in page["data"]["note"]
+    assert last_page["data"]["functions"] == ["func_10", "func_11"]
+    assert last_page["data"]["truncated"] is False
+
+
+def test_deep_call_context_reports_truncated_sections() -> None:
+    class DeepBackend:
+        def get_indirect_callees(self, func_name, limit=30):
+            return [{"callee": f"indirect_{index}"} for index in range(limit)]
+
+        def get_taint_bugs(self, bug_type="", limit=100):
+            return [{"bug": f"bug_{index}"} for index in range(limit)]
+
+        def get_method(self, func_name):
+            return {"name": func_name}
+
+    class DeepCodeIndex:
+        backend = DeepBackend()
+
+        def get_callers(self, name, limit=20):
+            return [{"name": f"caller_{index}"} for index in range(limit)]
+
+        def get_callees(self, name, limit=30):
+            return [{"name": f"callee_{index}"} for index in range(limit)]
+
+    result = GetDeepCallContextTool(DeepCodeIndex()).execute({"func_name": "root"})
+
+    data = result["data"]
+    assert len(data["callers"]) == 20
+    assert len(data["callees"]) == 30
+    assert len(data["indirect_callees"]) == 20
+    assert len(data["taint_bugs"]) == 20
+    assert data["truncated"] is True
+    assert set(data["truncated_sections"]) == {
+        "callers",
+        "callees",
+        "indirect_callees",
+        "taint_bugs",
+    }
+
+
+def test_deep_call_context_without_overflow_has_no_truncation_keys() -> None:
+    class SparseBackend:
+        def get_indirect_callees(self, func_name, limit=30):
+            return [{"callee": "only"}]
+
+        def get_taint_bugs(self, bug_type="", limit=100):
+            return []
+
+        def get_method(self, func_name):
+            return None
+
+    class SparseCodeIndex:
+        backend = SparseBackend()
+
+        def get_callers(self, name, limit=20):
+            return [{"name": "caller"}]
+
+        def get_callees(self, name, limit=30):
+            return [{"name": "callee"}]
+
+    result = GetDeepCallContextTool(SparseCodeIndex()).execute({"func_name": "root"})
+
+    assert result["success"] is True
+    assert "truncated" not in result["data"]
+    assert result["data"]["callers"] == [{"name": "caller"}]
+
+
+def test_taint_and_pointer_tools_report_truncation() -> None:
+    class TruncatingBackend:
+        def get_taint_bugs(self, bug_type="", limit=100):
+            return [{"bug": index} for index in range(limit)]
+
+        def get_indirect_callees(self, func_name, limit=30):
+            return [{"callee": index} for index in range(limit)]
+
+    class TruncatingIndex:
+        backend = TruncatingBackend()
+
+    index = TruncatingIndex()
+
+    taint = VerifyTaintReachabilityTool(index).execute({"bug_type": "leak", "limit": 4})
+    assert taint["data"]["count"] == 4
+    assert len(taint["data"]["bugs"]) == 4
+    assert taint["data"]["truncated"] is True
+
+    alias = QueryPointerAliasTool(index).execute({"func_name": "f", "limit": 4})
+    assert alias["data"]["count"] == 4
+    assert len(alias["data"]["indirect_callees"]) == 4
+    assert alias["data"]["truncated"] is True

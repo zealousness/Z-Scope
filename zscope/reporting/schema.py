@@ -1,45 +1,18 @@
-"""Report schema v3 authority, manifest, and exit-policy helpers."""
+"""Report schema v2 status, manifest, and exit-policy helpers."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
-from copy import deepcopy
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from ..orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
-from ..orchestration.proof_promotion_qualification import (
-    load_runtime_successor_qualification as load_successor_qualification,
-)
-from ..orchestration.successor_runtime_review_status import (
-    SUCCESSOR_RUNTIME_REVIEW_MANIFEST,
-    validate_current_successor_runtime_review_status,
-    validate_successor_runtime_review_status,
-)
-from ..orchestration.runtime_authority import (
-    P5_RELEASE_STATUS,
-    RUNTIME_CACHE_EPOCH,
-    current_successor_reviewed,
-    validate_runtime_authority_manifest,
-)
+from ..common.validator_protocol import VALIDATION_POLICY_VERSION
 
-
-REPORT_SCHEMA_VERSION = 3
-RUN_MANIFEST_SCHEMA_VERSION = "zscope.run-manifest.v3"
-# A report produced before the current deterministic successor was projected
-# into its manifest must never become reusable merely because it happens to
-# share the broader runtime-authority cache epoch.
-REPORT_REUSE_EPOCH = "zscope.report-reuse.successor-bound.v1"
+REPORT_SCHEMA_VERSION = 2
 FINDING_STATUSES = {"clean", "needs_review", "confirmed"}
 COMPLETENESS_STATUSES = {"complete", "partial", "degraded", "failed", "interrupted"}
 EXIT_POLICIES = {"review", "confirmed", "legacy"}
-NON_REVIEW_TERMINAL_DISPOSITIONS = {
-    "confirmed",
-    "rejected_with_proof",
-    "deduplicated_alias",
-    "shadow_observation",
-}
 
 
 def terminal_candidate_identity(item: Mapping[str, Any]) -> str:
@@ -268,7 +241,6 @@ def finding_status(
         str(item.get("record_role") or "") != "operational_obligation"
         and str(item.get("candidate_disposition") or "").lower()
         not in {"deferred_budget", "engine_failed", "interrupted"}
-        | NON_REVIEW_TERMINAL_DISPOSITIONS
         and (
             str(item.get("candidate_disposition") or "").lower() == "needs_review"
             or str(item.get("validation_status") or "").lower()
@@ -302,8 +274,6 @@ def needs_review_count(
         if str(item.get("record_role") or "") == "operational_obligation":
             return
         if disposition in {"deferred_budget", "engine_failed", "interrupted"}:
-            return
-        if disposition in NON_REVIEW_TERMINAL_DISPOSITIONS:
             return
         if disposition != "needs_review" and validation not in {
             "needs_review",
@@ -350,8 +320,6 @@ def unresolved_obligation_count(
             "interrupted",
         } and validation not in {"needs_review", "uncertain", "unvalidated", "pending"}:
             continue
-        if disposition in NON_REVIEW_TERMINAL_DISPOSITIONS:
-            continue
         for field in (
             "operational_uid",
             "validation_cluster_uid",
@@ -381,7 +349,7 @@ def completeness_status(
         return "degraded"
     capability_values: list[str] = []
     capabilities = state.get("engine_capabilities") or state.get("backend_capabilities")
-    security_runtime = state.get("security_runtime")
+    active_discovery = state.get("active_discovery")
 
     def collect_capability_statuses(value: Any) -> None:
         if isinstance(value, Mapping):
@@ -396,7 +364,7 @@ def completeness_status(
                 collect_capability_statuses(nested)
 
     collect_capability_statuses(capabilities)
-    collect_capability_statuses(security_runtime)
+    collect_capability_statuses(active_discovery)
     if "interrupted" in capability_values:
         return "interrupted"
     if any(
@@ -437,49 +405,20 @@ def scan_outcome(finding: str, completeness: str) -> str:
     return finding if finding in FINDING_STATUSES else "clean"
 
 
-def current_successor_runtime_binding() -> Dict[str, str]:
-    """Load the exact fresh deterministic successor identity.
-
-    This deliberately uses the strict qualification loader rather than the
-    review-status projection.  An ``in_progress`` successor may produce a
-    non-release report, while a stale/malformed qualification cannot be used
-    to bind either a new report or a historical reuse decision.
-    """
-
-    successor = load_successor_qualification()
-    implementation_root = str(successor["implementation_root_sha256"])
-    qualification_sha256 = str(successor["content_sha256"])
-    review_status = SUCCESSOR_RUNTIME_REVIEW_MANIFEST
-    valid_review, reason = validate_successor_runtime_review_status(
-        review_status,
-        expected_implementation_root_sha256=implementation_root,
-        expected_successor_qualification_sha256=qualification_sha256,
-    )
-    if not valid_review:
-        raise ValueError(reason)
-    current_review, current_reason = validate_current_successor_runtime_review_status(review_status)
-    if review_status.get("status") == "reviewed":
-        if not current_review:
-            raise ValueError(current_reason)
-    elif current_review or current_reason != "successor_review_in_progress":
-        raise ValueError(current_reason)
-    return {
-        "successor_implementation_root_sha256": str(implementation_root),
-        "successor_qualification_sha256": qualification_sha256,
-        "successor_review_status": str(review_status["status"]),
-        "successor_review_status_content_sha256": str(review_status["content_sha256"]),
-        "successor_review_set_sha256": str(review_status["review_set_sha256"]),
-    }
-
-
 def report_reuse_blockers(
     report: Mapping[str, Any],
     *,
     expected_manifest: Mapping[str, Any] | None = None,
+    business_answer_store: Any = None,
 ) -> list[str]:
     """Explain why a historical report cannot safely short-circuit analysis."""
 
     blockers: list[str] = []
+    from ..semantics.business_assumptions import feedback_reuse_problem
+
+    feedback_problem = feedback_reuse_problem(report, business_answer_store)
+    if feedback_problem:
+        blockers.append(feedback_problem)
     try:
         schema_version = int(report.get("schema_version") or 0)
     except (TypeError, ValueError):
@@ -497,41 +436,8 @@ def report_reuse_blockers(
         manifest = {}
     if str(manifest.get("candidate_schema_version") or "") != CANDIDATE_SCHEMA_VERSION:
         blockers.append("candidate_schema_mismatch")
-    if str(manifest.get("schema_version") or "") != RUN_MANIFEST_SCHEMA_VERSION:
-        blockers.append("run_manifest_schema_mismatch")
-    if str(manifest.get("report_reuse_epoch") or "") != REPORT_REUSE_EPOCH:
-        blockers.append("report_reuse_epoch_mismatch")
-    if str(manifest.get("cache_epoch") or "") != RUNTIME_CACHE_EPOCH:
-        blockers.append("cache_epoch_mismatch")
-    authority_manifest = manifest.get("runtime_authority_manifest")
-    if not isinstance(authority_manifest, Mapping):
-        blockers.append("runtime_authority_manifest_missing")
-    else:
-        valid_authority, _reason = validate_runtime_authority_manifest(authority_manifest)
-        if not valid_authority:
-            blockers.append("runtime_authority_manifest_invalid")
-    trace = manifest.get("decision_trace")
-    if not isinstance(trace, Mapping) or trace.get("complete") is not True:
-        blockers.append("decision_trace_incomplete")
-
-    try:
-        current_successor = current_successor_runtime_binding()
-    except (KeyError, OSError, TypeError, ValueError):
-        blockers.append("successor_qualification_not_current")
-        current_successor = {}
-    for key in (
-        "successor_implementation_root_sha256",
-        "successor_qualification_sha256",
-        "successor_review_status",
-        "successor_review_status_content_sha256",
-        "successor_review_set_sha256",
-    ):
-        expected = str(current_successor.get(key) or "")
-        actual = str(manifest.get(key) or "")
-        if key not in manifest:
-            blockers.append(f"successor_binding_missing:{key}")
-        elif actual != expected:
-            blockers.append(f"successor_binding_mismatch:{key}")
+    if str(manifest.get("validation_policy_version") or "") != VALIDATION_POLICY_VERSION:
+        blockers.append("validation_policy_mismatch")
 
     unresolved_dispositions = {
         "needs_review",
@@ -573,14 +479,6 @@ def report_reuse_blockers(
             "model_manifest_hash",
             "knowledge_db_version",
             "effective_rules_sha256",
-            "cache_epoch",
-            "runtime_authority_sha256",
-            "report_reuse_epoch",
-            "successor_implementation_root_sha256",
-            "successor_qualification_sha256",
-            "successor_review_status",
-            "successor_review_status_content_sha256",
-            "successor_review_set_sha256",
         ):
             expected = str(expected_manifest.get(key) or "")
             if not expected:
@@ -613,11 +511,8 @@ def build_run_manifest(
     review_governance: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     governance = dict(review_governance or {})
-    successor_binding = current_successor_runtime_binding()
     return {
-        "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
-        "report_reuse_epoch": REPORT_REUSE_EPOCH,
-        **successor_binding,
+        "schema_version": "zscope.run-manifest.v1",
         "run_id": metadata.get("run_id") or "",
         "entry_function": entry_function,
         "project_id": metadata.get("project_id") or "",
@@ -646,13 +541,7 @@ def build_run_manifest(
         ),
         "knowledge_db_version": metadata.get("knowledge_db_version") or "",
         "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
-        "cache_epoch": RUNTIME_CACHE_EPOCH,
-        "runtime_authority_manifest": metadata.get("runtime_authority_manifest") or {},
-        "runtime_authority_sha256": (
-            (metadata.get("runtime_authority_manifest") or {}).get("content_sha256", "")
-            if isinstance(metadata.get("runtime_authority_manifest"), Mapping)
-            else ""
-        ),
+        "validation_policy_version": VALIDATION_POLICY_VERSION,
         "finding_status": finding,
         "completeness": completeness,
         "issue_count": int(issue_count),
@@ -679,6 +568,34 @@ def build_run_manifest(
         "valid": completeness == "complete",
         "resume_lineage": metadata.get("resume_lineage") or [],
         "engine_capabilities": metadata.get("engine_capabilities") or {},
+        "wiki_telemetry": metadata.get("wiki_telemetry")
+        or {
+            "effective_mode": "off",
+            "active_effective_mode": False,
+            "wiki_context_injected": False,
+            "resolution_count": 0,
+            "wiki_resolution_count": 0,
+            "source_fallback_count": 0,
+            "none_count": 0,
+            "knowledge_context_tokens": 0,
+            "incremental_fact_count": 0,
+            "selected_constraint_ids": {},
+            "selected_source_ref_ids": {},
+            "fallback_reasons": {},
+        },
+        "interface_probe": metadata.get("interface_probe")
+        or {
+            "probed": 0,
+            "classified": 0,
+            "declined": 0,
+            "skipped_budget": 0,
+            "skipped_known_role": 0,
+            "skipped_external": 0,
+            "skipped_no_client": 0,
+            "errors": 0,
+            "roles": {},
+            "classified_functions": [],
+        },
         "timestamp": metadata.get("timestamp") or "",
     }
 
@@ -692,7 +609,7 @@ def apply_report_schema_v2(
     metadata: Mapping[str, Any],
     entry_function: str,
 ) -> Dict[str, Any]:
-    from .views import build_report_views, review_governance_summary
+    from .views import review_governance_summary
 
     raw_terminal_candidates = state.get("candidate_terminal_states")
     terminal_candidates = (
@@ -731,38 +648,11 @@ def apply_report_schema_v2(
             else None
         ),
     )
-    raw_views = report.get("report_views")
-    default_items: Any = None
-    with_review_items: Any = None
-    if isinstance(raw_views, Mapping):
-        raw_default = raw_views.get("default")
-        raw_with_review = raw_views.get("with_needs_review")
-        default_items = raw_default.get("issues") if isinstance(raw_default, Mapping) else None
-        with_review_items = (
-            raw_with_review.get("issues") if isinstance(raw_with_review, Mapping) else None
-        )
-    if not isinstance(default_items, list) or not isinstance(with_review_items, list):
-        raw_views = build_report_views(
-            [dict(item) for item in issues if isinstance(item, Mapping)],
-            [dict(item) for item in observations if isinstance(item, Mapping)],
-            canonical_projection=canonical_projection,
-        )
-        report["report_views"] = raw_views
-        raw_default = raw_views.get("default")
-        raw_with_review = raw_views.get("with_needs_review")
-        default_items = raw_default.get("issues") if isinstance(raw_default, Mapping) else None
-        with_review_items = (
-            raw_with_review.get("issues") if isinstance(raw_with_review, Mapping) else None
-        )
     invariant = report_invariant_status(
         issues,
         observations,
         terminal_candidates,
         canonical_projection=canonical_projection,
-        default_items=(default_items if isinstance(default_items, list) else None),
-        with_needs_review_items=(
-            with_review_items if isinstance(with_review_items, list) else None
-        ),
     )
     if "validation_queue_drained" in state and not bool(state.get("validation_queue_drained")):
         invariant["valid"] = False
@@ -800,12 +690,6 @@ def apply_report_schema_v2(
                 "validation_group_alias_count",
                 "validator_invocation_count",
                 "rejected_with_proof_count",
-                "deduplicated_alias_count",
-                "shadow_observation_count",
-                "audit_observation_count",
-                "operational_obligation_count",
-                "terminal_outcome_count",
-                "unknown_terminal_disposition_count",
                 "cluster_fragmentation_count",
             )
         }
@@ -815,25 +699,10 @@ def apply_report_schema_v2(
     report["run_manifest"]["finding_root_alias_count"] = int(
         state.get("finding_root_alias_count", 0) or 0
     )
-    report["run_manifest"]["finding_root_projection"] = dict(
-        state.get("finding_root_projection_summary") or {}
+    report["run_manifest"]["aggregation_count"] = int(state.get("aggregation_count", 0) or 0)
+    report["run_manifest"]["aggregation_alias_count"] = int(
+        state.get("aggregation_alias_count", 0) or 0
     )
-    trace_manifest = state.get("decision_trace_manifest")
-    if isinstance(trace_manifest, dict):
-        report["run_manifest"]["decision_trace"] = {
-            key: deepcopy(trace_manifest.get(key))
-            for key in (
-                "schema_version",
-                "manifest_path",
-                "manifest_sha256",
-                "trace_count",
-                "coverage_trace_count",
-                "evidence_object_count",
-                "model_event_count",
-                "complete",
-                "errors",
-            )
-        }
     for key in (
         "validator_session_count",
         "validator_api_call_count",
@@ -862,19 +731,6 @@ def apply_report_schema_v2(
         release_blockers.append("budget_policy_not_observe_only")
     if not invariant["valid"]:
         release_blockers.append("report_invariant_failed")
-    if P5_RELEASE_STATUS != "complete":
-        release_blockers.append("p5_stage_not_complete")
-    if not current_successor_reviewed():
-        release_blockers.append("successor_review_not_current")
-    authority_manifest = report["run_manifest"].get("runtime_authority_manifest")
-    authority_valid = isinstance(authority_manifest, Mapping) and (
-        validate_runtime_authority_manifest(authority_manifest)[0]
-    )
-    if not authority_valid:
-        release_blockers.append("runtime_authority_manifest_invalid")
-    trace = report["run_manifest"].get("decision_trace")
-    if not isinstance(trace, Mapping) or trace.get("complete") is not True:
-        release_blockers.append("decision_trace_incomplete")
     report["run_manifest"]["release_gate_status"] = {
         "runtime_valid": not release_blockers,
         "quality_evaluation_pending": True,
@@ -889,51 +745,36 @@ def report_invariant_status(
     terminal_candidates: Sequence[Any],
     *,
     canonical_projection: bool,
-    default_items: Sequence[Any] | None = None,
-    with_needs_review_items: Sequence[Any] | None = None,
 ) -> Dict[str, Any]:
     """Check that public report projections share one terminal source of truth."""
 
-    issue_items = _dict_items(issues)
-    observation_items = _dict_items(observations)
-    terminal_items = _dict_items(terminal_candidates)
-    confirmed_items = [
-        item
-        for item in issue_items
+    confirmed = sum(
+        1
+        for item in _dict_items(issues)
         if str(item.get("candidate_disposition") or "").lower() == "confirmed"
         or str(item.get("validation_status") or "").lower()
         in {"validated", "verified", "confirmed"}
-    ]
-    review_items = [
-        item
-        for item in observation_items
-        if (
-            str(item.get("candidate_disposition") or "").lower()
-            not in NON_REVIEW_TERMINAL_DISPOSITIONS
-            and (
-                str(item.get("candidate_disposition") or "").lower() == "needs_review"
-                or str(item.get("validation_status") or "").lower()
-                in {"needs_review", "uncertain", "unvalidated"}
-            )
-        )
-    ]
-    terminal_confirmed_items = [
-        item
-        for item in terminal_items
-        if str(item.get("candidate_disposition") or "").lower() == "confirmed"
-    ]
-    terminal_review_items = [
-        item
-        for item in terminal_items
+    )
+    review = sum(
+        1
+        for item in _dict_items(observations)
         if str(item.get("candidate_disposition") or "").lower() == "needs_review"
-    ]
-    confirmed = len(confirmed_items)
-    review = len(review_items)
-    terminal_confirmed = len(terminal_confirmed_items)
-    terminal_review = len(terminal_review_items)
+        or str(item.get("validation_status") or "").lower()
+        in {"needs_review", "uncertain", "unvalidated"}
+    )
+    terminal_confirmed = sum(
+        1
+        for item in _dict_items(terminal_candidates)
+        if str(item.get("candidate_disposition") or "").lower() == "confirmed"
+    )
+    terminal_review = sum(
+        1
+        for item in _dict_items(terminal_candidates)
+        if str(item.get("candidate_disposition") or "").lower() == "needs_review"
+    )
     security_terminal = [
         item
-        for item in terminal_items
+        for item in _dict_items(terminal_candidates)
         if str(item.get("record_role") or "") != "operational_obligation"
         and str(item.get("candidate_disposition") or "").lower() != "shadow_observation"
     ]
@@ -942,33 +783,7 @@ def report_invariant_status(
         for item in security_terminal
         if item.get("validation_cluster_uid")
     }
-    terminal_dispositions = Counter(
-        str(
-            item.get("candidate_disposition")
-            or item.get("terminal_disposition")
-            or item.get("status")
-            or ""
-        ).lower()
-        for item in terminal_items
-    )
-    known_dispositions = {
-        "confirmed",
-        "needs_review",
-        "rejected_with_proof",
-        "deduplicated_alias",
-        "shadow_observation",
-        "deferred_budget",
-        "engine_failed",
-        "interrupted",
-    }
-    unknown_terminal_count = sum(
-        count
-        for disposition, count in terminal_dispositions.items()
-        if disposition not in known_dispositions
-    )
-    disposition_conservation = (
-        sum(terminal_dispositions.values()) == len(terminal_items) and unknown_terminal_count == 0
-    )
+    terminal_items = _dict_items(terminal_candidates)
     open_completion_count = sum(
         1
         for item in terminal_items
@@ -986,98 +801,12 @@ def report_invariant_status(
         str(item.get("obligation_uid") or item.get("candidate_uid") or "")
         for item in security_terminal
     }
-
-    def identity_projection(
-        values: Sequence[Mapping[str, Any]],
-    ) -> tuple[list[str], set[str], bool]:
-        projected = [terminal_candidate_identity(item) for item in values]
-        return projected, set(projected), all(projected)
-
-    issue_identity_list, top_level_issue_identities, issue_identities_nonempty = (
-        identity_projection(issue_items)
-    )
-    review_identity_list, review_identities, review_identities_nonempty = identity_projection(
-        review_items
-    )
-    actual_default_items = _dict_items(default_items or ())
-    actual_with_review_items = _dict_items(with_needs_review_items or ())
-    actual_default_identity_list, actual_default_identities, actual_default_nonempty = (
-        identity_projection(actual_default_items)
-    )
-    actual_with_review_identity_list, with_review_identities, actual_with_review_nonempty = (
-        identity_projection(actual_with_review_items)
-    )
-    terminal_confirmed_identity_list, terminal_confirmed_identities, terminal_confirmed_nonempty = (
-        identity_projection(terminal_confirmed_items)
-    )
-    terminal_review_identity_list, terminal_review_identities, terminal_review_nonempty = (
-        identity_projection(terminal_review_items)
-    )
-    view_projection_available = default_items is not None and with_needs_review_items is not None
-    view_item_shapes_valid = (
-        view_projection_available
-        and len(actual_default_items) == len(default_items or ())
-        and len(actual_with_review_items) == len(with_needs_review_items or ())
-    )
-    top_level_only_confirmed = len(confirmed_items) == len(issue_items)
-    identities_nonempty = all(
-        (
-            issue_identities_nonempty,
-            review_identities_nonempty,
-            actual_default_nonempty,
-            actual_with_review_nonempty,
-            terminal_confirmed_nonempty,
-            terminal_review_nonempty,
-        )
-    )
-    identities_unique = all(
-        len(projected) == len(set(projected))
-        for projected in (
-            issue_identity_list,
-            review_identity_list,
-            actual_default_identity_list,
-            actual_with_review_identity_list,
-            terminal_confirmed_identity_list,
-            terminal_review_identity_list,
-        )
-    )
-    expected_with_review_identities = terminal_confirmed_identities | terminal_review_identities
-    actual_default_exact = (
-        view_projection_available
-        and actual_default_identities == top_level_issue_identities == terminal_confirmed_identities
-    )
-    actual_with_review_exact = (
-        view_projection_available and with_review_identities == expected_with_review_identities
-    )
-    view_conservation = bool(
-        len(top_level_issue_identities) == confirmed
-        and len(review_identities) == review
-        and top_level_only_confirmed
-        and top_level_issue_identities == terminal_confirmed_identities
-        and review_identities == terminal_review_identities
-        and view_projection_available
-        and view_item_shapes_valid
-        and identities_nonempty
-        and identities_unique
-        and actual_default_exact
-        and actual_with_review_exact
-    )
-    default_subset = (
-        view_projection_available and actual_default_identities <= with_review_identities
-    )
-    all_review_included = (
-        view_projection_available and terminal_review_identities <= with_review_identities
-    )
     valid = not canonical_projection or (
         confirmed == terminal_confirmed
         and review == terminal_review
         and len(clusters) == len(security_terminal)
         and open_completion_count == 0
         and open_validation_count == 0
-        and disposition_conservation
-        and view_conservation
-        and default_subset
-        and all_review_included
     )
     return {
         "valid": valid,
@@ -1086,26 +815,11 @@ def report_invariant_status(
         "terminal_confirmed_count": terminal_confirmed,
         "displayed_review_count": review,
         "terminal_review_count": terminal_review,
-        "shadow_observation_count": terminal_dispositions["shadow_observation"],
-        "audit_observation_count": terminal_dispositions["shadow_observation"],
-        "deduplicated_alias_count": terminal_dispositions["deduplicated_alias"],
-        "operational_obligation_count": sum(
-            terminal_dispositions[value]
-            for value in ("deferred_budget", "engine_failed", "interrupted")
+        "shadow_observation_count": sum(
+            1
+            for item in terminal_items
+            if str(item.get("candidate_disposition") or "").lower() == "shadow_observation"
         ),
-        "terminal_outcome_count": len(terminal_items),
-        "terminal_disposition_counts": dict(sorted(terminal_dispositions.items())),
-        "unknown_terminal_disposition_count": unknown_terminal_count,
-        "terminal_outcome_conservation_passed": disposition_conservation,
-        "view_membership_conservation_passed": view_conservation,
-        "view_membership_item_shapes_valid": view_item_shapes_valid,
-        "top_level_issues_are_terminal_confirmed": top_level_only_confirmed,
-        "view_membership_identities_nonempty": identities_nonempty,
-        "view_membership_identities_unique": identities_unique,
-        "actual_default_membership_exact": actual_default_exact,
-        "actual_with_needs_review_membership_exact": actual_with_review_exact,
-        "default_is_with_needs_review_subset": default_subset,
-        "all_canonical_needs_review_included": all_review_included,
         "canonical_validation_group_count": len(clusters),
         "validation_group_alias_count": sum(
             len(item.get("alias_occurrence_uids") or []) for item in terminal_items
@@ -1113,7 +827,11 @@ def report_invariant_status(
         "validator_invocation_count": sum(
             int(item.get("validation_attempt_count") or 0) for item in terminal_items
         ),
-        "rejected_with_proof_count": terminal_dispositions["rejected_with_proof"],
+        "rejected_with_proof_count": sum(
+            1
+            for item in terminal_items
+            if str(item.get("candidate_disposition") or "").lower() == "rejected_with_proof"
+        ),
         "cluster_fragmentation_count": max(0, len(clusters) - len(obligation_uids)),
         "open_evidence_completion_count": open_completion_count,
         "open_validation_group_count": open_validation_count,

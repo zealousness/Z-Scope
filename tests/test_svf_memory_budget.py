@@ -4,6 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def deterministic_memory_budget(monkeypatch):
+    monkeypatch.setattr(
+        "zscope.retrieval.indexing_runtime.resource_limits",
+        lambda: {"cpu_count": 16, "task_memory_budget_bytes": 128 * 1024**3},
+    )
+
+
 from zscope.retrieval.knowledge_db import KnowledgeDB
 from zscope.retrieval.svf_analyzer import SvfAnalyzer
 from zscope.retrieval.svf_runner import SvfResult

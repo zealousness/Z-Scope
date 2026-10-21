@@ -29,7 +29,7 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], value) if isinstance(value, Mapping) else {}
 
 
-CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.3"
+CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.5"
 DECISION_CONTEXT_VERSION = DECISION_CONTEXT_V33
 CANDIDATE_DISPOSITIONS = {
     "confirmed",
@@ -286,80 +286,6 @@ def _location_parts(
     return _project_relative_path(location, project_root), None
 
 
-def concrete_candidate_occurrence_anchor(
-    issue: Mapping[str, Any],
-) -> Optional[tuple[str, str, int]]:
-    """Return the exact file/function/line carried by one live occurrence.
-
-    This deliberately does not infer an anchor from prose, evidence text, or
-    the candidate display ID.  Proof consumers use it to bind the occurrence
-    to a sealed FunctionSecuritySummary.  Conflicting top-level/location
-    projections fail closed instead of letting a caller choose whichever
-    representation happens to match the proof artifact.
-
-    ``location.function_uid`` is not compared with ``function`` here: Hunter
-    locations use the security-map function identity while the live issue's
-    ``function`` is the concrete FunctionIR signature.  The Hunter-specific
-    sealed-location equality is checked by its consumer.
-    """
-
-    raw_file = issue.get("file")
-    raw_function = issue.get("function")
-    raw_line = issue.get("line")
-    if (
-        not isinstance(raw_file, str)
-        or not raw_file
-        or not isinstance(raw_function, str)
-        or not raw_function
-        or raw_line is None
-        or isinstance(raw_line, bool)
-    ):
-        return None
-    try:
-        line = int(raw_line)
-    except (TypeError, ValueError):
-        return None
-    if line <= 0:
-        return None
-
-    location = issue.get("location")
-    if isinstance(location, Mapping):
-        location_file = location.get("file")
-        location_line = location.get("start_line", location.get("line"))
-        if location_file is not None and location_file != raw_file:
-            return None
-        if location_line is not None:
-            if isinstance(location_line, bool):
-                return None
-            try:
-                if int(location_line) != line:
-                    return None
-            except (TypeError, ValueError):
-                return None
-    elif isinstance(location, str):
-        match = re.fullmatch(r"(.+?):(\d+)(?::\d+)?", location.strip())
-        if match is None or match.group(1) != raw_file or int(match.group(2)) != line:
-            return None
-    elif location is not None:
-        return None
-
-    for alias in ("file_path", "module_path"):
-        value = issue.get(alias)
-        if value is not None and value != raw_file:
-            return None
-    for alias in ("start_line",):
-        value = issue.get(alias)
-        if value is not None:
-            if isinstance(value, bool):
-                return None
-            try:
-                if int(value) != line:
-                    return None
-            except (TypeError, ValueError):
-                return None
-    return raw_file, raw_function, line
-
-
 def _evidence_pack(issue: Mapping[str, Any]) -> Dict[str, Any]:
     value = issue.get("evidence_pack")
     if not isinstance(value, Mapping):
@@ -452,6 +378,7 @@ class CandidateEnvelope:
     evidence_sources: List[str] = field(default_factory=list)
     entry_paths: List[List[str]] = field(default_factory=list)
     schema_version: str = CANDIDATE_SCHEMA_VERSION
+    build_context_id: str = ""
 
     @classmethod
     def from_issue(
@@ -482,9 +409,13 @@ class CandidateEnvelope:
                 )
             )
         )
+        from ..common.issue_identity import issue_build_context_id
+
+        build_context_id = issue_build_context_id(issue)
         existing_schema = str(issue.get("candidate_schema_version") or "")
         if (
             existing_schema == CANDIDATE_SCHEMA_VERSION
+            and str(issue.get("identity_build_context_id") or "") == build_context_id
             and issue.get("candidate_uid")
             and issue.get("occurrence_uid")
             and issue.get("decision_evidence_hash")
@@ -502,6 +433,7 @@ class CandidateEnvelope:
                 else []
             )
             return cls(
+                build_context_id=build_context_id,
                 candidate_uid=str(issue["candidate_uid"]),
                 occurrence_uid=str(issue["occurrence_uid"]),
                 history_key=str(issue.get("history_key") or ""),
@@ -598,6 +530,7 @@ class CandidateEnvelope:
             project_root,
         )
         structural = {
+            "build_context_id": build_context_id,
             "schema": CANDIDATE_SCHEMA_VERSION,
             "project": normalized_project_id,
             "defect_class": defect_class,
@@ -719,6 +652,7 @@ class CandidateEnvelope:
         }
         evidence_hash = _digest(evidence, length=64)
         decision_evidence = {
+            "build_context_id": build_context_id,
             "version": requested_context_version,
             "obligation": obligation_uid,
             "obligation_shape": obligation_shape,
@@ -791,6 +725,9 @@ class CandidateEnvelope:
             or pack.get("code_hash")
             or pack.get("source_fingerprint"),
         }
+        semantic_version = issue.get("semantic_contract_version") or pack.get("semantic_contract_version")
+        if semantic_version:
+            decision_evidence["semantic_contract_version"] = semantic_version
         if requested_context_version in {
             DECISION_CONTEXT_V31,
             DECISION_CONTEXT_V32,
@@ -853,6 +790,7 @@ class CandidateEnvelope:
             "complete" if complete is True else "partial" if complete is False else "unknown"
         )
         return cls(
+            build_context_id=build_context_id,
             candidate_uid=candidate_uid,
             occurrence_uid=occurrence_uid,
             history_key=history_key,
@@ -920,6 +858,8 @@ def annotate_issue_identity(
     issue.update(
         {
             "candidate_schema_version": envelope.schema_version,
+            "build_context_id": envelope.build_context_id,
+            "identity_build_context_id": envelope.build_context_id,
             "candidate_uid": envelope.candidate_uid,
             "occurrence_uid": envelope.occurrence_uid,
             "history_key": envelope.history_key,

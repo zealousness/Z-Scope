@@ -19,6 +19,37 @@ from scripts.verify_release_assets import verify_release_assets
 
 ROOT = Path(__file__).resolve().parents[1]
 
+SHIPPED_LOCKS = (
+    "requirements/release/py313.txt",
+    "requirements/constraints/py313.txt",
+    "requirements/portable/py313-cpp.txt",
+    "requirements/portable/py313-java.txt",
+)
+# Runtime packages that shipped in every artifact and therefore have to be fixed in
+# every lock at once. The minimum is where the advisory range ends:
+# urllib3 CVE-2026-97687/97688/97689 and certifi GHSA-6q48-6c7w-9gw2.
+SECURITY_FLOORS = {"urllib3": (2, 8, 0), "certifi": (2026, 10, 19)}
+
+
+def _locked_versions(lock: Path) -> dict[str, str]:
+    """Read `name==version` pins, including CRLF-generated locks."""
+    pins: dict[str, str] = {}
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^([A-Za-z0-9_.\-]+)==([^\\\s]+)", line.strip())
+        if match:
+            pins[match.group(1).lower()] = match.group(2)
+    return pins
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts = []
+    for chunk in value.split("."):
+        digits = re.match(r"\d+", chunk)
+        if not digits:
+            break
+        parts.append(int(digits.group(0)))
+    return tuple(parts)
+
 
 def _sqlite_sql_literals(path: Path) -> list[str]:
     """Return SQL-looking literals without importing the inspected module."""
@@ -111,19 +142,23 @@ def test_package_version_is_semver_and_shared_by_user_surfaces() -> None:
     assert result.stdout.strip() == __version__
 
 
-def test_python_39_314_constraints_are_declared() -> None:
+def test_python_313_baseline_is_declared() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'requires-python = ">=3.9"' in pyproject
+    assert 'requires-python = ">=3.13"' in pyproject
     assert "[tool.zscope.runtime-requirements]" in pyproject
     assert 'sqlite = ">=3.8.10.2"' in pyproject
-    assert "target-version = ['py39']" in pyproject
-    assert 'python_version = "3.9"' in pyproject
-    assert '"orchestration/successor-runtime-review-evidence/*"' in pyproject
-    assert '"orchestration/successor-runtime-review-evidence/**/*"' in pyproject
-    assert '"orchestration/successor-runtime-review-integration-receipt.v1.json"' in pyproject
-    for suffix in ("39", "310", "311", "312", "313", "314"):
-        constraint = ROOT / "requirements" / "constraints" / f"py{suffix}.txt"
-        assert constraint.stat().st_size > 1000
+    assert "target-version = ['py313']" in pyproject
+    assert 'python_version = "3.13"' in pyproject
+    constraint = ROOT / "requirements" / "constraints" / "py313.txt"
+    assert constraint.stat().st_size > 1000
+    # The Python 3.9-3.14 matrix CI and per-version constraints were removed in
+    # v1.3.2; the workflow set is now release/benchmark/attestation/ai-review.
+    assert not (ROOT / ".github/workflows/ci.yml").exists()
+    for suffix in ("py39", "py310", "py311", "py312", "py314"):
+        assert not (ROOT / "requirements" / "constraints" / f"{suffix}.txt").exists()
+    for workflow in ("formal-benchmark.yml", "balanced-default-attestation.yml"):
+        text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        assert "requirements/constraints/py313.txt" in text
 
 
 def test_sqlite_queries_stay_compatible_with_declared_3_8_10_2_floor() -> None:
@@ -175,11 +210,39 @@ def test_sqlite_queries_stay_compatible_with_declared_3_8_10_2_floor() -> None:
 
 def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> None:
     lock = (ROOT / "requirements/release/py313.txt").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     assert "cpgqls-client==" in lock
     assert "openai==" in lock
     assert "black==" not in lock
     assert "mypy==" not in lock
     assert "pytest==" not in lock
+    assert "scripts/portable_release.py fetch" in workflow
+    assert "scripts/portable_release.py build --formal" in workflow
+    assert "scripts/portable_release.py verify --run-smoke" in workflow
+    cpp = (ROOT / "requirements/portable/py313-cpp.txt").read_text(encoding="utf-8")
+    java = (ROOT / "requirements/portable/py313-java.txt").read_text(encoding="utf-8")
+    assert "cpgqls-client==" not in cpp and "websockets==" not in cpp
+    assert "cpgqls-client==" in java and "websockets==" in java
+
+
+def test_every_lock_pins_the_same_security_fixed_runtime_versions() -> None:
+    """A fixed advisory must be fixed in every lock, not only in the one that reported it.
+
+    `urllib3` and `certifi` are transitive (requests / httpx / openai) yet they ship in
+    the release bundle and in both portable archives, so a bump in one lock leaves the
+    other artifacts exposed. The floors are the first releases outside the advisory
+    ranges; this test fails if a future regeneration resolves back below them.
+    """
+
+    pins = {name: _locked_versions(ROOT / name) for name in SHIPPED_LOCKS}
+    for package, floor in SECURITY_FLOORS.items():
+        found = {name: table.get(package) for name, table in pins.items()}
+        assert all(found.values()), f"{package} missing from a lock: {found}"
+        assert len(set(found.values())) == 1, f"{package} versions disagree: {found}"
+        pinned = next(iter(found.values()))
+        assert (
+            _version_tuple(pinned) >= floor
+        ), f"{package} {pinned} is below the fixed floor {floor}"
 
 
 def test_joern_client_is_java_optional_not_base_dependency() -> None:
@@ -189,13 +252,51 @@ def test_joern_client_is_java_optional_not_base_dependency() -> None:
     assert "cpgqls-client" in optional.split("[project.scripts]", 1)[0]
 
 
-def test_installer_enforces_security_boundaries() -> None:
+def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
+    ai = (ROOT / ".github/workflows/ai-review.yml").read_text(encoding="utf-8")
+    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    benchmark = (ROOT / ".github/workflows/formal-benchmark.yml").read_text(encoding="utf-8")
     installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "pull_request_target" not in ai
+    assert "head.repo.full_name == github.repository" in ai
+    assert "continue-on-error: true" in ai
+    assert "environment: release" in release
+    assert "--verify-tag" in release
+    assert "benchmark_run_id:" in release
+    assert "balanced_attestation_run_id:" in release
+    assert "actions/download-artifact@v8" in release
+    assert "--formal-artifact" in release
+    assert "--balanced-default-attestation" in release
+    assert "--balanced-attestation-workflow-run-id" in release
+    assert ".github/workflows/formal-benchmark.yml" in release
+    assert ".github/workflows/balanced-default-attestation.yml" in release
+    assert "digest-mismatch: error" in release
+    assert "org.opencontainers.image.revision" in benchmark
+    assert "scanner image must be digest-pinned" in benchmark
     assert "Missing SHA256SUMS.sig" in installer
     assert "Refusing system-wide prefix" in installer
     assert 'install_requirement="zscope[java]"' in installer
     assert "command -v zstd" in installer
     assert ">>/etc/profile" not in installer.replace(" ", "")
+    workflows = "\n".join((ai, release, benchmark))
+    for action in (
+        "actions/checkout@v7",
+        "actions/setup-python@v7",
+        "actions/github-script@v9",
+        "actions/upload-artifact@v7",
+        "actions/download-artifact@v8",
+    ):
+        assert action in workflows
+    for deprecated in (
+        "actions/checkout@v4",
+        "actions/setup-python@v5",
+        "actions/setup-java@v4",
+        "actions/github-script@v7",
+        "actions/upload-artifact@v4",
+        "actions/dependency-review-action@v4",
+        "gitleaks/gitleaks-action@v2",
+    ):
+        assert deprecated not in workflows
 
 
 def test_spdx_generation_is_reproducible_and_uses_unique_package_name(tmp_path: Path) -> None:

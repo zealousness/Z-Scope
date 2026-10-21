@@ -2,26 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from scripts import external_benchmark
-from tests.test_benchmark_isolation_executor import (
-    FakeOciRuntime as _IsolationFakeOciRuntime,
-    _anonymous_test_fd,
-    _write_proxy_attestation,
-)
 from zscope.benchmarking.isolation import (
     BenchmarkIsolationError,
     OciNetworkPolicy,
     RootlessOciExecutor,
 )
-from zscope.benchmarking.provider_runtime import ProviderRuntimeContract
 
 
-class ExternalFakeOciRuntime(_IsolationFakeOciRuntime):
+class ExternalFakeOciRuntime:
     def __init__(
         self,
         *,
@@ -29,33 +24,79 @@ class ExternalFakeOciRuntime(_IsolationFakeOciRuntime):
         scan_input: Path,
         output: Path,
         cache: Path,
-        relay_source: Path,
         environment: dict[str, str],
-        provider_contract: ProviderRuntimeContract,
         rootless: bool = True,
     ) -> None:
-        super().__init__(
-            runtime="podman",
-            image=image,
-            scan_input=scan_input,
-            output=output,
-            cache=cache,
-            relay_source=relay_source,
-            environment=environment,
-            provider_contract=provider_contract,
-            rootless=rootless,
-        )
+        self.image = image
+        self.scan_input = scan_input.resolve()
+        self.output = output.resolve()
+        self.cache = cache.resolve()
+        self.policy = OciNetworkPolicy.from_environment(environment)
+        self.rootless = rootless
+        self.scanner_name = ""
+        self.run_argv: list[str] = []
         self.runtime_environment: dict[str, str] = {}
         self.config_text = ""
         self.entries_text = ""
         self.compile_commands_text = ""
         self.scanner_finished = False
 
+    @staticmethod
+    def _result(argv: list[str], value: Any = None, returncode: int = 0):
+        stdout = "" if value is None else json.dumps(value)
+        return subprocess.CompletedProcess(argv, returncode, stdout, "")
+
     def __call__(self, argv: list[str], **kwargs: Any):
         command = [str(value) for value in argv]
-        scanner_run = len(command) > 1 and command[1] == "run" and "--network=none" not in command
-        result = super().__call__(argv, **kwargs)
-        if scanner_run:
+        if command[1:3] == ["info", "--format"]:
+            return self._result(command, {"host": {"security": {"rootless": self.rootless}}})
+        if command[1:3] == ["image", "inspect"]:
+            digest = self.image.rsplit("@", 1)[1]
+            return self._result(command, [{"Id": digest, "RepoDigests": ["repo@" + digest]}])
+        if command[1:3] == ["network", "inspect"]:
+            peers: dict[str, Any] = {"proxy123": {"Name": "model-proxy"}}
+            if self.scanner_name:
+                peers["scanner123"] = {"Name": self.scanner_name}
+            return self._result(
+                command,
+                [
+                    {
+                        "Name": self.policy.network_name,
+                        "Internal": True,
+                        "Labels": {
+                            "io.zscope.network-policy": "model-endpoint-only",
+                            "io.zscope.network-policy-sha256": self.policy.policy_sha256,
+                        },
+                        "Containers": peers,
+                    }
+                ],
+            )
+        if command[1] == "inspect" and command[2] == self.policy.proxy_container:
+            return self._result(
+                command,
+                [
+                    {
+                        "Id": "proxy123",
+                        "Config": {
+                            "Labels": {
+                                "io.zscope.role": "model-endpoint-proxy",
+                                "io.zscope.network-policy-sha256": self.policy.policy_sha256,
+                            }
+                        },
+                        "State": {"Running": True},
+                        "NetworkSettings": {
+                            "Networks": {
+                                self.policy.network_name: {
+                                    "Aliases": [self.policy.endpoint_host, "model-proxy"]
+                                }
+                            }
+                        },
+                    }
+                ],
+            )
+        if command[1] == "run":
+            self.scanner_name = command[command.index("--name") + 1]
+            self.run_argv = command
             self.runtime_environment = dict(kwargs.get("env") or {})
             self.config_text = (self.scan_input / "zscope.execution.yaml").read_text(
                 encoding="utf-8"
@@ -85,7 +126,59 @@ class ExternalFakeOciRuntime(_IsolationFakeOciRuntime):
                 json.dumps(report), encoding="utf-8"
             )
             self.scanner_finished = True
-        return result
+            return self._result(command)
+        if command[1] == "inspect" and command[2] == self.scanner_name:
+            return self._result(
+                command,
+                [
+                    {
+                        "Id": "scanner123",
+                        "Image": self.image.rsplit("@", 1)[1],
+                        "Config": {
+                            "WorkingDir": "/zscope-input",
+                            "Image": self.image,
+                            "Labels": {
+                                "io.zscope.role": "scanner",
+                                "io.zscope.network-policy-sha256": self.policy.policy_sha256,
+                            },
+                        },
+                        "HostConfig": {
+                            "ReadonlyRootfs": True,
+                            "CapDrop": ["ALL"],
+                            "SecurityOpt": ["no-new-privileges:true"],
+                            "NetworkMode": self.policy.network_name,
+                        },
+                        "State": {"ExitCode": 0},
+                        "Mounts": [
+                            {
+                                "Type": "bind",
+                                "Source": str(self.scan_input),
+                                "Destination": "/zscope-input",
+                                "RW": False,
+                            },
+                            {
+                                "Type": "bind",
+                                "Source": str(self.output),
+                                "Destination": "/zscope-output",
+                                "RW": True,
+                            },
+                            {
+                                "Type": "bind",
+                                "Source": str(self.cache),
+                                "Destination": "/zscope-cache",
+                                "RW": True,
+                            },
+                        ],
+                        "NetworkSettings": {
+                            "Networks": {self.policy.network_name: {"Aliases": [self.scanner_name]}}
+                        },
+                    }
+                ],
+            )
+        if command[1:3] == ["rm", "--force"]:
+            self.scanner_name = ""
+            return self._result(command)
+        raise AssertionError(f"unexpected OCI command: {command}")
 
 
 def _suite(tmp_path: Path) -> Path:
@@ -176,20 +269,15 @@ def _install_fake_runtime(
     monkeypatch: pytest.MonkeyPatch,
     observed: list[ExternalFakeOciRuntime],
     *,
-    relay_source: Path,
     rootless: bool = True,
 ) -> None:
     def factory(**kwargs: Any) -> RootlessOciExecutor:
-        provider_contract = kwargs.get("provider_contract")
-        assert isinstance(provider_contract, ProviderRuntimeContract)
         fake = ExternalFakeOciRuntime(
             image=str(kwargs["image"]),
             scan_input=Path(kwargs["scan_input"]),
             output=Path(kwargs["artifact_output"]),
             cache=Path(kwargs["cache_output"]),
-            relay_source=relay_source,
             environment=dict(kwargs["environment"]),
-            provider_contract=provider_contract,
             rootless=rootless,
         )
         observed.append(fake)
@@ -197,57 +285,24 @@ def _install_fake_runtime(
             **kwargs,
             process_runner=fake,
             which=lambda _value: "/usr/bin/podman",
-            secret_fd_factory=_anonymous_test_fd,
         )
 
     monkeypatch.setattr(external_benchmark, "_OCI_EXECUTOR_FACTORY", factory)
 
 
-def _set_formal_environment(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    tmp_path: Path,
-    suite: Path,
-) -> Path:
-    preview = tmp_path / "trusted-preview.yaml"
-    external_benchmark._write_formal_container_config(
-        suite / "zscope.benchmark.yaml",
-        preview,
-        compile_commands_present=True,
-    )
-    provider_contract = ProviderRuntimeContract.from_config_file(preview)
-    image = "repo@sha256:" + "d" * 64
-    policy_environment = {
-        "Z_SCOPE_BENCHMARK_OCI_NETWORK": "model-only",
-        "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER": "model-proxy",
-    }
-    policy = OciNetworkPolicy.from_provider_contract(
-        policy_environment,
-        provider_contract,
-    )
-    relay_source = tmp_path / "p6_tcp_relay.py"
-    relay_source.write_text("# sealed relay\n", encoding="utf-8")
-    attestation_path = (tmp_path / "expected-proxy-attestation.json").absolute()
-    attestation_sha256 = _write_proxy_attestation(
-        attestation_path,
-        image=image,
-        policy=policy,
-        provider_contract=provider_contract,
-        relay_source=relay_source,
-        image_environment=[],
-    )
+def _set_formal_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     values = {
         "Z_SCOPE_BENCHMARK_OCI_RUNTIME": "podman",
-        "Z_SCOPE_BENCHMARK_OCI_IMAGE": image,
-        **policy_environment,
-        "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE": str(attestation_path),
-        "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256": attestation_sha256,
+        "Z_SCOPE_BENCHMARK_OCI_IMAGE": "repo@sha256:" + "d" * 64,
+        "Z_SCOPE_BENCHMARK_OCI_NETWORK": "model-only",
+        "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER": "model-proxy",
+        "Z_SCOPE_LLM_BASE_URL": "https://models.internal/v1",
+        "Z_SCOPE_LLM_MODEL": "glm-5.1",
         "Z_SCOPE_API_KEY": "secret",
         "GROUND_TRUTH_PATH": "must-not-reach-container",
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
-    return relay_source
 
 
 def test_external_formal_executes_real_rootless_oci_contract_then_scores_on_host(
@@ -257,12 +312,8 @@ def test_external_formal_executes_real_rootless_oci_contract_then_scores_on_host
     run_dir = tmp_path / "formal-run"
     env_file = tmp_path / "missing.env"
     observed: list[ExternalFakeOciRuntime] = []
-    relay_source = _set_formal_environment(
-        monkeypatch,
-        tmp_path=tmp_path,
-        suite=suite,
-    )
-    _install_fake_runtime(monkeypatch, observed, relay_source=relay_source)
+    _set_formal_environment(monkeypatch)
+    _install_fake_runtime(monkeypatch, observed)
     original_load_truth = external_benchmark._load_truth
 
     def load_truth_after_scan(root: Path) -> dict[str, Any]:
@@ -289,12 +340,7 @@ def test_external_formal_executes_real_rootless_oci_contract_then_scores_on_host
     assert not (suite / "project" / "zscope_batch_report.json").exists()
     assert "/zscope-cache/project" in fake.config_text
     assert "/zscope-input/entries.json" in fake.config_text
-    assert "https://host.invalid/v1" in fake.config_text
-    assert "host-model" in fake.config_text
-    assert "${Z_SCOPE_LLM_BASE_URL}" not in fake.config_text
-    assert "${Z_SCOPE_LLM_MODEL}" not in fake.config_text
-    assert "${Z_SCOPE_API_KEY}" in fake.config_text
-    assert "host-key" not in fake.config_text
+    assert "${Z_SCOPE_LLM_BASE_URL}" in fake.config_text
     assert suite.as_posix() not in fake.config_text
     assert "benchmark" not in fake.config_text.lower()
     assert "ground_truth" not in fake.config_text.lower()
@@ -302,24 +348,6 @@ def test_external_formal_executes_real_rootless_oci_contract_then_scores_on_host
     assert suite.as_posix() not in fake.compile_commands_text
     assert "ground_truth" not in fake.entries_text.lower()
     assert "GROUND_TRUTH_PATH" not in fake.runtime_environment
-    assert "Z_SCOPE_API_KEY" not in fake.runtime_environment
-    assert "Z_SCOPE_LLM_BASE_URL" not in fake.runtime_environment
-    assert "Z_SCOPE_LLM_MODEL" not in fake.runtime_environment
-    assert "secret" not in fake.run_argv
-    assert "--preserve-fds=1" in fake.run_argv
-    assert 3 in fake.run_pass_fds
-    assert not any(
-        value == "Z_SCOPE_API_KEY" or value.startswith("Z_SCOPE_API_KEY=")
-        for value in fake.run_argv
-    )
-    assert fake.scanner_environment == []
-    assert (
-        summary["isolation"]["phase_executions"][0]["scanner_provider_anonymous_fd_verified"]
-        is True
-    )
-    assert summary["isolation"]["phase_executions"][0]["scanner_log_driver_none_verified"] is True
-    assert "secret" not in json.dumps(summary)
-    assert "secret" not in (run_dir / "isolation.json").read_text(encoding="utf-8")
     mount_sources = {
         Path(row["source"]) for row in summary["isolation"]["mounts"] if isinstance(row, dict)
     }
@@ -342,17 +370,8 @@ def test_external_formal_fails_closed_when_runtime_is_not_rootless(
 ) -> None:
     suite = _suite(tmp_path)
     observed: list[ExternalFakeOciRuntime] = []
-    relay_source = _set_formal_environment(
-        monkeypatch,
-        tmp_path=tmp_path,
-        suite=suite,
-    )
-    _install_fake_runtime(
-        monkeypatch,
-        observed,
-        relay_source=relay_source,
-        rootless=False,
-    )
+    _set_formal_environment(monkeypatch)
+    _install_fake_runtime(monkeypatch, observed, rootless=False)
     monkeypatch.setattr(
         external_benchmark,
         "_load_truth",
@@ -366,49 +385,6 @@ def test_external_formal_fails_closed_when_runtime_is_not_rootless(
 
     assert observed and observed[0].scanner_finished is False
     assert not (suite / "project" / "zscope_batch_report.json").exists()
-
-
-def test_external_formal_requires_a_bound_proxy_attestation_before_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    suite = _suite(tmp_path)
-    observed: list[ExternalFakeOciRuntime] = []
-    relay_source = _set_formal_environment(
-        monkeypatch,
-        tmp_path=tmp_path,
-        suite=suite,
-    )
-    monkeypatch.delenv("Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE")
-    monkeypatch.delenv("Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256")
-    _install_fake_runtime(monkeypatch, observed, relay_source=relay_source)
-
-    with pytest.raises(BenchmarkIsolationError, match="proxy attestation is required"):
-        external_benchmark.run_prepared(
-            _formal_args(suite, tmp_path / "formal-unattested", tmp_path / "missing.env")
-        )
-
-    assert observed and observed[0].runtime_invocations == []
-
-
-def test_external_formal_rejects_provider_identity_override_before_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    suite = _suite(tmp_path)
-    observed: list[ExternalFakeOciRuntime] = []
-    relay_source = _set_formal_environment(
-        monkeypatch,
-        tmp_path=tmp_path,
-        suite=suite,
-    )
-    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "untrusted-model")
-    _install_fake_runtime(monkeypatch, observed, relay_source=relay_source)
-
-    with pytest.raises(BenchmarkIsolationError, match="provider runtime contract is invalid"):
-        external_benchmark.run_prepared(
-            _formal_args(suite, tmp_path / "formal-override", tmp_path / "missing.env")
-        )
-
-    assert observed == []
 
 
 @pytest.mark.parametrize(

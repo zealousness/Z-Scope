@@ -1,14 +1,18 @@
-"""Candidate registration and lifecycle ledger."""
+"""Candidate ledger for focused subagent de-duplication."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, cast
+from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Tuple, TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .jobs.instance_results import FrozenJSON, InstanceKey, PendingCandidate
 
 from .candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
@@ -18,16 +22,11 @@ from .candidate_envelope import (
     occurrence_uid_for,
     validation_cluster_uid_for,
 )
-from .decision_trace import DecisionTraceStore
-from ..core.validation.authority import (
-    TERMINAL_AUTHORITY_DECISION_V4,
-    TerminalAuthorityEvaluator,
-)
+from .subagents import SubAgentTicket
 from ..reporting.attribution import (
     FindingAttribution,
     finding_attribution_mapping_errors,
 )
-
 
 TERMINAL_DISPOSITIONS = frozenset(
     {
@@ -43,62 +42,97 @@ TERMINAL_DISPOSITIONS = frozenset(
 )
 NONTERMINAL_STATUSES = frozenset({"pending", "queued", "planned", "running"})
 
+PENDING_MANIFEST_SCHEMA = "zscope.instance-pending-manifest.v1"
+PENDING_WIRE_ADAPTER_VERSION = "zscope.instance-pending-wire-adapter.v1"
+_PENDING_WIRE_FIELDS = frozenset(
+    {
+        "candidate_schema_version",
+        "candidate_uid",
+        "candidate_id",
+        "obligation_uid",
+        "validation_cluster_uid",
+        "history_key",
+        "build_context_id",
+        "decision_context_version",
+        "evidence_hash",
+        "decision_evidence_hash",
+        "provenance_hashes",
+        "evidence_hashes",
+        "context_signature",
+        "validation_contexts",
+        "occurrence_uids",
+        "occurrences",
+        "entries",
+        "call_paths",
+        "entry_paths",
+        "sources",
+        "record_role",
+        "status",
+        "defect_class",
+        "canonical_source",
+        "canonical_sink",
+        "root_cause_key",
+        "dedup_key",
+        "ticket",
+    }
+)
 
-def _has_exact_v4_producer_occurrence_binding(issue: Mapping[str, Any]) -> bool:
-    """Keep the ledger import-light while sharing the canonical rebuild."""
 
-    from ..core.validation.audit_eligibility import (
-        has_exact_v4_producer_occurrence_binding,
+def _pending_merge_key(projection: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        projection[key]
+        for key in (
+            "build_context_id",
+            "candidate_uid",
+            "obligation_uid",
+            "validation_cluster_uid",
+            "evidence_hash",
+            "context_signature",
+        )
     )
 
-    return has_exact_v4_producer_occurrence_binding(issue)
+
+def _pending_json(value: Any, ancestors: Optional[set[int]] = None) -> Any:
+    """Detach known JSON views; never stringify or coerce unknown evidence."""
+    if value is None or type(value) in (str, int, bool):
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("pending_record_nonfinite_number")
+        return value
+    if not isinstance(value, (dict, list)):
+        raise ValueError("pending_record_non_json_evidence")
+    parents = set() if ancestors is None else ancestors
+    if id(value) in parents:
+        raise ValueError("pending_record_recursive_evidence")
+    parents.add(id(value))
+    try:
+        if isinstance(value, dict):
+            if any(type(key) is not str for key in value):
+                raise ValueError("pending_record_non_string_key")
+            return {key: _pending_json(item, parents) for key, item in value.items()}
+        return [_pending_json(item, parents) for item in value]
+    finally:
+        parents.remove(id(value))
 
 
-@dataclass
-class CandidateTicket:
-    """Structured data accepted by the Candidate Ledger.
+def _pending_bytes(value: Any) -> bytes:
+    return json.dumps(
+        _pending_json(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
 
-    Candidate tickets have no worker-spawn or model-execution semantics. They
-    are emitted by deterministic providers or registrars and consumed only by
-    the shared lifecycle ledger.
-    """
 
-    id: str
-    skill: str
-    task: str
-    trigger: str
-    line: int
-    context_slice: str
-    priority_score: int = 0
-    priority_reasons: List[str] = field(default_factory=list)
-    origin: str = ""
-    sink: str = ""
-    resource_kind: str = ""
-    source: str = "source_rule"
-    sources: List[str] = field(default_factory=list)
-    call_paths: List[List[str]] = field(default_factory=list)
-    dedup_key: str = ""
-    evidence: Dict[str, Any] = field(default_factory=dict)
+@dataclass(frozen=True)
+class PendingRecordSnapshot:
+    """One complete locked projection, independent of later ledger mutation."""
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "skill": self.skill,
-            "task": self.task,
-            "trigger": self.trigger,
-            "line": self.line,
-            "context_slice": self.context_slice,
-            "priority_score": self.priority_score,
-            "priority_reasons": self.priority_reasons or [],
-            "origin": self.origin,
-            "sink": self.sink,
-            "resource_kind": self.resource_kind,
-            "source": self.source,
-            "sources": self.sources or ([self.source] if self.source else []),
-            "call_paths": self.call_paths or [],
-            "dedup_key": self.dedup_key,
-            "evidence": self.evidence or {},
-        }
+    records: Tuple["PendingCandidate", ...]
+    manifest_json: "FrozenJSON"
+    diagnostics_json: "FrozenJSON"
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -189,8 +223,15 @@ class CandidateRegistrar:
             str(value or "").strip().lower().replace("-", "_") for value in raw_sources if value
         }
         discovered: set[str] = set()
-        if any("hypothesis_hunter" in value for value in normalized):
-            discovered.add("hypothesis_hunter")
+        if normalized & {"semantic_snapshot", "semantic_snapshot_hypothesis", "semantic_modeling"}:
+            discovered.add("semantic_modeling")
+        if any(
+            "active_discovery" in value
+            or "llm_observation" in value
+            or value == "llm_active_discovery"
+            for value in normalized
+        ):
+            discovered.add("llm_active_discovery")
         if any(
             "backend_signal" in value or value.startswith(("svf", "saber", "joern"))
             for value in normalized
@@ -213,7 +254,10 @@ class CandidateRegistrar:
             )
 
         detail_ids = {
-            "hypothesis_hunter": str(
+            "semantic_modeling": str(
+                issue.get("snapshot_version") or issue.get("id") or producer_source
+            ),
+            "llm_active_discovery": str(
                 issue.get("audit_unit_uid")
                 or issue.get("audit_unit_id")
                 or issue.get("id")
@@ -288,11 +332,26 @@ class CandidateRegistrar:
                 default_disposition="needs_review",
                 decision_fact_cache=self.decision_fact_cache,
             )
+            if force_unconfirmed and str(issue.get("rollout_visibility") or "").lower() == "shadow":
+                # Decision-fact attachment owns its general promotion fields,
+                # but a release rollout shadow is a stronger, independent
+                # visibility gate.  Re-assert it at the registrar boundary so
+                # no producer or fact refresh can promote the hypothesis.
+                issue["candidate_promotion_eligible"] = False
+                issue["candidate_promotion_reason"] = (
+                    "conditional_snapshot_shadow"
+                    if issue.get("candidate_kind") == "conditional_snapshot_observation"
+                    and issue.get("candidate_source") == "semantic_snapshot"
+                    else "active_discovery_rollout_shadow"
+                )
+                issue["candidate_promotion_terminal_status"] = "shadow_observation"
             evidence = dict(issue.get("evidence_pack") or {})
             evidence.update(
                 {
                     "candidate_id": str(issue.get("candidate_id") or issue.get("id") or ""),
                     "candidate_schema_version": envelope.schema_version,
+                    "build_context_id": envelope.build_context_id,
+                    "identity_build_context_id": envelope.build_context_id,
                     "candidate_uid": envelope.candidate_uid,
                     "occurrence_uid": envelope.occurrence_uid,
                     "history_key": envelope.history_key,
@@ -358,7 +417,7 @@ class CandidateRegistrar:
                 call_path = [str(item) for item in raw_path if str(item)]
                 if not call_path:
                     call_path = [entry_identity]
-                ticket = CandidateTicket(
+                ticket = SubAgentTicket(
                     id=str(issue.get("candidate_id") or issue.get("id") or envelope.run_issue_uid),
                     skill=str(
                         issue.get("skill")
@@ -506,7 +565,7 @@ class CandidateRecord:
 
     candidate_id: str
     dedup_key: str
-    ticket: CandidateTicket
+    ticket: SubAgentTicket
     status: str = "pending"
     sources: List[str] = field(default_factory=list)
     call_paths: List[List[str]] = field(default_factory=list)
@@ -538,7 +597,7 @@ class CandidateRecord:
     engine_status: str = "complete"
     schema_version: str = CANDIDATE_SCHEMA_VERSION
 
-    def to_ticket(self) -> CandidateTicket:
+    def to_ticket(self) -> SubAgentTicket:
         ticket = self.ticket
         ticket.id = self.candidate_id
         ticket.sources = list(self.sources)
@@ -560,6 +619,7 @@ class CandidateRecord:
         if not include_context:
             ticket_dict.pop("context_slice", None)
         return {
+            "build_context_id": str((self.ticket.evidence or {}).get("build_context_id") or ""),
             "candidate_id": self.candidate_id,
             "dedup_key": self.dedup_key,
             "status": self.status,
@@ -607,7 +667,7 @@ class CandidateRecord:
 
 
 class CandidateLedger:
-    """Central de-duplication ledger for every candidate source."""
+    """Central de-duplication ledger for semantic, heuristic, and VA candidates."""
 
     def __init__(
         self,
@@ -615,19 +675,560 @@ class CandidateLedger:
         project_id: str = "project",
         project_root: str = "",
         revision: str = "",
-        decision_trace_store: Optional[DecisionTraceStore] = None,
     ) -> None:
         self._records: Dict[str, CandidateRecord] = {}
         self._lock = threading.RLock()
+        from ..reporting.immutable_evidence import ImmutableEvidencePool
+
+        self._terminal_evidence = ImmutableEvidencePool()
         self.project_id = self._normalize_project_id(project_id)
         self.project_root = str(project_root or "")
         self.revision = str(revision or "")
-        self.decision_trace_store = decision_trace_store
         self._frozen = False
+        self._review_appendices: List["CandidateLedger"] = []
+
+    def pending_instance_snapshot(
+        self,
+        *,
+        instance: "InstanceKey",
+        entry_instances: Mapping[Tuple[str, str], "InstanceKey"],
+    ) -> PendingRecordSnapshot:
+        """Export all pending members for an exact instance under the ledger lock.
+
+        The independently enumerated live identity list is compared with the
+        detached projection before publishing the manifest. Unknown ownership
+        or a terminal member invalidates the whole instance; it is never filtered
+        away to manufacture an apparently complete empty result.
+        """
+        from dataclasses import asdict
+        from .jobs.instance_results import FrozenJSON, PendingCandidate
+
+        with self._lock:
+            if self._frozen or self._review_appendices:
+                raise ValueError("pending_export_ledger_not_open")
+            selected: list[tuple[CandidateRecord, tuple["InstanceKey", ...]]] = []
+            live_members: list[dict[str, Any]] = []
+            for key, record in sorted(self._records.items()):
+                build = record.ticket.evidence.get("build_context_id")
+                if not isinstance(build, str) or not build or not record.occurrences:
+                    raise ValueError("pending_record_ownership_unknown")
+                owners: dict[str, "InstanceKey"] = {}
+                for occurrence in record.occurrences:
+                    owner = entry_instances.get((occurrence.entry_identity, build))
+                    if owner is None or owner.build_context_id != build:
+                        raise ValueError("pending_record_entry_binding_unknown")
+                    owners[owner.identity] = owner
+                if instance.identity not in owners:
+                    continue
+                if owners[instance.identity] != instance:
+                    raise ValueError("pending_record_instance_mismatch")
+                if (
+                    key != record.validation_cluster_uid
+                    or not record.candidate_uid
+                    or not record.obligation_uid
+                    or record.status not in {"pending", "queued"}
+                    or record.record_role not in {"triage_lead", "validation_obligation"}
+                    or type(record.disposition) is not str
+                    or record.disposition != ""
+                    or type(record.decision_proof) is not dict
+                    or record.decision_proof != {}
+                    or type(record.terminal_issue) is not dict
+                    or record.terminal_issue != {}
+                    or type(record.validation_attempt_count) is not int
+                    or record.validation_attempt_count != 0
+                    or type(record.duplicate_count) is not int
+                    or record.duplicate_count < 0
+                    or record.evidence_completion_status != "not_requested"
+                    or record.engine_status != "complete"
+                    or record.worker_report_id is not None
+                    or record.schema_version != CANDIDATE_SCHEMA_VERSION
+                    or record.decision_context_version != DECISION_CONTEXT_VERSION
+                ):
+                    raise ValueError("pending_record_not_neutral")
+                owner_tuple = tuple(owners[name] for name in sorted(owners))
+                selected.append((record, owner_tuple))
+                live_members.append(
+                    {
+                        "build_context_id": build,
+                        "candidate_uid": record.candidate_uid,
+                        "obligation_uid": record.obligation_uid,
+                        "validation_cluster_uid": key,
+                        "evidence_hash": record.evidence_hash,
+                        "context_signature": record.context_signature,
+                        "owner_instances": [asdict(owner) for owner in owner_tuple],
+                        "record_role": record.record_role,
+                        "duplicate_count": record.duplicate_count,
+                        "occurrence_uids": list(record.occurrence_uids),
+                        "occurrences": [occurrence.to_dict() for occurrence in record.occurrences],
+                    }
+                )
+            result: list["PendingCandidate"] = []
+            projections: list[dict[str, Any]] = []
+            projected_members: list[dict[str, Any]] = []
+            diagnostics: list[dict[str, Any]] = []
+            for record, record_owners in selected:
+                # to_ticket() updates ticket aliases. Perform that operation
+                # only on a detached copy, preserving the live ledger bytes.
+                detached = deepcopy(record)
+                projection = _pending_json(detached.to_dict(include_context=True))
+                projection["terminal_issue"] = {}
+                projections.append(projection)
+                projected_members.append(
+                    {
+                        key: projection[key]
+                        for key in (
+                            "build_context_id",
+                            "candidate_uid",
+                            "obligation_uid",
+                            "validation_cluster_uid",
+                            "evidence_hash",
+                            "context_signature",
+                            "record_role",
+                            "occurrence_uids",
+                            "occurrences",
+                            "duplicate_count",
+                        )
+                    }
+                    | {"owner_instances": [asdict(owner) for owner in record_owners]}
+                )
+                diagnostics.append(
+                    {
+                        "record_key": list(_pending_merge_key(projection)),
+                        "duplicate_count": record.duplicate_count,
+                    }
+                )
+                wire = {key: projection[key] for key in sorted(_PENDING_WIRE_FIELDS)}
+                result.append(
+                    PendingCandidate(
+                        schema="zscope.instance-pending-record.v1",
+                        candidate_uid=record.candidate_uid,
+                        obligation_uid=record.obligation_uid,
+                        validation_cluster_uid=record.validation_cluster_uid,
+                        build_context_id=str(projection["build_context_id"]),
+                        owner_instances=record_owners,
+                        status=cast(Literal["pending", "queued"], record.status),
+                        record_role=cast(
+                            Literal["triage_lead", "validation_obligation"], record.record_role
+                        ),
+                        record_json=FrozenJSON(_pending_bytes(wire)),
+                    )
+                )
+            if _pending_bytes(live_members) != _pending_bytes(projected_members):
+                raise ValueError("pending_export_membership_changed")
+            manifest = {
+                "schema": PENDING_MANIFEST_SCHEMA,
+                "wire_adapter": PENDING_WIRE_ADAPTER_VERSION,
+                "instance": asdict(instance),
+                "record_count": len(selected),
+                "obligation_count": sum(
+                    record.record_role == "validation_obligation" for record, _owners in selected
+                ),
+                "occurrence_count": sum(
+                    len(record.occurrence_uids) for record, _owners in selected
+                ),
+                "occurrence_row_count": sum(
+                    len(record.occurrences) for record, _owners in selected
+                ),
+                "members": live_members,
+                "membership_sha256": hashlib.sha256(_pending_bytes(live_members)).hexdigest(),
+                "records_sha256": hashlib.sha256(_pending_bytes(projections)).hexdigest(),
+                "diagnostics_sha256": hashlib.sha256(_pending_bytes(diagnostics)).hexdigest(),
+            }
+            return PendingRecordSnapshot(
+                tuple(result),
+                FrozenJSON(_pending_bytes(manifest)),
+                FrozenJSON(_pending_bytes(diagnostics)),
+            )
+
+    def export_pending_instance_records(
+        self,
+        *,
+        instance: "InstanceKey",
+        entry_instances: Mapping[Tuple[str, str], "InstanceKey"],
+    ) -> Tuple["PendingCandidate", ...]:
+        return self.pending_instance_snapshot(
+            instance=instance, entry_instances=entry_instances
+        ).records
+
+    @staticmethod
+    def _pending_record_from_projection(
+        pending: "PendingCandidate", *, duplicate_count: int
+    ) -> CandidateRecord:
+        def unique_strings(value: Any) -> list[str]:
+            if not isinstance(value, list) or any(type(item) is not str for item in value):
+                raise ValueError("pending_import_invalid_string_list")
+            if len(set(value)) != len(value):
+                raise ValueError("pending_import_duplicate_members")
+            return list(value)
+
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("pending_import_duplicate_json_key")
+                result[key] = value
+            return result
+
+        raw = json.loads(pending.record_json, object_pairs_hook=pairs)
+        if not isinstance(raw, dict) or _pending_bytes(raw) != pending.record_json:
+            raise ValueError("pending_import_noncanonical_record")
+        if set(raw) != _PENDING_WIRE_FIELDS:
+            raise ValueError("pending_import_incomplete_wire_projection")
+        if type(duplicate_count) is not int or duplicate_count < 0:
+            raise ValueError("pending_import_invalid_diagnostic_count")
+        uids = unique_strings(raw.get("occurrence_uids"))
+        hashes = unique_strings(raw.get("provenance_hashes"))
+        raw.update(
+            candidate_disposition="",
+            decision_proof={},
+            terminal_issue={},
+            validation_attempt_count=0,
+            evidence_completion_status="not_requested",
+            engine_status="complete",
+            worker_report_id=None,
+            duplicate_count=duplicate_count,
+            provenance_hash=hashes[0] if hashes else "",
+            alias_occurrence_uids=uids[1:],
+            occurrence_count=len(uids),
+            grouped_alias_count=max(0, len(uids) - 1),
+            entry_count=len(raw["entries"]),
+        )
+        if (
+            raw.get("candidate_schema_version") != CANDIDATE_SCHEMA_VERSION
+            or raw.get("decision_context_version") != DECISION_CONTEXT_VERSION
+            or raw.get("status") not in {"pending", "queued"}
+            or raw.get("record_role") not in {"triage_lead", "validation_obligation"}
+            or raw.get("candidate_disposition") != ""
+            or raw.get("decision_proof") != {}
+            or raw.get("terminal_issue") != {}
+            or type(raw.get("validation_attempt_count")) is not int
+            or raw.get("validation_attempt_count") != 0
+            or raw.get("evidence_completion_status") != "not_requested"
+            or raw.get("engine_status") != "complete"
+            or raw.get("worker_report_id") is not None
+        ):
+            raise ValueError("pending_import_not_neutral")
+        for key, value in (
+            ("candidate_uid", pending.candidate_uid),
+            ("obligation_uid", pending.obligation_uid),
+            ("validation_cluster_uid", pending.validation_cluster_uid),
+            ("build_context_id", pending.build_context_id),
+            ("record_role", pending.record_role),
+            ("status", pending.status),
+        ):
+            if raw.get(key) != value or not value:
+                raise ValueError("pending_import_coordinate_mismatch")
+        text_fields = (
+            "candidate_id",
+            "dedup_key",
+            "history_key",
+            "defect_class",
+            "canonical_source",
+            "canonical_sink",
+            "root_cause_key",
+            "evidence_hash",
+            "decision_evidence_hash",
+            "context_signature",
+        )
+        if any(type(raw.get(key)) is not str for key in text_fields):
+            raise ValueError("pending_import_invalid_scalar")
+        if not all(
+            raw[key]
+            for key in (
+                "candidate_id",
+                "dedup_key",
+                "evidence_hash",
+                "decision_evidence_hash",
+                "context_signature",
+            )
+        ):
+            raise ValueError("pending_import_missing_identity")
+        if type(raw.get("duplicate_count")) is not int or raw["duplicate_count"] < 0:
+            raise ValueError("pending_import_invalid_duplicate_count")
+        ticket_json = raw.get("ticket")
+        if not isinstance(ticket_json, dict):
+            raise ValueError("pending_import_missing_ticket")
+        from dataclasses import fields
+
+        if set(ticket_json) != {item.name for item in fields(SubAgentTicket)}:
+            raise ValueError("pending_import_incomplete_ticket")
+        ticket = SubAgentTicket(**_pending_json(ticket_json))
+        if (
+            ticket.id != raw["candidate_id"]
+            or ticket.dedup_key != raw["dedup_key"]
+            or not isinstance(ticket.evidence, dict)
+            or ticket.evidence.get("build_context_id") != pending.build_context_id
+        ):
+            raise ValueError("pending_import_ticket_identity_mismatch")
+        for key in (
+            "candidate_uid",
+            "obligation_uid",
+            "validation_cluster_uid",
+            "evidence_hash",
+            "context_signature",
+        ):
+            carried = ticket.evidence.get(key)
+            if carried not in (None, "", raw[key]):
+                raise ValueError("pending_import_ticket_evidence_identity_mismatch")
+        payload = ticket.evidence.get("candidate_payload")
+        if (
+            not isinstance(payload, dict)
+            or payload.get("build_context_id") != pending.build_context_id
+        ):
+            raise ValueError("pending_import_missing_full_candidate_payload")
+        uids = unique_strings(raw.get("occurrence_uids"))
+        occurrences: list[CandidateOccurrence] = []
+        for occurrence in raw.get("occurrences", ()):
+            if not isinstance(occurrence, dict) or set(occurrence) != {
+                "occurrence_uid",
+                "entry_identity",
+                "call_paths",
+                "context_signature",
+            }:
+                raise ValueError("pending_import_invalid_occurrence")
+            if any(
+                type(occurrence[key]) is not str or not occurrence[key]
+                for key in ("occurrence_uid", "entry_identity", "context_signature")
+            ):
+                raise ValueError("pending_import_incomplete_occurrence")
+            paths = occurrence["call_paths"]
+            if not isinstance(paths, list) or any(
+                not isinstance(path, list) or any(type(item) is not str for item in path)
+                for path in paths
+            ):
+                raise ValueError("pending_import_invalid_call_paths")
+            occurrences.append(
+                CandidateOccurrence(
+                    occurrence_uid=occurrence["occurrence_uid"],
+                    entry_identity=occurrence["entry_identity"],
+                    call_paths=tuple(tuple(path) for path in paths),
+                    context_signature=occurrence["context_signature"],
+                )
+            )
+        if not occurrences or {occurrence.occurrence_uid for occurrence in occurrences} != set(
+            uids
+        ):
+            raise ValueError("pending_import_occurrence_membership_mismatch")
+        record = CandidateRecord(
+            candidate_id=raw["candidate_id"],
+            dedup_key=raw["dedup_key"],
+            ticket=ticket,
+            status=pending.status,
+            sources=unique_strings(raw.get("sources")),
+            call_paths=_pending_json(raw["call_paths"]),
+            duplicate_count=raw["duplicate_count"],
+            defect_class=raw["defect_class"],
+            canonical_source=raw["canonical_source"],
+            canonical_sink=raw["canonical_sink"],
+            root_cause_key=raw["root_cause_key"],
+            candidate_uid=pending.candidate_uid,
+            history_key=raw["history_key"],
+            obligation_uid=pending.obligation_uid,
+            decision_context_version=raw["decision_context_version"],
+            evidence_hash=raw["evidence_hash"],
+            decision_evidence_hash=raw["decision_evidence_hash"],
+            provenance_hashes=unique_strings(raw["provenance_hashes"]),
+            evidence_hashes=unique_strings(raw["evidence_hashes"]),
+            validation_cluster_uid=pending.validation_cluster_uid,
+            context_signature=raw["context_signature"],
+            context_signatures=unique_strings(raw["validation_contexts"]),
+            occurrence_uids=uids,
+            occurrences=occurrences,
+            record_role=pending.record_role,
+        )
+        projection = record.to_dict(include_context=True)
+        projection["terminal_issue"] = {}
+        if (
+            _pending_bytes({key: projection[key] for key in sorted(_PENDING_WIRE_FIELDS)})
+            != pending.record_json
+        ):
+            raise ValueError("pending_import_projection_not_lossless")
+        return record
+
+    @staticmethod
+    def _join_pending_records(
+        existing: CandidateRecord, incoming: CandidateRecord
+    ) -> CandidateRecord:
+        left, right = deepcopy(existing), deepcopy(incoming)
+        a, b = left.to_dict(True), right.to_dict(True)
+        union_fields = (
+            "sources",
+            "call_paths",
+            "entry_paths",
+            "validation_contexts",
+            "provenance_hashes",
+            "evidence_hashes",
+            "occurrence_uids",
+            "occurrences",
+        )
+        derived = (
+            "duplicate_count",
+            "provenance_hash",
+            "alias_occurrence_uids",
+            "occurrence_count",
+            "grouped_alias_count",
+            "entry_count",
+            "entries",
+        )
+        for projection in (a, b):
+            for key in (*union_fields, *derived):
+                projection.pop(key)
+            for key in ("sources", "call_paths", "priority_reasons"):
+                projection["ticket"].pop(key)
+        if _pending_bytes(a) != _pending_bytes(b):
+            raise ValueError("pending_import_conflicting_record_payload")
+
+        def joined(first: list[Any], second: list[Any]) -> list[Any]:
+            result = deepcopy(first)
+            for item in second:
+                if item not in result:
+                    result.append(deepcopy(item))
+            return result
+
+        for attr in (
+            "sources",
+            "call_paths",
+            "context_signatures",
+            "provenance_hashes",
+            "evidence_hashes",
+            "occurrence_uids",
+            "occurrences",
+        ):
+            setattr(left, attr, joined(getattr(left, attr), getattr(right, attr)))
+        left.ticket.priority_reasons = joined(
+            left.ticket.priority_reasons, right.ticket.priority_reasons
+        )
+        left.ticket.sources = list(left.sources)
+        left.ticket.call_paths = deepcopy(left.call_paths)
+        left.duplicate_count = max(left.duplicate_count, right.duplicate_count)
+        return left
+
+    def _stage_pending_instance_records(
+        self,
+        *,
+        records: Tuple["PendingCandidate", ...],
+        allowed_instances: Mapping[str, "InstanceKey"],
+        diagnostics: Mapping[tuple[str, ...], int],
+        entry_instances: Mapping[Tuple[str, str], "InstanceKey"],
+    ) -> Dict[str, CandidateRecord]:
+        if self._frozen or self._review_appendices:
+            raise ValueError("pending_import_ledger_not_open")
+        expected_keys = {_pending_merge_key(json.loads(record.record_json)) for record in records}
+        if set(diagnostics) != expected_keys:
+            raise ValueError("pending_import_orphan_or_missing_diagnostics")
+        staged = dict(self._records)
+        for pending in records:
+            if not pending.owner_instances:
+                raise ValueError("pending_import_no_owner")
+            for owner in pending.owner_instances:
+                if (
+                    allowed_instances.get(owner.identity) != owner
+                    or owner.build_context_id != pending.build_context_id
+                ):
+                    raise ValueError("pending_import_owner_not_in_current_plan")
+            wire = json.loads(pending.record_json)
+            merge_key = _pending_merge_key(wire)
+            if merge_key not in diagnostics:
+                raise ValueError("pending_import_missing_record_diagnostics")
+            incoming = self._pending_record_from_projection(
+                pending, duplicate_count=diagnostics[merge_key]
+            )
+            mapped = {
+                entry_instances.get((occurrence.entry_identity, pending.build_context_id))
+                for occurrence in incoming.occurrences
+            }
+            if None in mapped or mapped != set(pending.owner_instances):
+                raise ValueError("pending_import_occurrence_owner_mismatch")
+            key = pending.validation_cluster_uid
+            if key in staged:
+                staged[key] = self._join_pending_records(staged[key], incoming)
+            else:
+                staged[key] = incoming
+        return staged
+
+    def restore_pending_instance_records(
+        self,
+        *,
+        records: Tuple["PendingCandidate", ...],
+        allowed_instances: Mapping[str, "InstanceKey"],
+        diagnostics: Optional[Mapping[tuple[str, ...], int]] = None,
+        entry_instances: Optional[Mapping[Tuple[str, str], "InstanceKey"]] = None,
+    ) -> None:
+        """Commit the complete chosen batch once; a late conflict changes nothing."""
+        with self._lock:
+            if records and (diagnostics is None or entry_instances is None):
+                raise ValueError("pending_import_complete_manifest_required")
+            staged = self._stage_pending_instance_records(
+                records=records,
+                allowed_instances=allowed_instances,
+                diagnostics=diagnostics or {},
+                entry_instances=entry_instances or {},
+            )
+            self._records = staged
+
+    def attach_review_appendix(self, ledger: "CandidateLedger") -> None:
+        """Attach a separately frozen discovery generation without reopening this ledger."""
+        if ledger is self or ledger._review_appendices or not ledger._frozen:
+            raise ValueError("review appendix must be frozen and exactly one generation")
+        with self._lock:
+            if ledger not in self._review_appendices:
+                self._review_appendices.append(ledger)
+
+    def restore_review_candidate(self, issue: Dict[str, Any]) -> None:
+        """Restore a driver-verified checkpoint without recomputing identity.
+
+        Restoration is distinct from registering a newly discovered candidate:
+        the original UID/cluster and evidence hashes bind the prior result.
+        """
+        if not issue.get("candidate_uid") or not issue.get("validation_cluster_uid"):
+            raise ValueError("review restoration requires frozen candidate and cluster identities")
+        evidence = deepcopy(issue.get("evidence_pack") or {})
+        for key in (
+            "build_context_id",
+            "identity_build_context_id",
+            "candidate_uid",
+            "validation_cluster_uid",
+            "obligation_uid",
+            "evidence_hash",
+            "decision_evidence_hash",
+            "context_signature",
+            "history_key",
+            "defect_class",
+            "decision_context_version",
+            "source",
+            "sink",
+        ):
+            if issue.get(key) is not None:
+                evidence[key] = deepcopy(issue[key])
+        evidence["candidate_payload"] = {
+            key: deepcopy(value)
+            for key, value in issue.items()
+            if key not in {"evidence_pack", "review_validation_evidence", "review_function_context"}
+        }
+        ticket = SubAgentTicket(
+            id=str(issue.get("id") or issue["candidate_uid"]),
+            skill=str(issue.get("skill") or issue.get("category") or "security_review"),
+            task=str(issue.get("description") or "Review candidate"),
+            trigger=str(issue.get("rule_id") or issue.get("category") or ""),
+            context_slice=str(
+                issue.get("review_function_context") or issue.get("code_snippet") or ""
+            ),
+            line=CandidateRegistrar._line_number(issue),
+            source=str(issue.get("candidate_source") or "review_checkpoint"),
+            origin=str(issue.get("source") or ""),
+            sink=str(issue.get("sink") or ""),
+            evidence=evidence,
+        )
+        self.add(
+            ticket,
+            source=ticket.source,
+            record_role="validation_obligation",
+            entry_identity=str(issue.get("entry_identity") or issue.get("function") or ""),
+        )
 
     def add(
         self,
-        ticket: CandidateTicket,
+        ticket: SubAgentTicket,
         source: str,
         call_path: Optional[Iterable[str]] = None,
         *,
@@ -749,50 +1350,18 @@ class CandidateLedger:
             if occurrence not in record.occurrences:
                 record.occurrences.append(occurrence)
 
-            trace_store = self.decision_trace_store
-            if trace_store is not None and record.record_role == "validation_obligation":
-                trace_store.bind_candidate(
-                    record.validation_cluster_uid,
-                    candidate_uids=(record.candidate_uid,),
-                    occurrence_uids=(occurrence_uid,),
-                )
-                trace_store.append_event(
-                    record.validation_cluster_uid,
-                    stage="registrar",
-                    actor="candidate_ledger",
-                    reason_code=("CANDIDATE_REGISTERED" if is_new else "LEDGER_ALIAS_MERGED"),
-                    after_state={
-                        "candidate_uid": record.candidate_uid,
-                        "validation_cluster_uid": record.validation_cluster_uid,
-                        "occurrence_uid": occurrence_uid,
-                        "record_role": record.record_role,
-                        "source": source,
-                    },
-                    disposition_after=str(record.disposition or ""),
-                    details={
-                        "candidate_id": record.candidate_id,
-                        "entry_identity": resolved_entry,
-                        "duplicate_count": record.duplicate_count,
-                        "source": source,
-                    },
-                    dedupe_key=(
-                        f"registrar:{record.validation_cluster_uid}:{occurrence_uid}:"
-                        f"{'new' if is_new else 'alias'}"
-                    ),
-                )
-
             return record, is_new
 
     def add_many(
         self,
-        tickets: Iterable[CandidateTicket],
+        tickets: Iterable[SubAgentTicket],
         source: str,
         call_path: Optional[Iterable[str]] = None,
     ) -> None:
         for ticket in tickets:
             self.add(ticket, source=source, call_path=call_path)
 
-    def pending_tickets(self) -> List[CandidateTicket]:
+    def pending_tickets(self) -> List[SubAgentTicket]:
         with self._lock:
             return [
                 record.to_ticket()
@@ -800,14 +1369,14 @@ class CandidateLedger:
                 if record.status == "pending"
             ]
 
-    def mark_planned(self, tickets: Iterable[CandidateTicket]) -> None:
+    def mark_planned(self, tickets: Iterable[SubAgentTicket]) -> None:
         ids = {ticket.id for ticket in tickets}
         with self._lock:
             for record in self._records.values():
                 if record.candidate_id in ids:
                     record.status = "planned"
 
-    def claim_pending(self, tickets: Iterable[CandidateTicket]) -> List[CandidateTicket]:
+    def claim_pending(self, tickets: Iterable[SubAgentTicket]) -> List[SubAgentTicket]:
         """Atomically claim pending candidates for exactly one worker/entry."""
         requested = [ticket for ticket in tickets]
         requested_ids = {ticket.id for ticket in requested}
@@ -819,7 +1388,7 @@ class CandidateLedger:
                     claimed_ids.add(record.candidate_id)
         return [ticket for ticket in requested if ticket.id in claimed_ids]
 
-    def mark_unassigned(self, tickets: Iterable[CandidateTicket]) -> None:
+    def mark_unassigned(self, tickets: Iterable[SubAgentTicket]) -> None:
         ids = {ticket.id for ticket in tickets}
         with self._lock:
             for record in self._records.values():
@@ -840,7 +1409,7 @@ class CandidateLedger:
                     continue
                 for record in self._records.values():
                     if record.candidate_id == candidate_id:
-                        # An investigation worker is an evidence producer, not a proof
+                        # A deep worker is an evidence producer, not a proof
                         # authority.  It must never turn a queued validation
                         # obligation into a security review finding.
                         if record.record_role == "validation_obligation":
@@ -879,16 +1448,6 @@ class CandidateLedger:
         if not occurrence_uid and not has_exact_validation_identity and not validation_cluster_uid:
             return 0
 
-        requested_disposition = (
-            disposition if disposition in TERMINAL_DISPOSITIONS else "needs_review"
-        )
-        requested_status = status or requested_disposition
-        if requested_disposition in {"confirmed", "rejected_with_proof"}:
-            requested_disposition, requested_status = self._authorized_proof_terminal(
-                issue,
-                requested_disposition=requested_disposition,
-            )
-
         updated = 0
         with self._lock:
             for record in self._records.values():
@@ -904,11 +1463,18 @@ class CandidateLedger:
                     matches = occurrence_uid in record.occurrence_uids
                 if not matches:
                     continue
-                record.disposition = requested_disposition
-                record.status = requested_status
-                record.terminal_issue = deepcopy(issue)
+                record.disposition = (
+                    disposition if disposition in TERMINAL_DISPOSITIONS else "needs_review"
+                )
+                record.status = status or record.disposition
+                # Rebase the original ticket too: a checkpoint-backed view can
+                # otherwise retain its entire private decoder after completion.
+                record.ticket.evidence = self._terminal_evidence.clone(record.ticket.evidence)
+                record.terminal_issue = self._terminal_evidence.clone(issue)
                 proof = issue.get("decision_proof") or issue.get("rejection_proof")
-                record.decision_proof = deepcopy(proof) if isinstance(proof, dict) else {}
+                record.decision_proof = (
+                    self._terminal_evidence.clone(proof) if isinstance(proof, dict) else {}
+                )
                 record.evidence_completion_status = str(
                     issue.get("evidence_completion_status") or record.evidence_completion_status
                 )
@@ -922,82 +1488,6 @@ class CandidateLedger:
                 )
                 updated += 1
         return updated
-
-    @staticmethod
-    def _authorized_proof_terminal(
-        issue: Dict[str, Any],
-        *,
-        requested_disposition: str,
-    ) -> tuple[str, str]:
-        """Authorize a proof terminal at the canonical lifecycle boundary.
-
-        The Validator is an evidence producer; a mutable issue field is not a
-        terminal authority.  Requiring both materialized v4 projections to be
-        the exact deterministic projection of the sealed promotion chain keeps
-        the Candidate Ledger from turning a stale, cross-obligation, legacy, or
-        model-authored assertion into a reportable security finding.
-        """
-
-        evaluator = TerminalAuthorityEvaluator()
-        producer_occurrence_bound = _has_exact_v4_producer_occurrence_binding(issue)
-        projected = evaluator.evaluate(
-            issue if producer_occurrence_bound else {},
-            protocol_or_engine_failure=not producer_occurrence_bound,
-            operation="live",
-        )
-        projected_dict = projected.to_dict()
-        recorded = issue.get("terminal_authority_decision")
-        engine_recorded = issue.get("proof_kernel_terminal_authority_decision")
-        evidence_pack = _as_dict(issue.get("evidence_pack"))
-        cluster_uid = str(
-            issue.get("validation_cluster_uid") or evidence_pack.get("validation_cluster_uid") or ""
-        )
-        claimed_disposition = str(issue.get("candidate_disposition") or "").lower()
-        authorized = bool(
-            producer_occurrence_bound
-            and projected.terminal
-            and projected.disposition == requested_disposition
-            and projected.integrity_status == "verified"
-            and projected.promotion_certificate is not None
-            and cluster_uid
-            and projected.validation_cluster_uid == cluster_uid
-            and (not claimed_disposition or claimed_disposition == requested_disposition)
-            and isinstance(recorded, Mapping)
-            and recorded.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
-            and dict(recorded) == projected_dict
-            and isinstance(engine_recorded, Mapping)
-            and engine_recorded.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
-            and dict(engine_recorded) == projected_dict
-        )
-        if authorized:
-            return requested_disposition, (
-                "validated" if requested_disposition == "confirmed" else "rejected"
-            )
-
-        # Preserve the obligation for user-visible review, but remove the
-        # untrusted promotion projection before materializing the fail-closed
-        # authority.  A complete closure without a valid certificate is not a
-        # terminal proof.
-        issue.pop("proof_kernel_promotion_certificate", None)
-        issue.pop("proof_kernel_terminal_authority_decision", None)
-        issue.pop("terminal_authority_decision", None)
-        issue.pop("proof_kernel_producer_binding_sha256", None)
-        issue.pop("proof_kernel_occurrence_binding_sha256", None)
-        fail_closed = evaluator.evaluate(
-            {},
-            protocol_or_engine_failure=True,
-            operation="live",
-        )
-        fail_closed_dict = fail_closed.to_dict()
-        issue["proof_kernel_terminal_authority_decision"] = fail_closed_dict
-        issue["terminal_authority_decision"] = fail_closed_dict
-        issue["terminal_authority"] = fail_closed.authority
-        issue["terminal_reason_codes"] = [fail_closed.reason_code]
-        issue["candidate_disposition"] = "needs_review"
-        issue["validation_status"] = "needs_review"
-        issue["policy_disposition"] = "needs_review"
-        issue["candidate_terminal_authority_failure_class"] = "terminal_authority_binding_invalid"
-        return "needs_review", "needs_review"
 
     def mark_validation_running(self, issue: Mapping[str, Any]) -> int:
         """Claim a validation group without assigning a security disposition."""
@@ -1080,44 +1570,75 @@ class CandidateLedger:
                 if outcome is not None:
                     outcomes.append(outcome)
             outcomes.sort(key=lambda item: item.validation_cluster_uid)
-            return {
+            result: Dict[str, Any] = {
                 "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
                 "entry_identity": entry_identity,
                 "records": projected,
                 "outcomes": [item.to_dict() for item in outcomes],
                 "summary": self._summary_unlocked(),
             }
+            for appendix in self._review_appendices:
+                extra = appendix.lifecycle_snapshot(
+                    entry_identity=entry_identity, include_triage=include_triage
+                )
+                result["records"].extend(extra["records"])
+                result["outcomes"].extend(extra["outcomes"])
+                result["summary"]["review_appendix_count"] = int(
+                    result["summary"].get("review_appendix_count", 0)
+                ) + len(extra["records"])
+                for key in (
+                    "total",
+                    "validation_group_count",
+                    "triage_lead_count",
+                    "raw_occurrence_count",
+                    "nonterminal_validation_count",
+                    "duplicates_merged",
+                ):
+                    result["summary"][key] += extra["summary"][key]
+                for key in ("by_status", "by_disposition", "triage_by_status"):
+                    for status, count in extra["summary"][key].items():
+                        result["summary"][key][status] = (
+                            result["summary"][key].get(status, 0) + count
+                        )
+                result["summary"]["incomplete"] |= extra["summary"]["incomplete"]
+            return result
 
     def freeze(self) -> Dict[str, Any]:
         """Seal candidate discovery and return the final atomic snapshot."""
 
         with self._lock:
             self._frozen = True
-            trace_store = self.decision_trace_store
-            if trace_store is not None:
-                for record in self._records.values():
-                    if record.record_role != "validation_obligation":
-                        continue
-                    trace_store.append_event(
-                        record.validation_cluster_uid,
-                        stage="registrar",
-                        actor="candidate_ledger",
-                        reason_code="LEDGER_FROZEN",
-                        after_state={
-                            "candidate_uid": record.candidate_uid,
-                            "validation_cluster_uid": record.validation_cluster_uid,
-                            "occurrence_uids": list(record.occurrence_uids),
-                            "validation_group_count": len(
-                                [
-                                    item
-                                    for item in self._records.values()
-                                    if item.record_role == "validation_obligation"
-                                ]
-                            ),
-                        },
-                        dedupe_key=f"ledger-frozen:{record.validation_cluster_uid}",
-                    )
             return self.lifecycle_snapshot()
+
+    @property
+    def is_frozen(self) -> bool:
+        """Whether the discovery generation is immutable and safe to query."""
+        with self._lock:
+            return self._frozen
+
+    def frozen_records(self) -> List[Dict[str, Any]]:
+        """Return an immutable projection including terminal validator output.
+
+        LLM-facing readers must use this method rather than traversing mutable
+        records or private ledger state while candidate discovery is running.
+        """
+        with self._lock:
+            if not self._frozen:
+                raise RuntimeError("candidate ledger is not frozen")
+            projected = []
+            for record in self._records.values():
+                item = record.to_dict(include_context=False)
+                item["terminal_issue"] = deepcopy(record.terminal_issue)
+                projected.append(item)
+            for appendix in self._review_appendices:
+                projected.extend(appendix.frozen_records())
+            projected.sort(
+                key=lambda item: (
+                    str(item.get("validation_cluster_uid") or ""),
+                    str(item.get("candidate_uid") or ""),
+                )
+            )
+            return projected
 
     def to_context(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._lock:
@@ -1129,7 +1650,11 @@ class CandidateLedger:
 
     def summary(self) -> Dict[str, Any]:
         with self._lock:
-            return self._summary_unlocked()
+            return (
+                self.lifecycle_snapshot()["summary"]
+                if self._review_appendices
+                else self._summary_unlocked()
+            )
 
     def _summary_unlocked(self) -> Dict[str, Any]:
         counts: Dict[str, int] = {}
@@ -1249,8 +1774,14 @@ class CandidateLedger:
         )
 
     @classmethod
-    def canonical_key(cls, ticket: CandidateTicket) -> str:
-        return cls._ticket_root_cause_key(ticket, "")
+    def canonical_key(cls, ticket: SubAgentTicket) -> str:
+        from ..common.issue_identity import issue_build_context_id
+
+        key = cls._ticket_root_cause_key(ticket, "")
+        scope = issue_build_context_id(ticket.evidence or {})
+        if scope:
+            key += "|build=" + hashlib.sha256(scope.encode("utf-8")).hexdigest()
+        return key
 
     @staticmethod
     def _candidate_id(validation_key: str) -> str:
@@ -1279,7 +1810,7 @@ class CandidateLedger:
         return f"HIST_{digest}"
 
     @staticmethod
-    def _evidence_hash(ticket: CandidateTicket) -> str:
+    def _evidence_hash(ticket: SubAgentTicket) -> str:
         import json
 
         payload = {
@@ -1295,7 +1826,7 @@ class CandidateLedger:
 
     @staticmethod
     def _decision_evidence_hash(
-        ticket: CandidateTicket,
+        ticket: SubAgentTicket,
         candidate_uid: str,
     ) -> str:
         evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
@@ -1326,7 +1857,7 @@ class CandidateLedger:
         return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _provenance_hash(ticket: CandidateTicket, source: str) -> str:
+    def _provenance_hash(ticket: SubAgentTicket, source: str) -> str:
         payload = {
             "display_id": ticket.id,
             "source": source,
@@ -1360,7 +1891,7 @@ class CandidateLedger:
     @classmethod
     def _context_signature(
         cls,
-        ticket: CandidateTicket,
+        ticket: SubAgentTicket,
         call_path: List[str],
     ) -> str:
         evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
@@ -1385,8 +1916,8 @@ class CandidateLedger:
 
     @staticmethod
     def _merge_ticket_evidence(
-        primary: CandidateTicket,
-        secondary: CandidateTicket,
+        primary: SubAgentTicket,
+        secondary: SubAgentTicket,
     ) -> None:
         primary_evidence = primary.evidence if isinstance(primary.evidence, dict) else {}
         secondary_evidence = secondary.evidence if isinstance(secondary.evidence, dict) else {}
@@ -1435,7 +1966,7 @@ class CandidateLedger:
         return re.sub(r"\s+", " ", text.lower()) or "project"
 
     @staticmethod
-    def _infer_resource_kind(ticket: CandidateTicket) -> str:
+    def _infer_resource_kind(ticket: SubAgentTicket) -> str:
         text = f"{ticket.skill} {ticket.trigger} {ticket.task}".lower()
         if any(word in text for word in ("malloc", "calloc", "realloc", "free", "memory")):
             return "memory"
@@ -1462,14 +1993,14 @@ class CandidateLedger:
         return text
 
     @classmethod
-    def _ticket_defect_class(cls, ticket: CandidateTicket) -> str:
+    def _ticket_defect_class(cls, ticket: SubAgentTicket) -> str:
         evidence = ticket.evidence or {}
         return cls._normalize(
             evidence.get("defect_class") or evidence.get("subcategory") or ticket.skill
         )
 
     @classmethod
-    def _ticket_source(cls, ticket: CandidateTicket) -> str:
+    def _ticket_source(cls, ticket: SubAgentTicket) -> str:
         evidence = ticket.evidence or {}
         source = evidence.get("source")
         if isinstance(source, dict):
@@ -1477,7 +2008,7 @@ class CandidateLedger:
         return cls._normalize(source or ticket.origin)
 
     @classmethod
-    def _ticket_sink(cls, ticket: CandidateTicket) -> str:
+    def _ticket_sink(cls, ticket: SubAgentTicket) -> str:
         evidence = ticket.evidence or {}
         sink = evidence.get("sink")
         if isinstance(sink, dict):
@@ -1485,7 +2016,7 @@ class CandidateLedger:
         return cls._normalize(sink or ticket.sink)
 
     @classmethod
-    def _ticket_root_cause_key(cls, ticket: CandidateTicket, fallback: str) -> str:
+    def _ticket_root_cause_key(cls, ticket: SubAgentTicket, fallback: str) -> str:
         evidence = ticket.evidence or {}
         explicit = evidence.get("root_cause_key") or evidence.get("dedup_key")
         defect = cls._ticket_defect_class(ticket)

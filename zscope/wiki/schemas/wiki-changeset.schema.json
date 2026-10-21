@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.wiki-changeset.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workset_id",
+    "base_revision_id",
+    "outcome",
+    "source_results",
+    "constraint_proposals",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.wiki-changeset.v1"
+    },
+    "workset_id": {
+      "type": "string",
+      "pattern": "^workset_[a-z0-9_:-]+$"
+    },
+    "base_revision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "compiler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity", "prompt_version"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["deterministic", "llm", "mixed"]},
+        "identity": {"type": "string", "minLength": 1, "maxLength": 240},
+        "prompt_version": {"type": ["string", "null"], "maxLength": 120},
+        "model": {"type": ["string", "null"], "maxLength": 160}
+      }
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "changed",
+        "background_only",
+        "extraction_failed",
+        "source_rejected"
+      ]
+    },
+    "source_results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_ref",
+          "extraction_status",
+          "source_refs_used",
+          "reason"
+        ],
+        "properties": {
+          "source_ref": {
+            "type": "string",
+            "pattern": "^(docsrc|docdesc)_[a-z0-9_:-]+$"
+          },
+          "extraction_status": {
+            "type": "string",
+            "enum": [
+              "constraints_found",
+              "no_constraints_found",
+              "extraction_failed",
+              "source_rejected"
+            ]
+          },
+          "source_refs_used": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^docref_[a-z0-9_:-]+$"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "constraint_proposals": {
+      "type": "array",
+      "items": {
+        "$ref": "zscope.project-constraint-proposal.v1"
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    }
+  }
+}

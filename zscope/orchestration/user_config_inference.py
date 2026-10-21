@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..common.utils import extract_json_blocks
 from ..config.user_config_workbook import SHEET_HEADERS
-from ..core.candidates.regex import RegexCandidateGenerator
+from ..semantics.models import classify_api_name
 from ..semantics.defaults import default_local_pattern_semantics
 
 
@@ -37,8 +37,10 @@ def _default_api_names() -> set[str]:
 DEFAULT_API_NAMES = _default_api_names()
 SKIPPED_DEFAULT_API_NAMES = DEFAULT_API_NAMES
 WRAPPER_NAME_HINT_RE = re.compile(
-    r"alloc|free|dealloc|lock|unlock|copy|cpy|move|create|destroy|"
-    r"open|close|acquire|release|get|put|ref|unref",
+    r"alloc|free|dealloc|lock|unlock|mutex|rwlock|spinlock|semaphore|copy|cpy|move|create|destroy|"
+    r"open|close|acquire|release|get|put|ref|unref|"
+    r"send|recv|read|write|emit|transmit|log|print|format|"
+    r"register|subscribe|hook|install|connect|accept|mmap",
     re.IGNORECASE,
 )
 API_ACTION_TOKENS = {
@@ -53,6 +55,26 @@ API_ACTION_TOKENS = {
     "copy",
     "cpy",
     "move",
+    "open",
+    "close",
+    "connect",
+    "accept",
+    "socket",
+    "mmap",
+    "send",
+    "recv",
+    "read",
+    "write",
+    "emit",
+    "transmit",
+    "receive",
+    "log",
+    "print",
+    "format",
+    "register",
+    "subscribe",
+    "hook",
+    "install",
 }
 CONSTANT_NOISE_TOKENS = {
     "err",
@@ -118,6 +140,39 @@ TABLE_HANDLER_RE = re.compile(
 LLM_REVIEWABLE_SHEETS = {"resource", "lock", "dispatcher", "module_lifecycle"}
 LLM_REVIEW_BATCH_SIZE = 8
 PAIRABLE_SHEETS = ("resource", "lock")
+CALLER_DISCOVERY_BUDGET = 400
+# Decisions below this confidence get an independent second LLM opinion; a
+# conflicting second opinion downgrades the row to needs_review instead of
+# silently keeping a speculative interface.
+SELF_CONSISTENCY_THRESHOLD = 0.75
+AMBIGUOUS_CLASSIFY_BATCH_SIZE = 6
+AMBIGUOUS_MAX_CANDIDATES = 200
+_RESOURCE_SHEET_KINDS = frozenset(
+    {
+        "allocator",
+        "calloc",
+        "reallocator",
+        "deallocator",
+        "copy",
+        "resource_acquire",
+        "resource_release",
+        "io_acquire",
+        "io_release",
+        "send_sink",
+        "recv_source",
+        "format_sink",
+        "callback_register",
+    }
+)
+_LLM_VALID_KINDS = _RESOURCE_SHEET_KINDS | {"lock", "unlock"}
+# Bodies that touch any of these standard risk APIs but were never classified
+# by the cheap heuristics are the strongest ambiguous-classification candidates.
+_AMBIGUOUS_BODY_HINT_RE = re.compile(
+    r"\b(?:malloc|calloc|realloc|free|pthread_mutex_(?:lock|unlock)|pthread_rwlock_"
+    r"(?:rd|wr)lock|pthread_rwlock_unlock|open|close|fopen|fclose|socket|mmap|munmap|"
+    r"send|recv|read|write|sendto|recvfrom|printf|fprintf|syslog|pthread_create)\s*\(",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -183,12 +238,18 @@ def infer_user_config_rows(
             roles[name] = kind
             _add_symbol(symbols, name, kind, "macro", "inferred:macro", 0.78, body=body)
 
+    callees_by_name: Dict[str, List[str]] = {}
     for name in function_names:
         impl = code_index.get_function_impl(name, max_lines=240, warn_missing=False)
         if not impl:
             continue
         code = str(impl.get("code") or "")
         evidence_by_name[name] = _evidence_from_impl(name, impl)
+        callees_by_name[name] = [
+            str(callee)
+            for callee in (impl.get("callees") or [])
+            if str(callee).strip()
+        ]
         body_kind = (
             _classify_body(code, roles) if (name in roles or _should_inspect_body(name)) else ""
         )
@@ -205,6 +266,46 @@ def infer_user_config_rows(
                 signature=str(impl.get("signature") or ""),
             )
 
+    # Caller-context discovery: wrappers whose names carry no action keyword
+    # (``get_buffer``/``channel_up`` style) are still found when they call, or
+    # are called beside, already role-classified symbols.  The reverse call
+    # index is built from the bodies fetched above, so this stays cheap.
+    callers_of: Dict[str, List[str]] = {}
+    for caller, callee_names in callees_by_name.items():
+        for callee_name in callee_names:
+            callers_of.setdefault(callee_name, []).append(caller)
+    discovered_callers = 0
+    for role_symbol in sorted(roles):
+        if discovered_callers >= CALLER_DISCOVERY_BUDGET:
+            break
+        for caller_name in callers_of.get(role_symbol, ()):
+            if discovered_callers >= CALLER_DISCOVERY_BUDGET:
+                break
+            if caller_name in roles or caller_name in evidence_by_name:
+                continue
+            if _classify_symbol_name(caller_name):
+                continue
+            discovered_callers += 1
+            caller_impl = code_index.get_function_impl(
+                caller_name, max_lines=240, warn_missing=False
+            )
+            if not caller_impl:
+                continue
+            caller_code = str(caller_impl.get("code") or "")
+            body_kind = _classify_body(caller_code, roles, propagate_project_roles=True)
+            if body_kind:
+                roles[caller_name] = body_kind
+                _add_symbol(
+                    symbols,
+                    caller_name,
+                    body_kind,
+                    "function",
+                    "inferred:caller_context",
+                    0.68,
+                    body=caller_code,
+                    signature=str(caller_impl.get("signature") or ""),
+                )
+
     for name, kind, confidence in _roles_from_snapshots(snapshot_dir):
         roles.setdefault(name, kind)
         _add_symbol(symbols, name, kind, "function", "inferred:semantic_snapshot", confidence)
@@ -215,11 +316,13 @@ def infer_user_config_rows(
         sheet_rows = rows[pair["sheet"]]
         acquire = pair["acquire_func"]
         release = pair["release_func"]
+        acquire_kind = str(pair.get("acquire_kind") or "") or _acquire_kind_for_sheet(pair["sheet"])
+        release_kind = str(pair.get("release_kind") or "") or _release_kind_for_sheet(pair["sheet"])
         acquire_row = next((row for row in sheet_rows if row.get("symbol_name") == acquire), None)
         if acquire_row is None:
             acquire_row = _symbol_row(
                 acquire,
-                _acquire_kind_for_sheet(pair["sheet"]),
+                acquire_kind,
                 "function",
                 "inferred:pair_name",
                 0.70,
@@ -232,7 +335,7 @@ def infer_user_config_rows(
             sheet_rows.append(
                 _symbol_row(
                     release,
-                    _release_kind_for_sheet(pair["sheet"]),
+                    release_kind,
                     "function",
                     "inferred:pair_name",
                     0.70,
@@ -343,7 +446,109 @@ def filter_user_config_rows_with_llm(
             filtered[sheet].append(revised)
 
     _remove_pairs_to_dropped_symbols(filtered, dropped_by_sheet)
+    stats["recheck"] = _recheck_low_confidence_decisions(
+        llm_client,
+        normalized,
+        filtered,
+        decisions,
+        batch_size=batch_size,
+        max_workers=max_workers,
+    )
     return filtered, stats
+
+
+def _recheck_low_confidence_decisions(
+    llm_client: Any,
+    original_rows: Dict[str, List[Dict[str, Any]]],
+    filtered_rows: Dict[str, List[Dict[str, Any]]],
+    decisions: Dict[str, Dict[str, Any]],
+    *,
+    batch_size: int,
+    max_workers: int,
+) -> int:
+    """Independently re-review low-confidence acceptances.
+
+    When the second opinion conflicts with the first, the row stays in the
+    workbook but is downgraded to ``llm:needs_review`` with low confidence so
+    the human reviewer settles it instead of the model.
+    """
+
+    recheck_candidates: List[Dict[str, Any]] = []
+    recheck_targets: Dict[str, Tuple[str, int, Dict[str, Any]]] = {}
+    for sheet in ("resource", "lock"):
+        for idx, row in enumerate(original_rows.get(sheet, [])):
+            candidate_id = _candidate_id(sheet, idx)
+            decision = decisions.get(candidate_id)
+            if not decision:
+                continue
+            if str(decision.get("action") or "").lower() not in {"keep", "revise"}:
+                continue
+            confidence = _coerce_confidence(decision.get("confidence", 1.0))
+            if confidence >= SELF_CONSISTENCY_THRESHOLD:
+                continue
+            symbol = _row_primary_name(sheet, row)
+            recheck_candidates.append(
+                {
+                    "id": candidate_id,
+                    "sheet": sheet,
+                    "row": _llm_safe_row(row),
+                    "generalized_pattern": _generalized_symbol_pattern(symbol),
+                    "evidence": {},
+                }
+            )
+            kept_row = next(
+                (
+                    item
+                    for item in filtered_rows.get(sheet, [])
+                    if item.get("symbol_name") == symbol
+                ),
+                None,
+            )
+            if kept_row is not None:
+                recheck_targets[candidate_id] = (sheet, idx, kept_row)
+    if not recheck_candidates:
+        return 0
+
+    second_decisions: Dict[str, Dict[str, Any]] = {}
+    batches = list(_chunks(recheck_candidates, max(1, batch_size)))
+    worker_count = max(1, min(_coerce_positive_int(max_workers, 1), len(batches)))
+    if worker_count == 1:
+        for batch in batches:
+            try:
+                second_decisions.update(
+                    _request_llm_user_config_decisions_for_thread(llm_client, batch)
+                )
+            except Exception:
+                continue
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(
+                    _request_llm_user_config_decisions_for_thread,
+                    llm_client,
+                    batch,
+                )
+                for batch in batches
+            ]
+            for future in as_completed(futures):
+                try:
+                    second_decisions.update(future.result())
+                except Exception:
+                    continue
+
+    rechecked = 0
+    for candidate_id, (sheet, _idx, kept_row) in recheck_targets.items():
+        second = second_decisions.get(candidate_id)
+        rechecked += 1
+        if not second:
+            continue
+        if str(second.get("action") or "").lower() == "drop":
+            kept_row["confidence"] = "0.40"
+            kept_row["notes"] = _append_note(
+                str(kept_row.get("notes") or ""), "llm:conflict second opinion dropped this row"
+            )
+            kept_row["source"] = _merge_csv(str(kept_row.get("source") or ""), "llm:needs_review")
+    return rechecked
 
 
 def _llm_review_candidates(
@@ -394,6 +599,275 @@ def _llm_review_candidates(
             }
         )
     return candidates
+
+
+def collect_ambiguous_interface_candidates(
+    code_index: Any,
+    *,
+    exclude: Iterable[str] = (),
+    max_candidates: int = AMBIGUOUS_MAX_CANDIDATES,
+) -> List[Dict[str, Any]]:
+    """Collect unclassified functions whose bodies touch standard risk APIs.
+
+    These are the symbols the cheap heuristics could not name-classify (no
+    action keyword, no caller-context signal).  The LLM pass decides whether
+    each is a real user-defined risk interface or ordinary business code.
+    """
+
+    excluded = {str(name) for name in exclude}
+    candidates: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        function_names = list(code_index.list_functions(limit=100000))
+    except TypeError:
+        try:
+            function_names = list(code_index.list_functions())
+        except Exception:
+            return []
+    except Exception:
+        return []
+    for name in function_names:
+        if len(candidates) >= max(1, int(max_candidates)):
+            break
+        name = str(name)
+        if not name or name in seen or name in excluded:
+            continue
+        if _classify_symbol_name(name):
+            continue
+        impl = None
+        get_impl = getattr(code_index, "get_function_impl", None)
+        if callable(get_impl):
+            try:
+                impl = get_impl(name, max_lines=120, warn_missing=False)
+            except TypeError:
+                impl = get_impl(name)
+            except Exception:
+                impl = None
+        if not impl:
+            continue
+        code = str(impl.get("code") or "")
+        if not code or not _AMBIGUOUS_BODY_HINT_RE.search(code):
+            continue
+        seen.add(name)
+        candidates.append(
+            {
+                "symbol": name,
+                "file": str(impl.get("file") or ""),
+                "signature": str(impl.get("signature") or ""),
+                "code_excerpt": _truncate_text(code, 1200),
+            }
+        )
+    return candidates
+
+
+def classify_ambiguous_interfaces_with_llm(
+    code_index: Any,
+    llm_client: Any,
+    *,
+    exclude: Iterable[str] = (),
+    batch_size: int = AMBIGUOUS_CLASSIFY_BATCH_SIZE,
+    max_workers: int = 1,
+    max_candidates: int = AMBIGUOUS_MAX_CANDIDATES,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, int]]:
+    """Classify ambiguous symbols with the LLM and return workbook rows.
+
+    The LLM may only assign a kind from the fixed enum (or drop the symbol);
+    every kept row carries evidence-based description markers so the rule
+    layer and the human reviewer can verify the decision.
+    """
+
+    ambiguous = collect_ambiguous_interface_candidates(
+        code_index, exclude=exclude, max_candidates=max_candidates
+    )
+    rows: Dict[str, List[Dict[str, Any]]] = {name: [] for name in SHEET_HEADERS}
+    stats = {"collected": len(ambiguous), "classified": 0, "dropped": 0, "errors": 0}
+    if not ambiguous:
+        return rows, stats
+
+    decisions: Dict[str, Dict[str, Any]] = {}
+    batches = list(_chunks(ambiguous, max(1, batch_size)))
+    worker_count = max(1, min(_coerce_positive_int(max_workers, 1), len(batches)))
+    if worker_count == 1:
+        for batch in batches:
+            try:
+                decisions.update(_request_llm_ambiguous_decisions(llm_client, batch))
+            except Exception:
+                stats["errors"] += 1
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(_request_llm_ambiguous_decisions, llm_client, batch)
+                for batch in batches
+            ]
+            for future in as_completed(futures):
+                try:
+                    decisions.update(future.result())
+                except Exception:
+                    stats["errors"] += 1
+
+    for idx, item in enumerate(ambiguous):
+        decision = decisions.get(f"ambiguous:{idx}")
+        if not decision:
+            continue
+        if str(decision.get("action") or "drop").lower() == "drop":
+            stats["dropped"] += 1
+            continue
+        kind = str(decision.get("kind") or "").strip().lower()
+        if kind not in _LLM_VALID_KINDS:
+            stats["dropped"] += 1
+            continue
+        confidence = _coerce_confidence(decision.get("confidence", 0.6))
+        description = str(decision.get("description") or "").strip()
+        sheet = "lock" if kind in {"lock", "unlock"} else "resource"
+        row = _symbol_row(
+            str(item["symbol"]),
+            kind,
+            "function",
+            "llm:classified",
+            confidence,
+            description=description,
+        )
+        if kind in {"lock", "unlock"}:
+            pair = str(decision.get("pair") or "").strip()
+            if pair:
+                row["pair"] = pair
+        rows[sheet].append(row)
+        stats["classified"] += 1
+    return rows, stats
+
+
+def _request_llm_ambiguous_decisions(
+    llm_client: Any,
+    items: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    messages = [
+        {"role": "system", "content": _llm_ambiguous_system_prompt()},
+        {
+            "role": "user",
+            "content": (
+                "Classify these project functions. Return JSON only.\n"
+                + json.dumps({"items": items}, ensure_ascii=False, indent=2)
+            ),
+        },
+    ]
+    response = llm_client.chat_completion(
+        messages,
+        temperature=0.0,
+        max_tokens=4096,
+        trace_agent="user_config_infer_ambiguous",
+        trace_label="llm_classify_ambiguous",
+    )
+    content = str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+    parsed_blocks = extract_json_blocks(content)
+    decisions: Dict[str, Dict[str, Any]] = {}
+    for block in parsed_blocks:
+        raw_items = block.get("items") or block.get("decisions") or []
+        if not isinstance(raw_items, list):
+            continue
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            decision_id = str(item.get("id") or "").strip()
+            if decision_id:
+                decisions[decision_id] = item
+        if decisions:
+            break
+    return decisions
+
+
+def _llm_ambiguous_system_prompt() -> str:
+    return (
+        "You decide whether project functions are user-defined risk interfaces "
+        "for a Z-Scope user_config.xlsx. A risk interface is a thin wrapper the "
+        "project calls instead of a standard risky API (memory allocation or "
+        "release, lock/unlock, file or socket open/close, network send/receive, "
+        "external input read, printf-family formatting, callback registration).\n\n"
+        f"Valid kinds: {', '.join(sorted(_LLM_VALID_KINDS))}.\n\n"
+        "Rules:\n"
+        "- Base every decision on the provided function body. If the body does "
+        "not show the risk operation directly, drop the candidate.\n"
+        "- Thin one-hop wrappers are interfaces; business functions that happen "
+        "to call a wrapper are NOT interfaces.\n"
+        "- Guard/flag/error helpers, metrics, and logging-of-state functions are "
+        "not interfaces even when names look action-like.\n"
+        "- Set kind exactly from the enum. Pick io_acquire/io_release for "
+        "handle-style resources, send_sink/recv_source for outbound/inbound "
+        "data, format_sink for printf-style rendering, callback_register for "
+        "storing function pointers for later invocation.\n"
+        "- In description, state where the resource or argument lives using "
+        "markers like resource_output=return, resource_input=argN, "
+        "size_arg=argN, lock_arg=argN, format_arg=argN, callback_arg=argN. "
+        "Write resource_output=review when the position is not visible.\n"
+        "- confidence is a number between 0 and 1 reflecting how directly the "
+        "body evidence supports the kind.\n\n"
+        "Return exactly one JSON object:\n"
+        '{ "items": [ { "id": string, "action": "keep"|"drop", '
+        '"kind": optional string, "pair": optional string, '
+        '"description": optional string, "confidence": optional number, '
+        '"notes": string } ] }\n'
+        "No markdown, no prose outside JSON."
+    )
+
+
+def classify_single_interface_with_llm(
+    llm_client: Any,
+    symbol: str,
+    item: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """LLM-classify one function body as a user-defined risk interface.
+
+    Returns ``{"kind", "confidence", "description"}`` for a confident
+    classification, or ``None`` when the model drops the candidate.  Used at
+    scan time for lightweight wrapper snapshots whose role the cheap
+    heuristics cannot determine.
+    """
+
+    payload = {
+        "id": "single:0",
+        "symbol": symbol,
+        "file": str(item.get("file") or ""),
+        "signature": str(item.get("signature") or ""),
+        "code_excerpt": _truncate_text(str(item.get("code_excerpt") or ""), 1200),
+    }
+    messages = [
+        {"role": "system", "content": _llm_ambiguous_system_prompt()},
+        {
+            "role": "user",
+            "content": (
+                "Classify this project function. Return JSON only.\n"
+                + json.dumps({"items": [payload]}, ensure_ascii=False, indent=2)
+            ),
+        },
+    ]
+    response = llm_client.chat_completion(
+        messages,
+        temperature=0.0,
+        max_tokens=1024,
+        trace_agent="user_config_interface_probe",
+        trace_label="llm_classify_interface",
+    )
+    content = str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+    kind = ""
+    confidence = 0.0
+    description = ""
+    for block in extract_json_blocks(content):
+        raw_items = block.get("items") or block.get("decisions") or []
+        if not isinstance(raw_items, list):
+            continue
+        for entry in raw_items:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("action") or "").lower() == "drop":
+                return None
+            kind = str(entry.get("kind") or "").strip().lower()
+            confidence = _coerce_confidence(entry.get("confidence", 0.6))
+            description = str(entry.get("description") or "").strip()
+            break
+        if kind or raw_items:
+            break
+    if kind not in _LLM_VALID_KINDS:
+        return None
+    return {"kind": kind, "confidence": confidence, "description": description}
 
 
 def _request_llm_user_config_decisions(
@@ -456,10 +930,22 @@ def _llm_user_config_system_prompt() -> str:
     return (
         "You are screening candidates for a human-editable Z-Scope user_config.xlsx. "
         "The workbook columns are fixed; you may only keep, drop, or revise existing rows.\n\n"
+        f"Valid resource kinds: {', '.join(sorted(_RESOURCE_SHEET_KINDS))}. "
+        "Valid lock kinds: lock, unlock.\n\n"
         "Decision rules:\n"
         "- Keep resource rows only for APIs/macros that themselves model resource allocation, "
         "reallocation, release, copy, open/close-style ownership transfer, bitmap/list resource "
         "acquire/release, or closely equivalent project resource operations.\n"
+        "- io_acquire: the call itself obtains a file/socket/handle/mapping and ownership of it "
+        "transfers to the caller (open/fopen/socket/mmap-style wrappers). "
+        "io_release: the call itself closes/releases such a handle (close/fclose/munmap-style "
+        "wrappers). Do not keep ordinary business functions that merely use an existing handle.\n"
+        "- send_sink: the call transmits/writes data out (send/write/sendto-style wrappers). "
+        "recv_source: the call receives or reads external input into the process "
+        "(recv/read/recvfrom-style wrappers, including config readers that return external bytes). "
+        "format_sink: the call renders a caller-supplied format string (printf/syslog-style "
+        "wrappers). callback_register: the call stores a caller-supplied function pointer for "
+        "later invocation (register_callback/subscribe-style wrappers and thread starters).\n"
         "- Keep lock rows only for APIs/macros that themselves acquire or release locks. "
         "Do not keep business functions that merely call a lock/unlock helper.\n"
         "- Drop constants, limits, error/status macros, flag/type/mode names, enum-like names, "
@@ -480,9 +966,13 @@ def _llm_user_config_system_prompt() -> str:
         "where the modeled object is located. Use these exact key names inside description when "
         "applicable: resource_output=return, resource_output=argN, resource_output=argN_deref, "
         "resource_input=argN, old_resource=argN, size_arg=argN, lock_arg=argN, "
+        "format_arg=argN, callback_arg=argN, "
         "failure_values=NULL/-1/0. Examples: malloc => resource_output=return; size_arg=arg1; "
         "free => resource_input=arg1; pthread_mutex_lock => lock_arg=arg1. If the position is "
         "not visible in the evidence, write resource_output=review or resource_input=review.\n"
+        "- io_acquire/io_release pairs must be plausible complements (same handle type, "
+        "compatible argument); if the acquire has no plausible release, keep it without a pair "
+        "only when the handle escapes via return; otherwise drop.\n"
         "- Keep dispatcher rows only when the evidence shows switch/case or table-driven message "
         "dispatch to handlers.\n"
         "- Keep module_lifecycle rows only for real init/finit/create/destroy module lifecycle "
@@ -534,7 +1024,7 @@ def _ensure_location_markers(sheet: str, original: Dict[str, Any], updated: Dict
     if sheet == "lock" and kind in {"lock", "unlock"}:
         marker_names.append("lock_arg")
     elif sheet == "resource":
-        if kind in {"allocator", "calloc", "resource_acquire", "reallocator"}:
+        if kind in {"allocator", "calloc", "resource_acquire", "reallocator", "io_acquire", "recv_source"}:
             marker_names.append("resource_output")
             if _extract_marker(original.get("description", ""), "size_arg"):
                 marker_names.append("size_arg")
@@ -542,12 +1032,18 @@ def _ensure_location_markers(sheet: str, original: Dict[str, Any], updated: Dict
                 marker_names.append("failure_values")
         if kind == "reallocator":
             marker_names.append("old_resource")
-        if kind in {"deallocator", "resource_release"}:
+        if kind in {"deallocator", "resource_release", "io_release"}:
             marker_names.append("resource_input")
-        if kind == "copy":
-            for marker in ("resource_output", "resource_input", "size_arg"):
+        if kind == "copy" or kind == "send_sink":
+            for marker in ("resource_input", "resource_output", "size_arg"):
                 if _extract_marker(original.get("description", ""), marker):
                     marker_names.append(marker)
+        if kind == "send_sink":
+            marker_names.append("resource_input")
+        if kind == "format_sink":
+            marker_names.append("format_arg")
+        if kind == "callback_register":
+            marker_names.append("callback_arg")
 
     description = str(updated.get("description") or "")
     for marker in marker_names:
@@ -773,6 +1269,12 @@ def _role_has_api_action_shape(name: str, role: str) -> bool:
         "copy": ("copy", "cpy", "move"),
         "lock": ("lock",),
         "unlock": ("unlock",),
+        "io_acquire": ("open", "connect", "accept", "socket", "mmap"),
+        "io_release": ("close", "munmap", "disconnect"),
+        "send_sink": ("send", "write", "emit", "transmit"),
+        "recv_source": ("recv", "read", "receive", "input"),
+        "format_sink": ("log", "print", "format", "printf"),
+        "callback_register": ("register", "subscribe", "hook", "install"),
     }
     return any(_has_action_token(name, action) for action in actions_by_role.get(role, ()))
 
@@ -789,7 +1291,7 @@ def _has_action_token(name: str, action: str) -> bool:
 def _classify_symbol_name(name: str) -> str:
     if _looks_like_constant_config_symbol(name):
         return ""
-    regex_role = RegexCandidateGenerator._classify_api_name(name)
+    regex_role = classify_api_name(name)
     if regex_role and _role_has_api_action_shape(name, regex_role):
         return regex_role
     lower = name.lower()
@@ -835,6 +1337,22 @@ def _classify_body(
         called_roles.add("unlock")
     if re.search(r"\b(?:memcpy|memmove|strncpy|strcpy)\s*\(", lowered):
         called_roles.add("copy")
+    if re.search(r"\b(?:open|fopen|creat|socket|accept|accept4|mmap)\s*\(", lowered):
+        called_roles.add("io_acquire")
+    if re.search(r"(?:->|\.)\s*(?:open|socket)\s*\(", lowered):
+        called_roles.add("io_acquire")
+    if re.search(r"\b(?:close|fclose|closesocket|munmap|pclose)\s*\(", lowered):
+        called_roles.add("io_release")
+    if re.search(r"(?:->|\.)\s*close\s*\(", lowered):
+        called_roles.add("io_release")
+    if re.search(r"\b(?:send|write|sendto|sendmsg|fwrite)\s*\(", lowered):
+        called_roles.add("send_sink")
+    if re.search(r"\b(?:recv|read|recvfrom|fread|getenv)\s*\(", lowered):
+        called_roles.add("recv_source")
+    if re.search(r"\b(?:printf|fprintf|sprintf|snprintf|syslog|vprintf|vfprintf)\s*\(", lowered):
+        called_roles.add("format_sink")
+    if re.search(r"\b(?:register_callback|pthread_create)\s*\(", lowered):
+        called_roles.add("callback_register")
 
     if "allocator" in called_roles and "deallocator" not in called_roles:
         return "allocator"
@@ -848,6 +1366,18 @@ def _classify_body(
         return "unlock"
     if "copy" in called_roles:
         return "copy"
+    if "io_acquire" in called_roles and "io_release" not in called_roles:
+        return "io_acquire"
+    if "io_release" in called_roles and "io_acquire" not in called_roles:
+        return "io_release"
+    if "callback_register" in called_roles:
+        return "callback_register"
+    if "send_sink" in called_roles and "recv_source" not in called_roles:
+        return "send_sink"
+    if "recv_source" in called_roles and "send_sink" not in called_roles:
+        return "recv_source"
+    if "format_sink" in called_roles:
+        return "format_sink"
     return ""
 
 
@@ -868,7 +1398,8 @@ def _roles_from_snapshots(snapshot_dir: Optional[Path]) -> List[Tuple[str, str, 
         if not isinstance(snapshot, dict):
             continue
         name = str(snapshot.get("func_name") or "")
-        kind = _classify_snapshot_text(json.dumps(snapshot, ensure_ascii=False).lower())
+        interface_input = {key: value for key, value in snapshot.items() if key != "suspicious_points"}
+        kind = _classify_snapshot_text(json.dumps(interface_input, ensure_ascii=False).lower())
         if name and kind:
             roles.append((name, kind, 0.80))
     return roles
@@ -906,6 +1437,20 @@ def _infer_pairs(roles: Dict[str, str]) -> List[Dict[str, Any]]:
             "Lock/unlock candidate.",
         )
     )
+    io_acquires = [name for name, kind in normalized.items() if kind == "io_acquire"]
+    io_releases = [name for name, kind in normalized.items() if kind == "io_release"]
+    pairs.extend(
+        _pair_by_stem(
+            io_acquires,
+            io_releases,
+            "resource",
+            "io",
+            "inferred:pair_name",
+            "File/socket handle acquisition/release candidate.",
+            acquire_kind="io_acquire",
+            release_kind="io_release",
+        )
+    )
     return pairs
 
 
@@ -916,6 +1461,9 @@ def _pair_by_stem(
     category: str,
     source: str,
     description: str,
+    *,
+    acquire_kind: str = "",
+    release_kind: str = "",
 ) -> List[Dict[str, Any]]:
     result = []
     seen = set()
@@ -937,6 +1485,8 @@ def _pair_by_stem(
                     "category": category,
                     "acquire_func": acquire,
                     "release_func": release,
+                    "acquire_kind": acquire_kind,
+                    "release_kind": release_kind,
                     "source": source,
                     "confidence": "0.70",
                     "description": description,
@@ -1684,6 +2234,10 @@ def _pair_stem(name: str) -> str:
         "ref",
         "put",
         "get",
+        "enter",
+        "exit",
+        "down",
+        "up",
     ):
         stem = stem.replace(token, "")
     return re.sub(r"[^a-z0-9]", "", stem)

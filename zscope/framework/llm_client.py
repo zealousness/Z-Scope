@@ -20,6 +20,7 @@ import time
 import shutil
 import subprocess
 import tempfile
+from weakref import WeakKeyDictionary
 from typing import (
     Any,
     Callable,
@@ -42,53 +43,11 @@ from ..common.utils import extract_json_blocks
 from .conversation_recorder import ConversationSession, get_conversation_recorder
 from .llm_usage import (
     LLMUsageAttribution,
-    P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM,
-    P6BalancedTokenAdmissionError,
     ScanTokenUsageLedger,
     TokenUsageReservation,
-    current_llm_usage_attribution,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# P6 admission must be conservative without depending on a provider-specific
-# tokenizer.  OpenAI-compatible tokenizers cannot consume more tokens than
-# the UTF-8 byte stream they tokenize (byte fallback is the worst case).  The
-# frozen allowance covers provider chat-template sentinels which are not part
-# of the JSON request itself.  These constants are deliberately generous: the
-# admission contract prefers stopping early to crossing the 11,999,999-token
-# selected-attempt ceiling.
-_REQUEST_PROMPT_TEMPLATE_BASE_ALLOWANCE = P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM // 8
-_REQUEST_PROMPT_TEMPLATE_PER_ITEM_ALLOWANCE = 256
-
-
-PROVIDER_FAILURE_CLASSES = frozenset(
-    {
-        "provider_credentials_unavailable",
-        "provider_transport_exhausted",
-        "provider_usage_unverifiable",
-        "provider_identity_mismatch",
-        "provider_protocol_incompatible",
-    }
-)
-
-
-class ProviderFailureError(RuntimeError):
-    """Public, body-free provider failure for control-plane classification.
-
-    ``failure_class`` is the only diagnostic detail exposed by this exception.
-    The message is deliberately constant so logging the exception cannot retain
-    an endpoint, HTTP status, provider body, model output, or credential.
-    """
-
-    MESSAGE = "provider request failed"
-
-    def __init__(self, failure_class: str) -> None:
-        if failure_class not in PROVIDER_FAILURE_CLASSES:
-            raise ValueError("unsupported provider failure class")
-        self.failure_class = failure_class
-        super().__init__(self.MESSAGE)
 
 
 @dataclass
@@ -108,10 +67,13 @@ class _EndpointCapacityState:
     requests_started: Deque[float] = field(default_factory=deque)
     success_streak: int = 0
     overload_events: int = 0
+    adaptive_limit: int = 0
+    owners: Any = field(default_factory=WeakKeyDictionary)
 
 
 @dataclass
 class _GlobalCapacityState:
+    owners: Any = field(default_factory=WeakKeyDictionary)
     hard_max_concurrent_requests: int = 0
     in_flight: int = 0
 
@@ -127,64 +89,6 @@ class _UsageTelemetryState:
     successful_call_durations_seconds: List[float] = field(default_factory=list)
 
 
-class _ProviderCallError(RuntimeError):
-    """Typed provider failure that never retains response or exception bodies."""
-
-    def __init__(self, failure_class: str, *, status: Optional[int] = None) -> None:
-        self.failure_class = failure_class
-        self.status = status
-        super().__init__(failure_class)
-
-
-def _public_provider_failure_class(reason: str) -> str:
-    """Map a private body-free reason to the fixed public P6 taxonomy."""
-
-    if reason == "provider_http_auth_error":
-        return "provider_credentials_unavailable"
-    if reason in {
-        "provider_http_rate_limited",
-        "provider_http_server_error",
-    } or reason.startswith("provider_transport_"):
-        return "provider_transport_exhausted"
-    if reason == "provider_protocol_usage_unverifiable":
-        return "provider_usage_unverifiable"
-    if reason in {
-        "provider_protocol_model_mismatch",
-        "provider_protocol_model_drift",
-    }:
-        return "provider_identity_mismatch"
-    if reason.startswith("provider_protocol_") or reason in {
-        "provider_http_client_error",
-        "provider_http_unexpected_status",
-    }:
-        return "provider_protocol_incompatible"
-    return "provider_transport_exhausted"
-
-
-class _DuplicateProviderJsonKeyError(ValueError):
-    """Internal marker for ambiguous provider-controlled JSON objects."""
-
-
-class _NonFiniteProviderJsonNumberError(ValueError):
-    """Internal marker for non-standard provider-controlled JSON numbers."""
-
-
-def _reject_duplicate_provider_json_keys(
-    pairs: Sequence[tuple[str, Any]],
-) -> Dict[str, Any]:
-    value: Dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise _DuplicateProviderJsonKeyError("duplicate provider JSON key")
-        value[key] = item
-    return value
-
-
-def _reject_nonfinite_provider_json_number(value: str) -> Any:
-    del value
-    raise _NonFiniteProviderJsonNumberError("non-finite provider JSON number")
-
-
 _ENDPOINT_CAPACITY_CONDITION = threading.Condition()
 _ENDPOINT_CAPACITY_STATES: Dict[str, _EndpointCapacityState] = {}
 _GLOBAL_CAPACITY_STATE = _GlobalCapacityState()
@@ -195,7 +99,7 @@ class LLMClient:
     OpenAI-compatible LLM client with model fallback support.
     """
 
-    MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS = 1
+    MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS = 50
     MODEL_CONTEXT_INLINE_OLD_TOOL_CHARS = 900
     MODEL_CONTEXT_TOOL_RESULT_SUMMARY_CHARS = 1800
     MODEL_CONTEXT_SUMMARY_STRING_CHARS = 500
@@ -209,8 +113,6 @@ class LLMClient:
     AIMD_DECREASE_FACTOR = 0.5
     TRANSIENT_AUTH_RETRY_LIMIT = 1
     TRANSIENT_AUTH_RETRY_DELAY_SECONDS = 1.0
-    TRANSIENT_CLIENT_RESPONSE_RETRY_LIMIT = 1
-    TRANSIENT_CLIENT_RESPONSE_RETRY_DELAY_SECONDS = 1.0
     _SUMMARY_PRIORITY_KEYS = (
         "success",
         "error",
@@ -265,10 +167,8 @@ class LLMClient:
         base_url_max_concurrent_requests: Optional[int] = None,
         global_max_concurrent_requests: int = DEFAULT_GLOBAL_MAX_INFLIGHT,
         supports_structured_output: bool = False,
-        require_exact_response_model: bool = False,
         token_usage_ledger: Optional[ScanTokenUsageLedger] = None,
         llm_ref: str = "",
-        response_model_map: Optional[Mapping[str, str]] = None,
     ):
         """
         Initialize LLM client.
@@ -277,27 +177,24 @@ class LLMClient:
             api_key: API key
             base_url: API base URL or ordered list of API base URLs
             models: List of model names in order of priority
-            response_model_map: Exact provider response identity for request aliases
             timeout: Request timeout in seconds
             max_retries: Retries per model
-            retry_until_available: Compatibility flag. Transient failures remain
-                bounded by the configured retry budget.
+            retry_until_available: Keep retrying transient transport/provider
+                failures after ``max_retries`` until the request succeeds or
+                the scan is cancelled.
         """
+        self._closed = False
+        self._owned_in_flight = 0
+        self._request_threads: Dict[int, int] = {}
         self.api_key = api_key
         self.base_urls = self._normalize_base_urls(base_url)
         self.base_url = self.base_urls[0]
         self.models = models
-        self.response_model_map = {
-            str(requested).strip(): str(response).strip()
-            for requested, response in (response_model_map or {}).items()
-            if str(requested).strip() and str(response).strip()
-        }
         self.timeout = float(timeout) if timeout is not None else None
         self.max_retries = max_retries
         self.retry_until_available = bool(retry_until_available)
         self.max_tokens = max_tokens
         self.supports_structured_output = bool(supports_structured_output)
-        self.require_exact_response_model = bool(require_exact_response_model)
         self.token_usage_ledger = token_usage_ledger
         self.llm_ref = str(llm_ref or "")
         self.base_url_rate_limit_per_minute = max(0, int(base_url_rate_limit_per_minute or 0))
@@ -339,6 +236,8 @@ class LLMClient:
         self._sessions_lock = threading.Lock()
         self._sessions: Set[requests.Session] = set()
         self._usage_lock = threading.Lock()
+        self._tool_schema_lock = threading.Lock()
+        self._portable_tool_schema_only = False
         self._usage_telemetry = _UsageTelemetryState()
         self.session = self._new_session()
         self._thread_local.session = self.session
@@ -348,48 +247,40 @@ class LLMClient:
         positive = [int(limit) for limit in limits if int(limit or 0) > 0]
         return min(positive) if positive else 0
 
-    @staticmethod
-    def _shared_global_capacity_state(
-        max_concurrent_requests: int,
-    ) -> _GlobalCapacityState:
+    def _shared_global_capacity_state(self, max_concurrent_requests: int) -> _GlobalCapacityState:
         with _ENDPOINT_CAPACITY_CONDITION:
-            if max_concurrent_requests > 0:
-                _GLOBAL_CAPACITY_STATE.hard_max_concurrent_requests = (
-                    LLMClient._strictest_positive_limit(
-                        _GLOBAL_CAPACITY_STATE.hard_max_concurrent_requests,
-                        max_concurrent_requests,
-                    )
-                )
-            return _GLOBAL_CAPACITY_STATE
+            state = _GLOBAL_CAPACITY_STATE
+            state.owners[self] = max_concurrent_requests
+            state.hard_max_concurrent_requests = self._strictest_positive_limit(
+                *state.owners.values()
+            )
+            return state
 
-    @staticmethod
+    @classmethod
+    def _recompute_endpoint_capacity(cls, state: _EndpointCapacityState) -> None:
+        values = list(state.owners.values())
+        state.hard_max_concurrent_requests = cls._strictest_positive_limit(*(v[0] for v in values))
+        state.rate_limit_per_minute = cls._strictest_positive_limit(*(v[1] for v in values))
+        state.max_concurrent_requests = cls._strictest_positive_limit(
+            state.hard_max_concurrent_requests, state.adaptive_limit
+        )
+
     def _shared_endpoint_capacity_state(
+        self,
         url: str,
         max_concurrent_requests: int,
         rate_limit_per_minute: int = 0,
     ) -> _EndpointCapacityState:
         with _ENDPOINT_CAPACITY_CONDITION:
-            state = _ENDPOINT_CAPACITY_STATES.get(url)
-            if state is None:
-                state = _EndpointCapacityState(url=url)
-                _ENDPOINT_CAPACITY_STATES[url] = state
-            if max_concurrent_requests > 0:
-                state.hard_max_concurrent_requests = LLMClient._strictest_positive_limit(
-                    state.hard_max_concurrent_requests,
-                    max_concurrent_requests,
-                )
-                if state.max_concurrent_requests <= 0:
-                    state.max_concurrent_requests = state.hard_max_concurrent_requests
-                else:
-                    state.max_concurrent_requests = min(
-                        state.max_concurrent_requests,
-                        state.hard_max_concurrent_requests,
-                    )
-            if rate_limit_per_minute > 0:
-                state.rate_limit_per_minute = LLMClient._strictest_positive_limit(
-                    state.rate_limit_per_minute,
-                    rate_limit_per_minute,
-                )
+            now = time.monotonic()
+            for key, old in list(_ENDPOINT_CAPACITY_STATES.items()):
+                self._prune_endpoint_requests(old, now)
+                if not old.owners and not old.in_flight and not old.requests_started:
+                    del _ENDPOINT_CAPACITY_STATES[key]
+            state = _ENDPOINT_CAPACITY_STATES.setdefault(url, _EndpointCapacityState(url=url))
+            state.owners[self] = (max_concurrent_requests, rate_limit_per_minute)
+            self._recompute_endpoint_capacity(state)
+            _ENDPOINT_CAPACITY_CONDITION.notify_all()
             return state
 
     def endpoint_capacity_snapshot(self) -> Dict[str, Dict[str, int]]:
@@ -465,39 +356,22 @@ class LLMClient:
         *,
         tools: Optional[List[Dict[str, Any]]],
         response_format: Optional[Dict[str, Any]],
-        request_payload: Optional[Mapping[str, Any]] = None,
     ) -> int:
-        """Return a conservative upper bound for one serialized request prompt.
+        """Estimate the complete request prompt before the manager adds its safety margin."""
 
-        The historical character heuristic remains useful as a lower-bound
-        sanity check, but it is not safe for formal admission.  The byte bound
-        includes messages, tools and response format exactly as JSON plus a
-        frozen allowance for provider chat-template framing.  Consequently an
-        admitted request reserves enough room even for byte-fallback
-        tokenization; the completion limit is reserved separately by the
-        scan-wide ledger.
-        """
-
-        heuristic = cls.estimate_tokens(messages)
-        serialized_payload: Dict[str, Any] = dict(request_payload or {})
-        serialized_payload["messages"] = messages
+        estimate = cls.estimate_tokens(messages)
+        protocol_payload: Dict[str, Any] = {}
         if tools:
-            serialized_payload["tools"] = tools
+            protocol_payload["tools"] = tools
         if response_format:
-            serialized_payload["response_format"] = response_format
-        rendered = json.dumps(
-            serialized_payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        template_item_count = max(1, len(messages)) + len(tools or [])
-        conservative_bound = (
-            len(rendered)
-            + _REQUEST_PROMPT_TEMPLATE_BASE_ALLOWANCE
-            + _REQUEST_PROMPT_TEMPLATE_PER_ITEM_ALLOWANCE * template_item_count
-        )
-        return max(1, heuristic, conservative_bound)
+            protocol_payload["response_format"] = response_format
+        if protocol_payload:
+            rendered = json.dumps(protocol_payload, ensure_ascii=False, separators=(",", ":"))
+            estimate += int((len(rendered) + 3) / 3.8)
+        # Provider chat templates add role and message framing that is absent
+        # from the content-only estimator.
+        estimate += 8 * max(1, len(messages))
+        return max(1, estimate)
 
     def _reserve_scan_usage(
         self,
@@ -510,52 +384,25 @@ class LLMClient:
         trace_agent: Optional[str],
         trace_label: Optional[str],
         usage_attribution: Optional[Mapping[str, Any]],
-        request_payload: Optional[Mapping[str, Any]] = None,
-        call_chain_id: str = "",
-        attempt_index: int = 1,
     ) -> Optional[TokenUsageReservation]:
         manager = self.token_usage_ledger
         if manager is None:
             return None
-        inherited_attribution = current_llm_usage_attribution()
-        inherited_attribution.update(dict(usage_attribution or {}))
         attribution = LLMUsageAttribution.from_trace(
             trace_agent=trace_agent,
             trace_label=trace_label,
             llm_ref=self.llm_ref,
-            explicit=inherited_attribution,
+            explicit=usage_attribution,
         )
-        operation_kind = attribution.call_kind
-        if operation_kind == "contract_regeneration":
-            match = re.search(
-                r"(?:^|[;\s])pass\s*=\s*([^;]+)",
-                str(trace_label or ""),
-                flags=re.IGNORECASE,
-            )
-            operation_kind = str(match.group(1)).strip() if match else ""
-        logical_operation_id = ""
-        if attribution.validation_cluster_uid and operation_kind:
-            material = "\x00".join(
-                (
-                    attribution.agent,
-                    attribution.validation_cluster_uid,
-                    operation_kind,
-                )
-            )
-            logical_operation_id = hashlib.sha256(material.encode("utf-8")).hexdigest()
         return manager.reserve(
             self._estimate_request_prompt_tokens(
                 messages,
                 tools=tools,
                 response_format=response_format,
-                request_payload=request_payload,
             ),
             max_completion_tokens,
             attribution=attribution,
             model=model,
-            call_chain_id=call_chain_id,
-            attempt_index=attempt_index,
-            logical_operation_id=logical_operation_id,
         )
 
     def _settle_scan_usage(
@@ -569,7 +416,6 @@ class LLMClient:
         tool_call_count: int = 0,
         new_fact_count: int = 0,
         duration_ms: int = 0,
-        provider_response_model: str = "",
     ) -> Optional[Dict[str, Any]]:
         manager = self.token_usage_ledger
         if manager is None or reservation is None:
@@ -583,22 +429,7 @@ class LLMClient:
             completion_tokens=completion,
             total_tokens=total,
             provider_reported=not bool(usage.get("estimated", True)),
-            # Provider-controlled metadata is archived with the accounting
-            # ledger.  Keep it on a fixed enum so an arbitrary response value
-            # can never become an artifact/log side channel.
-            finish_reason=(
-                finish_reason
-                if finish_reason
-                in {
-                    "stop",
-                    "length",
-                    "tool_calls",
-                    "function_call",
-                    "content_filter",
-                    "error",
-                }
-                else "other"
-            ),
+            finish_reason=finish_reason,
             cached_prompt_tokens=self._usage_value(usage.get("cached_prompt_tokens")),
             reasoning_tokens=self._usage_value(usage.get("reasoning_tokens")),
             retry=retry,
@@ -606,91 +437,15 @@ class LLMClient:
             tool_call_count=tool_call_count,
             new_fact_count=new_fact_count,
             duration_ms=duration_ms,
-            provider_response_model=provider_response_model,
         )
         return event.to_dict()
 
-    @staticmethod
-    def _provider_message_has_output(message: Mapping[str, Any]) -> bool:
-        """Return whether a successful provider message contains model output.
-
-        The predicate deliberately reduces the response to one boolean.  It is
-        used only to reject an impossible all-zero strict usage record and
-        never retains provider content in an exception, log, or ledger event.
-        """
-
-        content = message.get("content")
-        reasoning = message.get("reasoning_content") or message.get("reasoning")
-        return bool(
-            (isinstance(content, str) and content)
-            or (isinstance(reasoning, str) and reasoning)
-            or message.get("tool_calls")
-            or message.get("function_call")
-        )
-
-    def _normalized_provider_usage(
-        self,
-        value: Any,
-        *,
-        response_has_output: bool = False,
-    ) -> Dict[str, Any]:
+    @classmethod
+    def _normalized_provider_usage(cls, value: Any) -> Dict[str, Any]:
         """Normalize OpenAI-compatible usage variants without retaining content."""
 
         if not isinstance(value, Mapping):
-            if self.require_exact_response_model:
-                raise _ProviderCallError("provider_protocol_usage_unverifiable")
             return {}
-
-        if self.require_exact_response_model:
-            prompt = value.get("prompt_tokens")
-            completion = value.get("completion_tokens")
-            total = value.get("total_tokens")
-            if any(
-                isinstance(item, bool) or not isinstance(item, int) or item < 0
-                for item in (prompt, completion, total)
-            ):
-                raise _ProviderCallError("provider_protocol_usage_unverifiable")
-            assert isinstance(prompt, int)
-            assert isinstance(completion, int)
-            assert isinstance(total, int)
-            if total != prompt + completion:
-                raise _ProviderCallError("provider_protocol_usage_unverifiable")
-            if response_has_output and prompt == completion == total == 0:
-                raise _ProviderCallError("provider_protocol_usage_unverifiable")
-
-            def optional_count(item: Any) -> int:
-                return (
-                    int(item)
-                    if isinstance(item, int) and not isinstance(item, bool) and item >= 0
-                    else 0
-                )
-
-            prompt_details = value.get("prompt_tokens_details")
-            completion_details = value.get("completion_tokens_details")
-            return {
-                "prompt_tokens": prompt,
-                "completion_tokens": completion,
-                "total_tokens": total,
-                "cached_prompt_tokens": optional_count(
-                    value.get("cached_prompt_tokens")
-                    if value.get("cached_prompt_tokens") is not None
-                    else (
-                        prompt_details.get("cached_tokens")
-                        if isinstance(prompt_details, Mapping)
-                        else None
-                    )
-                ),
-                "reasoning_tokens": optional_count(
-                    value.get("reasoning_tokens")
-                    if value.get("reasoning_tokens") is not None
-                    else (
-                        completion_details.get("reasoning_tokens")
-                        if isinstance(completion_details, Mapping)
-                        else None
-                    )
-                ),
-                "estimated": False,
-            }
 
         def first_number(*values: Any) -> Optional[int]:
             for candidate in values:
@@ -819,11 +574,14 @@ class LLMClient:
         return session
 
     def _session_for_thread(self) -> requests.Session:
-        session = getattr(self._thread_local, "session", None)
-        if session is None:
-            session = self._new_session()
-            self._thread_local.session = session
-        return cast(requests.Session, session)
+        with self._base_url_condition:
+            if self._closed and not self._request_threads.get(threading.get_ident()):
+                raise RuntimeError("LLM client is closed")
+            session = getattr(self._thread_local, "session", None)
+            if session is None:
+                session = self._new_session()
+                self._thread_local.session = session
+            return cast(requests.Session, session)
 
     def close_thread_session(self) -> None:
         """Close this client's HTTP session for the current thread."""
@@ -841,7 +599,25 @@ class LLMClient:
                 pass
 
     def close(self) -> None:
-        """Close all HTTP sessions known to this client."""
+        """Stop admission; active requests retain sessions until they release."""
+        with self._base_url_condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._global_capacity_state.owners.pop(self, None)
+            self._global_capacity_state.hard_max_concurrent_requests = (
+                self._strictest_positive_limit(*self._global_capacity_state.owners.values())
+            )
+            for endpoint in self._endpoint_capacity_states.values():
+                endpoint.owners.pop(self, None)
+                self._recompute_endpoint_capacity(endpoint)
+            self._base_url_condition.notify_all()
+            if self._owned_in_flight:
+                return
+        self._close_sessions()
+
+    def _close_sessions(self) -> None:
+        """Called only after admission stopped and this owner's requests drained."""
         with self._sessions_lock:
             sessions = list(self._sessions)
             self._sessions.clear()
@@ -884,6 +660,8 @@ class LLMClient:
                 token.raise_if_cancelled()
             now = time.monotonic()
             with self._base_url_condition:
+                if self._closed:
+                    raise RuntimeError("LLM client is closed")
                 for state in self._base_url_states:
                     self._prune_recent_requests(state, now)
                     self._prune_endpoint_requests(
@@ -916,6 +694,9 @@ class LLMClient:
                     endpoint.requests_started.append(now)
                     endpoint.in_flight += 1
                     self._global_capacity_state.in_flight += 1
+                    self._owned_in_flight += 1
+                    thread = threading.get_ident()
+                    self._request_threads[thread] = self._request_threads.get(thread, 0) + 1
                     return selected
 
                 blocked_by_concurrency_only = (
@@ -952,7 +733,16 @@ class LLMClient:
                 0,
                 self._global_capacity_state.in_flight - 1,
             )
+            self._owned_in_flight = max(0, self._owned_in_flight - 1)
+            thread = threading.get_ident()
+            if self._request_threads.get(thread, 0) <= 1:
+                self._request_threads.pop(thread, None)
+            else:
+                self._request_threads[thread] -= 1
+            drained = self._closed and not self._owned_in_flight
             self._base_url_condition.notify_all()
+        if drained:
+            self._close_sessions()
 
     def _mark_base_url_cooldown(self, state: _BaseUrlState, seconds: float) -> None:
         if seconds <= 0:
@@ -1052,6 +842,11 @@ class LLMClient:
                 hard_limit,
                 endpoint.max_concurrent_requests + 1,
             )
+            endpoint.adaptive_limit = (
+                endpoint.max_concurrent_requests
+                if endpoint.max_concurrent_requests < hard_limit
+                else 0
+            )
             endpoint.success_streak = 0
             self._base_url_condition.notify_all()
             logger.info(
@@ -1073,6 +868,8 @@ class LLMClient:
                 endpoint.max_concurrent_requests or endpoint.hard_max_concurrent_requests
             )
             if current_limit <= 1:
+                endpoint.adaptive_limit = 1
+                endpoint.max_concurrent_requests = 1
                 endpoint.success_streak = 0
                 endpoint.overload_events += 1
                 return
@@ -1081,6 +878,7 @@ class LLMClient:
                 int(current_limit * self.AIMD_DECREASE_FACTOR),
             )
             endpoint.max_concurrent_requests = min(current_limit, reduced_limit)
+            endpoint.adaptive_limit = endpoint.max_concurrent_requests
             endpoint.success_streak = 0
             endpoint.overload_events += 1
             self._base_url_condition.notify_all()
@@ -1111,7 +909,7 @@ class LLMClient:
             pass
         try:
             retry_at = parsedate_to_datetime(retry_after)
-            return max(0.0, retry_at.timestamp() - time.time())
+            return max(0.0, float(retry_at.timestamp() - time.time()))
         except (TypeError, ValueError, OverflowError):
             return None
 
@@ -1174,45 +972,353 @@ class LLMClient:
 
     def _recover_from_local_fd_exhaustion(
         self,
-        _error: BaseException,
+        error: BaseException,
         cooldown_seconds: float,
     ) -> None:
         logger.warning(
             "Local file descriptor exhaustion while calling LLM; closing current "
-            "thread HTTP session and cooling all base_urls for %.1fs",
+            "thread HTTP session and cooling all base_urls for %.1fs: %s",
             cooldown_seconds,
+            error,
         )
         self.close_thread_session()
         self._mark_all_base_urls_cooldown(cooldown_seconds)
 
+    # ------------------------------------------------------------------
+    # Conversation recording helpers. Every helper is a no-op unless the
+    # process-wide recorder is enabled (verbose runs) and a trace session
+    # exists, so instrumented call sites carry no overhead otherwise.
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def _http_failure_class(status: int) -> str:
-        if status in {401, 403}:
-            return "provider_http_auth_error"
-        if status == 429:
-            return "provider_http_rate_limited"
-        if 500 <= status <= 599:
-            return "provider_http_server_error"
-        if 400 <= status <= 499:
-            return "provider_http_client_error"
-        return "provider_http_unexpected_status"
+    def _tools_schema_hash(tools_schema: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+        if not tools_schema:
+            return None
+        try:
+            canonical = json.dumps(tools_schema, ensure_ascii=False, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            canonical = repr(tools_schema)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    # ------------------------------------------------------------------
+    # HTTP 4xx wire-shape diagnostics. Customer gateways validate payloads
+    # with different strictness than the local benchmark replay, so a 400
+    # must be diagnosable from logs alone. These helpers never log message
+    # contents; they only summarize protocol fields and JSON-Schema
+    # constructs that strict providers are known to reject.
+    # ------------------------------------------------------------------
+
+    _MESSAGE_STANDARD_KEYS = frozenset(
+        {"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"}
+    )
 
     @classmethod
-    def _provider_failure_class(cls, error: BaseException) -> str:
-        if isinstance(error, _ProviderCallError):
-            return error.failure_class
-        if cls._is_too_many_open_files(error):
-            return "provider_transport_local_resource_exhausted"
-        overload = cls._endpoint_overload_reason(error)
-        if overload == "timeout":
-            return "provider_transport_timeout"
-        if overload == "ssl_error":
-            return "provider_transport_tls_error"
-        if overload == "connection_error":
-            return "provider_transport_connection_error"
-        if isinstance(error, (json.JSONDecodeError, UnicodeError, ValueError, TypeError)):
-            return "provider_protocol_error"
-        return "provider_transport_error"
+    def _collect_json_schema_flags(
+        cls,
+        node: Any,
+        flags: Dict[str, int],
+        depth: int = 0,
+    ) -> None:
+        """Count JSON-Schema constructs that strict provider validators reject."""
+        if depth > 16 or not isinstance(node, dict):
+            return
+        if isinstance(node.get("type"), list):
+            flags["type_union"] = flags.get("type_union", 0) + 1
+        for keyword in (
+            "$defs",
+            "$ref",
+            "$schema",
+            "oneOf",
+            "anyOf",
+            "allOf",
+            "pattern",
+            "patternProperties",
+            "format",
+            "minLength",
+            "maxLength",
+            "minItems",
+            "maxItems",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+        ):
+            if keyword in node:
+                flags[keyword] = flags.get(keyword, 0) + 1
+        if node.get("additionalProperties") is False:
+            flags["additionalProperties_false"] = flags.get("additionalProperties_false", 0) + 1
+        for key, value in node.items():
+            if key in ("properties", "$defs", "patternProperties") and isinstance(value, dict):
+                for child in value.values():
+                    cls._collect_json_schema_flags(child, flags, depth + 1)
+            elif key in ("items", "additionalProperties", "not", "if", "then", "else"):
+                cls._collect_json_schema_flags(value, flags, depth + 1)
+            elif key in ("oneOf", "anyOf", "allOf", "prefixItems") and isinstance(value, list):
+                for child in value:
+                    cls._collect_json_schema_flags(child, flags, depth + 1)
+
+    def _log_http_4xx_diagnostics(
+        self,
+        *,
+        model: str,
+        base_url: str,
+        status: int,
+        response_body: Any,
+        payload: Dict[str, Any],
+    ) -> None:
+        """Log a compact, content-free wire-shape summary of a rejected request.
+
+        Emitted on every HTTP 4xx (including every provider validator 400) so
+        the offending protocol field can be identified from customer-environment
+        logs: exact top-level payload fields, ``max_tokens``, the ``tool_choice``
+        form, ``response_format`` detail, per-role message counts, whether any
+        assistant message would replay ``reasoning_content``, unexpected message
+        keys, tool names, a tools-schema hash, and JSON-Schema feature flags.
+        Never raises; diagnostics must not mask the original failure.
+        """
+        try:
+            messages = payload.get("messages")
+            roles: List[str] = []
+            role_counts: Dict[str, int] = {}
+            extra_message_keys: set = set()
+            assistant_with_reasoning = 0
+            if isinstance(messages, list):
+                for message in messages:
+                    if not isinstance(message, dict):
+                        roles.append("<non-dict>")
+                        continue
+                    role = str(message.get("role") or "<missing>")
+                    roles.append(role)
+                    role_counts[role] = role_counts.get(role, 0) + 1
+                    if role == "assistant" and message.get("reasoning_content") is not None:
+                        assistant_with_reasoning += 1
+                    extra_message_keys.update(
+                        str(key) for key in message.keys() if key not in self._MESSAGE_STANDARD_KEYS
+                    )
+            tools = payload.get("tools")
+            tool_names: List[str] = []
+            schema_flags: Dict[str, int] = {}
+            if isinstance(tools, list):
+                for tool in tools:
+                    function = tool.get("function") if isinstance(tool, dict) else None
+                    name = function.get("name") if isinstance(function, dict) else None
+                    tool_names.append(str(name) if name else "<missing>")
+                    parameters = function.get("parameters") if isinstance(function, dict) else None
+                    self._collect_json_schema_flags(parameters, schema_flags)
+            response_format = payload.get("response_format")
+            response_format_summary: Any = None
+            if isinstance(response_format, dict):
+                response_format_summary = {"type": response_format.get("type")}
+                json_schema = response_format.get("json_schema")
+                if isinstance(json_schema, dict):
+                    response_format_summary["json_schema.name"] = json_schema.get("name")
+                    response_format_summary["json_schema.strict"] = json_schema.get("strict")
+            diag = {
+                "model": model,
+                "base_url": base_url,
+                "status": status,
+                "payload_fields": sorted(str(key) for key in payload.keys()),
+                "max_tokens": payload.get("max_tokens"),
+                "temperature": payload.get("temperature"),
+                "tool_choice": payload.get("tool_choice"),
+                "response_format": response_format_summary,
+                "message_count": len(roles),
+                "role_counts": role_counts,
+                "role_tail": roles[-6:],
+                "assistant_with_reasoning_content": assistant_with_reasoning,
+                "message_extra_keys": sorted(extra_message_keys),
+                "tool_names": tool_names,
+                "tools_schema_hash": self._tools_schema_hash(
+                    tools if isinstance(tools, list) else None
+                ),
+                "tool_schema_flags": schema_flags,
+                "stream": payload.get("stream"),
+                "stream_options": payload.get("stream_options"),
+            }
+            logger.warning(
+                "[LLM-4xx-DIAG] %s",
+                json.dumps(diag, ensure_ascii=False, default=str),
+            )
+            logger.warning(
+                "[LLM-4xx-DIAG] provider_body: %s",
+                str(response_body or "")[:1500],
+            )
+        except Exception:
+            logger.warning("[LLM-4xx-DIAG] failed to summarize rejected payload", exc_info=True)
+
+    @staticmethod
+    def _record_chat_exchange(
+        recorder: Any,
+        trace_session: Optional[ConversationSession],
+        created_trace_session: bool,
+        *,
+        iteration: Optional[int],
+        messages: List[Dict[str, Any]],
+        assembled_message: Dict[str, Any],
+        finish_reason: Optional[str],
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        duration_ms: int,
+        attempt_count: int,
+        base_url: str,
+        usage_event: Optional[Mapping[str, Any]] = None,
+        usage_attribution: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        if not (recorder and trace_session):
+            return
+        usage_event_id = None
+        if isinstance(usage_event, Mapping):
+            usage_event_id = usage_event.get("sequence")
+        recorder.record_exchange(
+            trace_session,
+            iteration,
+            messages,
+            assembled_message,
+            finish_reason,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            duration_ms=duration_ms,
+            attempt_count=attempt_count,
+            base_url=base_url,
+            usage_event_id=usage_event_id,
+            attribution=dict(usage_attribution) if usage_attribution else None,
+        )
+        if created_trace_session:
+            recorder.record_session_end(
+                trace_session,
+                iteration or 1,
+                prompt_tokens + completion_tokens,
+                truncated=finish_reason == "length",
+                cumulative_prompt_tokens=prompt_tokens,
+                cumulative_completion_tokens=completion_tokens,
+                cumulative_total_tokens=prompt_tokens + completion_tokens,
+                finish_reason=finish_reason,
+            )
+
+    @staticmethod
+    def _record_attempt_failure(
+        trace_session: Optional[ConversationSession],
+        iteration: Optional[int],
+        *,
+        model: Optional[str],
+        base_url: Optional[str],
+        attempt: Optional[int],
+        outcome: str,
+        error: Optional[str] = None,
+        delay_ms: Optional[int] = None,
+    ) -> None:
+        recorder = get_conversation_recorder()
+        if recorder is None or trace_session is None:
+            return
+        recorder.record_attempt_failure(
+            trace_session,
+            iteration,
+            model=model,
+            base_url=base_url,
+            attempt=attempt,
+            outcome=outcome,
+            error=error,
+            delay_ms=delay_ms,
+        )
+
+    @staticmethod
+    def _attempt_failure_outcome(error: BaseException) -> str:
+        if isinstance(error, requests.exceptions.Timeout):
+            return "timeout"
+        if isinstance(error, requests.exceptions.SSLError):
+            return "tls_error"
+        if isinstance(error, requests.exceptions.ConnectionError):
+            return "connect_error"
+        return "request_error"
+
+    @staticmethod
+    def _record_control_event(
+        trace_session: Optional[ConversationSession],
+        iteration: int,
+        kind: str,
+        detail: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        recorder = get_conversation_recorder()
+        if recorder is None or trace_session is None:
+            return
+        recorder.record_iteration_control(
+            trace_session,
+            iteration,
+            kind,
+            dict(detail) if detail else None,
+        )
+
+    @staticmethod
+    def _record_loop_guard_event(
+        trace_session: Optional[ConversationSession],
+        iteration: int,
+        **fields: Any,
+    ) -> None:
+        recorder = get_conversation_recorder()
+        if recorder is None or trace_session is None:
+            return
+        recorder.record_loop_guard(trace_session, iteration, **fields)
+
+    @classmethod
+    def _strict_tool_schemas(cls, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Create OpenAI strict schemas while retaining nullable optional fields."""
+
+        def strict_value(schema: Any, *, optional: bool = False) -> Any:
+            if not isinstance(schema, dict):
+                return schema
+            result = {key: strict_value(value) for key, value in schema.items()}
+            schema_type = result.get("type")
+            if optional:
+                if isinstance(schema_type, str):
+                    result["type"] = [schema_type, "null"]
+                elif isinstance(schema_type, list) and "null" not in schema_type:
+                    result["type"] = [*schema_type, "null"]
+                elif schema_type is None:
+                    result["anyOf"] = [
+                        {key: value for key, value in result.items() if key != "anyOf"},
+                        {"type": "null"},
+                    ]
+                if isinstance(result.get("enum"), list) and None not in result["enum"]:
+                    result["enum"] = [*result["enum"], None]
+            properties = result.get("properties")
+            if isinstance(properties, dict):
+                originally_required = set(result.get("required") or [])
+                result["properties"] = {
+                    name: strict_value(value, optional=name not in originally_required)
+                    for name, value in properties.items()
+                }
+                result["required"] = list(properties)
+                result["additionalProperties"] = False
+            if isinstance(result.get("items"), dict):
+                result["items"] = strict_value(result["items"])
+            return result
+
+        strict_tools: List[Dict[str, Any]] = []
+        for tool in tools:
+            copied = json.loads(json.dumps(tool))
+            function = copied.get("function")
+            if isinstance(function, dict):
+                function["parameters"] = strict_value(function.get("parameters") or {})
+                function["strict"] = True
+            strict_tools.append(copied)
+        return strict_tools
+
+    @staticmethod
+    def _is_tool_schema_rejection(response_text: str) -> bool:
+        lowered = str(response_text or "").lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "strict",
+                "tool schema",
+                "function schema",
+                "invalid schema",
+                "additionalproperties",
+            )
+        ) or (
+            "required" in lowered
+            and any(marker in lowered for marker in ("schema", "function", "tool"))
+        )
 
     def chat_completion(
         self,
@@ -1238,16 +1344,24 @@ class LLMClient:
         recorder = get_conversation_recorder()
         created_trace_session = False
         if recorder and trace_session is None:
-            trace_session = recorder.begin_session(trace_agent or "direct_chat", trace_label)
+            trace_session = recorder.begin_session(
+                trace_agent or "direct_chat",
+                trace_label,
+                tools_schema_hash=self._tools_schema_hash(tools),
+            )
             created_trace_session = True
+
+        portable_tools = tools
+        with self._tool_schema_lock:
+            portable_only = self._portable_tool_schema_only
+        strict_tools_active = bool(self.supports_structured_output and tools and not portable_only)
+        strict_fallback_used = False
+        request_tool_schemas = (
+            self._strict_tool_schemas(tools) if strict_tools_active and tools else tools
+        )
 
         for model in self.models:
             logger.info(f"Using model: {model}")
-            call_chain_id = (
-                self.token_usage_ledger.new_call_chain_id()
-                if self.token_usage_ledger is not None
-                else ""
-            )
 
             payload = {
                 "model": model,
@@ -1256,16 +1370,9 @@ class LLMClient:
                 "max_tokens": max_tokens or self.max_tokens,
             }
 
-            if tools:
-                payload["tools"] = tools
+            if request_tool_schemas:
+                payload["tools"] = request_tool_schemas
                 payload["tool_choice"] = tool_choice if tool_choice is not None else "auto"
-                # The sealed P6 provider contract is an OpenAI-compatible
-                # tools endpoint.  Keep each response as one deterministic
-                # action/finalization boundary so a provider cannot batch a
-                # validator final call with another action.  Non-strict
-                # compatibility profiles do not receive this optional field.
-                if self.require_exact_response_model:
-                    payload["parallel_tool_calls"] = False
             if response_format:
                 payload["response_format"] = response_format
 
@@ -1280,10 +1387,15 @@ class LLMClient:
             total_attempts = (self.max_retries + 1) * max(1, len(self._base_url_states))
             attempt = 0
             retry_transient = False
+            retry_transient_auth = False
             transient_auth_retries_remaining = self.TRANSIENT_AUTH_RETRY_LIMIT
-            transient_client_response_retries_remaining = self.TRANSIENT_CLIENT_RESPONSE_RETRY_LIMIT
-            while attempt < total_attempts:
+            while (
+                attempt < total_attempts
+                or (self.retry_until_available and retry_transient)
+                or retry_transient_auth
+            ):
                 retry_transient = False
+                retry_transient_auth = False
                 attempt += 1
                 token = current_cancellation_token()
                 if token is not None:
@@ -1293,9 +1405,7 @@ class LLMClient:
                 response: Optional[requests.Response] = None
                 usage_reservation: Optional[TokenUsageReservation] = None
                 usage_settled = False
-                usage_rejected_before_model = False
                 request_started: Optional[float] = None
-                usage_failure_class = "provider_request_failed"
                 retry_call, repair_call, new_fact_count = self._usage_call_flags(
                     attempt=attempt,
                     trace_label=trace_label,
@@ -1316,9 +1426,6 @@ class LLMClient:
                         trace_agent=trace_agent,
                         trace_label=trace_label,
                         usage_attribution=usage_attribution,
-                        request_payload=payload,
-                        call_chain_id=call_chain_id,
-                        attempt_index=attempt,
                     )
                     attempt_payload = dict(payload)
                     if usage_reservation is not None:
@@ -1326,20 +1433,12 @@ class LLMClient:
 
                     if self._transport == "curl":
                         request_started = time.monotonic()
-                        (
-                            assembled_message,
-                            finish_reason,
-                            provider_usage,
-                            provider_response_model,
-                        ) = self._curl_chat_completion(
-                            url,
-                            attempt_payload,
+                        assembled_message, finish_reason, provider_usage = (
+                            self._curl_chat_completion(
+                                url,
+                                attempt_payload,
+                            )
                         )
-                        self._validate_provider_response_model(
-                            requested_model=model,
-                            response_model=provider_response_model,
-                        )
-                        self._validate_provider_finish_reason(finish_reason)
                         prompt_tokens = LLMClient.estimate_tokens(messages)
                         completion_tokens = LLMClient.estimate_tokens([assembled_message])
                         usage: Dict[str, Any] = {
@@ -1348,12 +1447,7 @@ class LLMClient:
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
-                        normalized_provider_usage = self._normalized_provider_usage(
-                            provider_usage,
-                            response_has_output=self._provider_message_has_output(
-                                assembled_message
-                            ),
-                        )
+                        normalized_provider_usage = self._normalized_provider_usage(provider_usage)
                         if normalized_provider_usage:
                             usage.update(normalized_provider_usage)
                         duration_seconds = time.monotonic() - request_started
@@ -1372,7 +1466,6 @@ class LLMClient:
                             tool_call_count=tool_call_count,
                             new_fact_count=new_fact_count,
                             duration_ms=max(0, int(round(duration_seconds * 1000))),
-                            provider_response_model=provider_response_model,
                         )
                         usage_settled = usage_reservation is not None
                         if usage_event is not None:
@@ -1383,23 +1476,23 @@ class LLMClient:
                             f"Completion ~{completion_tokens:,} tk | "
                             f"Total ~{prompt_tokens + completion_tokens:,} tk"
                         )
-                        if recorder and trace_session:
-                            recorder.record_exchange(
-                                trace_session,
-                                trace_iteration,
-                                messages,
-                                assembled_message,
-                                finish_reason,
-                                model,
-                                prompt_tokens,
-                                completion_tokens,
-                            )
-                            if created_trace_session:
-                                recorder.record_session_end(
-                                    trace_session,
-                                    trace_iteration or 1,
-                                    prompt_tokens + completion_tokens,
-                                )
+                        self._record_chat_exchange(
+                            recorder,
+                            trace_session,
+                            created_trace_session,
+                            iteration=trace_iteration,
+                            messages=messages,
+                            assembled_message=assembled_message,
+                            finish_reason=finish_reason,
+                            model=model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            duration_ms=max(0, int(round(duration_seconds * 1000))),
+                            attempt_count=attempt,
+                            base_url=endpoint.url,
+                            usage_event=usage_event,
+                            usage_attribution=usage_attribution,
+                        )
                         self._record_endpoint_success(endpoint)
                         return {
                             "choices": [
@@ -1408,8 +1501,7 @@ class LLMClient:
                                     "finish_reason": finish_reason,
                                 }
                             ],
-                            "model": provider_response_model,
-                            "requested_model": model,
+                            "model": model,
                             "usage": usage,
                         }
 
@@ -1425,24 +1517,15 @@ class LLMClient:
                     request_started = time.monotonic()
                     response = self._session_for_thread().post(
                         url,
-                        json=attempt_payload,
+                        json=cast(Any, attempt_payload),
                         timeout=request_timeout,
                         stream=True,
-                        allow_redirects=False,
                     )
 
                     if response.status_code == 200:
-                        (
-                            assembled_message,
-                            finish_reason,
-                            provider_usage,
-                            provider_response_model,
-                        ) = self._assemble_chat_response_with_usage(response)
-                        self._validate_provider_response_model(
-                            requested_model=model,
-                            response_model=provider_response_model,
+                        assembled_message, finish_reason, provider_usage = (
+                            self._assemble_chat_response_with_usage(response)
                         )
-                        self._validate_provider_finish_reason(finish_reason)
 
                         # Estimate single API call cost and log prominently
                         prompt_tokens = LLMClient.estimate_tokens(messages)
@@ -1453,12 +1536,7 @@ class LLMClient:
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
-                        normalized_provider_usage = self._normalized_provider_usage(
-                            provider_usage,
-                            response_has_output=self._provider_message_has_output(
-                                assembled_message
-                            ),
-                        )
+                        normalized_provider_usage = self._normalized_provider_usage(provider_usage)
                         if normalized_provider_usage:
                             usage.update(normalized_provider_usage)
                         duration_seconds = time.monotonic() - request_started
@@ -1477,7 +1555,6 @@ class LLMClient:
                             tool_call_count=tool_call_count,
                             new_fact_count=new_fact_count,
                             duration_ms=max(0, int(round(duration_seconds * 1000))),
-                            provider_response_model=provider_response_model,
                         )
                         usage_settled = usage_reservation is not None
                         if usage_event is not None:
@@ -1489,52 +1566,86 @@ class LLMClient:
                             f"Completion ≈ {completion_tokens:,} tk | "
                             f"Total ≈ {prompt_tokens + completion_tokens:,} tk"
                         )
-                        if recorder and trace_session:
-                            recorder.record_exchange(
-                                trace_session,
-                                trace_iteration,
-                                messages,
-                                assembled_message,
-                                finish_reason,
-                                model,
-                                prompt_tokens,
-                                completion_tokens,
-                            )
-                            if created_trace_session:
-                                recorder.record_session_end(
-                                    trace_session,
-                                    trace_iteration or 1,
-                                    prompt_tokens + completion_tokens,
-                                )
+                        self._record_chat_exchange(
+                            recorder,
+                            trace_session,
+                            created_trace_session,
+                            iteration=trace_iteration,
+                            messages=messages,
+                            assembled_message=assembled_message,
+                            finish_reason=finish_reason,
+                            model=model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            duration_ms=max(0, int(round(duration_seconds * 1000))),
+                            attempt_count=attempt,
+                            base_url=endpoint.url,
+                            usage_event=usage_event,
+                            usage_attribution=usage_attribution,
+                        )
 
                         self._record_endpoint_success(endpoint)
                         return {
                             "choices": [
                                 {"message": assembled_message, "finish_reason": finish_reason}
                             ],
-                            "model": provider_response_model,
-                            "requested_model": model,
+                            "model": model,
                             "usage": usage,
                         }
 
-                    failure_class = self._http_failure_class(response.status_code)
+                    error_msg = f"HTTP {response.status_code}: {response.text}"
                     transient_http_error = (
                         response.status_code >= 500 or response.status_code == 429
                     )
+                    if 400 <= response.status_code < 500:
+                        self._log_http_4xx_diagnostics(
+                            model=model,
+                            base_url=endpoint.url,
+                            status=response.status_code,
+                            response_body=response.text,
+                            payload=attempt_payload,
+                        )
+                    if (
+                        response.status_code == 400
+                        and strict_tools_active
+                        and not strict_fallback_used
+                        and self._is_tool_schema_rejection(response.text)
+                    ):
+                        strict_fallback_used = True
+                        strict_tools_active = False
+                        with self._tool_schema_lock:
+                            self._portable_tool_schema_only = True
+                        total_attempts += 1
+                        request_tool_schemas = portable_tools
+                        payload["tools"] = portable_tools
+                        last_error = error_msg
+                        logger.warning(
+                            "tool_schema_strict_fallback model=%s endpoint=%s",
+                            model,
+                            endpoint.url,
+                        )
+                        self._record_control_event(
+                            trace_session,
+                            trace_iteration or 0,
+                            "tool_schema_strict_fallback",
+                            {"model": model, "base_url": endpoint.url},
+                        )
+                        continue
                     logger.warning(
-                        "Model %s via %s failed (class=%s, status=%d, attempt=%d/%s)",
+                        "Model %s via %s failed (attempt %d/%s): %s",
                         model,
                         endpoint.url,
-                        failure_class,
-                        response.status_code,
                         attempt,
-                        (str(total_attempts)),
+                        (
+                            "unbounded"
+                            if (self.retry_until_available and transient_http_error)
+                            else str(total_attempts)
+                        ),
+                        error_msg,
                     )
 
                     if transient_http_error:
                         retry_transient = True
-                        if response.status_code == 429:
-                            usage_rejected_before_model = True
                         if response.status_code in {429, 502, 503, 504}:
                             self._record_endpoint_overload(
                                 endpoint,
@@ -1546,18 +1657,26 @@ class LLMClient:
                             10,
                         ) + random.uniform(0, 3)
                         self._mark_base_url_cooldown(endpoint, wait_time)
+                        self._record_attempt_failure(
+                            trace_session,
+                            trace_iteration,
+                            model=model,
+                            base_url=endpoint.url,
+                            attempt=attempt,
+                            outcome="rate_limited" if response.status_code == 429 else "http_5xx",
+                            error=error_msg,
+                            delay_ms=int(wait_time * 1000),
+                        )
                         logger.warning(
                             "Rate limited or server error on %s; cooling it down for %.1fs...",
                             endpoint.url,
                             wait_time,
                         )
-                        usage_failure_class = failure_class
-                        last_error = failure_class
+                        last_error = error_msg
                         continue
                     elif (
                         response.status_code == 401
                         and transient_auth_retries_remaining > 0
-                        and attempt < total_attempts
                         and self._has_successful_call()
                     ):
                         # A provider can occasionally return an isolated 401 while
@@ -1565,12 +1684,21 @@ class LLMClient:
                         # succeed. Retry that condition once, but never turn a bad
                         # credential into an unbounded retry loop.
                         transient_auth_retries_remaining -= 1
-                        usage_rejected_before_model = True
+                        retry_transient_auth = True
                         wait_time = self.TRANSIENT_AUTH_RETRY_DELAY_SECONDS
                         self._mark_base_url_cooldown(endpoint, wait_time)
                         post_attempt_delay = wait_time
-                        usage_failure_class = failure_class
-                        last_error = failure_class
+                        last_error = error_msg
+                        self._record_attempt_failure(
+                            trace_session,
+                            trace_iteration,
+                            model=model,
+                            base_url=endpoint.url,
+                            attempt=attempt,
+                            outcome="auth_retry",
+                            error=error_msg,
+                            delay_ms=int(wait_time * 1000),
+                        )
                         logger.warning(
                             "Endpoint %s returned an isolated HTTP 401 after prior "
                             "successful authentication; retrying once after %.1fs",
@@ -1578,41 +1706,47 @@ class LLMClient:
                             wait_time,
                         )
                         continue
-                    elif (
-                        response.status_code == 400
-                        and transient_client_response_retries_remaining > 0
-                        and attempt < total_attempts
-                    ):
-                        # A busy OpenAI-compatible gateway can occasionally
-                        # return an isolated 400 for a byte-identical request
-                        # while concurrent requests on the same deployment are
-                        # still establishing their first successes. Retry that
-                        # exact request once even during the startup window.
-                        # A deterministic schema/request rejection therefore
-                        # fails on the second identical response and never
-                        # degrades into an unbounded or mutated retry.
-                        transient_client_response_retries_remaining -= 1
-                        usage_rejected_before_model = True
-                        post_attempt_delay = self.TRANSIENT_CLIENT_RESPONSE_RETRY_DELAY_SECONDS
-                        usage_failure_class = failure_class
-                        last_error = failure_class
-                        logger.warning(
-                            "Endpoint %s returned HTTP 400; retrying the "
-                            "byte-identical request once",
-                            endpoint.url,
-                        )
-                        continue
                     else:
-                        usage_failure_class = failure_class
-                        last_error = failure_class
+                        self._record_attempt_failure(
+                            trace_session,
+                            trace_iteration,
+                            model=model,
+                            base_url=endpoint.url,
+                            attempt=attempt,
+                            outcome=f"http_{response.status_code}",
+                            error=error_msg,
+                        )
+                        last_error = error_msg
                         break  # Try next model
 
-                except P6BalancedTokenAdmissionError:
-                    # Admission is a deterministic pre-provider decision.  It
-                    # is never a transport failure and must not be retried or
-                    # conservatively charged as a physical model call.
-                    raise
                 except Exception as e:
+                    exception_text = str(e)
+                    if (
+                        exception_text.startswith("HTTP 400:")
+                        and strict_tools_active
+                        and not strict_fallback_used
+                        and self._is_tool_schema_rejection(exception_text)
+                    ):
+                        strict_fallback_used = True
+                        strict_tools_active = False
+                        with self._tool_schema_lock:
+                            self._portable_tool_schema_only = True
+                        total_attempts += 1
+                        request_tool_schemas = portable_tools
+                        payload["tools"] = portable_tools
+                        last_error = exception_text
+                        logger.warning(
+                            "tool_schema_strict_fallback model=%s endpoint=%s",
+                            model,
+                            endpoint.url,
+                        )
+                        self._record_control_event(
+                            trace_session,
+                            trace_iteration or 0,
+                            "tool_schema_strict_fallback",
+                            {"model": model, "base_url": endpoint.url},
+                        )
+                        continue
                     local_fd_exhausted = self._is_too_many_open_files(e)
                     overload_reason = (
                         None if local_fd_exhausted else self._endpoint_overload_reason(e)
@@ -1622,6 +1756,16 @@ class LLMClient:
                         2 ** min(attempt - 1, 4),
                         10,
                     ) + random.uniform(0, 3)
+                    self._record_attempt_failure(
+                        trace_session,
+                        trace_iteration,
+                        model=model,
+                        base_url=endpoint.url,
+                        attempt=attempt,
+                        outcome=self._attempt_failure_outcome(e),
+                        error=str(e),
+                        delay_ms=int(wait_time * 1000),
+                    )
                     if overload_reason is not None:
                         self._record_endpoint_overload(
                             endpoint,
@@ -1631,47 +1775,39 @@ class LLMClient:
                     if local_fd_exhausted:
                         wait_time = max(wait_time, self.LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS)
                         self._recover_from_local_fd_exhaustion(e, wait_time)
-                    is_last = attempt >= total_attempts
-                    post_attempt_delay = 0.0 if is_last else wait_time
-                    failure_class = self._provider_failure_class(e)
-                    usage_failure_class = failure_class
-                    if self.require_exact_response_model and failure_class.startswith(
-                        "provider_protocol_"
-                    ):
-                        # A long streaming session can occasionally receive one
-                        # malformed chunk from an otherwise healthy gateway.
-                        # Retry the byte-identical request once (bounded by
-                        # ``total_attempts``) before declaring the protocol
-                        # incompatible; a deterministic schema rejection
-                        # fails again on the retry and still fail-closes.
-                        if attempt < total_attempts:
-                            logger.warning(
-                                "Strict provider response rejected (class=%s); "
-                                "retrying request (attempt=%d/%s)",
-                                failure_class,
-                                attempt,
-                                str(total_attempts),
-                            )
-                            post_attempt_delay = self.TRANSIENT_CLIENT_RESPONSE_RETRY_DELAY_SECONDS
-                            last_error = failure_class
-                            continue
-                        logger.warning(
-                            "Strict provider response rejected (class=%s)",
-                            failure_class,
-                        )
-                        post_attempt_delay = 0.0
-                        last_error = failure_class
-                        break
-                    logger.warning(
-                        "Model %s via %s request failed " "(class=%s, attempt=%d/%s, final=%s)",
-                        model,
-                        endpoint.url,
-                        failure_class,
-                        attempt,
-                        (str(total_attempts)),
-                        is_last,
+                    is_last = attempt >= total_attempts and not (
+                        self.retry_until_available and retry_transient
                     )
-                    last_error = failure_class
+                    post_attempt_delay = 0.0 if is_last else wait_time
+                    if is_last:
+                        logger.warning(
+                            "Model %s via %s request error (attempt %d/%d, final): %s",
+                            model,
+                            endpoint.url,
+                            attempt,
+                            total_attempts,
+                            e,
+                        )
+                    else:
+                        logger.warning(
+                            "Model %s via %s request error "
+                            "(attempt %d/%s, retrying after %.1fs): %s",
+                            model,
+                            endpoint.url,
+                            attempt,
+                            (
+                                "unbounded"
+                                if (
+                                    self.retry_until_available
+                                    and retry_transient
+                                    and attempt >= total_attempts
+                                )
+                                else str(total_attempts)
+                            ),
+                            wait_time,
+                            e,
+                        )
+                    last_error = str(e)
                     continue
                 finally:
                     if usage_reservation is not None and not usage_settled:
@@ -1684,19 +1820,13 @@ class LLMClient:
                                 if request_started is not None
                                 else 0
                             )
-                            if usage_rejected_before_model:
-                                manager.reject_before_model(
-                                    usage_reservation,
-                                    reason=usage_failure_class,
-                                )
-                            else:
-                                manager.forfeit(
-                                    usage_reservation,
-                                    reason=usage_failure_class,
-                                    retry=retry_call,
-                                    repair=repair_call,
-                                    duration_ms=duration_ms,
-                                )
+                            manager.forfeit(
+                                usage_reservation,
+                                reason=(str(last_error or "provider_request_failed")[:500]),
+                                retry=retry_call,
+                                repair=repair_call,
+                                duration_ms=duration_ms,
+                            )
                         except ValueError:
                             # A successful response can be settled immediately
                             # before a downstream recorder/logging failure.
@@ -1713,17 +1843,24 @@ class LLMClient:
                         elif token.wait(post_attempt_delay):
                             token.raise_if_cancelled()
 
+            self._record_attempt_failure(
+                trace_session,
+                trace_iteration,
+                model=model,
+                base_url=None,
+                attempt=attempt,
+                outcome="model_fallback",
+                error=last_error,
+            )
             logger.info(f"Falling back from model {model}...")
 
-        raise ProviderFailureError(
-            _public_provider_failure_class(last_error or "provider_request_failed")
-        )
+        raise Exception(f"All models failed. Last error: {last_error}")
 
     def _curl_chat_completion(
         self,
         url: str,
         payload: Dict[str, Any],
-    ) -> tuple[Dict[str, Any], str, Dict[str, Any], str]:
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
         """Send a chat completion request through curl.
 
         This is intentionally opt-in via ``Z_SCOPE_LLM_TRANSPORT=curl``. It is
@@ -1769,278 +1906,48 @@ class LLMClient:
             except OSError:
                 logger.debug("Failed to remove temporary curl config", exc_info=True)
         stdout = proc.stdout.decode("utf-8", errors="replace")
+        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
         if status_marker not in stdout:
-            raise _ProviderCallError("provider_transport_missing_http_status")
+            detail = stderr or stdout[-500:] or f"curl exited with {proc.returncode}"
+            raise RuntimeError(f"curl transport did not return an HTTP status: {detail}")
         body, raw_status = stdout.rsplit(status_marker, 1)
         try:
             status = int(raw_status.strip()[-3:])
         except ValueError as exc:
-            raise _ProviderCallError("provider_transport_invalid_http_status") from exc
+            raise RuntimeError(
+                f"curl transport returned invalid HTTP status: {raw_status!r}"
+            ) from exc
         if proc.returncode != 0:
-            raise _ProviderCallError("provider_transport_error", status=status)
+            detail = stderr or body[-500:] or f"curl exited with {proc.returncode}"
+            raise RuntimeError(f"curl transport failed: {detail}")
         if status != 200:
-            raise _ProviderCallError(self._http_failure_class(status), status=status)
+            if 400 <= status < 500:
+                # curl_payload has stream_options stripped and stream=False, so
+                # the summary reflects the curl-transport wire shape.
+                self._log_http_4xx_diagnostics(
+                    model=str(payload.get("model") or ""),
+                    base_url=url,
+                    status=status,
+                    response_body=body,
+                    payload=curl_payload,
+                )
+            raise RuntimeError(f"HTTP {status}: {body[:2000]}")
         try:
-            data = json.loads(
-                body,
-                object_pairs_hook=_reject_duplicate_provider_json_keys,
-                parse_constant=(
-                    _reject_nonfinite_provider_json_number
-                    if self.require_exact_response_model
-                    else None
-                ),
-            )
-        except (
-            json.JSONDecodeError,
-            _DuplicateProviderJsonKeyError,
-            _NonFiniteProviderJsonNumberError,
-        ) as exc:
-            raise _ProviderCallError("provider_protocol_non_json") from exc
-        if not isinstance(data, dict):
-            raise _ProviderCallError("provider_protocol_invalid_response")
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"curl transport returned non-JSON response: {body[:1000]}") from exc
         choices = data.get("choices") or []
         if not choices:
-            raise _ProviderCallError("provider_protocol_missing_choices")
-        if self.require_exact_response_model and (
-            not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict)
-        ):
-            raise _ProviderCallError("provider_protocol_invalid_response")
+            raise RuntimeError(f"curl transport response missing choices: {body[:1000]}")
         choice = choices[0] if isinstance(choices[0], dict) else {}
-        raw_message = choice.get("message")
-        if self.require_exact_response_model and not isinstance(raw_message, dict):
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        message = raw_message or {}
+        message = choice.get("message") or {}
         if not isinstance(message, dict):
             message = {"role": "assistant", "content": str(message)}
-        response_tool_protocol = (
-            "function_call"
-            if message.get("function_call") is not None
-            else ("tool_calls" if message.get("tool_calls") is not None else "")
-        )
-        if self.require_exact_response_model:
-            self._validate_strict_provider_message(message, streaming=False)
-        message = self._canonicalize_legacy_function_call(
-            message,
-            streaming=False,
-        )
-        if self.require_exact_response_model:
-            # Validate the canonical shape as well.  The first validation above
-            # accepts the legacy ``function_call`` envelope; after conversion,
-            # the response must satisfy the same complete modern tool-call
-            # contract as a native ``tool_calls`` response.
-            self._validate_strict_provider_message(message, streaming=False)
         message.setdefault("role", "assistant")
         message.setdefault("content", "")
-        raw_finish_reason = choice.get("finish_reason")
-        if self.require_exact_response_model and (
-            not isinstance(raw_finish_reason, str) or not raw_finish_reason
-        ):
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        finish_reason = str(raw_finish_reason or "stop")
-        if self.require_exact_response_model and finish_reason != "length":
-            # ``length`` is the provider's well-formed truncation outcome; the
-            # conversation loop continues from it instead of fail-closing.
-            self._validate_strict_tool_finish_reason(
-                finish_reason,
-                tool_protocol=response_tool_protocol,
-            )
-        raw_usage = data.get("usage")
-        usage: Dict[str, Any] = dict(raw_usage) if isinstance(raw_usage, dict) else {}
-        raw_provider_response_model = data.get("model")
-        provider_response_model = (
-            raw_provider_response_model if isinstance(raw_provider_response_model, str) else ""
-        )
-        return message, finish_reason, usage, provider_response_model
-
-    def _validate_provider_response_model(
-        self, *, requested_model: str, response_model: str
-    ) -> None:
-        expected_response_model = self.response_model_map.get(requested_model, requested_model)
-        # Some gateways preserve the exact requested deployment alias while
-        # others return its exact versioned deployment identity. Both values
-        # are source-controlled by the request -> response map; every unrelated
-        # response identity still fails closed.
-        allowed_response_models = {requested_model, expected_response_model}
-        if self.require_exact_response_model and response_model not in allowed_response_models:
-            raise _ProviderCallError("provider_protocol_model_mismatch")
-
-    def _validate_provider_finish_reason(self, finish_reason: str) -> None:
-        # ``length`` is a well-formed provider outcome: the stream completed and
-        # provider usage arrived, the completion merely hit the request's token
-        # cap.  The strict protocol still rejects every other non-terminal
-        # reason; truncation itself is recoverable upstream (the tool loop
-        # continues the conversation instead of failing the whole scan).
-        if self.require_exact_response_model and finish_reason not in {
-            "stop",
-            "length",
-            "tool_calls",
-            "function_call",
-        }:
-            raise _ProviderCallError("provider_protocol_invalid_response")
-
-    @staticmethod
-    def _validate_strict_tool_finish_reason(
-        finish_reason: str,
-        *,
-        tool_protocol: str,
-    ) -> None:
-        # Several OpenAI-compatible gateways emit ``finish_reason=stop`` even
-        # when the message carries complete ``tool_calls``; the conversation
-        # loop already treats that combination as a usable tool call.  Reject
-        # only shapes that cannot be acted upon, not the well-known stop+call
-        # gateway quirk.
-        allowed = {
-            "": {"stop"},
-            "tool_calls": {"stop", "tool_calls"},
-            "function_call": {"stop", "function_call"},
-        }.get(tool_protocol)
-        if allowed is None or finish_reason not in allowed:
-            raise _ProviderCallError("provider_protocol_invalid_response")
-
-    def _validate_strict_provider_message(
-        self,
-        message: Any,
-        *,
-        streaming: bool,
-    ) -> None:
-        """Reject ambiguous provider-controlled message shapes in P6 strict mode."""
-
-        if not isinstance(message, Mapping):
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        role = message.get("role")
-        if role is not None and role != "assistant":
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        if not streaming and role != "assistant":
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        content = message.get("content")
-        if content is not None and not isinstance(content, str):
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        has_tool_calls = message.get("tool_calls") is not None
-        has_legacy_function_call = message.get("function_call") is not None
-        if has_tool_calls and has_legacy_function_call:
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        if has_legacy_function_call:
-            self._validate_legacy_function_call(
-                message.get("function_call"),
-                streaming=streaming,
-            )
-        tool_calls = message.get("tool_calls")
-        if not has_tool_calls:
-            return
-        if not isinstance(tool_calls, list):
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        if len(tool_calls) > 1 or (not streaming and len(tool_calls) != 1):
-            # ``parallel_tool_calls=false`` is part of the sealed request, but
-            # it is only a provider hint.  Enforce the one-response/one-action
-            # boundary locally before any caller can execute a sibling call.
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, Mapping):
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            allowed_tool_keys = {"id", "type", "function", "index"}
-            if not set(tool_call) <= allowed_tool_keys:
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            index = tool_call.get("index")
-            if index is not None and (
-                isinstance(index, bool) or not isinstance(index, int) or index < 0
-            ):
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            tool_id = tool_call.get("id")
-            tool_type = tool_call.get("type")
-            function = tool_call.get("function")
-            if function is not None and not isinstance(function, Mapping):
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            if isinstance(function, Mapping):
-                if not set(function) <= {"name", "arguments"}:
-                    raise _ProviderCallError("provider_protocol_invalid_response")
-                for field in ("name", "arguments"):
-                    item = function.get(field)
-                    if item is not None and not isinstance(item, str):
-                        raise _ProviderCallError("provider_protocol_invalid_response")
-            if streaming:
-                if tool_id is not None and (not isinstance(tool_id, str) or not tool_id):
-                    raise _ProviderCallError("provider_protocol_invalid_response")
-                if tool_type is not None and tool_type != "function":
-                    raise _ProviderCallError("provider_protocol_invalid_response")
-                if isinstance(function, Mapping):
-                    name = function.get("name")
-                    if name is not None and not name:
-                        raise _ProviderCallError("provider_protocol_invalid_response")
-                continue
-            if not isinstance(tool_id, str) or not tool_id or tool_type != "function":
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            if not isinstance(function, Mapping) or set(function) != {"name", "arguments"}:
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            if not function.get("name"):
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            try:
-                self._parse_terminal_tool_args(function.get("arguments"))
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise _ProviderCallError("provider_protocol_invalid_response") from exc
-
-    @staticmethod
-    def _validate_legacy_function_call(value: Any, *, streaming: bool) -> None:
-        """Validate the deprecated OpenAI ``function_call`` response shape.
-
-        Streaming deltas may split the name and arguments across chunks, but
-        each fragment must still be an unambiguous string-only projection.
-        A complete non-stream response must contain exactly both fields.
-        """
-
-        if not isinstance(value, Mapping):
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        keys = set(value)
-        allowed = {"name", "arguments"}
-        if not keys or not keys <= allowed:
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        if not streaming and keys != allowed:
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        for field in keys:
-            item = value.get(field)
-            if not isinstance(item, str):
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            if field == "name" and not streaming and not item:
-                raise _ProviderCallError("provider_protocol_invalid_response")
-
-    @classmethod
-    def _canonicalize_legacy_function_call(
-        cls,
-        message: Mapping[str, Any],
-        *,
-        streaming: bool,
-    ) -> Dict[str, Any]:
-        """Return one modern canonical tool call for a legacy response.
-
-        The synthetic id is content-bound and carries no provider-controlled
-        body.  Mixed modern/legacy responses are always ambiguous and fail
-        closed, including for non-strict compatibility clients.
-        """
-
-        canonical = dict(message)
-        if "function_call" not in canonical:
-            return canonical
-        if canonical.get("function_call") is None:
-            canonical.pop("function_call", None)
-            return canonical
-        if canonical.get("tool_calls") is not None:
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        function_call = canonical.get("function_call")
-        cls._validate_legacy_function_call(function_call, streaming=streaming)
-        assert isinstance(function_call, Mapping)
-        name = str(function_call.get("name") or "")
-        arguments = str(function_call.get("arguments") or "")
-        if not streaming and not name:
-            raise _ProviderCallError("provider_protocol_invalid_response")
-        identity = hashlib.sha256((name + "\x00" + arguments).encode("utf-8")).hexdigest()[:24]
-        canonical.pop("function_call", None)
-        canonical["tool_calls"] = [
-            {
-                "id": f"call_legacy_{identity}",
-                "type": "function",
-                "function": {"name": name, "arguments": arguments},
-            }
-        ]
-        return canonical
+        finish_reason = str(choice.get("finish_reason") or "stop")
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        return message, finish_reason, dict(usage)
 
     def _write_curl_config(
         self,
@@ -2108,25 +2015,21 @@ class LLMClient:
 
     def _assemble_chat_response(self, response: requests.Response) -> tuple[Dict[str, Any], str]:
         """Assemble either SSE chunks or a plain JSON chat completion response."""
-        message, finish_reason, _usage, _model = self._assemble_chat_response_with_usage(response)
+        message, finish_reason, _usage = self._assemble_chat_response_with_usage(response)
         return message, finish_reason
 
     def _assemble_chat_response_with_usage(
         self,
         response: requests.Response,
-    ) -> tuple[Dict[str, Any], str, Dict[str, Any], str]:
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
         """Assemble a response and retain only provider token-accounting fields."""
 
         content_pieces: List[str] = []
         reasoning_pieces: List[str] = []
         tool_calls_map: Dict[Any, Dict[str, Any]] = {}
-        legacy_function_call: Dict[str, str] = {}
-        tool_protocol = ""
         finish_reason = "stop"
-        finish_reason_seen = False
+        saw_finish_reason = False
         provider_usage: Dict[str, Any] = {}
-        provider_response_model = ""
-        provider_usage_seen = False
 
         # A stream that continues to yield valid provider chunks is healthy.
         # Do not turn request elapsed time into a local analysis budget; the
@@ -2138,68 +2041,19 @@ class LLMClient:
             max_stream_seconds=stream_deadline,
             max_idle_valid_chunk_seconds=self.timeout,
         ):
-            raw_chunk_model = chunk.get("model")
-            if self.require_exact_response_model and (
-                not isinstance(raw_chunk_model, str) or not raw_chunk_model
-            ):
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            chunk_model = raw_chunk_model if isinstance(raw_chunk_model, str) else ""
-            if chunk_model:
-                if provider_response_model and chunk_model != provider_response_model:
-                    raise _ProviderCallError("provider_protocol_model_drift")
-                provider_response_model = chunk_model
             chunk_usage = chunk.get("usage")
-            if (
-                self.require_exact_response_model
-                and "usage" in chunk
-                and chunk_usage is not None
-                and not isinstance(chunk_usage, dict)
-            ):
-                raise _ProviderCallError("provider_protocol_usage_unverifiable")
-            if isinstance(chunk_usage, dict) and chunk_usage:
-                usage_identity = {
-                    key: chunk_usage.get(key)
-                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-                }
-                recorded_usage_identity = {
-                    key: provider_usage.get(key)
-                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-                }
-                if (
-                    self.require_exact_response_model
-                    and provider_usage_seen
-                    and usage_identity != recorded_usage_identity
-                ):
-                    raise _ProviderCallError("provider_protocol_usage_unverifiable")
-                provider_usage_seen = True
+            if isinstance(chunk_usage, dict):
                 provider_usage.update(chunk_usage)
             choices = chunk.get("choices", [])
             if not choices:
                 continue
-            if self.require_exact_response_model and (
-                not isinstance(choices, list)
-                or len(choices) != 1
-                or not isinstance(choices[0], dict)
-            ):
-                raise _ProviderCallError("provider_protocol_invalid_response")
 
             choice = choices[0]
-            raw_delta = choice.get("delta")
-            raw_message = choice.get("message")
-            if self.require_exact_response_model and (
-                ("delta" in choice and not isinstance(raw_delta, dict))
-                or ("message" in choice and not isinstance(raw_message, dict))
-            ):
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            message_delta = raw_delta
+            message_delta = choice.get("delta")
             if not isinstance(message_delta, dict) or not message_delta:
-                message_delta = raw_message or {}
-            if self.require_exact_response_model and not isinstance(message_delta, dict):
-                raise _ProviderCallError("provider_protocol_invalid_response")
+                message_delta = choice.get("message", {})
             if not isinstance(message_delta, dict):
                 message_delta = {}
-            if self.require_exact_response_model:
-                self._validate_strict_provider_message(message_delta, streaming=True)
 
             content = message_delta.get("content")
             if content:
@@ -2209,103 +2063,54 @@ class LLMClient:
             if reasoning:
                 reasoning_pieces.append(str(reasoning))
 
-            if message_delta.get("function_call") is not None:
-                if tool_protocol == "tool_calls":
-                    raise _ProviderCallError("provider_protocol_invalid_response")
-                tool_protocol = "function_call"
-                legacy_delta = message_delta.get("function_call")
-                self._validate_legacy_function_call(legacy_delta, streaming=True)
-                assert isinstance(legacy_delta, Mapping)
-                for field in ("name", "arguments"):
-                    piece = legacy_delta.get(field)
-                    if isinstance(piece, str):
-                        legacy_function_call[field] = legacy_function_call.get(field, "") + piece
-
             tool_calls = message_delta.get("tool_calls") or []
-            if message_delta.get("tool_calls") is not None:
-                if tool_protocol == "function_call":
-                    raise _ProviderCallError("provider_protocol_invalid_response")
-                tool_protocol = "tool_calls"
             if isinstance(tool_calls, list):
                 for fallback_index, tool_call in enumerate(tool_calls):
                     if isinstance(tool_call, dict):
-                        self._merge_tool_call(
-                            tool_calls_map,
-                            tool_call,
-                            fallback_index,
-                            strict=self.require_exact_response_model,
-                        )
+                        self._merge_tool_call(tool_calls_map, tool_call, fallback_index)
 
-            if choice.get("finish_reason") is not None:
-                if self.require_exact_response_model and finish_reason_seen:
-                    raise _ProviderCallError("provider_protocol_invalid_response")
+            if choice.get("finish_reason"):
                 finish_reason = choice["finish_reason"]
-                finish_reason_seen = True
+                saw_finish_reason = True
 
-        if self.require_exact_response_model:
-            if not finish_reason_seen or finish_reason not in {
-                "stop",
-                "length",
-                "tool_calls",
-                "function_call",
-            }:
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            if finish_reason == "length":
-                # A truncated stream carries no complete tool call by
-                # definition; skip the protocol/finish cross-check and let
-                # the conversation loop continue from the partial output.
-                pass
-            elif tool_protocol == "tool_calls" and not tool_calls_map:
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            elif tool_protocol == "function_call" and not legacy_function_call:
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            else:
-                self._validate_strict_tool_finish_reason(
-                    finish_reason,
-                    tool_protocol=tool_protocol,
+        if not saw_finish_reason:
+            if not content_pieces and not tool_calls_map and not reasoning_pieces:
+                # A stream that delivers no content, no tool call, and no
+                # finish_reason chunk ended before the provider framed a
+                # complete response (proxy/provider truncation).  Surface it
+                # as a chunked-encoding failure so the caller's retry and
+                # endpoint-cooldown path treats it like any broken stream
+                # instead of silently returning an empty "stop" response.
+                raise requests.exceptions.ChunkedEncodingError(
+                    "Chat completion stream ended without any content, reasoning, "
+                    "tool calls, or a finish_reason chunk (stream truncated)."
                 )
+            logger.warning(
+                "Chat completion stream ended without a finish_reason chunk; "
+                "treating %d content chars, %d reasoning chars, and %d tool "
+                "calls as a complete response.",
+                sum(len(piece) for piece in content_pieces),
+                sum(len(piece) for piece in reasoning_pieces),
+                len(tool_calls_map),
+            )
 
         assembled_message: Dict[str, Any] = {"role": "assistant"}
-        truncated = finish_reason == "length"
         if content_pieces:
             assembled_message["content"] = "".join(content_pieces)
-        if not truncated and legacy_function_call:
-            if (
-                set(legacy_function_call) != {"name", "arguments"}
-                or not legacy_function_call["name"]
-            ):
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            assembled_message["function_call"] = legacy_function_call
-            assembled_message = self._canonicalize_legacy_function_call(
-                assembled_message,
-                streaming=False,
-            )
-            assembled_message.setdefault("content", "")
-        elif not truncated and tool_calls_map:
+        if tool_calls_map:
             assembled_message["tool_calls"] = [
                 tool_calls_map[key] for key in sorted(tool_calls_map.keys(), key=str)
             ]
             assembled_message.setdefault("content", "")
         else:
-            # A ``length`` truncation can cut the stream mid tool-call; such
-            # fragments have no complete id/name/arguments and are unusable.
-            # Drop them and let the conversation loop continue from the
-            # partial content instead of failing the whole scan.
             assembled_message.setdefault("content", "")
         if reasoning_pieces:
             assembled_message["reasoning_content"] = "".join(reasoning_pieces)
 
-        if self.require_exact_response_model and not truncated:
-            # Streaming validation above intentionally permits partial deltas.
-            # Revalidate the assembled response as one complete message so a
-            # missing id/type/name/arguments fragment can never reach an agent
-            # or be accounted as a successful provider action.
-            self._validate_strict_provider_message(assembled_message, streaming=False)
+        return assembled_message, finish_reason, provider_usage
 
-        return assembled_message, finish_reason, provider_usage, provider_response_model
-
+    @staticmethod
     def _iter_chat_chunks(
-        self,
         response: requests.Response,
         *,
         max_stream_seconds: Optional[float] = None,
@@ -2343,74 +2148,38 @@ class LLMClient:
                         f"for {max_idle_valid_chunk_seconds:.0f}s"
                     )
                 continue
-            if decoded_line.startswith(":"):
-                continue
-            is_data_line = decoded_line.startswith("data:")
-            if self.require_exact_response_model and not is_data_line:
-                raise _ProviderCallError("provider_protocol_invalid_response")
-            if is_data_line:
+            if decoded_line.startswith("data:"):
                 decoded_line = decoded_line[len("data:") :].strip()
             if decoded_line == "[DONE]":
                 break
             if not decoded_line.startswith("{"):
-                if self.require_exact_response_model:
-                    raise _ProviderCallError("provider_protocol_invalid_response")
                 continue
             try:
-                chunk = json.loads(
-                    decoded_line,
-                    object_pairs_hook=_reject_duplicate_provider_json_keys,
-                    parse_constant=(
-                        _reject_nonfinite_provider_json_number
-                        if self.require_exact_response_model
-                        else None
-                    ),
-                )
-            except (
-                _DuplicateProviderJsonKeyError,
-                _NonFiniteProviderJsonNumberError,
-            ) as exc:
-                raise _ProviderCallError("provider_protocol_invalid_response") from exc
-            except json.JSONDecodeError as exc:
-                if self.require_exact_response_model:
-                    raise _ProviderCallError("provider_protocol_invalid_response") from exc
-                logger.debug("Ignoring malformed chat completion line")
+                chunk = json.loads(decoded_line)
+            except json.JSONDecodeError:
+                logger.debug("Ignoring malformed chat completion line: %s", decoded_line[:200])
                 continue
             if isinstance(chunk, dict):
                 last_valid_chunk_at = time.monotonic()
                 yield chunk
-            elif self.require_exact_response_model:
-                raise _ProviderCallError("provider_protocol_invalid_response")
 
     @staticmethod
     def _merge_tool_call(
         tool_calls_map: Dict[Any, Dict[str, Any]],
         tool_call: Dict[str, Any],
         fallback_index: int,
-        *,
-        strict: bool = False,
     ) -> None:
         idx = tool_call.get("index", fallback_index)
-        if strict and tool_calls_map and idx not in tool_calls_map:
-            raise _ProviderCallError("provider_protocol_invalid_response")
         existing = tool_calls_map.setdefault(idx, {})
 
         for key in ("id", "type", "index"):
             if tool_call.get(key) is not None:
-                if strict and key in existing and existing[key] != tool_call[key]:
-                    raise _ProviderCallError("provider_protocol_invalid_response")
                 existing[key] = tool_call[key]
 
         function_delta = tool_call.get("function")
         if isinstance(function_delta, dict):
             function = existing.setdefault("function", {})
             if function_delta.get("name"):
-                if (
-                    strict
-                    and function.get("name") is not None
-                    and function["name"] != function_delta["name"]
-                ):
-                    raise _ProviderCallError("provider_protocol_invalid_response")
                 function["name"] = function_delta["name"]
             if function_delta.get("arguments") is not None:
                 function["arguments"] = str(function.get("arguments", "")) + str(
@@ -2425,35 +2194,53 @@ class LLMClient:
                 content_chunks.append(msg.get("content", ""))
         return "".join(content_chunks)
 
-    @staticmethod
-    def estimate_tokens(conversation: List[Dict[str, Any]]) -> int:
+    # Code points whose characters tokenize at roughly one token per 1-1.5
+    # characters on mainstream BPE tokenizers, versus ~3.8 chars/token for
+    # ASCII-heavy text.  CJK is counted separately so the estimate does not
+    # silently undercount context size for Chinese-heavy prompts.
+    _CJK_TOKEN_CHARS_PER_TOKEN = 1.5
+    _ASCII_TOKEN_CHARS_PER_TOKEN = 3.8
+    _CJK_CHAR_RE = re.compile(
+        "[\u3000-\u303f\u3040-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]"
+    )
+
+    @classmethod
+    def estimate_tokens(cls, conversation: List[Dict[str, Any]]) -> int:
         """Estimate the total token count of a conversation.
 
-        Uses a simple heuristic: ~3.5 chars per token for CJK-heavy text,
-        ~4 chars per token for ASCII. This avoids a tiktoken dependency.
+        Uses a simple heuristic: ~1.5 chars per token for CJK characters and
+        ~3.8 chars per token for the rest. This avoids a tiktoken dependency.
         """
-        total_chars = 0
+        cjk_chars = 0
+        other_chars = 0
         for msg in conversation:
             content = msg.get("content") or ""
             if isinstance(content, str):
-                total_chars += len(content)
+                cjk_chars += len(cls._CJK_CHAR_RE.findall(content))
+                other_chars += len(content)
             # Count tool call arguments as part of the context
             for tc in msg.get("tool_calls", []):
                 args = tc.get("function", {}).get("arguments", "")
                 if isinstance(args, str):
-                    total_chars += len(args)
+                    cjk_chars += len(cls._CJK_CHAR_RE.findall(args))
+                    other_chars += len(args)
             # Count reasoning_content if present (e.g. DeepSeek R1)
             rc = msg.get("reasoning_content") or ""
             if isinstance(rc, str):
-                total_chars += len(rc)
-        # Heuristic: average 3.8 chars per token for mixed CJK/ASCII codebases
-        return int(total_chars / 3.8)
+                cjk_chars += len(cls._CJK_CHAR_RE.findall(rc))
+                other_chars += len(rc)
+        other_chars -= cjk_chars
+        estimate = cjk_chars / cls._CJK_TOKEN_CHARS_PER_TOKEN + (
+            other_chars / cls._ASCII_TOKEN_CHARS_PER_TOKEN
+        )
+        return int(estimate)
 
     def _prepare_messages_for_model(
         self,
         conversation: List[Dict[str, Any]],
         *,
         preserve_reasoning_metadata: bool = False,
+        preserve_latest_reasoning_metadata: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Build the model-facing context without mutating the full transcript.
@@ -2464,17 +2251,30 @@ class LLMClient:
         structured summaries that preserve lookup provenance and key facts.
         """
         keep_tool_ids = self._recent_tool_result_ids_to_keep(conversation)
+        latest_assistant_index = next(
+            (
+                index
+                for index in range(len(conversation) - 1, -1, -1)
+                if conversation[index].get("role") == "assistant"
+            ),
+            None,
+        )
         projected: List[Dict[str, Any]] = []
         compacted_count = 0
         original_chars = 0
         compacted_chars = 0
 
-        for message in conversation:
+        for index, message in enumerate(conversation):
             role = message.get("role")
             projected_message = self._copy_message_for_model(message)
-            if role == "assistant" and not preserve_reasoning_metadata:
+            if (
+                role == "assistant"
+                and not preserve_reasoning_metadata
+                and not (preserve_latest_reasoning_metadata and index == latest_assistant_index)
+            ):
                 # reasoning_content is provider-specific scratchpad text. It is
-                # useful for local diagnostics but very expensive to replay.
+                # useful for continuing a truncated model turn, but replaying it
+                # during normal tool rounds is expensive and disrupts prompt caching.
                 projected_message.pop("reasoning_content", None)
             elif role == "tool":
                 tool_id = str(message.get("tool_call_id") or "")
@@ -2628,7 +2428,6 @@ class LLMClient:
         trace_agent: Optional[str] = None,
         trace_label: Optional[str] = None,
         max_identical_tool_calls: int = 2,
-        replay_identical_tool_result: bool = True,
         terminal_tool_name: Optional[str] = None,
         terminal_tool_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
@@ -2636,6 +2435,8 @@ class LLMClient:
         max_identical_invalid_terminal_calls: int = 3,
         max_invalid_terminal_calls: int = 5,
         preserve_reasoning_metadata: bool = False,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Run a conversation loop with tool calling support.
@@ -2644,6 +2445,7 @@ class LLMClient:
         iterations = 0
         tool_call_history: Dict[str, List[Dict[str, Any]]] = {}
         loop_guard_recovery: Optional[Dict[str, Any]] = None
+        loop_guard_disabled_tools: Set[str] = set()
         cumulative_prompt_tokens = 0
         cumulative_completion_tokens = 0
         warned_low_iterations = False
@@ -2656,14 +2458,44 @@ class LLMClient:
         terminal_tool_call_count = 0
         terminal_invalid_call_count = 0
         terminal_failure_history: Dict[str, List[Dict[str, Any]]] = {}
+        loop_guard_fired = False
         if terminal_tool_handler is None and terminal_tool_validator is not None:
             terminal_tool_handler = terminal_tool_validator
+        conversation_started_monotonic = time.monotonic()
         recorder = get_conversation_recorder()
         trace_session = (
-            recorder.begin_session(trace_agent or "unknown_agent", trace_label)
+            recorder.begin_session(
+                trace_agent or "unknown_agent",
+                trace_label,
+                tools_schema_hash=self._tools_schema_hash(tools_schema),
+            )
             if recorder
             else None
         )
+
+        def _record_session_end_traced(
+            final_iterations: int,
+            final_tokens: int,
+            *,
+            truncated: bool,
+            finish_reason_value: Optional[str],
+            terminal_valid: Optional[bool],
+        ) -> None:
+            if not (recorder and trace_session):
+                return
+            recorder.record_session_end(
+                trace_session,
+                final_iterations,
+                final_tokens,
+                truncated=truncated,
+                cumulative_prompt_tokens=cumulative_prompt_tokens,
+                cumulative_completion_tokens=cumulative_completion_tokens,
+                cumulative_total_tokens=cumulative_prompt_tokens + cumulative_completion_tokens,
+                wall_seconds=max(0.0, time.monotonic() - conversation_started_monotonic),
+                finish_reason=finish_reason_value,
+                loop_guard_triggered=loop_guard_fired or None,
+                terminal_tool_valid=terminal_valid,
+            )
 
         while iterations < max_iterations:
             iterations += 1
@@ -2684,7 +2516,7 @@ class LLMClient:
                         exc,
                     )
                     executor_requested_final = True
-            force_no_tool_final = loop_guard_recovery is not None or executor_requested_final
+            force_no_tool_final = executor_requested_final
             final_iteration = max_iteration_final or force_no_tool_final
             if max_iteration_final:
                 final_instruction = (
@@ -2705,8 +2537,18 @@ class LLMClient:
                         "content": final_instruction,
                     }
                 )
+                self._record_control_event(
+                    trace_session,
+                    iterations,
+                    "final_instruction",
+                    {
+                        "iteration": iterations,
+                        "max_iterations": max_iterations,
+                        "terminal_tool_name": terminal_tool_name,
+                    },
+                )
             elif force_no_tool_final:
-                pass
+                self._record_control_event(trace_session, iterations, "forced_final_by_executor")
             elif not warned_low_iterations and remaining_after_this <= low_iteration_threshold:
                 warned_low_iterations = True
                 conversation.append(
@@ -2720,10 +2562,20 @@ class LLMClient:
                         ),
                     }
                 )
+                self._record_control_event(
+                    trace_session,
+                    iterations,
+                    "low_iteration_warning",
+                    {
+                        "remaining_after_this": remaining_after_this,
+                        "max_iterations": max_iterations,
+                    },
+                )
 
             model_conversation = self._prepare_messages_for_model(
                 conversation,
                 preserve_reasoning_metadata=preserve_reasoning_metadata,
+                preserve_latest_reasoning_metadata=last_finish_reason == "length",
             )
             ctx_tokens = self.estimate_tokens(model_conversation)
             raw_ctx_tokens = self.estimate_tokens(conversation)
@@ -2736,7 +2588,20 @@ class LLMClient:
             )
 
             # Call LLM
-            request_tools = None if final_iteration else tools_schema
+            request_tools = (
+                None
+                if final_iteration
+                else [
+                    schema
+                    for schema in tools_schema
+                    if not (
+                        isinstance(schema, dict)
+                        and isinstance(schema.get("function"), dict)
+                        and schema["function"].get("name") in loop_guard_disabled_tools
+                        and schema["function"].get("name") != terminal_tool_name
+                    )
+                ]
+            )
             if final_iteration and terminal_tool_name:
                 terminal_schemas = [
                     schema
@@ -2746,36 +2611,24 @@ class LLMClient:
                     and schema["function"].get("name") == terminal_tool_name
                 ]
                 request_tools = terminal_schemas or None
-            response = self.chat_completion(
-                model_conversation,
-                tools=request_tools,
-                trace_agent=trace_agent,
-                trace_label=trace_label,
-                trace_iteration=iterations,
-                trace_session=trace_session,
-            )
+            completion_kwargs: Dict[str, Any] = {
+                "tools": request_tools,
+                "trace_agent": trace_agent,
+                "trace_label": trace_label,
+                "trace_iteration": iterations,
+                "trace_session": trace_session,
+            }
+            if max_tokens is not None:
+                completion_kwargs["max_tokens"] = max_tokens
+            if temperature is not None:
+                completion_kwargs["temperature"] = temperature
+            response = self.chat_completion(model_conversation, **completion_kwargs)
 
             # Extract assistant message
             choice = response.get("choices", [{}])[0]
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason")
             provider_model = response.get("model") or (self.models[0] if self.models else None)
-            if self.require_exact_response_model:
-                try:
-                    self._validate_strict_provider_message(message, streaming=False)
-                except _ProviderCallError as exc:
-                    raise ProviderFailureError(
-                        _public_provider_failure_class(exc.failure_class)
-                    ) from exc
-                # The P6 provider contract accepts only native, structured
-                # ``tool_calls``.  XML invoke tags are a legacy compatibility
-                # syntax: converting them into synthetic calls here would
-                # bypass the strict response validator (including its
-                # single-action batch rule) and could execute provider prose.
-                if not message.get("tool_calls") and "<invoke name=" in str(
-                    message.get("content") or ""
-                ):
-                    raise ProviderFailureError("provider_protocol_incompatible")
             last_finish_reason = finish_reason
             last_provider_model = provider_model
             last_message = message
@@ -2808,6 +2661,12 @@ class LLMClient:
                             ),
                         }
                     )
+                    self._record_control_event(
+                        trace_session,
+                        iterations,
+                        "terminal_prose_reprompt",
+                        {"reason": "no_terminal_call"},
+                    )
                     continue
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(
@@ -2819,8 +2678,13 @@ class LLMClient:
                 logger.info(
                     f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens"
                 )
-                if recorder and trace_session:
-                    recorder.record_session_end(trace_session, iterations, final_tokens)
+                _record_session_end_traced(
+                    iterations,
+                    final_tokens,
+                    truncated=False,
+                    finish_reason_value=finish_reason,
+                    terminal_valid=terminal_tool_valid,
+                )
                 result_payload = {
                     "content": content,
                     "conversation": conversation,
@@ -2856,6 +2720,12 @@ class LLMClient:
                     f"Model {self.models[0] if self.models else 'unknown'} output truncated! Prompting to continue..."
                 )
                 conversation.append({"role": "user", "content": "请继续"})
+                self._record_control_event(
+                    trace_session,
+                    iterations,
+                    "length_continuation",
+                    {"finish_reason": "length"},
+                )
                 continue
 
             # Handle tool calls
@@ -2875,19 +2745,25 @@ class LLMClient:
                     "Model returned %d tool calls after tool use was disabled.",
                     len(tool_calls),
                 )
+                self._record_control_event(
+                    trace_session,
+                    iterations,
+                    "final_iteration_tool_calls_rejected",
+                    {"tool_call_count": len(tool_calls)},
+                )
                 final_tokens = self.estimate_tokens(
                     self._prepare_messages_for_model(
                         conversation,
                         preserve_reasoning_metadata=preserve_reasoning_metadata,
                     )
                 )
-                if recorder and trace_session:
-                    recorder.record_session_end(
-                        trace_session,
-                        iterations,
-                        final_tokens,
-                        truncated=max_iteration_final,
-                    )
+                _record_session_end_traced(
+                    iterations,
+                    final_tokens,
+                    truncated=max_iteration_final,
+                    finish_reason_value=finish_reason,
+                    terminal_valid=terminal_tool_valid,
+                )
                 result_payload = {
                     "content": self._get_combined_content(conversation),
                     "conversation": conversation,
@@ -2924,12 +2800,7 @@ class LLMClient:
 
             # --- XML Fallback (For GLM/Minimax models that emit raw text invoke tags) ---
             content = message.get("content", "")
-            if (
-                not self.require_exact_response_model
-                and not final_iteration
-                and not tool_calls
-                and "<invoke name=" in content
-            ):
+            if not final_iteration and not tool_calls and "<invoke name=" in content:
                 import uuid
 
                 invokes = re.finditer(r'<invoke name="([^"]+)">([\s\S]*?)(?:</invoke>|$)', content)
@@ -2974,6 +2845,12 @@ class LLMClient:
                             ),
                         }
                     )
+                    self._record_control_event(
+                        trace_session,
+                        iterations,
+                        "terminal_prose_reprompt",
+                        {"reason": "no_tool_calls"},
+                    )
                     continue
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(
@@ -2985,8 +2862,13 @@ class LLMClient:
                 logger.info(
                     f"Conversation complete (no more tool calls): {iterations} iterations, final context ≈ {final_tokens:,} tokens"
                 )
-                if recorder and trace_session:
-                    recorder.record_session_end(trace_session, iterations, final_tokens)
+                _record_session_end_traced(
+                    iterations,
+                    final_tokens,
+                    truncated=False,
+                    finish_reason_value=finish_reason,
+                    terminal_valid=terminal_tool_valid,
+                )
                 result_payload = {
                     "content": content,
                     "conversation": conversation,
@@ -3018,7 +2900,7 @@ class LLMClient:
                 return result_payload
 
             # Execute each tool call
-            force_final_after_loop_guard = False
+            loop_guard_tools_triggered_this_iteration: List[str] = []
             terminal_calls = []
             for candidate in tool_calls:
                 candidate_function = (
@@ -3034,34 +2916,31 @@ class LLMClient:
                 for terminal_call in terminal_calls:
                     terminal_id = terminal_call.get("id")
                     terminal_function = terminal_call.get("function", {})
-                    raw_terminal_args = terminal_function.get("arguments")
+                    raw_terminal_args = terminal_function.get("arguments", "{}")
                     try:
-                        terminal_args = self._parse_terminal_tool_args(raw_terminal_args)
+                        terminal_args = self._parse_tool_args(raw_terminal_args)
                         terminal_function["arguments"] = json.dumps(
                             terminal_args, ensure_ascii=False
                         )
-                    except (TypeError, ValueError, json.JSONDecodeError):
+                    except Exception as exc:
                         terminal_args = {}
                         terminal_function["arguments"] = json.dumps(terminal_args)
-                        terminal_failure_class = "terminal_tool_arguments_invalid"
+                        exc_text = str(exc)
                     else:
-                        terminal_failure_class = ""
+                        exc_text = ""
 
                     validation: Dict[str, Any] = {"valid": True, "payload": terminal_args}
-                    if terminal_failure_class:
-                        validation = {
-                            "valid": False,
-                            "error": terminal_failure_class,
-                        }
+                    if exc_text:
+                        validation = {"valid": False, "error": exc_text}
                     elif mixed_calls:
                         validation = {
                             "valid": False,
-                            "error": "terminal_tool_mixed_calls",
+                            "error": "The terminal final tool cannot be combined with other tool calls; retry it alone.",
                         }
                     elif duplicate_calls:
                         validation = {
                             "valid": False,
-                            "error": "terminal_tool_duplicate_calls",
+                            "error": "Only one terminal final tool call is allowed in a conversation.",
                         }
                     elif terminal_tool_handler:
                         try:
@@ -3070,16 +2949,8 @@ class LLMClient:
                                 validation = handled
                             else:
                                 validation = {"valid": bool(handled), "payload": terminal_args}
-                        except Exception:
-                            validation = {
-                                "valid": False,
-                                "error": "terminal_tool_handler_failed",
-                            }
-                        if not validation.get("valid"):
-                            validation = {
-                                "valid": False,
-                                "error": "terminal_tool_payload_invalid",
-                            }
+                        except Exception as exc:
+                            validation = {"valid": False, "error": str(exc)}
 
                     if validation.get("valid"):
                         terminal_payload = validation.get("payload", terminal_args)
@@ -3091,6 +2962,7 @@ class LLMClient:
                                 terminal_tool_name,
                                 terminal_args,
                                 True,
+                                tool_call_id=terminal_id,
                             )
                         final_tokens = self.estimate_tokens(
                             self._prepare_messages_for_model(
@@ -3098,8 +2970,13 @@ class LLMClient:
                                 preserve_reasoning_metadata=preserve_reasoning_metadata,
                             )
                         )
-                        if recorder and trace_session:
-                            recorder.record_session_end(trace_session, iterations, final_tokens)
+                        _record_session_end_traced(
+                            iterations,
+                            final_tokens,
+                            truncated=False,
+                            finish_reason_value=finish_reason,
+                            terminal_valid=terminal_tool_valid,
+                        )
                         return {
                             "content": str(message.get("content") or ""),
                             "conversation": conversation,
@@ -3148,21 +3025,20 @@ class LLMClient:
                             terminal_args,
                             False,
                             validation_error,
+                            tool_call_id=terminal_id,
                         )
                     terminal_invalid_call_count += 1
                     failure_signature = self._terminal_failure_signature(
                         terminal_tool_name,
                         terminal_args,
                         raw_arguments=raw_terminal_args,
-                        parse_failed=bool(terminal_failure_class),
+                        parse_failed=bool(exc_text),
                         error=validation_error,
                     )
-                    arguments_identity = hashlib.sha256(
-                        self._canonical_tool_argument_text(raw_terminal_args).encode("utf-8")
-                    ).hexdigest()
                     failure_record = {
                         "iteration": iterations,
-                        "arguments_sha256": arguments_identity,
+                        "tool_call_id": terminal_id,
+                        "arguments": raw_terminal_args if exc_text else terminal_args,
                         "error": error_result["error"],
                     }
                     identical_failures = terminal_failure_history.setdefault(
@@ -3188,7 +3064,7 @@ class LLMClient:
                         if guard_reason == "identical_invalid_terminal_call_limit":
                             repeated_terminal_tool_call = {
                                 "tool": terminal_tool_name,
-                                "arguments_sha256": failure_record["arguments_sha256"],
+                                "arguments": failure_record["arguments"],
                                 "error": error_result["error"],
                                 "repeat_count": len(identical_failures),
                                 "first_seen": identical_failures[0],
@@ -3208,13 +3084,22 @@ class LLMClient:
                             terminal_invalid_call_count,
                             len(identical_failures),
                         )
-                        if recorder and trace_session:
-                            recorder.record_session_end(
-                                trace_session,
-                                iterations,
-                                final_tokens,
-                                truncated=False,
-                            )
+                        loop_guard_fired = True
+                        self._record_loop_guard_event(
+                            trace_session,
+                            iterations,
+                            tool=terminal_tool_name,
+                            repeat_count=len(identical_failures),
+                            reason=guard_reason,
+                            scope="terminal",
+                        )
+                        _record_session_end_traced(
+                            iterations,
+                            final_tokens,
+                            truncated=False,
+                            finish_reason_value=finish_reason,
+                            terminal_valid=terminal_tool_valid,
+                        )
                         result_payload = {
                             "content": str(message.get("content") or ""),
                             "conversation": conversation,
@@ -3245,14 +3130,7 @@ class LLMClient:
                                 repeated_terminal_tool_call
                             )
                         return result_payload
-                # A response that mixes or duplicates the authorization tool
-                # is rejected as one indivisible batch.  Do not execute a
-                # sibling action after observing an invalid final decision.
-                tool_calls = (
-                    []
-                    if mixed_calls or duplicate_calls
-                    else [call for call in tool_calls if call not in terminal_calls]
-                )
+                tool_calls = [call for call in tool_calls if call not in terminal_calls]
 
             for tool_call in tool_calls:
                 tool_id = tool_call.get("id")
@@ -3262,25 +3140,30 @@ class LLMClient:
 
                 logger.info(f"Tool call: {func_name}")
 
+                tool_started = time.monotonic()
+                func_args: Dict[str, Any] = {}
                 try:
                     func_args = self._parse_tool_args(func_args_str)
+                    func_args = self._restore_portable_tool_args(
+                        str(func_name or ""),
+                        func_args,
+                        tools_schema,
+                    )
 
                     # VERY IMPORTANT: Re-serialize the corrected dict back into the conversation history
                     # so that strict upstreams like GLM-4/5 do not throw 400 Bad Request on "Expecting ','"
                     function["arguments"] = json.dumps(func_args, ensure_ascii=False)
+                    if recorder and trace_session:
+                        recorder.record_tool_call(
+                            trace_session,
+                            iterations,
+                            func_name,
+                            func_args,
+                            tool_call_id=tool_id,
+                        )
 
                     signature = self._tool_call_signature(func_name, func_args)
                     previous_calls = tool_call_history.get(signature, [])
-                    covered_snippet_call = None
-                    if not (
-                        max_identical_tool_calls > 0
-                        and len(previous_calls) >= max_identical_tool_calls
-                    ):
-                        covered_snippet_call = self._find_covering_file_snippet_call(
-                            tool_call_history,
-                            signature,
-                            func_args,
-                        )
                     cached_replayed = any(call.get("cached_replay") for call in previous_calls)
                     cached_previous_result = self._last_replayable_tool_result(previous_calls)
                     repeat_notice = self._build_repeat_tool_notice(
@@ -3289,33 +3172,28 @@ class LLMClient:
                         tool_id,
                         previous_calls,
                     )
-                    if covered_snippet_call is not None:
-                        repeated_call_count = 0
-                        covering_result = covered_snippet_call.get("result")
-                        result = dict(covering_result) if isinstance(covering_result, dict) else {}
-                        result["cached_tool_result"] = True
-                        result["covered_file_snippet_replay"] = True
-                        result["repeat_call_warning"] = self._build_covered_file_snippet_notice(
-                            func_args,
-                            tool_id,
-                            covered_snippet_call,
-                        )
+                    if func_name in loop_guard_disabled_tools:
+                        repeated_call_count = len(previous_calls) + 1
+                        result = {
+                            "success": False,
+                            "error": (
+                                "This tool was disabled by the loop guard after a repeated "
+                                "call. Use another available tool or produce the final answer."
+                            ),
+                            "loop_guard_disabled_tool": True,
+                            **repeat_notice,
+                        }
                         logger.warning(
-                            "Replayed cached result for covered get_file_snippet range: "
-                            "%s (covered by %s)",
+                            "Rejected call to tool disabled by loop guard: %s %s",
+                            func_name,
                             func_args,
-                            covered_snippet_call.get("arguments"),
                         )
                     elif (
                         max_identical_tool_calls > 0
                         and len(previous_calls) >= max_identical_tool_calls
                     ):
                         repeated_call_count = len(previous_calls) + 1
-                        if (
-                            replay_identical_tool_result
-                            and cached_previous_result is not None
-                            and not cached_replayed
-                        ):
+                        if cached_previous_result is not None and not cached_replayed:
                             result = dict(cached_previous_result)
                             result["cached_tool_result"] = True
                             result["repeat_call_warning"] = {
@@ -3382,7 +3260,10 @@ class LLMClient:
                         {
                             "role": "tool",
                             "tool_call_id": tool_id,
-                            "content": json.dumps(result, ensure_ascii=False),
+                            # default=str keeps a single non-JSON-native value
+                            # (bytes, set, Path) from discarding the whole tool
+                            # result and replacing it with an error message.
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
                         }
                     )
                     tool_call_history.setdefault(signature, []).append(
@@ -3409,59 +3290,47 @@ class LLMClient:
                             func_name,
                             func_args,
                             result,
+                            tool_call_id=tool_id,
+                            duration_ms=max(
+                                0, int(round((time.monotonic() - tool_started) * 1000))
+                            ),
+                            blocked=bool(
+                                isinstance(result, dict) and result.get("repeat_call_guard")
+                            ),
+                            cached_replay=bool(
+                                isinstance(result, dict) and result.get("cached_tool_result")
+                            ),
+                            repeat_count=repeated_call_count,
                         )
 
-                    # A program-owned checker may close the security decision
-                    # while handling one tool call in a model response that
-                    # contains several calls.  Stop the current tool round at
-                    # that exact boundary: calling the remaining tools would
-                    # be post-proof work even though the model emitted their
-                    # requests before the proof existed.  The existing hook
-                    # below validates and returns the terminal payload without
-                    # starting another model iteration.
-                    programmatic_terminal = getattr(
-                        tool_executor,
-                        "_zscope_programmatic_terminal_payload",
-                        None,
-                    )
-                    if callable(programmatic_terminal):
-                        try:
-                            terminal_after_tool = programmatic_terminal()
-                        except Exception as exc:
-                            logger.warning("Programmatic terminal hook failed: %s", exc)
-                            terminal_after_tool = None
-                        if isinstance(terminal_after_tool, dict):
-                            break
-
                     if isinstance(result, dict) and result.get("repeat_call_guard"):
+                        loop_guard_disabled_tools.add(func_name)
                         loop_guard_recovery = {
                             "tool": func_name,
                             "arguments": func_args,
                             "repeat_count": repeated_call_count,
+                            "disabled_tools": sorted(loop_guard_disabled_tools),
                         }
                         logger.error(
-                            "Conversation hit repeated identical tool call; forcing final "
-                            "no-tool response: "
+                            "Conversation hit repeated identical tool call; disabling only "
+                            "the offending tool: "
                             "%s %s (repeat #%d)",
                             func_name,
                             func_args,
                             repeated_call_count,
                         )
-                        conversation.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "The loop guard blocked a repeated identical tool call. "
-                                    "The latest tool message contains the cached result or the "
-                                    "available evidence for that request. Tool use is now disabled. "
-                                    "Produce the required final answer from the evidence already in "
-                                    "this conversation. If the expected output is JSON, output one "
-                                    "valid JSON block now."
-                                ),
-                            }
+                        loop_guard_fired = True
+                        self._record_loop_guard_event(
+                            trace_session,
+                            iterations,
+                            tool=func_name,
+                            repeat_count=repeated_call_count,
+                            disabled_tools=sorted(loop_guard_disabled_tools),
+                            scope="tool",
+                            recovered=False,
                         )
-                        force_final_after_loop_guard = True
-                        break
+                        if func_name not in loop_guard_tools_triggered_this_iteration:
+                            loop_guard_tools_triggered_this_iteration.append(func_name)
 
                 except Exception as e:
                     logger.error(f"Tool execution failed: {e}")
@@ -3477,71 +3346,29 @@ class LLMClient:
                             trace_session,
                             iterations,
                             func_name,
-                            {},
+                            func_args,
                             {},
                             error=str(e),
-                        )
-            if force_final_after_loop_guard:
-                continue
-
-            programmatic_terminal = getattr(
-                tool_executor,
-                "_zscope_programmatic_terminal_payload",
-                None,
-            )
-            if callable(programmatic_terminal):
-                try:
-                    payload = programmatic_terminal()
-                except Exception as exc:
-                    logger.warning("Programmatic terminal hook failed: %s", exc)
-                    payload = None
-                if isinstance(payload, dict):
-                    programmatic_validation: Dict[str, Any] = {
-                        "valid": True,
-                        "payload": payload,
-                    }
-                    if terminal_tool_handler:
-                        try:
-                            handled = terminal_tool_handler(payload)
-                            programmatic_validation = (
-                                handled
-                                if isinstance(handled, dict)
-                                else {"valid": bool(handled), "payload": payload}
-                            )
-                        except Exception as exc:
-                            programmatic_validation = {"valid": False, "error": str(exc)}
-                    if programmatic_validation.get("valid"):
-                        terminal_payload = programmatic_validation.get("payload", payload)
-                        final_tokens = self.estimate_tokens(
-                            self._prepare_messages_for_model(
-                                conversation,
-                                preserve_reasoning_metadata=preserve_reasoning_metadata,
-                            )
-                        )
-                        if recorder and trace_session:
-                            recorder.record_session_end(trace_session, iterations, final_tokens)
-                        return {
-                            "content": "",
-                            "conversation": conversation,
-                            "terminal_tool_payload": terminal_payload,
-                            "terminal_tool_name": terminal_tool_name,
-                            "terminal_tool_valid": True,
-                            "terminal_tool_call_count": terminal_tool_call_count,
-                            "terminal_invalid_call_count": terminal_invalid_call_count,
-                            "programmatic_terminal": True,
-                            "iterations": iterations,
-                            "context_tokens": final_tokens,
-                            "api_call_count": iterations,
-                            "cumulative_prompt_tokens": cumulative_prompt_tokens,
-                            "cumulative_completion_tokens": cumulative_completion_tokens,
-                            "cumulative_total_tokens": (
-                                cumulative_prompt_tokens + cumulative_completion_tokens
+                            tool_call_id=tool_id,
+                            duration_ms=max(
+                                0, int(round((time.monotonic() - tool_started) * 1000))
                             ),
-                            "tool_call_count": self._count_tool_result_messages(conversation),
-                            "finish_reason": last_finish_reason,
-                            "provider_model": last_provider_model,
-                            "last_assistant_preview": self._assistant_preview(last_message),
-                        }
+                            args_raw=func_args_str if not func_args else None,
+                        )
+            if loop_guard_tools_triggered_this_iteration:
+                disabled_names = ", ".join(loop_guard_tools_triggered_this_iteration)
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The loop guard blocked repeated calls and disabled only these tools: "
+                            f"{disabled_names}. Their latest tool messages contain the cached "
+                            "results or available evidence. Other tools remain available; use them "
+                            "only if needed, then produce the required final answer."
+                        ),
+                    }
+                )
+                continue
 
         if iterations >= max_iterations:
             logger.warning(
@@ -3568,15 +3395,20 @@ class LLMClient:
         logger.info(
             f"Conversation ended (truncated={iterations >= max_iterations}): {iterations} iterations, final context ≈ {final_tokens:,} tokens"
         )
-        if recorder and trace_session:
-            recorder.record_session_end(
-                trace_session,
-                iterations,
-                final_tokens,
-                truncated=iterations >= max_iterations,
-            )
+        _record_session_end_traced(
+            iterations,
+            final_tokens,
+            truncated=iterations >= max_iterations,
+            finish_reason_value=last_finish_reason,
+            terminal_valid=terminal_tool_valid,
+        )
         result_payload = {
-            "content": conversation[-1].get("content", "") if not message.get("tool_calls") else "",
+            # The loop can exit with a trailing user message ("请继续" length
+            # continuation, loop-guard notice, final-iteration instruction),
+            # so the last conversation entry is not the model's answer.  Use
+            # the same combined-assistant-content projection as the normal
+            # completion paths instead of leaking the prompt text as content.
+            "content": self._get_combined_content(conversation),
             "conversation": conversation,
             "iterations": iterations,
             "truncated": iterations >= max_iterations,
@@ -3630,21 +3462,6 @@ class LLMClient:
             sort_keys=True,
             separators=(",", ":"),
         )
-
-    @staticmethod
-    def _canonical_tool_argument_text(value: Any) -> str:
-        if isinstance(value, str):
-            return value
-        try:
-            return json.dumps(
-                value,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
-        except (TypeError, ValueError):
-            return f"invalid:{type(value).__name__}"
 
     @staticmethod
     def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
@@ -3701,19 +3518,136 @@ class LLMClient:
         )
 
     @classmethod
-    def _normalize_tool_args(cls, tool_name: str, value: Any) -> Any:
+    def _normalize_tool_args(cls, tool_name: str, value: Any, *, _root: bool = True) -> Any:
         if isinstance(value, dict):
             normalized = {
-                str(key): cls._normalize_tool_args(tool_name, val) for key, val in value.items()
+                str(key): cls._normalize_tool_args(tool_name, val, _root=False)
+                for key, val in value.items()
             }
-            if tool_name == "get_function_impl" and "max_lines" not in normalized:
-                normalized["max_lines"] = 200
-            if tool_name in {"get_call_graph", "query_pointer_alias"} and "limit" not in normalized:
-                normalized["limit"] = 30
+            if not _root:
+                return normalized
+            defaults: Dict[str, Dict[str, Any]] = {
+                "search_code": {
+                    "kinds": None,
+                    "match_mode": "substring",
+                    "path_prefix": None,
+                    "limit": 20,
+                    "offset": 0,
+                },
+                "read_code": {
+                    "symbol_id": None,
+                    "file_path": None,
+                    "start_line": None,
+                    "end_line": None,
+                    "max_lines": 200,
+                },
+                "get_semantic_context": {
+                    "symbol_id": None,
+                    "query": None,
+                    "limit": 20,
+                    "offset": 0,
+                },
+                "query_code_graph": {"direction": "both", "depth": 1, "limit": 30, "offset": 0},
+                "trace_data_flow": {
+                    "max_call_depth": 3,
+                    "include_may_alias": True,
+                    "limit": 10,
+                    "offset": 0,
+                },
+                "query_static_findings": {
+                    "symbol_id": None,
+                    "producers": None,
+                    "rule_id": None,
+                    "category": None,
+                    "validation_states": None,
+                    "limit": 20,
+                    "offset": 0,
+                },
+            }
+            for key, default in defaults.get(tool_name, {}).items():
+                normalized.setdefault(key, default)
+            if tool_name == "trace_data_flow":
+                source = normalized.get("source")
+                if isinstance(source, dict):
+                    for key in ("name", "file_path", "line", "column"):
+                        source.setdefault(key, None)
+                sink = normalized.get("sink")
+                if isinstance(sink, dict):
+                    for key, default in (
+                        ("query", None),
+                        ("match_mode", "exact"),
+                        ("name", None),
+                        ("file_path", None),
+                        ("line", None),
+                        ("column", None),
+                    ):
+                        sink.setdefault(key, default)
             return normalized
         if isinstance(value, list):
-            return [cls._normalize_tool_args(tool_name, item) for item in value]
+            return [cls._normalize_tool_args(tool_name, item, _root=False) for item in value]
         return value
+
+    @classmethod
+    def _restore_portable_tool_args(
+        cls,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        tools_schema: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Remove only nulls introduced by strict nullable-required adaptation.
+
+        The provider sees a strict copy in which every optional property is
+        required and nullable. Execution still validates against the original
+        portable contract, so an artificial null must become an omitted field.
+        Properties that were nullable in the original contract retain null.
+        """
+        parameters: Dict[str, Any] = {}
+        for tool in tools_schema:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict) or function.get("name") != tool_name:
+                continue
+            candidate = function.get("parameters")
+            if isinstance(candidate, dict):
+                parameters = candidate
+            break
+
+        def allows_null(schema: Dict[str, Any]) -> bool:
+            schema_type = schema.get("type")
+            if schema_type == "null":
+                return True
+            if isinstance(schema_type, list) and "null" in schema_type:
+                return True
+            for keyword in ("anyOf", "oneOf"):
+                variants = schema.get(keyword)
+                if isinstance(variants, list) and any(
+                    isinstance(variant, dict) and allows_null(variant) for variant in variants
+                ):
+                    return True
+            return False
+
+        def restore(value: Any, schema: Dict[str, Any]) -> Any:
+            if isinstance(value, dict):
+                properties = schema.get("properties")
+                properties = properties if isinstance(properties, dict) else {}
+                required = set(schema.get("required") or [])
+                result: Dict[str, Any] = {}
+                for key, item in value.items():
+                    property_schema = properties.get(key)
+                    if not isinstance(property_schema, dict):
+                        result[key] = item
+                        continue
+                    if item is None and key not in required and not allows_null(property_schema):
+                        continue
+                    result[key] = restore(item, property_schema)
+                return result
+            if isinstance(value, list):
+                item_schema = schema.get("items")
+                if isinstance(item_schema, dict):
+                    return [restore(item, item_schema) for item in value]
+            return value
+
+        restored = restore(arguments, parameters)
+        return restored if isinstance(restored, dict) else dict(arguments)
 
     @staticmethod
     def _build_repeat_tool_notice(
@@ -3751,105 +3685,6 @@ class LLMClient:
             }
         return notice
 
-    @classmethod
-    def _find_covering_file_snippet_call(
-        cls,
-        tool_call_history: Dict[str, List[Dict[str, Any]]],
-        current_signature: str,
-        arguments: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        """Return a previous get_file_snippet call whose result covers this range."""
-        requested_file = cls._normalize_file_path_for_compare(arguments.get("file_path"))
-        requested_start = cls._line_number(arguments.get("start_line"))
-        requested_end = cls._line_number(arguments.get("end_line"))
-        if not requested_file or requested_start is None or requested_end is None:
-            return None
-        if requested_end < requested_start:
-            return None
-
-        for signature, calls in tool_call_history.items():
-            if signature == current_signature:
-                continue
-            for call in reversed(calls):
-                if call.get("tool") != "get_file_snippet":
-                    continue
-                if call.get("blocked") or call.get("cached_replay"):
-                    continue
-                result = call.get("result")
-                if not isinstance(result, dict) or result.get("success") is False:
-                    continue
-                data = result.get("data")
-                if not isinstance(data, dict):
-                    continue
-
-                previous_file = cls._normalize_file_path_for_compare(
-                    data.get("file") or (call.get("arguments") or {}).get("file_path")
-                )
-                previous_start = cls._line_number(
-                    data.get("start_line") or (call.get("arguments") or {}).get("start_line")
-                )
-                previous_end = cls._line_number(
-                    data.get("end_line") or (call.get("arguments") or {}).get("end_line")
-                )
-                if (
-                    previous_file == requested_file
-                    and previous_start is not None
-                    and previous_end is not None
-                    and previous_start <= requested_start
-                    and previous_end >= requested_end
-                ):
-                    return call
-        return None
-
-    @classmethod
-    def _build_covered_file_snippet_notice(
-        cls,
-        arguments: Dict[str, Any],
-        current_tool_call_id: Any,
-        covering_call: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        covering_args = covering_call.get("arguments") or {}
-        result = (
-            covering_call.get("result") if isinstance(covering_call.get("result"), dict) else {}
-        )
-        data = result.get("data") if isinstance(result, dict) else {}
-        if not isinstance(data, dict):
-            data = {}
-        return {
-            "tool": "get_file_snippet",
-            "arguments": arguments,
-            "current_tool_call_id": current_tool_call_id,
-            "covered_by_previous_snippet": {
-                "iteration": covering_call.get("iteration"),
-                "assistant_tool_call_id": covering_call.get("tool_call_id"),
-                "assistant_message_index": covering_call.get("assistant_message_index"),
-                "tool_result_message_index": covering_call.get("tool_result_message_index"),
-                "file_path": data.get("file") or covering_args.get("file_path"),
-                "start_line": data.get("start_line") or covering_args.get("start_line"),
-                "end_line": data.get("end_line") or covering_args.get("end_line"),
-            },
-            "instruction": (
-                "The requested file line range is already contained in a previous "
-                "get_file_snippet result. This tool message replays that cached "
-                "snippet. Use it directly and do not request overlapping snippets "
-                "unless the new range includes additional lines that are not present."
-            ),
-        }
-
-    @staticmethod
-    def _normalize_file_path_for_compare(value: Any) -> str:
-        text = str(value or "").strip().replace("\\", "/")
-        while text.startswith("./"):
-            text = text[2:]
-        return text
-
-    @staticmethod
-    def _line_number(value: Any) -> Optional[int]:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
     @staticmethod
     def _last_replayable_tool_result(
         previous_calls: List[Dict[str, Any]],
@@ -3865,39 +3700,6 @@ class LLMClient:
                 continue
             return result
         return None
-
-    @staticmethod
-    def _parse_terminal_tool_args(value: Any) -> Dict[str, Any]:
-        """Parse final-tool arguments as one strict JSON object.
-
-        Unlike ordinary exploratory tool calls, a terminal authorization is
-        never repaired with ``literal_eval`` or heuristic extraction.  The
-        failure is body-free and duplicate/non-finite JSON is rejected.
-        """
-
-        if isinstance(value, dict):
-            try:
-                json.dumps(value, allow_nan=False)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("terminal_tool_arguments_invalid") from exc
-            return dict(value)
-        if not isinstance(value, str) or not value:
-            raise ValueError("terminal_tool_arguments_invalid")
-
-        def reject_constant(_value: str) -> Any:
-            raise ValueError("terminal_tool_arguments_invalid")
-
-        try:
-            parsed = json.loads(
-                value,
-                object_pairs_hook=_reject_duplicate_provider_json_keys,
-                parse_constant=reject_constant,
-            )
-        except (json.JSONDecodeError, _DuplicateProviderJsonKeyError, ValueError) as exc:
-            raise ValueError("terminal_tool_arguments_invalid") from exc
-        if not isinstance(parsed, dict):
-            raise ValueError("terminal_tool_arguments_invalid")
-        return parsed
 
     def _parse_tool_args(self, func_args_str: Any) -> Dict[str, Any]:
         """Parse tool arguments, with fallbacks for slightly malformed JSON."""

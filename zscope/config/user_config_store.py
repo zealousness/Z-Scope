@@ -93,6 +93,9 @@ class UserConfigStore:
                 );
             """)
             self._ensure_column(conn, "finding_baselines", "stable_fingerprint", "TEXT NOT NULL DEFAULT ''")
+            from .protocol_feedback import initialize
+
+            initialize(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_finding_baselines_stable_fingerprint "
                 "ON finding_baselines(stable_fingerprint)"
@@ -105,12 +108,41 @@ class UserConfigStore:
         finally:
             conn.close()
 
+    # ── Business Premise Feedback ──
+
+    def get_protocol_answers(self, keys: List[str]) -> Dict[str, Dict[str, Any]]:
+        from .protocol_feedback import latest
+
+        conn = self._connect()
+        try:
+            return latest(conn, keys)
+        finally:
+            conn.close()
+
+    def protocol_answer_revisions(self, keys: List[str]) -> Dict[str, int]:
+        rows = self.get_protocol_answers(keys)
+        return {key: int(rows.get(key, {}).get("revision", 0)) for key in keys}
+
+    def save_protocol_answers(self, updates: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        from .protocol_feedback import save
+
+        conn = self._connect()
+        try:
+            return save(conn, updates)
+        finally:
+            conn.close()
+
     # ── External Functions ──
 
-    def upsert_external_function(self, func_name: str, description: str,
-                                 library: str = "", memory_behavior: Optional[Dict] = None,
-                                 concurrency_behavior: Optional[Dict] = None,
-                                 return_semantics: str = "") -> None:
+    def upsert_external_function(
+        self,
+        func_name: str,
+        description: str,
+        library: str = "",
+        memory_behavior: Optional[Dict] = None,
+        concurrency_behavior: Optional[Dict] = None,
+        return_semantics: str = "",
+    ) -> None:
         self.workbook.upsert_external_function(
             func_name,
             description,
@@ -325,8 +357,10 @@ class UserConfigStore:
         if exact_key:
             exact = self.get_finding_baseline(exact_key)
             if exact:
-                exact["match_strategy"] = "dedup_key"
-                return exact
+                baseline_issue = self._parse_json_value(str(exact.get("issue_json") or ""), {})
+                if source_context_fingerprints_compatible(issue or {}, baseline_issue):
+                    exact["match_strategy"] = "dedup_key"
+                    return exact
 
         fingerprint = stable_issue_fingerprint(issue or {})
         if not fingerprint:

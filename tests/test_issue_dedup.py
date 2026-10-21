@@ -103,7 +103,10 @@ def test_fixture_identifiers_alone_do_not_synthesize_root_cause_identity() -> No
             "category": category,
             "description": description,
         }
-        assert root_cause_token(issue, category, flatten_issue_text(issue)) != fixture_root
+        assert (
+            root_cause_token(issue, category, flatten_issue_text(issue))
+            != fixture_root
+        )
 
 
 def _precise_endpoint_issue(
@@ -182,7 +185,9 @@ def test_source_sink_location_dedup_uses_normalized_category() -> None:
     deduped = deduplicate_issues([signed, truncation])
 
     assert len(deduped) == 1
-    assert deduped[0]["dedup_key"] == ("source-sink-v1|signed_unsigned|src/demo.c:10|src/demo.c:20")
+    assert deduped[0]["dedup_key"] == (
+        "source-sink-v1|signed_unsigned|src/demo.c:10|src/demo.c:20"
+    )
 
 
 def test_source_sink_location_dedup_uses_issue_file_for_line_only_endpoints() -> None:
@@ -245,9 +250,7 @@ def test_source_sink_location_dedup_requires_same_endpoint_files() -> None:
 
 
 def test_source_sink_location_dedup_requires_same_type() -> None:
-    bounds = _precise_endpoint_issue(
-        "BOUNDS", category="bounds", function="bounds_path", location_line=701
-    )
+    bounds = _precise_endpoint_issue("BOUNDS", category="bounds", function="bounds_path", location_line=701)
     command = _precise_endpoint_issue(
         "COMMAND",
         category="command_injection",
@@ -379,7 +382,9 @@ def test_dedup_keeps_same_helper_pattern_distinct_across_sink_functions() -> Non
     deduped = deduplicate_issues([first_recv, second_recv])
 
     assert len(deduped) == 2
-    assert {item["dedup_key"] for item in deduped} == {
+    assert {
+        item["dedup_key"] for item in deduped
+    } == {
         "signed_unsigned|src/io.c|decode_primary_frame|negative_length_to_unsigned_size",
         "signed_unsigned|src/io.c|decode_replica_frame|negative_length_to_unsigned_size",
     }
@@ -404,7 +409,9 @@ def test_pipe_lock_order_findings_keep_distinct_path_functions() -> None:
     deduped = deduplicate_issues([dispatch, timer])
 
     assert len(deduped) == 2
-    assert {item["dedup_key"] for item in deduped} == {
+    assert {
+        item["dedup_key"] for item in deduped
+    } == {
         "deadlock|src/worker.c|dispatch_tick|lock_order_control_lock_scheduler_lock",
         "deadlock|src/worker.c|timer_callback|lock_order_control_lock_scheduler_lock",
     }
@@ -456,10 +463,7 @@ def test_use_after_scope_stack_thread_issue_normalizes_to_stack_escape() -> None
         "category": "memory safety use after scope 栈内存逃逸到分离线程",
         "subcategory": "use_after_scope",
         "description": "FlushJob job is passed to pthread create as &job and later read by _flush_worker.",
-        "positive_evidence": [
-            "pthread_create(&tid, NULL, _flush_worker, &job)",
-            "pthread_detach(tid)",
-        ],
+        "positive_evidence": ["pthread_create(&tid, NULL, _flush_worker, &job)", "pthread_detach(tid)"],
         "source": "FlushJob job",
         "sink": "_flush_worker",
     }
@@ -669,7 +673,8 @@ def test_partial_retry_symptoms_merge_by_structured_cleanup_root() -> None:
 
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
-        "partial_resource_leak|src/partition.c|load_partition_with_retry|" "retry_cleanup_missing"
+        "partial_resource_leak|src/partition.c|load_partition_with_retry|"
+        "retry_cleanup_missing"
     )
 
 
@@ -703,7 +708,8 @@ def test_structured_version_candidates_merge_across_entry_roots() -> None:
 
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
-        "version_filtering|src/protocol.c|parse_protocol_version|" "parsed_protocol_version_ignored"
+        "version_filtering|src/protocol.c|parse_protocol_version|"
+        "parsed_protocol_version_ignored"
     )
     assert deduped[0]["duplicate_count"] == 1
 
@@ -764,7 +770,8 @@ def test_error_return_variants_merge_by_detector_root() -> None:
 
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
-        "unchecked_return|src/transport.c|probe_transport_status|" "error_branch_returns_success"
+        "unchecked_return|src/transport.c|probe_transport_status|"
+        "error_branch_returns_success"
     )
 
 
@@ -779,12 +786,12 @@ def test_path_check_before_open_variants_merge_across_public_entries() -> None:
         "category": "sigpipe_unhandled",
         "entry_function": "td_execute_command",
         "description": "A pathname is checked separately from a later open/use operation.",
-        "sink": 'FILE* fp = fopen(path, "r");',
+        "sink": "FILE* fp = fopen(path, \"r\");",
     }
     submit = {
         **command,
         "entry_function": "td_submit_task",
-        "sink": 'fopen(path, "r")',
+        "sink": "fopen(path, \"r\")",
     }
 
     deduped = deduplicate_issues([command, submit])
@@ -825,7 +832,9 @@ def test_numeric_root_does_not_merge_distinct_flows_without_flow_identity() -> N
         "numeric_allocation_size_calculation"
     )
     assert len(deduped) == 2
-    assert all(str(issue["dedup_key"]).startswith(expected_root_key) for issue in deduped)
+    assert all(
+        str(issue["dedup_key"]).startswith(expected_root_key) for issue in deduped
+    )
 
 
 def test_same_function_same_file_distinct_resources_still_do_not_merge() -> None:
@@ -864,79 +873,11 @@ def test_distinct_memory_leaks_remain_separate() -> None:
     deduped = deduplicate_issues([thread_ids, queue_tasks])
 
     assert len(deduped) == 2
-    assert {item["dedup_key"] for item in deduped} == {
+    assert {
+        item["dedup_key"] for item in deduped
+    } == {
         "memory_leak|src/bootstrap.c|initialize_workers|worker_handles",
         "memory_leak|src/bootstrap.c|g_scheduler.queue.tasks",
-    }
-
-
-def test_memory_leak_resource_signature_extracts_allocation_owner() -> None:
-    pid_list = {
-        "function": "_runtime_query_peak_stats",
-        "location": "src/lifecycle.c:1422-1430",
-        "category": "memory_leak",
-        "description": "pid_list通过_safe_calloc分配后从未释放，函数返回时内存丢失",
-    }
-    child_member = {
-        "function": "_runtime_unload_patch_member",
-        "location": "src/lifecycle.c:1346-1350",
-        "category": "memory_leak",
-        "resource": "root->children分配的ServiceChild结构体及其name字段从未释放",
-    }
-
-    assert issue_resource_signature(pid_list) == "pid_list"
-    assert issue_resource_signature(child_member) == "root->children"
-
-
-def test_generic_memory_leak_text_does_not_become_root_token() -> None:
-    issue = {
-        "function": "generic_cleanup",
-        "location": "src/demo.c:10",
-        "category": "memory_leak",
-        "description": "memory_leak memory leak resource leak",
-    }
-    text = flatten_issue_text(issue)
-    category = canonical_category(issue, text)
-
-    assert root_cause_token(issue, category, text) == ""
-    assert canonical_issue_key(issue) == "memory_leak|src/demo.c|10|generic_cleanup"
-
-
-def test_real018_style_memory_leak_stays_independent_from_patch_member_leak() -> None:
-    patch_member = {
-        "id": "ISSUE_4",
-        "function": "_runtime_unload_patch_member",
-        "location": "src/lifecycle.c:1346-1350",
-        "category": "memory_leak",
-        "validation_status": "validated",
-        "confidence": 0.95,
-        "description": "root->children分配的ServiceChild结构体及其name字段从未释放",
-        "root_cause": "释放父节点时未递归释放子节点资源",
-        "reasoning": "root->children及其内部name字段未被释放",
-    }
-    peak_stats = {
-        "id": "ISSUE_2",
-        "function": "_runtime_query_peak_stats",
-        "location": "src/lifecycle.c:1422-1430",
-        "category": "memory_leak",
-        "validation_status": "validated",
-        "confidence": 0.95,
-        "description": "pid_list通过_safe_calloc分配后从未释放，函数返回时内存丢失",
-        "root_cause": "函数获取所有权后既未释放也未转移所有权，违反所有权契约",
-        "reasoning": "第1422行分配pid_list；第1430行返回时指针丢失",
-    }
-
-    deduped = deduplicate_issues([patch_member.copy(), peak_stats.copy()])
-    semantic_deduped, summary = deduplicate_semantic_issues_programmatic(
-        [patch_member.copy(), peak_stats.copy()]
-    )
-
-    assert len(deduped) == 2
-    assert len(semantic_deduped) == 2
-    assert summary["programmatic_merge_count"] == 0
-    assert {issue_resource_signature(issue) for issue in semantic_deduped} == {
-        "root->children",
-        "pid_list",
     }
 
 
@@ -1020,11 +961,95 @@ def test_semantic_related_keys_cluster_cross_function_same_sink_and_path() -> No
     direct_keys = set(semantic_related_cluster_keys(direct))
     wrapper_keys = set(semantic_related_cluster_keys(wrapper))
 
-    assert any(
-        key.startswith("semantic-sink-v1|command_injection|src/parser.c|system")
-        for key in direct_keys
-    )
+    assert any(key.startswith("semantic-sink-v1|command_injection|src/parser.c|system") for key in direct_keys)
     assert direct_keys.intersection(wrapper_keys)
+
+
+def test_llm_dedup_guard_allows_cross_function_command_injection_same_sink() -> None:
+    direct = {
+        "id": "A",
+        "function": "_validate_task",
+        "location": "src/parser.c:361",
+        "category": "command_injection",
+        "description": "The command reaches system without shell escaping.",
+        "sink": "system(command)",
+    }
+    wrapper = {
+        "id": "B",
+        "function": "_submit_task_frame",
+        "location": "src/parser.c:420",
+        "category": "command_injection",
+        "description": "The submit path forwards the same command to the shell.",
+        "sink": "system(command)",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "task_command_execution",
+                "confidence": 0.92,
+                "reasoning": "Both findings describe the same command execution sink.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": direct, "B": wrapper},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 1
+    assert rejected == 0
+    assert "duplicate_count" not in direct
+    assert direct["dedup_cluster_suggestions"][0]["role"] == "primary"
+    assert wrapper["dedup_cluster_suggestions"][0]["role"] == "possible_alias"
+
+
+def test_llm_dedup_guard_rejects_cross_function_same_sink_distinct_resources() -> None:
+    admin = {
+        "id": "A",
+        "function": "_run_admin_task",
+        "location": "src/parser.c:500",
+        "category": "command_injection",
+        "description": "admin command reaches system",
+        "sink": "system(command)",
+        "resource_signature": "admin_command",
+    }
+    user = {
+        "id": "B",
+        "function": "_run_user_task",
+        "location": "src/parser.c:540",
+        "category": "command_injection",
+        "description": "user command reaches system",
+        "sink": "system(command)",
+        "resource_signature": "user_command",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "bad-merge",
+                "confidence": 0.99,
+                "reasoning": "Both call system.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": admin, "B": user},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 0
+    assert rejected == 1
 
 
 def test_programmatic_semantic_dedup_merges_missing_refcount_and_uaf_same_resource() -> None:
@@ -1045,11 +1070,7 @@ def test_programmatic_semantic_dedup_merges_missing_refcount_and_uaf_same_resour
         "description": "Worker reaches the same g_issue41_broker.resources node after SAFE_FREE(res).",
         "resource_signature": "g_issue41_broker.resources",
         "sink": "res->ref_count",
-        "call_path": [
-            "td_run_issue41_cases",
-            "_td_issue41_worker",
-            "_issue41_missing_reference_count",
-        ],
+        "call_path": ["td_run_issue41_cases", "_td_issue41_worker", "_issue41_missing_reference_count"],
     }
 
     deduped, summary = deduplicate_semantic_issues_programmatic([refcount, uaf])
@@ -1057,6 +1078,129 @@ def test_programmatic_semantic_dedup_merges_missing_refcount_and_uaf_same_resour
     assert len(deduped) == 1
     assert deduped[0]["duplicate_count"] == 1
     assert summary["programmatic_merge_count"] == 1
+
+
+def test_llm_dedup_guard_rejects_distinct_resources() -> None:
+    thread_ids = {
+        "id": "A",
+        "function": "td_init",
+        "location": "src/main.c:187",
+        "category": "memory_leak",
+        "description": "thread_ids is allocated and not freed.",
+    }
+    queue_tasks = {
+        "id": "B",
+        "function": "td_init",
+        "location": "src/main.c:160",
+        "category": "memory_leak",
+        "description": "g_dispatcher.queue.tasks is allocated and not freed.",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "bad-merge",
+                "confidence": 0.99,
+                "reasoning": "LLM incorrectly merged different resources.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": thread_ids, "B": queue_tasks},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 0
+    assert rejected == 1
+
+
+def test_llm_dedup_guard_rejects_td_init_distinct_allocation_members() -> None:
+    dispatcher_threads = {
+        "id": "A",
+        "function": "td_init",
+        "location": "src/main.c:185",
+        "category": "memory_leak",
+        "description": "g_dispatcher.threads allocation failure leaves earlier dispatcher resources allocated.",
+    }
+    thread_ids = {
+        "id": "B",
+        "function": "td_init",
+        "location": "src/main.c:191",
+        "category": "memory_leak",
+        "description": "thread_ids allocation failure leaks the previously allocated thread argument array.",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "partial_cleanup_failure|src/main.c|td_init|g_dispatcher",
+                "confidence": 0.92,
+                "reasoning": "Both are cleanup failures in td_init.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": dispatcher_threads, "B": thread_ids},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 0
+    assert rejected == 1
+
+
+def test_llm_dedup_guard_allows_same_file_root_across_functions() -> None:
+    callee = {
+        "id": "A",
+        "function": "expand_task_table",
+        "location": "src/tasks.c:1789",
+        "category": "dynamic_array_race",
+        "resource_signature": "g_task_table",
+        "description": "g_task_table is resized and the old array is freed without synchronization.",
+        "sink": "g_task_table = new_array",
+    }
+    wrapper = {
+        "id": "B",
+        "function": "create_task_from_frame",
+        "location": "src/tasks.c:1922",
+        "category": "shared_state_race",
+        "resource_signature": "g_task_table",
+        "description": "The task creation path reaches the same unsynchronized g_task_table resize.",
+        "sink": "g_task_table old storage can race with readers",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "g_task_table",
+                "confidence": 0.93,
+                "reasoning": "Both reports describe the same global task array resize root cause.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": callee, "B": wrapper},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 1
+    assert rejected == 0
+    assert "duplicate_count" not in callee
+    assert callee["dedup_cluster_suggestions"][0]["role"] == "primary"
 
 
 def test_programmatic_semantic_dedup_keeps_distinct_concrete_roots() -> None:

@@ -168,6 +168,42 @@ def test_bundle_unions_alias_evidence_facts_and_occurrences_order_independently(
     assert group["hashes"]["facts_sha256"] == canonical_json_sha256(group["facts"])
 
 
+def test_bundle_binds_review_memory_projection_into_group_hashes() -> None:
+    review_memory = {
+        "schema_version": "zscope.validator-review-memory.v1",
+        "authority": "advisory",
+        "hints": [{
+            "pattern_id": "pattern_1",
+            "summary": "recheck current guard",
+            "match_basis": ["cfg"],
+            "required_checks": ["recheck CFG"],
+            "counter_conditions": ["guard absent"],
+            "evidence_refs": ["e1"],
+        }],
+        "selection": {"candidate_count": 1, "selected_count": 1, "omitted_count": 0, "token_budget": 1200},
+    }
+    bundle = build_validator_replay_bundle(_report(), review_memory=review_memory)
+    assert bundle["review_memory"] == review_memory
+    assert bundle["canonical_groups"][0]["review_memory"] == review_memory
+    assert bundle["bundle_sha256"]
+    validate_validator_replay_bundle(bundle)
+    changed = copy.deepcopy(review_memory)
+    changed["hints"][0]["pattern_id"] = "pattern_2"
+    changed_bundle = build_validator_replay_bundle(_report(), review_memory=changed)
+    assert changed_bundle["bundle_sha256"] != bundle["bundle_sha256"]
+
+
+def test_validator_replay_input_projects_hashed_review_memory_advisory() -> None:
+    from zscope.benchmarking.validator_replay import _group_to_validator_input
+
+    review_memory = {"authority": "advisory", "hints": [{"pattern_id": "p1"}]}
+    bundle = build_validator_replay_bundle(_report(), review_memory=review_memory)
+    validator_input = _group_to_validator_input(
+        bundle["canonical_groups"][0], validation_pass="initial"
+    )
+    assert validator_input["evidence_slice"]["review_memory"] == review_memory
+
+
 def test_bundle_merges_stale_clusters_connected_by_candidate_or_occurrence() -> None:
     report = _report()
     duplicate = copy.deepcopy(report["candidate_terminal_states"][0])

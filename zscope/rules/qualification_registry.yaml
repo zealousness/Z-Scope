@@ -1,3 +1,10 @@
+# C/C++ v4 contracts / v15 source composition require fresh qualification evidence;
+# source-chain tests and trial results do not establish formal qualification.
+# Object/path ownership and compiler-bound refutation revisions remain pending.
+# retained_slot_release revision 1 has native positive/negative and candidate
+# snapshot tests only; it remains experimental/default-disabled, unqualified.
+# object_protocol_path likewise remains unqualified; bounded concrete path
+# observations do not establish business release requirements or universal coverage.
 schema_version: zscope.rule-qualification.v1
 legacy_stable_policy: legacy_stable_pending
 qualifications: []

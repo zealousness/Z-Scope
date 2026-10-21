@@ -1,0 +1,468 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.validator-project-knowledge.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "resolution_mode",
+    "project_id",
+    "wiki_revision_id",
+    "source_manifest_digest",
+    "context_digest",
+    "target",
+    "constraints",
+    "source_excerpts",
+    "conflicts",
+    "unknowns",
+    "selection"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.validator-project-knowledge.v1"
+    },
+    "resolution_mode": {
+      "type": "string",
+      "enum": [
+        "wiki",
+        "source_fallback",
+        "none"
+      ]
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "wiki_revision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "source_manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "context_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module_ids",
+        "subject_ids",
+        "obligation_kinds",
+        "candidate_file"
+      ],
+      "properties": {
+        "module_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^module:[a-z0-9_.:/-]+$"
+          }
+        },
+        "subject_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        },
+        "obligation_kinds": {
+          "type": "array",
+          "minItems": 0,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+            "module_boundary",
+            "public_api",
+            "entry_exposure",
+            "input_range",
+            "input_format",
+            "caller_precondition",
+            "return_contract",
+            "error_contract",
+            "nullability",
+            "size_contract",
+            "ownership_acquire",
+            "ownership_release",
+            "ownership_transfer",
+            "resource_lifecycle",
+            "requires_lock",
+            "protects_state",
+            "lock_order",
+            "threading_contract",
+            "configuration_constraint",
+            "sanitizer_or_guard",
+            "documented_exception",
+            "known_false_positive_pattern",
+            "unknown"
+            ]
+          }
+        },
+        "candidate_file": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*\\.\\.)(?:[^/]+/)*[^/]+$"
+        },
+        "function_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 300
+        },
+        "entry_function": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 300
+        }
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "constraint_id",
+          "kind",
+          "subject_id",
+          "subject_kind",
+          "statement",
+          "authority",
+          "normativity",
+          "status",
+          "source_refs"
+        ],
+        "properties": {
+          "constraint_id": {
+            "type": "string",
+            "pattern": "^constraint_[a-z0-9_:-]+$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "module_boundary",
+              "public_api",
+              "entry_exposure",
+              "input_range",
+              "input_format",
+              "caller_precondition",
+              "return_contract",
+              "error_contract",
+              "nullability",
+              "size_contract",
+              "ownership_acquire",
+              "ownership_release",
+              "ownership_transfer",
+              "resource_lifecycle",
+              "requires_lock",
+              "protects_state",
+              "lock_order",
+              "threading_contract",
+              "configuration_constraint",
+              "sanitizer_or_guard",
+              "documented_exception",
+              "known_false_positive_pattern"
+            ]
+          },
+          "subject_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "subject_kind": {
+            "type": "string",
+            "enum": [
+              "project",
+              "module",
+              "api",
+              "symbol",
+              "resource",
+              "lock",
+              "type",
+              "configuration",
+              "topic"
+            ]
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1600
+          },
+          "authority": {
+            "const": "documented_contract"
+          },
+          "normativity": {
+            "type": "string",
+            "enum": [
+              "required",
+              "recommended",
+              "descriptive",
+              "unknown"
+            ]
+          },
+          "status": {
+            "enum": [
+              "active",
+              "conflicted"
+            ]
+          },
+          "source_refs": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^docref_[a-z0-9_:-]+$"
+            }
+          },
+          "conflicts_with": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^constraint_[a-z0-9_:-]+$"
+            }
+          }
+        }
+      }
+    },
+    "source_excerpts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref_id",
+          "relative_path",
+          "heading_path",
+          "start_line",
+          "end_line",
+          "text",
+          "match_reasons",
+          "score"
+        ],
+        "properties": {
+          "ref_id": {
+            "type": "string",
+            "pattern": "^docref_[a-z0-9_:-]+$"
+          },
+          "relative_path": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*\\.\\.)(?:[^/]+/)*[^/]+$"
+          },
+          "heading_path": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "match_reasons": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "exact_symbol",
+                "module_scope",
+                "path_scope",
+                "fact_kind",
+                "resource_identity",
+                "lock_identity",
+                "bm25",
+                "link_distance"
+              ]
+            }
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "subject_id",
+          "constraint_ids",
+          "reason",
+          "source_refs"
+        ],
+        "properties": {
+          "subject_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "constraint_ids": {
+            "type": "array",
+            "minItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^constraint_[a-z0-9_:-]+$"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "source_refs": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^docref_[a-z0-9_:-]+$"
+            }
+          }
+        }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "subject_id",
+          "reason"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "missing_document",
+              "ambiguous_module",
+              "stale_source",
+              "unresolved_scope",
+              "unsupported_fact_kind"
+            ]
+          },
+          "subject_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_tokens",
+        "estimated_tokens",
+        "selected_constraint_ids",
+        "omitted_constraint_count",
+        "omitted_source_excerpt_count",
+        "selected_source_ref_ids",
+        "ranking_version",
+        "fallback_reason"
+      ],
+      "properties": {
+        "max_tokens": {
+          "type": ["integer", "null"],
+          "minimum": 256,
+          "maximum": 4096,
+          "default": 4096
+        },
+        "estimated_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selected_constraint_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^constraint_[a-z0-9_:-]+$"
+          }
+        },
+        "omitted_constraint_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_source_excerpt_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selected_source_ref_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^docref_[a-z0-9_:-]+$"
+          }
+        },
+        "ranking_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "fallback_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "compiler_disabled",
+            "compiler_unavailable",
+            "no_active_revision",
+            "stale_revision",
+            "invalid_revision",
+            "no_wiki_match",
+            "no_constraint_match",
+            "context_overflow",
+            "no_relevant_project_constraint",
+            null
+          ]
+        }
+      }
+    }
+  }
+}

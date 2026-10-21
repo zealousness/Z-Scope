@@ -5,12 +5,18 @@ Configuration management for Z-SCOPE.
 from __future__ import annotations
 
 import os
+import math
 import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 import logging
+
+if TYPE_CHECKING:
+    # Import cycle guard: v3 imports this module at runtime; this import only
+    # exists for the ``user_config_v3`` annotation below.
+    from .v3 import UserConfigV3
 
 _yaml: Any
 try:
@@ -199,22 +205,15 @@ class LLMConfig:
     base_url_rate_limit_per_minute: Optional[int] = None
     base_url_max_concurrent_requests: Optional[int] = None
     models: List[str] = field(default_factory=list)
-    response_model_map: Dict[str, str] = field(default_factory=dict)
     max_tokens: int = 4096
     timeout: Optional[float] = 120.0
     max_retries: int = 2
     retry_until_available: bool = False
     supports_structured_output: bool = False
-    require_exact_response_model: bool = False
 
     def __post_init__(self) -> None:
         self.base_urls = _normalize_llm_base_urls(self.base_urls or self.base_url)
         self.base_url = self.base_urls[0]
-        self.response_model_map = {
-            str(requested).strip(): str(response).strip()
-            for requested, response in self.response_model_map.items()
-            if str(requested).strip() and str(response).strip()
-        }
         self.base_url_rate_limit_per_minute = _optional_positive_int(
             self.base_url_rate_limit_per_minute,
             None,
@@ -237,6 +236,7 @@ class AgentConfig:
     skills: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
     mcp_servers: List[str] = field(default_factory=list)
+    can_spawn_subagents: Optional[bool] = None
     entry_custom_prompt: Optional[str] = None
 
 
@@ -249,6 +249,74 @@ class EntryDiscoveryConfig:
     max_functions: int = 10000
     interface_files: List[str] = field(default_factory=list)
     search_root: Optional[Path] = None
+
+
+@dataclass
+class WikiConfig:
+    """Public project Wiki controls; off remains the compatibility default."""
+
+    mode: str = "off"  # off | build_only | shadow | active
+    auto_maintain: bool = False
+    state_dir: str = ".zscope_knowledge/wiki"
+    compiler_enabled: bool = True
+    document_exclude: List[str] = field(default_factory=list)
+    explanatory_overrides: List[str] = field(default_factory=list)
+    generated_overrides: List[str] = field(default_factory=list)
+    max_file_bytes: int = 10 * 1024 * 1024
+    max_files: int = 10_000
+    max_total_bytes: int = 100 * 1024 * 1024
+    # Wiki-local limits are opt-in. ``None`` means unlimited; the ordinary
+    # LLM profile max_tokens remains the physical request ceiling.
+    compiler_max_tokens: Optional[int] = None
+    max_wall_seconds: Optional[int] = None
+    max_constraints: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        self.mode = str(self.mode or "off").strip().lower().replace("-", "_")
+        if self.mode not in {"off", "build_only", "shadow", "active"}:
+            raise ValueError("project.wiki.mode must be off, build_only, shadow, or active")
+        self.state_dir = str(self.state_dir or ".zscope_knowledge/wiki").strip()
+        if (
+            not self.state_dir
+            or Path(self.state_dir).is_absolute()
+            or ".." in Path(self.state_dir).parts
+        ):
+            raise ValueError("project.wiki.state_dir must be project-root relative")
+        self.max_file_bytes = int(self.max_file_bytes)
+        self.max_files = int(self.max_files)
+        self.max_total_bytes = int(self.max_total_bytes)
+        self.compiler_max_tokens = _optional_positive_int(self.compiler_max_tokens, None)
+        self.max_wall_seconds = _optional_positive_int(self.max_wall_seconds, None)
+        self.max_constraints = _optional_positive_int(self.max_constraints, None)
+        if min(self.max_file_bytes, self.max_files, self.max_total_bytes) <= 0:
+            raise ValueError("project.wiki limits must be positive")
+
+
+@dataclass
+class ReviewMemoryConfig:
+    mode: str = "off"
+    state_dir: str = ".zscope/review-memory"
+    project_scope: str = "project"
+    extraction: str = "auto_extract"
+    llm_enabled: bool = True
+    max_patterns_per_finding: int = 3
+    max_context_tokens: int = 1200
+    stale_on_source_drift: bool = True
+    allow_direct_suppression: bool = False
+
+    def __post_init__(self) -> None:
+        self.mode = str(self.mode or "off").strip().lower()
+        if self.mode not in {"off", "archive", "extract", "active"}:
+            raise ValueError("project.review_memory.mode must be off, archive, extract, or active")
+        path = Path(str(self.state_dir or ".zscope/review-memory"))
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("project.review_memory.state_dir must be project-root relative")
+        if self.project_scope != "project" or self.extraction not in {"auto_extract", "async_cli"}:
+            raise ValueError("review memory requires project scope and auto_extract or async_cli extraction")
+        if self.max_patterns_per_finding < 0 or self.max_context_tokens < 0:
+            raise ValueError("review memory limits must be non-negative")
+        if self.allow_direct_suppression:
+            raise ValueError("review memory cannot enable direct suppression")
 
 
 @dataclass
@@ -286,6 +354,7 @@ class ConcurrencyConfig:
     investigator_workers: int = 1
     evidence_completion_workers: int = 2
     index_workers: int = 4
+    wiki_compiler_workers: int = 4
     svf_workers: Optional[int] = None
     llm_max_inflight: int = 4
 
@@ -296,6 +365,7 @@ class ConcurrencyConfig:
             "investigator_workers": self.investigator_workers,
             "evidence_completion_workers": self.evidence_completion_workers,
             "index_workers": self.index_workers,
+            "wiki_compiler_workers": self.wiki_compiler_workers,
             "llm_max_inflight": self.llm_max_inflight,
         }
         if self.svf_workers is not None:
@@ -312,6 +382,7 @@ class RuntimeAgentConfig:
     name: str
     llm_role: str
     enabled: bool = True
+    can_spawn_subagents: Optional[bool] = None
 
 
 @dataclass
@@ -363,6 +434,8 @@ class IndexingConfig:
     joern_heap_size: str = "8g"
     # Clang 配置（Phase 1+）
     clangd_path: str = "clangd"
+    clang_frontend: str = "auto"
+    clang_indexer_path: str = "zscope-clang-indexer"
     knowledge_db_path: str = ".zscope_knowledge/code_knowledge.db"
     batch_size: int = 50
     max_clangd_threads: int = 8
@@ -392,6 +465,8 @@ class IndexingConfig:
 
     def __post_init__(self) -> None:
         self.backend = str(self.backend or "regex").strip().lower().replace("-", "_")
+        if self.clang_frontend not in {"auto", "batch", "lsp"}:
+            raise ValueError("indexing.clang.frontend must be auto, batch, or lsp")
         self.java_structure_frontend = (
             str(self.java_structure_frontend or "auto").strip().lower().replace("-", "_")
         )
@@ -433,14 +508,97 @@ class AnalysisConfig:
     user_config_db: str = (
         ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
     )
+    enable_global_model: bool = False  # Batch-level global premodel/model_entry replacement.
+    max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
+    semantic_model_max_rounds: int = 3  # Frozen-contract rounds for recursive components
+    max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
+    # Scan-time LLM classification of unknown lightweight wrapper callees
+    # (user-defined risk interfaces without name hints).  Enabled by default in
+    # every scan depth because the resulting roles feed rule-facing semantics.
+    llm_interface_inference: bool = True
+    llm_interface_inference_budget: int = 50  # Max LLM interface classifications per scan.
+    # Optional LLM supplement that adds a user-facing Chinese explanation on
+    # top of LLM-free deterministic validation decisions (confirmed by proof,
+    # audit observations, evidence conflicts).  The deterministic verdict and
+    # reasoning stay authoritative; the model only rewrites the explanation.
+    llm_decision_explanation: bool = True
+    llm_decision_explanation_budget: int = 50  # Max explanation calls per scan.
     workflow_name: str = "default"
+    enable_subagent_workers: bool = False
+    # Internal rollout control.  ``shadow`` records evidence-backed semantic
+    # deltas without allowing them to influence coverage-gap planning;
+    # ``active`` applies those deltas to the read-only Security Semantic Map.
+    security_semantic_enrichment_mode: str = "shadow"
+    # Bounded source investigation is an internal experiment. It supplements
+    # one-shot discovery and cannot be promoted through public project YAML.
+    active_investigation_mode: str = "off"
+    active_investigation_max_rounds: int = 4
+    active_investigation_timeout_seconds: float = 120.0
+    active_investigation_max_scope_extensions: int = 1
+    semantic_snapshot_candidate_mode: str = "off"
+    semantic_model_demand_mode: str = "off"
+    # V01 controlled dynamic reproduction (ASAN/TSAN harness execution).  Internal
+    # experiment: it is never exposed through public project YAML.  ``off`` keeps
+    # the shipped scan inert, ``shadow`` records provider metadata without
+    # granting confirmation authority, ``on`` lets a fully qualified witness
+    # reach the shared adjudication.
+    dynamic_reproduction_mode: str = "off"
+    dynamic_reproduction_required_replays: int = 2
+    dynamic_reproduction_max_replays: int = 3
+    dynamic_reproduction_timeout_seconds: int = 30
+    # One wall-clock deadline for the whole verification (authorized build plus
+    # every run); per-process timeouts cannot stretch the authorization.
+    dynamic_reproduction_deadline_seconds: int = 900
+    dynamic_reproduction_memory_limit_mb: int = 512
+    dynamic_reproduction_isolation: str = "process"
+    max_subagent_tickets: int = 4
+    subagent_max_turns: int = 20  # Per-ticket tool/LLM turn budget for focused workers.
     request_deadline_seconds: Optional[float] = 120.0
-    validation_deadline_seconds: Optional[float] = 240.0
+    validation_deadline_seconds: Optional[float] = 600.0
+    subagent_ticket_timeout: Optional[float] = 300.0
     entry_deadline_seconds: Optional[float] = 1800.0
     scan_deadline_seconds: Optional[float] = None
     budget_exhaustion_policy: str = "observe"
+    subagent_spawn_allowlist: List[str] = field(default_factory=lambda: ["deep_worker"])
+    subagent_skill_llm_refs: Dict[str, str] = field(default_factory=dict)
+    subagent_skill_efforts: Dict[str, str] = field(default_factory=dict)
     tool_audit_log: str = ""  # Optional JSONL audit sink for tool/MCP policy events.
+    # Escalation-ladder rungs (new_docs/balanced_confirmed_tp_plan.md Phase 4).
+    # All default to off so the shipped pipeline behavior is unchanged; pilots
+    # enable them individually so each rung's TP contribution stays measurable.
+    validation_uncertain_confirm_threshold: Optional[float] = None
+    # Defaults to True: the balanced pipeline has always run the V3 reattempt;
+    # set False only for R1-only reference runs (plan M5 differential rows).
+    validation_v3_reattempt: bool = True
+    validation_v2b_adjudication: bool = False
+    validation_review_protocol: bool = False
+    # M4': compiler-checked review claims (deterministic reject proofs minted
+    # from the fact store).  Tri-state like the guards above: ``None`` enables
+    # it for ``balanced`` scans only.  Even when depth-enabled, the feature
+    # auto-disables when the compile_commands driver is not bound to the fact
+    # compiler (see CompleteFactStore.driver_bound).
+    validation_checked_proofs: Optional[bool] = None
+    validation_positive_case: bool = False
+    validation_related_findings: bool = False
+    validation_review_checkpoint: bool = False
+    # FP-suppression guards (M1/M2/M3').  Tri-state: ``None`` resolves by
+    # scan depth — enabled for ``balanced`` scans (where the balanced
+    # confirmed-TP pilot verified their effect), disabled elsewhere.  An
+    # explicit True/False always wins.
+    # M1: an R3 replay escalation that starts from ``uncertain`` and ends
+    # ``verified`` no longer auto-confirms; it is held in needs_review with
+    # review_disposition_reason=uncertain_confirm_hold.
+    validation_uncertain_replay_review: Optional[bool] = None
+    # M2: the source_lifecycle_acquire_without_release proof loses its
+    # confirm authority (measured 0TP/1FP on the frozen balanced run); it
+    # becomes diagnostic-only and the item routes through the normal ladder.
+    validation_demote_source_lifecycle_confirm: Optional[bool] = None
+    # M3': a cfg-obligation confirm whose function body itself releases the
+    # obligation object (free/SAFE_FREE of a sink-argument token) is
+    # self-contradictory and is not produced; the item routes through the
+    # normal ladder (measured on the frozen run: 1 FP removed, 0 TP touched).
+    validation_obligation_infunction_release_guard: Optional[bool] = None
 
     def __post_init__(self) -> None:
         self.validation_cache_entries = _bounded_cache_entries(
@@ -451,7 +609,10 @@ class AnalysisConfig:
             self.request_deadline_seconds, 120.0
         )
         self.validation_deadline_seconds = _optional_positive_seconds(
-            self.validation_deadline_seconds, 240.0
+            self.validation_deadline_seconds, 600.0
+        )
+        self.subagent_ticket_timeout = _optional_positive_seconds(
+            self.subagent_ticket_timeout, 300.0
         )
         self.entry_deadline_seconds = _optional_positive_seconds(
             self.entry_deadline_seconds, 1800.0
@@ -460,11 +621,110 @@ class AnalysisConfig:
         self.budget_exhaustion_policy = _normalize_budget_exhaustion_policy(
             self.budget_exhaustion_policy
         )
+        self.security_semantic_enrichment_mode = (
+            str(self.security_semantic_enrichment_mode or "shadow").strip().lower()
+        )
+        if self.security_semantic_enrichment_mode not in {"shadow", "active"}:
+            raise ValueError("security_semantic_enrichment_mode must be 'shadow' or 'active'")
+        if self.active_investigation_mode not in {"off", "shadow"}:
+            raise ValueError("active_investigation_mode must be 'off' or 'shadow'")
+        if (
+            type(self.active_investigation_max_rounds) is not int
+            or not 1 <= self.active_investigation_max_rounds <= 4
+        ):
+            raise ValueError("active_investigation_max_rounds must be an integer from 1 to 4")
+        if (
+            type(self.active_investigation_max_scope_extensions) is not int
+            or not 0 <= self.active_investigation_max_scope_extensions <= 1
+        ):
+            raise ValueError("active_investigation_max_scope_extensions must be 0 or 1")
+        if (
+            isinstance(self.active_investigation_timeout_seconds, bool)
+            or not isinstance(self.active_investigation_timeout_seconds, (int, float))
+            or not math.isfinite(self.active_investigation_timeout_seconds)
+            or self.active_investigation_timeout_seconds <= 0
+        ):
+            raise ValueError("active_investigation_timeout_seconds must be finite and positive")
+        self.active_investigation_timeout_seconds = float(self.active_investigation_timeout_seconds)
+        for name in ("semantic_snapshot_candidate_mode", "semantic_model_demand_mode"):
+            mode = getattr(self, name)
+            if not isinstance(mode, str) or mode not in {"off", "shadow"}:
+                raise ValueError(f"{name} must be 'off' or 'shadow'")
+        dynamic_reproduction_mode = self.dynamic_reproduction_mode
+        if (
+            not isinstance(dynamic_reproduction_mode, str)
+            or dynamic_reproduction_mode not in {"off", "shadow", "on"}
+        ):
+            raise ValueError("dynamic_reproduction_mode must be 'off', 'shadow' or 'on'")
+        for name in (
+            "dynamic_reproduction_required_replays",
+            "dynamic_reproduction_max_replays",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not 1 <= value <= 16:
+                raise ValueError(f"{name} must be an integer from 1 to 16")
+        if self.dynamic_reproduction_max_replays < self.dynamic_reproduction_required_replays:
+            raise ValueError(
+                "dynamic_reproduction_max_replays must be >= dynamic_reproduction_required_replays"
+            )
+        if (
+            type(self.dynamic_reproduction_timeout_seconds) is not int
+            or not 1 <= self.dynamic_reproduction_timeout_seconds <= 3600
+        ):
+            raise ValueError(
+                "dynamic_reproduction_timeout_seconds must be an integer from 1 to 3600"
+            )
+        if (
+            type(self.dynamic_reproduction_deadline_seconds) is not int
+            or not 1 <= self.dynamic_reproduction_deadline_seconds <= 86400
+        ):
+            raise ValueError(
+                "dynamic_reproduction_deadline_seconds must be an integer from 1 to 86400"
+            )
+        dynamic_reproduction_isolation = self.dynamic_reproduction_isolation
+        if (
+            not isinstance(dynamic_reproduction_isolation, str)
+            or dynamic_reproduction_isolation not in {"process", "user_net_namespace"}
+        ):
+            raise ValueError(
+                "dynamic_reproduction_isolation must be 'process' or 'user_net_namespace'"
+            )
+        self.llm_decision_explanation = bool(self.llm_decision_explanation)
+        try:
+            self.llm_decision_explanation_budget = max(0, int(self.llm_decision_explanation_budget))
+        except (TypeError, ValueError):
+            self.llm_decision_explanation_budget = 50
+        if self.validation_uncertain_confirm_threshold is not None:
+            threshold = float(self.validation_uncertain_confirm_threshold)
+            if not 0.5 < threshold <= 1.0:
+                raise ValueError(
+                    "validation_uncertain_confirm_threshold must be None or in (0.5, 1.0]"
+                )
+            self.validation_uncertain_confirm_threshold = threshold
+        self.validation_v3_reattempt = bool(self.validation_v3_reattempt)
+        self.validation_v2b_adjudication = bool(self.validation_v2b_adjudication)
+        self.validation_review_protocol = bool(self.validation_review_protocol)
+        # tri-state (None = depth-scoped): no bool coercion here
+        self.validation_positive_case = bool(self.validation_positive_case)
+        self.validation_related_findings = bool(self.validation_related_findings)
+        self.validation_review_checkpoint = bool(self.validation_review_checkpoint)
+
+
+@dataclass
+class SemanticDedupConfig:
+    """Configuration for final-report semantic duplicate handling."""
+
+    enabled: bool = True
+    llm_enabled: bool = False
+    llm_confidence_threshold: float = 0.85
+    max_cluster_size: int = 8
 
 
 @dataclass
 class ReportingConfig:
     """Configuration for report assembly and presentation."""
+
+    semantic_dedup: SemanticDedupConfig = field(default_factory=SemanticDedupConfig)
 
 
 @dataclass
@@ -497,6 +757,8 @@ class ProjectConfig:
     exclude_paths: List[str] = field(default_factory=list)
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
     diff_impact: DiffImpactConfig = field(default_factory=DiffImpactConfig)
+    wiki: WikiConfig = field(default_factory=WikiConfig)
+    review_memory: ReviewMemoryConfig = field(default_factory=ReviewMemoryConfig)
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
@@ -569,9 +831,10 @@ class ProjectConfig:
             self.user_config_file = user_config_file.resolve()
 
         if self.entry_discovery.search_root:
+            # 相对 search_root 固定基于 source_root 解析（CLI / Web / MCP 共用同一条规则）。
             search_root = Path(self.entry_discovery.search_root)
             if not search_root.is_absolute():
-                search_root = self.project_root / search_root
+                search_root = self.source_root / search_root
             search_root = search_root.resolve()
             if not search_root.is_dir():
                 raise ValueError(
@@ -595,6 +858,10 @@ class ZScopeConfig:
     rules: RulesConfig = field(default_factory=RulesConfig)
     runtime_provenance: RuntimeSpecProvenance = field(default_factory=RuntimeSpecProvenance)
     user_config_version: int = 2
+    # Formal v3 model (``zscope.config.v3.UserConfigV3``) attached when the
+    # document declares config_version 3; v2 loads leave it None.  Excluded
+    # from repr/equality because it carries the full LLM profile table.
+    user_config_v3: Optional[UserConfigV3] = field(default=None, repr=False, compare=False)
     # Populated by the shared rule preflight before any indexer, external tool,
     # or LLM is started.  These are internal runtime objects rather than public
     # v2 YAML fields, so they intentionally do not appear on ``UserConfigV2``.
@@ -644,6 +911,7 @@ class ConfigLoader:
         config_path: Optional[str] = None,
         *,
         scan_depth: Optional[str] = None,
+        read_only: bool = False,
     ) -> ZScopeConfig:
         from .v2 import apply_scan_overrides, load_user_config_v2
         from ..framework.llm_usage import ScanTokenUsageLedger
@@ -655,6 +923,10 @@ class ConfigLoader:
             config,
             scan_depth=scan_depth,
         )
+        if read_only:
+            # Cached MCP does not execute providers, apply rollout control, or
+            # create usage state. Public Config v2 parsing remains strict.
+            return config
         apply_persisted_rollout_policy(config)
         usage_event_path = Path(config.analysis.snapshot_dir) / (
             f"llm_usage_events_{uuid.uuid4().hex}.jsonl"

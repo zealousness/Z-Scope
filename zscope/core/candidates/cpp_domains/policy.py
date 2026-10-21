@@ -32,10 +32,14 @@ def _packaged_policy(language: str) -> Any:
     from zscope.rules.catalog import EffectiveRuleSet, RuleCatalog
 
     backend = "java_unified" if language == "java" else "unified"
+    catalog = RuleCatalog.builtin()
     return EffectiveRuleSet.build(
-        RuleCatalog.builtin(),
+        catalog,
         language=language,
         backend=backend,
+        # This policy resolves metadata for standalone detector experiments.
+        # Actual scan admission is controlled by the injected runtime policy.
+        enabled_ids=[rule.id for rule in catalog.descriptors if rule.language == language],
     ).policy
 
 

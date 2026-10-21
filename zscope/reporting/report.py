@@ -5,9 +5,12 @@ Handles conversion of analysis results to JSON and Markdown formats.
 
 import json
 import datetime
-from dataclasses import dataclass, asdict, field, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+from ..common.defect_cwe_map import cwe_tokens
+from .shared_objects import dataclass_dict
 
 
 @dataclass
@@ -30,9 +33,33 @@ class Issue:
         "pending"  # pending, validated, needs_review, uncertain, unvalidated, rejected
     )
     validation_reasoning: Optional[str] = None
+    llm_explanation: Optional[str] = None
+    promotion_review_reason: Optional[str] = None
+    protocol_assessment: Optional[Dict[str, Any]] = None
+    needs_review_sub_state: Optional[str] = None
+    review_disposition_reason: Optional[str] = None
+    review_adjudication: Optional[Dict[str, Any]] = None
+    review_fact_store: Optional[Dict[str, Any]] = None
+    review_claim_checks: Optional[List[Dict[str, Any]]] = None
+    review_checked_proof: Optional[Dict[str, Any]] = None
+    review_conditional_risks: Optional[List[Dict[str, Any]]] = None
+    review_macro_branches: Optional[List[Dict[str, Any]]] = None
+    review_guard_coverage: Optional[Dict[str, Any]] = None
+    review_checkpoint_id: Optional[str] = None
+    review_priority_signal: Optional[str] = None
+    review_v3_entry_pool: Optional[str] = None
+    review_v3_objective: Optional[str] = None
+    parent_candidate_uid: Optional[str] = None
+    parent_candidate_uids: Optional[List[str]] = None
+    related_generation: Optional[int] = None
+    analysis_scope: Optional[str] = None
+    trigger_condition: Optional[str] = None
+    user_rebuttal: Optional[str] = None
     finding_kind: Optional[str] = None
     validator_verdict: Optional[str] = None
     cwe: Optional[str] = None
+    cwes: Optional[List[str]] = None
+    categories: Optional[List[str]] = None
     source: Optional[str] = None
     sink: Optional[str] = None
     guard_analysis: Optional[str] = None
@@ -134,17 +161,6 @@ class Issue:
     validator_result_pass: Optional[str] = None
     validator_pass_history: Optional[List[Dict[str, Any]]] = None
     validator_policy_outcome: Optional[Dict[str, Any]] = None
-    decision_trace_ref: Optional[str] = None
-    decision_trace_sha256: Optional[str] = None
-    terminal_event_uid: Optional[str] = None
-    terminal_transition_event_uid: Optional[str] = None
-    terminal_transition_event_hash: Optional[str] = None
-    terminal_transition_authority_sha256: Optional[str] = None
-    terminal_transition_level: Optional[str] = None
-    terminal_transition_disposition: Optional[str] = None
-    terminal_authority: Optional[str] = None
-    terminal_reason_codes: Optional[List[str]] = None
-    open_clause_ids: Optional[List[str]] = None
 
     @classmethod
     def from_dict(
@@ -169,6 +185,15 @@ class Issue:
             if k in mapping and mapping[k] in valid_fields and mapping[k] not in filtered_data:
                 # If we have a mapping and the target field isn't already filled
                 filtered_data[mapping[k]] = v
+
+        # Multi-CWE and multi-category labels tolerate scalar inputs from
+        # older reports and LLM payloads.
+        for field_name in ("cwes", "categories"):
+            value = filtered_data.get(field_name)
+            if isinstance(value, str):
+                filtered_data[field_name] = [value] if value else []
+            elif isinstance(value, (list, tuple)):
+                filtered_data[field_name] = [str(item) for item in value if str(item)]
 
         # Ensure required fields have SOMETHING to avoid __init__ errors
         # These are the 9 fields mentioned in the error message + 'id'
@@ -212,7 +237,7 @@ class Issue:
         return cls(**filtered_data)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return dataclass_dict(self)
 
 
 @dataclass
@@ -260,6 +285,17 @@ class ReportGenerator:
         self.project_root = Path(project_root)
 
     @staticmethod
+    def _issue_cwe_labels(issue: Issue) -> List[str]:
+        """Ordered CWE labels: the primary CWE first, then the full set."""
+
+        ordered: List[str] = []
+        for value in (issue.cwe, issue.cwes):
+            for token in cwe_tokens(value):
+                if token not in ordered:
+                    ordered.append(token)
+        return ordered
+
+    @staticmethod
     def _normalize_md_text(value: Optional[str]) -> str:
         if value is None:
             return ""
@@ -269,12 +305,50 @@ class ReportGenerator:
         """Save report as JSON."""
         output_path = self.project_root / filename
         data = report.to_dict()
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        from .json_io import write_report_atomic
+
+        write_report_atomic(output_path, data)
         return output_path
+
+    @staticmethod
+    def _needs_review_issues(report: FinalReport) -> List[tuple]:
+        """Project final needs_review items from the report view for Markdown.
+
+        Returns ``(Issue, raw_dict)`` pairs so the Markdown renderer can also
+        surface the plan Phase 3 review sub-state and presentation bundle,
+        which the compact ``Issue`` projection does not carry.
+        """
+        review_statuses = {"needs_review", "uncertain", "unvalidated"}
+        views = report.report_views if isinstance(report.report_views, dict) else {}
+        view = views.get("with_needs_review")
+        raw_items = view.get("issues", []) if isinstance(view, dict) else []
+        projected: List[tuple] = []
+        for index, raw in enumerate(raw_items, 1):
+            if isinstance(raw, Issue):
+                if str(raw.validation_status or "").strip().lower() in review_statuses:
+                    projected.append((raw, {}))
+                continue
+            if not isinstance(raw, dict):
+                continue
+            status = str(raw.get("validation_status") or "").strip().lower()
+            if not status:
+                disposition = str(raw.get("candidate_disposition") or "").strip().lower()
+                finding_kind = str(raw.get("finding_kind") or "").strip().lower()
+                status = (
+                    "needs_review"
+                    if disposition == "needs_review" or finding_kind == "needs_review"
+                    else ""
+                )
+            if status not in review_statuses:
+                continue
+            issue = Issue.from_dict(raw, context_function=report.entry_function, issue_index=index)
+            issue.validation_status = "needs_review"
+            projected.append((issue, raw))
+        return projected
 
     def save_markdown_report(self, report: FinalReport) -> Path:
         """保存中文分析结论报告。"""
+        review_issues = self._needs_review_issues(report)
         md_content = f"""# Z-SCOPE 分析报告
 
 **分析时间**: {report.metadata.get('timestamp', '未记录')}
@@ -290,7 +364,10 @@ class ReportGenerator:
             f"{' (incomplete)' if report.completeness != 'complete' else ''}\n\n"
         )
         if not report.issues:
-            md_content += "未发现显著缺陷。\n"
+            if review_issues:
+                md_content += "未发现已确认缺陷；存在待复核项。\n"
+            else:
+                md_content += "未发现显著缺陷。\n"
         else:
             # Filter out rejected issues for offline report
             reportable_issues = [i for i in report.issues if i.validation_status != "rejected"]
@@ -321,6 +398,9 @@ class ReportGenerator:
                 md_content += f"- **置信度**: {issue.confidence:.0%}\n"
                 if issue.final_score is not None:
                     md_content += f"- **综合评分**: {issue.final_score:.0%}\n"
+                cwe_labels = self._issue_cwe_labels(issue)
+                if cwe_labels:
+                    md_content += f"- **CWE**: {', '.join(cwe_labels)}\n"
                 if issue.finding_kind:
                     md_content += f"- **Finding 类型**: `{issue.finding_kind}`\n"
                 if issue.code_snippet:
@@ -342,6 +422,117 @@ class ReportGenerator:
                     }.get(issue.validation_status, "⚪ Validator 未完成")
                     md_content += f"\n**{status_label}**:\n{self._normalize_md_text(issue.validation_reasoning)}\n"
 
+                if issue.llm_explanation:
+                    md_content += (
+                        "\n**🤖 决策解释**:\n" f"{self._normalize_md_text(issue.llm_explanation)}\n"
+                    )
+
+                if issue.promotion_review_reason:
+                    md_content += (
+                        "\n**未晋级为 validated 的原因**:\n"
+                        f"{self._normalize_md_text(issue.promotion_review_reason)}\n"
+                    )
+
+                if issue.protocol_assessment:
+                    md_content += "\n**对象协议确认的业务范围（扫描时）**:\n"
+                    for assumption in issue.protocol_assessment.get("assumptions", []):
+                        answer = assumption.get("answer") or {}
+                        md_content += (
+                            "- "
+                            + self._normalize_md_text(assumption.get("statement", ""))
+                            + "；来源："
+                            + self._normalize_md_text(answer.get("source_note", "未确认"))
+                            + "\n"
+                        )
+
+                if issue.user_rebuttal:
+                    md_content += (
+                        "\n**👤 用户反驳 / 复核说明**:\n"
+                        f"{self._normalize_md_text(issue.user_rebuttal)}\n"
+                    )
+
+                md_content += "\n---\n"
+
+        if review_issues:
+            md_content += "\n## 待复核问题\n\n"
+            sub_state_labels = {
+                "model_uncertain": "模型未能判定",
+                "model_rejected_unproven": "模型否决但未获确定性证明",
+                "policy_pending_promotion": "证据完整，等待策略提升",
+                "business_conditional": "条件性风险：业务前提待核实",
+                "protocol_pending": "待补证：技术证据未闭合",
+            }
+            for issue, raw_review in review_issues:
+                icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(
+                    issue.impact_level.lower(), "⚪"
+                )
+                md_content += f"### {icon} [{issue.id}] {issue.category}: {issue.subcategory}\n"
+                md_content += f"- **所在函数**: `{issue.function}`\n"
+                md_content += f"- **代码位置**: `{issue.location}`\n"
+                md_content += f"- **置信度**: {issue.confidence:.0%}\n"
+                cwe_labels = self._issue_cwe_labels(issue)
+                if cwe_labels:
+                    md_content += f"- **CWE**: {', '.join(cwe_labels)}\n"
+                if issue.finding_kind:
+                    md_content += f"- **Finding 类型**: `{issue.finding_kind}`\n"
+                if issue.code_snippet:
+                    md_content += f"\n**相关代码**:\n```c\n{self._normalize_md_text(issue.code_snippet)}\n```\n"
+                md_content += f"\n**问题描述**:\n{self._normalize_md_text(issue.description)}\n"
+                if issue.reasoning:
+                    md_content += f"\n**分析推理**:\n{self._normalize_md_text(issue.reasoning)}\n"
+                md_content += f"\n**根本原因**:\n{self._normalize_md_text(issue.root_cause)}\n"
+                md_content += f"\n**修复建议**:\n> {self._normalize_md_text(issue.suggested_fix)}\n"
+                if issue.validation_reasoning:
+                    md_content += (
+                        "\n**🟡 Validator 待复核**:\n"
+                        f"{self._normalize_md_text(issue.validation_reasoning)}\n"
+                    )
+                if issue.llm_explanation:
+                    md_content += (
+                        "\n**🤖 决策解释**:\n" f"{self._normalize_md_text(issue.llm_explanation)}\n"
+                    )
+                review_presentation = (
+                    raw_review.get("needs_review_presentation")
+                    if isinstance(raw_review, dict)
+                    else None
+                )
+                sub_state = (
+                    str(raw_review.get("needs_review_sub_state") or "")
+                    if isinstance(raw_review, dict)
+                    else ""
+                )
+                if sub_state:
+                    label = sub_state_labels.get(sub_state, sub_state)
+                    md_content += f"\n**复核子状态**: `{sub_state}`（{label}）\n"
+                if issue.promotion_review_reason:
+                    md_content += (
+                        "\n**未晋级为 validated 的原因**:\n"
+                        f"{self._normalize_md_text(issue.promotion_review_reason)}\n"
+                    )
+                if isinstance(review_presentation, dict):
+                    for assumption in review_presentation.get("business_assumptions", []):
+                        md_content += (
+                            "\n- **业务前提（未确认）**: "
+                            + self._normalize_md_text(assumption.get("statement", ""))
+                            + "\n"
+                        )
+                    for gap in review_presentation.get("technical_gaps", []):
+                        md_content += "- **技术缺口**: " + self._normalize_md_text(gap) + "\n"
+                    missing_kinds = review_presentation.get("missing_fact_kinds") or []
+                    if missing_kinds:
+                        md_content += (
+                            "- **缺失事实清单**: "
+                            + ", ".join(f"`{kind}`" for kind in missing_kinds)
+                            + "\n"
+                        )
+                    action = str(review_presentation.get("suggested_action") or "").strip()
+                    if action:
+                        md_content += f"- **建议动作**: {self._normalize_md_text(action)}\n"
+                if issue.user_rebuttal:
+                    md_content += (
+                        "\n**👤 用户反驳 / 复核说明**:\n"
+                        f"{self._normalize_md_text(issue.user_rebuttal)}\n"
+                    )
                 md_content += "\n---\n"
 
         if report.notes:

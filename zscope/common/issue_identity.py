@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, cast
 
 
 MAX_CATEGORY_TOKEN_LENGTH = 64
@@ -13,18 +13,78 @@ MAX_ISSUE_KEY_PART_LENGTH = 160
 ISSUE_KEY_HASH_LENGTH = 12
 
 
+def issue_build_context_id(issue: Mapping[str, Any]) -> str:
+    """Return the explicit compilation scope; absence is never a wildcard."""
+    pack = issue.get("evidence_pack")
+    pack = pack if isinstance(pack, Mapping) else {}
+    return str(issue.get("build_context_id") or pack.get("build_context_id") or "")
+
+
+def same_build_context(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    return issue_build_context_id(left) == issue_build_context_id(right)
+
+
+def _build_scoped_key(issue: Mapping[str, Any], key: str) -> str:
+    scope = issue_build_context_id(issue)
+    if not key or not scope:
+        return key
+    return key + "|build=" + hashlib.sha256(scope.encode("utf-8")).hexdigest()
+
+
 def _as_dict(value: Any) -> Dict[str, Any]:
     return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
 
 
+def _same_defect_site(
+    left: Dict[str, Any],
+    right: Dict[str, Any],
+    tolerance: int = 8,
+) -> bool:
+    """Return True when two issues point at the same defect site.
+
+    Site-aware dedup guard: a destructive merge must not swallow a distinct
+    finding merely because both items share a root-cause token or call path.
+    Primary lines within ``tolerance`` lines (the official matcher's own
+    tolerance) count as the same site; unknown lines fall back to the
+    equivalence decision.
+    """
+    # Endpoint coordinates are the strongest site identity: when both issues
+    # carry source/sink flow keys, the equivalence check has already required
+    # their equality, so the endpoints decide the site.
+    left_flow = source_sink_location_issue_key(left)
+    right_flow = source_sink_location_issue_key(right)
+    if left_flow and right_flow:
+        return True
+    left_file, left_line = parse_issue_location(
+        str(left.get("location") or left.get("file") or "")
+    )
+    right_file, right_line = parse_issue_location(
+        str(right.get("location") or right.get("file") or "")
+    )
+    if left_file and right_file and left_file != right_file:
+        return False
+    if left_line is not None and right_line is not None:
+        return abs(left_line - right_line) <= tolerance
+    return True
+
+
 def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge findings that point at the same root cause."""
+    """Merge findings that point at the same root cause.
+
+    A destructive merge additionally requires both issues to sit at the same
+    defect site (primary lines within the scorer tolerance).  This prevents a
+    distant second truth in the same function from being silently swallowed by
+    a shared root-cause token or call path.
+    """
     records: Dict[str, Dict[str, Any]] = {}
     merge_cache: Dict[int, Dict[str, Any]] = {}
     for issue in issues:
         normalize_issue_fields(issue)
         source_sink_key = source_sink_location_issue_key(issue)
         key = source_sink_key or canonical_issue_key(issue)
+        if issue.get("analysis_scope") == "conditional_source_branch":
+            condition_hash = hashlib.sha256(str(issue.get("trigger_condition") or "unknown").encode("utf-8")).hexdigest()[:16]
+            key += "|conditional=" + condition_hash
         decision_method = "source_sink_location" if source_sink_key else "canonical_issue_key"
         existing = records.get(key)
         if existing is None:
@@ -37,7 +97,10 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             records[key] = issue
             continue
 
-        if not issues_have_destructive_equivalence(existing, issue):
+        equivalent = issues_have_destructive_equivalence(existing, issue)
+        if equivalent and not _same_defect_site(existing, issue):
+            equivalent = False
+        if not equivalent:
             occurrence_key = _independent_occurrence_key(issue, key)
             suffix = 1
             unique_key = occurrence_key
@@ -80,6 +143,13 @@ def issues_have_destructive_equivalence(
     right: Dict[str, Any],
 ) -> bool:
     """Return True only when deleting one occurrence is structurally safe."""
+
+    if not same_build_context(left, right):
+        return False
+
+    if "conditional_source_branch" in {left.get("analysis_scope"), right.get("analysis_scope")}:
+        if (left.get("analysis_scope"), left.get("trigger_condition")) != (right.get("analysis_scope"), right.get("trigger_condition")):
+            return False
 
     left_internal = _internal_occurrence_identity(left)
     right_internal = _internal_occurrence_identity(right)
@@ -704,7 +774,7 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
     if root:
         scoped_root = root_scope_token(issue, category, root)
         parts = (category, scope, scoped_root, root) if scoped_root else (category, scope, root)
-        return "|".join(normalize_issue_key_part(part) for part in parts)
+        return _build_scoped_key(issue, "|".join(normalize_issue_key_part(part) for part in parts))
 
     sink = str(issue.get("sink") or issue.get("sink_function") or "")
     if not sink:
@@ -717,9 +787,12 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
             flags=re.IGNORECASE,
         )
         sink = sink_match.group(1).lower() if sink_match else ""
-    return "|".join(
-        normalize_issue_key_part(part)
-        for part in (category, scope, str(line or ""), sink or function)
+    return _build_scoped_key(
+        issue,
+        "|".join(
+            normalize_issue_key_part(part)
+            for part in (category, scope, str(line or ""), sink or function)
+        ),
     )
 
 
@@ -735,13 +808,16 @@ def source_sink_location_issue_key(issue: Dict[str, Any]) -> str:
     sink_file, sink_line = sink_location
     if not (source_file and source_line and sink_file and sink_line):
         return ""
-    return "|".join(
-        (
-            "source-sink-v1",
-            category,
-            f"{source_file}:{source_line}",
-            f"{sink_file}:{sink_line}",
-        )
+    return _build_scoped_key(
+        issue,
+        "|".join(
+            (
+                "source-sink-v1",
+                category,
+                f"{source_file}:{source_line}",
+                f"{sink_file}:{sink_line}",
+            )
+        ),
     )
 
 
@@ -995,7 +1071,7 @@ def _resource_signature_from_text(value: Any) -> str:
     raw_lower = text.lower()
     identifier = r"[A-Za-z_][A-Za-z0-9_]*"
     member_identifier = r"[a-z_][a-z0-9_]*"
-    allocator = r"(?:_safe_calloc|safe_calloc|calloc|malloc|realloc|strdup|xmalloc)"
+    allocator = r"(?:calloc|malloc|realloc|strdup)"
 
     assignment = re.search(
         rf"(?<![A-Za-z0-9_])({identifier})\s*=\s*(?:\([^)]*\)\s*)?{allocator}\s*\(",
@@ -1147,7 +1223,7 @@ def semantic_root_cause_key(issue: Dict[str, Any]) -> str:
     ]
     if len(normalized) < 4:
         return ""
-    return "|".join(normalized)
+    return _build_scoped_key(issue, "|".join(normalized))
 
 
 def semantic_cluster_key(issue: Dict[str, Any]) -> str:
@@ -1160,10 +1236,13 @@ def semantic_cluster_key(issue: Dict[str, Any]) -> str:
     function = issue_function_identity(issue)
     if not family or not (file_path or function):
         return ""
-    return "|".join(
-        normalize_issue_key_part(part)
-        for part in ("semantic-cluster-v1", family, file_path, function)
-        if normalize_issue_key_part(part)
+    return _build_scoped_key(
+        issue,
+        "|".join(
+            normalize_issue_key_part(part)
+            for part in ("semantic-cluster-v1", family, file_path, function)
+            if normalize_issue_key_part(part)
+        ),
     )
 
 
@@ -1227,11 +1306,13 @@ def semantic_related_cluster_keys(issue: Dict[str, Any]) -> List[str]:
             )
             if sink_key and sink_key not in keys:
                 keys.append(sink_key)
-    return keys
+    return [key if key == same_context_key else _build_scoped_key(issue, key) for key in keys]
 
 
 def issues_same_context(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     """Return whether two issues are anchored to the same function/path context."""
+    if not same_build_context(left, right):
+        return False
     left_file = issue_file_identity(left, flatten_issue_text(left))
     right_file = issue_file_identity(right, flatten_issue_text(right))
     left_func = issue_function_identity(left)
@@ -1342,6 +1423,8 @@ def issues_may_share_root_cause(
     allow_cross_function_root: bool = False,
 ) -> bool:
     """Guardrail for deterministic and LLM-backed duplicate decisions."""
+    if not same_build_context(left, right):
+        return False
     if confidence < threshold:
         return False
     # A v3 validation cluster is the immutable structured decision identity.
@@ -1702,7 +1785,7 @@ def stable_issue_fingerprint(issue: Dict[str, Any]) -> str:
     # Avoid producing a dangerously broad fingerprint such as only category/file.
     if len(normalized) < 4:
         return ""
-    return "|".join(normalized)
+    return _build_scoped_key(issue, "|".join(normalized))
 
 
 def source_context_fingerprint(issue: Dict[str, Any]) -> str:
@@ -1750,6 +1833,8 @@ def source_context_fingerprints_compatible(
     baseline_issue: Dict[str, Any],
 ) -> bool:
     """Return whether optional source-window identities allow a baseline match."""
+    if not same_build_context(current_issue, baseline_issue):
+        return False
     current = source_context_fingerprint(current_issue)
     baseline = source_context_fingerprint(baseline_issue)
     return not current or not baseline or current == baseline

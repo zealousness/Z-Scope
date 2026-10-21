@@ -23,7 +23,7 @@ class UnifiedBackend(CodeBackend):
         clangd_path: str = "clangd",
         db_path: str = ".zscope_knowledge/code_knowledge.db",
         batch_size: int = 50,
-        max_threads: int = 8,
+        max_threads: int = 4,
         svf_bin_dir: str = "",
         gclang_path: str = "gclang",
         get_bc_path: str = "get-bc",
@@ -40,12 +40,16 @@ class UnifiedBackend(CodeBackend):
         svf_exclusive_pools: Optional[List[Dict[str, Any]]] = None,
         svf_shared_pools: Optional[List[Dict[str, Any]]] = None,
         svf_parallel_workers: int = 1,
+        clang_frontend: str = "auto",
+        clang_indexer_path: str = "zscope-clang-indexer",
     ):
         self._clang = ClangBackend(
             clangd_path=clangd_path,
             db_path=db_path,
             batch_size=batch_size,
             max_threads=max_threads,
+            frontend=clang_frontend,
+            clang_indexer_path=clang_indexer_path,
         )
         self._svf_cfg: Dict[str, Any] = dict(
             svf_bin_dir=svf_bin_dir,
@@ -86,6 +90,9 @@ class UnifiedBackend(CodeBackend):
         self._project_root = Path(kwargs.get("project_root", source_path))
         self._compile_commands_path = kwargs.get("compile_commands_path")
 
+        kwargs["compile_preparation_tools"] = dict(
+            llvm_link=self._svf_cfg["llvm_link_path"], gclang=self._svf_cfg["gclang_path"]
+        )
         ok = self._clang.initialize(source_path, **kwargs)
         if not ok:
             self._status = "error"
@@ -107,6 +114,10 @@ class UnifiedBackend(CodeBackend):
         return True
 
     def run_svf(self, entry_functions: Optional[List[Any]] = None) -> bool:
+        with self._clang.pause_type_references():
+            return self._run_svf_exclusive(entry_functions)
+
+    def _run_svf_exclusive(self, entry_functions: Optional[List[Any]] = None) -> bool:
         if self._svf_ran:
             return self._svf_available
         if not self._clang._db:
@@ -125,6 +136,7 @@ class UnifiedBackend(CodeBackend):
         cc = Path(self._compile_commands_path) if self._compile_commands_path else None
         source_path = self._source_path or Path(".")
         project_root = self._project_root or source_path
+        self._svf._compile_preparation = getattr(self._clang, "_compile_preparation", None)
         svf_ok = self._svf.run(
             Path(source_path),
             Path(project_root),
@@ -143,9 +155,12 @@ class UnifiedBackend(CodeBackend):
     def _check_svf_tools(self) -> List[str]:
         missing: List[str] = []
         gclang = str(self._svf_cfg.get("gclang_path", "gclang"))
-        if not shutil.which(gclang):
-            missing.append(f"gclang ({gclang})")
         llvm_link = str(self._svf_cfg.get("llvm_link_path", "llvm-link"))
+        if not shutil.which(gclang):
+            from .llvm_toolchain import matching_clang
+
+            if not matching_clang(llvm_link):
+                missing.append(f"matching Clang or gclang ({gclang})")
         if not shutil.which(llvm_link):
             missing.append(f"llvm-link ({llvm_link})")
 
@@ -183,6 +198,9 @@ class UnifiedBackend(CodeBackend):
 
     def get_macro_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
         return self._clang.get_macro_definitions_batch(names)
+
+    def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        return self._clang.get_global_definitions_batch(names)
 
     def get_function_symbol_context(
         self,
@@ -358,12 +376,10 @@ class UnifiedBackend(CodeBackend):
         source_param: str,
         sink_pattern: str,
     ) -> List[Dict[str, Any]]:
-        db = self.db
-        if not db:
-            return []
-        return cast(
-            List[Dict[str, Any]],
-            db.get_enriched_taint_bugs(bug_type=sink_pattern, func_name=source_func),
+        raise NotImplementedError(
+            "UnifiedBackend does not expose persisted taint findings as source-to-sink "
+            "paths; use FlowQueryService for program-events v5 evidence and "
+            "query_static_findings for backend signals."
         )
 
     def get_indirect_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:

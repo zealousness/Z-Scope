@@ -1,20 +1,60 @@
-"""Generate a strict, language-aware Z-SCOPE configuration v2."""
+"""Generate a strict, language-aware Z-SCOPE configuration v3.
+
+The generated document follows the strict v3 model exactly: ``project.root``
+is written relative to the configuration file directory (so the same file
+loads to the same project from any working directory), the target's
+``compile_commands`` is relative to the resolved root, and credentials stay
+in ``${VAR}`` environment references.  Only wired fields are emitted; the
+declared-but-unconsumed v3 fields stay documented in the reference templates
+instead of being silently enabled here.
+
+Every user-controlled string (root, target id, compile database path) is
+serialized through :func:`_yaml_scalar` — a real JSON encoder, whose output
+is a YAML 1.2 double-quoted scalar — so characters that change YAML meaning
+(``#``, ``: ``, quotes, newlines) survive a round trip through the strict v3
+parser instead of being spliced into the document verbatim.
+"""
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import click
 
 from ..config.config import detect_project_language
+from ..config.v2 import SCAN_DEPTHS_BY_LANGUAGE
+from ..config.v3 import PRESET_DEPTH_MAPPING, SCAN_PRESETS
 
 
-def _project_value(project_root: Path) -> str:
-    resolved = project_root.resolve()
-    return "." if resolved == Path.cwd().resolve() else resolved.as_posix()
+def _yaml_scalar(value: str) -> str:
+    """Serialize one user-controlled string as a single-line YAML scalar.
+
+    JSON string syntax is a subset of YAML 1.2 double-quoted scalars, and the
+    encoder escapes ``#``, ``: ``, quotes, backslashes, and newlines without
+    any hand-written quoting rules.  The strict parser therefore reads the
+    document back to the exact same string.
+    """
+
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _project_value(project_root: Path, config_dir: Path) -> str:
+    """Anchor project.root to the configuration file directory (v3 semantics)."""
+
+    root = project_root.resolve()
+    directory = config_dir.resolve()
+    if root == directory:
+        return "."
+    if directory.is_relative_to(root):
+        # The configuration lives inside the project; point back up to it.
+        return os.path.relpath(root, directory).replace(os.sep, "/")
+    if root.is_relative_to(directory):
+        return os.path.relpath(root, directory).replace(os.sep, "/")
+    return root.as_posix()
 
 
 def _compile_commands(project_root: Path) -> str:
@@ -28,108 +68,29 @@ def _compile_commands(project_root: Path) -> str:
     return "build/compile_commands.json"
 
 
-def _module_candidates(project_root: Path, language: str) -> List[Path]:
-    markers = (
-        ("CMakeLists.txt", "meson.build", "Makefile")
-        if language == "c_cpp"
-        else ("pom.xml", "build.gradle", "build.gradle.kts")
-    )
-    candidates = [project_root]
-    try:
-        for child in sorted(path for path in project_root.iterdir() if path.is_dir()):
-            if any((child / marker).is_file() for marker in markers):
-                candidates.append(child)
-    except OSError:
-        pass
-    return candidates
+def _default_preset(language: str) -> str:
+    # The default preset is overnight for C/C++; Java has not opened the
+    # balanced/deep tier yet, so its document must declare quick explicitly.
+    return "overnight" if language == "c_cpp" else "quick"
 
 
-def _relative_module(project_root: Path, module_root: Path) -> str:
-    try:
-        value = module_root.resolve().relative_to(project_root.resolve()).as_posix()
-    except ValueError:
-        value = module_root.resolve().as_posix()
-    return value or "."
+def _preset_allowed(preset: str, language: str) -> bool:
+    depth = PRESET_DEPTH_MAPPING[preset]
+    return depth in SCAN_DEPTHS_BY_LANGUAGE.get(language, frozenset())
 
 
 def _render(
     *,
     language: str,
     project_root: Path,
-    search_root: str,
-    interface_files: List[str],
-    entry_workers: int,
-    validator_workers: int,
-    investigator_workers: int,
-    evidence_workers: int,
-    index_workers: int,
-    svf_workers: int,
-    llm_max_inflight: int,
+    config_dir: Path,
+    target_id: str,
+    compile_commands: str,
+    preset: str,
 ) -> str:
-    interface_text = ", ".join(f'"{item}"' for item in interface_files)
-    project_lines = [
-        "project:",
-        f"  language: {language}",
-        f"  root: {_project_value(project_root)}",
-        "  source_root: .",
-    ]
-    if language == "c_cpp":
-        project_lines.append(f"  compile_commands_path: {_compile_commands(project_root)}")
-        project_lines.append("  exclude_paths: [build, third_party]")
-    else:
-        project_lines.append("  exclude_paths: [target, build, .gradle]")
-    project_lines.extend(
-        [
-            "  entry_discovery:",
-            "    enabled: true",
-            f"    search_root: {search_root}",
-            f"    interface_files: [{interface_text}]",
-            "    max_entries: 200",
-        ]
-    )
-
-    indexing_lines = ["indexing:"]
-    if language == "c_cpp":
-        indexing_lines.extend(
-            [
-                "  backend: unified",
-                "  svf:",
-                "    scope: auto",
-                "    entry_depth: 4",
-                "    max_selected_tus: 200",
-                "    fallback: full",
-                "    always_include: []",
-                "    exclusive_pools: []",
-                "    shared_pools: []",
-                "    heap_limit_mb: 32768",
-                "    timeout_seconds: 1800",
-            ]
-        )
-    else:
-        indexing_lines.extend(
-            [
-                "  backend: java_unified",
-                "  java:",
-                "    structure_frontend: auto",
-                "    signals: [joern]",
-            ]
-        )
-
-    concurrency_lines = [
-        "concurrency:",
-        f"  entry_workers: {entry_workers}",
-        f"  validator_workers: {validator_workers}",
-        f"  investigator_workers: {investigator_workers}",
-        f"  evidence_completion_workers: {evidence_workers}",
-        f"  index_workers: {index_workers}",
-    ]
-    if language == "c_cpp":
-        concurrency_lines.append(f"  svf_workers: {svf_workers}")
-    concurrency_lines.append(f"  llm_max_inflight: {llm_max_inflight}")
-
     lines = [
         "# Generated by zscope-init. Keep API keys in environment variables.",
-        "config_version: 2",
+        "config_version: 3",
         "",
         "llms:",
         "  default:",
@@ -137,19 +98,34 @@ def _render(
         '    models: ["${Z_SCOPE_LLM_MODEL}"]',
         '    api_key: "${Z_SCOPE_API_KEY}"',
         "    max_tokens: 8192 # 单次响应上限；扫描总用量由报告计量。",
-        f"    base_url_max_concurrent_requests: {llm_max_inflight}",
         "",
-        *project_lines,
-        "",
-        "scan:",
-        "  depth: fast # C/C++ 可选 balanced 或 deep；token 只观测，不作为运行时硬上限。",
-        '  task: "" # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。',
-        "  llm_profiles: {modeling: default, analysis: default, validation: default}",
-        "",
-        *indexing_lines,
-        "",
-        *concurrency_lines,
+        "project:",
+        f"  language: {language}",
+        f"  root: {_yaml_scalar(_project_value(project_root, config_dir))}"
+        " # 相对本配置文件所在目录解析（v3）",
+        "  platform: linux_user",
+        "  targets:",
+        f"    - id: {_yaml_scalar(target_id)}",
     ]
+    if language == "c_cpp":
+        lines.append(
+            f"      compile_commands: {_yaml_scalar(compile_commands)} # 相对 project.root"
+        )
+    lines.extend(
+        [
+            "",
+            "scan:",
+            f"  preset: {preset} # quick=快速档；overnight=夜间档。当前临时映射到内部深度，不启用实验。",
+        ]
+    )
+    if language == "java":
+        lines.append("  # Java 当前仅开放 quick；overnight 对应的深度尚未通过该语言门禁。")
+    lines.extend(
+        [
+            "  # focus/reproduction 已校验保留但尚未消费；execution 时窗与并发预算见",
+            "  # 仓库根目录 zscope.c_cpp.yaml / zscope.java.yaml 模板注释。",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -170,25 +146,39 @@ def _render(
     show_default=True,
 )
 @click.option(
+    "--preset",
+    type=click.Choice(list(SCAN_PRESETS)),
+    default=None,
+    help="Quality tier (default: overnight for c_cpp, quick for java).",
+)
+@click.option(
+    "--target-id",
+    default="main",
+    show_default=True,
+    help="Identity of the single generated build target.",
+)
+@click.option(
     "--interactive/--no-interactive",
     default=None,
-    help="Confirm detected module, interface globs, and concurrency (auto-detected for TTY).",
+    help="Confirm detected language, target, and preset (auto-detected for TTY).",
 )
 @click.option("--force", is_flag=True, help="Replace an existing generated configuration.")
 def main(
     language: str,
     project_root: Path,
     output: Path,
+    preset: Optional[str],
+    target_id: str,
     interactive: Optional[bool],
     force: bool,
 ) -> None:
-    """Create a strict, explicit project configuration v2."""
+    """Create a strict, explicit project configuration v3."""
 
     root = project_root.expanduser().resolve()
     if not root.is_dir():
         raise click.ClickException(f"project root is not a directory: {root}")
-    detected = detect_project_language(root) if language == "auto" else language
     use_interactive = sys.stdin.isatty() if interactive is None else interactive
+    detected = detect_project_language(root) if language == "auto" else language
     if use_interactive:
         detected = click.prompt(
             "Project language",
@@ -196,53 +186,28 @@ def main(
             default=detected,
         )
 
-    modules = _module_candidates(root, detected)
-    module_root = modules[0]
-    if use_interactive and len(modules) > 1:
-        click.echo("Detected module roots:")
-        for index, candidate in enumerate(modules, start=1):
-            click.echo(f"  {index}. {_relative_module(root, candidate)}")
-        selection = click.prompt("Module to scan", type=click.IntRange(1, len(modules)), default=1)
-        module_root = modules[selection - 1]
-    search_root = _relative_module(root, module_root)
-    interface_files = (
-        ["include/**/*.h", "include/**/*.hpp"]
-        if detected == "c_cpp"
-        else ["src/main/java/**/*.java"]
-    )
+    target_id = target_id.strip() or "main"
     if use_interactive:
-        raw_patterns = click.prompt(
-            "Interface file globs (comma separated)",
-            default=", ".join(interface_files),
+        target_id = click.prompt("Target id", default=target_id).strip() or "main"
+    compile_commands = _compile_commands(root)
+    if detected == "c_cpp" and use_interactive:
+        compile_commands = click.prompt(
+            "compile_commands (relative to project root)", default=compile_commands
         )
-        interface_files = [item.strip() for item in raw_patterns.split(",") if item.strip()]
 
-    cpu_count = max(1, os.cpu_count() or 1)
-    entry_workers = min(4, cpu_count)
-    index_workers = min(4, cpu_count)
-    svf_workers = min(2, cpu_count)
-    validator_workers = 2
-    investigator_workers = 1
-    evidence_workers = 2
-    llm_max_inflight = 4
+    chosen_preset = preset or _default_preset(detected)
     if use_interactive:
-        entry_workers = click.prompt("Entry workers", type=click.IntRange(1), default=entry_workers)
-        index_workers = click.prompt("Index workers", type=click.IntRange(1), default=index_workers)
-        if detected == "c_cpp":
-            svf_workers = click.prompt("SVF workers", type=click.IntRange(1), default=svf_workers)
-        validator_workers = click.prompt(
-            "Validator workers", type=click.IntRange(1), default=validator_workers
+        allowed = [item for item in SCAN_PRESETS if _preset_allowed(item, detected)]
+        default_preset = chosen_preset if chosen_preset in allowed else allowed[0]
+        chosen_preset = click.prompt(
+            "Scan preset",
+            type=click.Choice(allowed),
+            default=default_preset,
         )
-        investigator_workers = click.prompt(
-            "Investigator workers", type=click.IntRange(1), default=investigator_workers
-        )
-        evidence_workers = click.prompt(
-            "Evidence completion workers", type=click.IntRange(1), default=evidence_workers
-        )
-        llm_max_inflight = click.prompt(
-            "Global LLM max in-flight requests",
-            type=click.IntRange(1),
-            default=llm_max_inflight,
+    if not _preset_allowed(chosen_preset, detected):
+        raise click.ClickException(
+            f"scan preset {chosen_preset!r} is not currently available for "
+            f"language={detected!r}; use {_default_preset(detected)!r}"
         )
 
     destination = output.expanduser()
@@ -252,23 +217,24 @@ def main(
     rendered = _render(
         language=detected,
         project_root=root,
-        search_root=search_root,
-        interface_files=interface_files,
-        entry_workers=entry_workers,
-        validator_workers=validator_workers,
-        investigator_workers=investigator_workers,
-        evidence_workers=evidence_workers,
-        index_workers=index_workers,
-        svf_workers=svf_workers,
-        llm_max_inflight=llm_max_inflight,
+        config_dir=destination.parent,
+        target_id=target_id,
+        compile_commands=compile_commands,
+        preset=chosen_preset,
     )
     with destination.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(rendered)
     click.echo(
-        f"Created {destination} ({detected}, backend={'unified' if detected == 'c_cpp' else 'java_unified'})"
+        f"Created config v3: {destination} "
+        f"(language={detected}, preset={chosen_preset}, target={target_id})"
     )
     click.echo(
-        "Next: set the Z_SCOPE_LLM_* variables, run zscope-doctor, then zscope --plan-entries."
+        "Multi-target documents can be saved and prepared, but the current "
+        "execution chain starts exactly one declared target."
+    )
+    click.echo(
+        "Next: set the Z_SCOPE_LLM_* variables, run zscope-config validate, "
+        "then zscope-config prepare."
     )
 
 

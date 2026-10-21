@@ -45,13 +45,13 @@ def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatc
     assert Path(config.analysis.snapshot_dir) == (BENCHMARK_ROOT / ".zscope_snapshots").resolve()
     agents = {agent.name: agent for agent in config.project.agents}
     assert {
-        "security_spec_miner",
-        "hypothesis_hunter",
-        "proof_engine",
-        "history_maintenance_agent",
+        "semantic_modeler",
+        "vulnerability_analyzer",
+        "validator_agent",
+        "issue_reconciler_agent",
     } <= set(agents)
-    assert agents["hypothesis_hunter"].enabled is True
-    assert agents["hypothesis_hunter"].task == ""
+    assert agents["vulnerability_analyzer"].enabled is True
+    assert agents["vulnerability_analyzer"].task == ""
 
 
 def test_java_range_benchmark_manifest_is_consistent() -> None:
@@ -76,7 +76,7 @@ def test_java_preview_structural_baseline_is_explicit_and_non_numeric_for_llm() 
     coverage = _load_json(BENCHMARK_ROOT / "benchmark" / "maintenance" / "entry_rule_coverage.json")
     vulnerabilities = truth["vulnerabilities"]
 
-    assert baseline["package_version"] == "1.3.1"
+    assert baseline["package_version"] == "1.3.2"
     assert baseline["truth_records"] == len(truth["vulnerabilities"]) == 58
     assert (
         baseline["rule_backed_truth_ids"]

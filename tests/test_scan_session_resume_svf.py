@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+from zscope.common.validator_protocol import VALIDATION_POLICY_VERSION
+
 from zscope.config.config import (
     AnalysisConfig,
     IndexingConfig,
@@ -12,14 +14,8 @@ from zscope.config.config import (
 )
 from zscope.config.function_entry import FunctionEntry
 from zscope.orchestration import scan_session as scan_session_module
-import zscope.reporting.schema as report_schema_module
-from zscope.orchestration.runtime_authority import (
-    RUNTIME_CACHE_EPOCH,
-    build_runtime_authority_manifest,
-)
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 from zscope.orchestration.scan_session import ScanSessionRunner
-from zscope.reporting.schema import REPORT_REUSE_EPOCH, RUN_MANIFEST_SCHEMA_VERSION
 from zscope.rules.extensions import preflight_rules
 from zscope.snapshots.store import SnapshotStore
 
@@ -49,73 +45,6 @@ def test_review_counts_separate_visible_findings_from_manifest_obligations() -> 
 
     assert ScanSessionRunner._needs_review_count_from_report(report) == 30
     assert ScanSessionRunner._unresolved_obligations_count_from_report(report) == 951
-
-
-def test_resume_requires_exact_current_successor_report_binding(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    binding = {
-        "successor_implementation_root_sha256": "1" * 64,
-        "successor_qualification_sha256": "2" * 64,
-        "successor_review_status": "in_progress",
-        "successor_review_status_content_sha256": "3" * 64,
-        "successor_review_set_sha256": "",
-    }
-    monkeypatch.setattr(
-        report_schema_module,
-        "current_successor_runtime_binding",
-        lambda: dict(binding),
-    )
-    authority = build_runtime_authority_manifest(
-        source_tree_hash="a" * 40,
-        config_sha256="b" * 64,
-        backend_sha256="c" * 64,
-        revisions={"proof_checker": "proof-checker.v2"},
-    )
-    report = {
-        "schema_version": 3,
-        "finding_status": "clean",
-        "completeness": "complete",
-        "issues": [],
-        "candidate_terminal_states": [],
-        "run_manifest": {
-            "valid": True,
-            "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
-            "report_reuse_epoch": REPORT_REUSE_EPOCH,
-            **binding,
-            "candidate_schema_version": "zscope.candidate.v3.3",
-            "cache_epoch": RUNTIME_CACHE_EPOCH,
-            "runtime_authority_manifest": authority,
-            "decision_trace": {"complete": True},
-        },
-    }
-    cfg = _config(tmp_path)
-    runner = ScanSessionRunner(cfg, resume=True)
-    entry = FunctionEntry("handle_request", file_path="src/a.c")
-    monkeypatch.setattr(runner, "_load_current_saved_report", lambda *_args: report)
-
-    stale_state = {
-        "entries_loaded": True,
-        "batch_mode": True,
-        "entries": [entry],
-        "code_index": object(),
-    }
-    report["run_manifest"]["successor_review_status_content_sha256"] = "f" * 64
-    runner._handle_plan_resume_entries(stale_state, None)  # type: ignore[arg-type]
-    assert stale_state["entries"] == [entry]
-    assert stale_state["skipped_entries"] == []
-
-    report["run_manifest"].update(binding)
-    current_state = {
-        "entries_loaded": True,
-        "batch_mode": True,
-        "entries": [entry],
-        "code_index": object(),
-    }
-    runner._handle_plan_resume_entries(current_state, None)  # type: ignore[arg-type]
-    assert current_state["entries"] == []
-    assert current_state["skipped_entries"] == [entry]
 
 
 def test_unresolved_obligations_fall_back_to_terminal_candidate_ledger() -> None:
@@ -509,7 +438,9 @@ def test_batch_task_id_writes_task_identified_reports(
     assert result.reports == [json_report, md_report]
     assert json_report.exists()
     assert md_report.exists()
-    payload = json.loads(json_report.read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+
+    payload = read_report(json_report)
     assert payload["task_id"] == "release/scan 42"
     assert payload["task_slug"] == "release_scan_42"
     assert payload["summary"]["task_id"] == "release/scan 42"
@@ -578,10 +509,24 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
     assert state["skipped_entries"] == []
 
 
-def test_resume_refuses_pre_p5_duplicate_function_reports_by_entry_path(
+@pytest.mark.parametrize("current_policy", [True, False])
+@pytest.mark.parametrize(
+    "experiment", ["off", "snapshot", "demand", "saved_snapshot", "saved_demand"]
+)
+@pytest.mark.parametrize("language", ["c_cpp", "java"])
+def test_resume_merges_duplicate_function_reports_by_entry_path(
     tmp_path: Path,
+    current_policy: bool,
+    experiment: str,
+    language: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _config(tmp_path)
+    cfg.project.language = language
+    if experiment == "snapshot":
+        cfg.analysis.semantic_snapshot_candidate_mode = "shadow"
+    if experiment == "demand":
+        cfg.analysis.semantic_model_demand_mode = "shadow"
     store = SnapshotStore.from_config(cfg)
     reports = {
         "src/a.c": {
@@ -591,7 +536,8 @@ def test_resume_refuses_pre_p5_duplicate_function_reports_by_entry_path(
             "completeness": "complete",
             "run_manifest": {
                 "valid": True,
-                "candidate_schema_version": "zscope.candidate.v3.3",
+                "candidate_schema_version": "zscope.candidate.v3.5",
+                "validation_policy_version": VALIDATION_POLICY_VERSION,
             },
             "issues": [{"source": "a"}],
         },
@@ -602,12 +548,29 @@ def test_resume_refuses_pre_p5_duplicate_function_reports_by_entry_path(
             "completeness": "complete",
             "run_manifest": {
                 "valid": True,
-                "candidate_schema_version": "zscope.candidate.v3.3",
+                "candidate_schema_version": "zscope.candidate.v3.5",
+                "validation_policy_version": VALIDATION_POLICY_VERSION,
             },
             "issues": [{"source": "b"}],
         },
     }
     for file_path, report in reports.items():
+        from zscope.snapshots.policy import SNAPSHOT_CANDIDATE_POLICY_VERSION
+
+        report["metadata"] = {
+            "semantic_contract_version": "published",
+            "snapshot_candidate_policy": (
+                SNAPSHOT_CANDIDATE_POLICY_VERSION
+                if current_policy
+                else "old-snapshot-candidates-enabled"
+            ),
+        }
+        if experiment == "saved_snapshot":
+            report["metadata"]["semantic_snapshot_candidates"] = {
+                "conditional_observations": {"mode": "shadow"}
+            }
+        if experiment == "saved_demand":
+            report["metadata"]["semantic_model_demand"] = {"mode": "shadow"}
         index_name = f"handle_request@{file_path}:10-10"
         store.save_snapshot(
             index_name,
@@ -618,6 +581,7 @@ def test_resume_refuses_pre_p5_duplicate_function_reports_by_entry_path(
                 "start_line": 10,
                 "end_line": 10,
                 "summary": file_path,
+                "project_callees": [],
                 "referenced_globals": [],
                 "referenced_macros": [],
                 "referenced_types": [],
@@ -631,6 +595,12 @@ def test_resume_refuses_pre_p5_duplicate_function_reports_by_entry_path(
         FunctionEntry("handle_request", file_path="src/b.c"),
     ]
     runner = ScanSessionRunner(cfg, resume=True)
+    if language == "c_cpp":
+
+        def forbidden_name_resume(*args, **kwargs):
+            pytest.fail("C/C++ resume borrowed a name-only saved report")
+
+        monkeypatch.setattr(runner, "_load_current_saved_report", forbidden_name_resume)
     state = {
         "entries_loaded": True,
         "batch_mode": True,
@@ -643,13 +613,27 @@ def test_resume_refuses_pre_p5_duplicate_function_reports_by_entry_path(
         ),
     }
 
+    from zscope.orchestration.semantic_modeling import SessionSemanticResult
+    from zscope.orchestration.global_modeler import GlobalModelStats
+
+    state["semantic_result"] = SessionSemanticResult(
+        GlobalModelStats(), contract_version="published"
+    )
+
     runner._handle_plan_resume_entries(state, None)  # type: ignore[arg-type]
     state["results"] = {}
     runner._handle_merge_skipped_reports(state, None)  # type: ignore[arg-type]
 
-    assert state["entries"] == entries
-    assert state["skipped_entries"] == []
-    assert state["results"] == {}
+    expected_keys = {ParallelAnalyzer._entry_result_key(entry) for entry in entries}
+    if language == "c_cpp" or not current_policy or experiment != "off":
+        assert state["entries"] == entries
+        assert state["skipped_entries"] == []
+        assert state["results"] == {}
+        return
+    assert state["entries"] == []
+    assert set(state["results"]) == expected_keys
+    assert state["results"]["default:handle_request@src/a.c"].issues == [{"source": "a"}]
+    assert state["results"]["default:handle_request@src/b.c"].issues == [{"source": "b"}]
 
 
 def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> None:

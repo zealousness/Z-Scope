@@ -17,9 +17,11 @@ from dataclasses import asdict, dataclass
 from threading import RLock
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
+from ...common.issue_identity import issue_build_context_id
 
-DECISION_FACT_VERSION = "zscope.decision-facts.v1.2"
-SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.2"
+
+DECISION_FACT_VERSION = "zscope.decision-facts.v1.4"
+SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.3"
 DECISION_CONTEXT_V31 = "zscope.decision-context.v3.1"
 DECISION_CONTEXT_V32 = "zscope.decision-context.v3.2"
 DECISION_CONTEXT_V33 = "zscope.decision-context.v3.3"
@@ -217,6 +219,7 @@ class DecisionFact:
     attributes: Mapping[str, Any]
     code_hash: str
     completeness: str
+    build_context_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -244,7 +247,13 @@ class DecisionFactSlice:
     assumptions: tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        for name in (
+            "fact_uids", "edge_uids", "dependency_code_hashes",
+            "missing_fact_kinds", "assumptions",
+        ):
+            value[name] = list(value[name])
+        return value
 
 
 @dataclass(frozen=True)
@@ -259,9 +268,11 @@ class SecurityObligation:
     required_fact_kinds: tuple[str, ...]
     decision_fact_slice: Optional[DecisionFactSlice] = None
     version: str = SECURITY_OBLIGATION_VERSION
+    build_context_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
+        data["required_fact_kinds"] = list(data["required_fact_kinds"])
         if self.decision_fact_slice is not None:
             data["decision_fact_slice"] = self.decision_fact_slice.to_dict()
         return data
@@ -279,12 +290,16 @@ class DecisionFactGraph:
         revision: str = "",
         index_epoch: str = "",
         source_fingerprint: str = "",
+        build_context_ids: Sequence[str] = (),
     ) -> None:
         self.project_id = str(project_id or "")
         self.revision = str(revision or "")
         self.index_epoch = str(index_epoch or "")
         self.source_fingerprint = str(source_fingerprint or "")
         self.facts = tuple(sorted(facts, key=lambda item: item.fact_uid))
+        self.build_context_ids = tuple(
+            sorted(set(build_context_ids) | {fact.build_context_id for fact in self.facts})
+        )
         self.edges = tuple(sorted(edges, key=lambda item: item.edge_uid))
         self._by_kind: Dict[str, list[DecisionFact]] = {}
         for fact in self.facts:
@@ -299,6 +314,7 @@ class DecisionFactGraph:
                 "revision": self.revision,
                 "index_epoch": self.index_epoch,
                 "source_fingerprint": self.source_fingerprint,
+                "build_context_ids": self.build_context_ids,
             },
             length=48,
         )
@@ -321,7 +337,10 @@ class DecisionFactGraph:
             or ""
         )
         file_path = normalize_path(issue.get("file") or issue.get("file_path") or path.get("file"))
-        function_uid = "FUNC_" + _digest({"file": file_path, "signature": function})
+        build_context_id = issue_build_context_id(issue)
+        function_uid = "FUNC_" + _digest(
+            {"file": file_path, "signature": function, "build_context_id": build_context_id}
+        )
         complete = bool(path.get("complete_in_function") is True or path.get("complete") is True)
         collection_failed = bool(
             issue.get("decision_fact_collection_failed")
@@ -366,6 +385,7 @@ class DecisionFactGraph:
                 attributes=dict(attributes or {}),
                 code_hash=code_hash,
                 completeness=fact_completeness,
+                build_context_id=build_context_id,
             )
             if fact not in facts:
                 facts.append(fact)
@@ -523,6 +543,7 @@ class DecisionFactGraph:
             revision=str(issue.get("revision") or ""),
             index_epoch=str(issue.get("index_epoch") or pack.get("index_epoch") or ""),
             source_fingerprint=code_hash,
+            build_context_ids=(build_context_id,),
         )
 
     @classmethod
@@ -572,6 +593,9 @@ class DecisionFactGraph:
             revision=resolved_revision,
             index_epoch=resolved_epoch,
             source_fingerprint=resolved_fingerprint,
+            build_context_ids=tuple(
+                scope for fragment in fragments for scope in fragment.build_context_ids
+            ),
         )
 
     def slice_for(
@@ -579,20 +603,23 @@ class DecisionFactGraph:
         obligation: SecurityObligation,
     ) -> DecisionFactSlice:
         subject = obligation.subject_uid
+        scoped_facts = [
+            fact for fact in self.facts if fact.build_context_id == obligation.build_context_id
+        ]
         selected = [
             fact
-            for fact in self.facts
+            for fact in scoped_facts
             if not subject or not fact.subject_uid or fact.subject_uid == subject
         ]
         # Source and sink are decision facts for a sink-sensitive obligation
         # even when their normalized subjects differ from the owned object.
         selected.extend(
             fact
-            for fact in self.facts
+            for fact in scoped_facts
             if fact.fact_kind in obligation.required_fact_kinds and fact not in selected
         )
         if not selected:
-            selected = list(self.facts)
+            selected = list(scoped_facts)
         selected_ids = {fact.fact_uid for fact in selected}
         fact_kinds = {fact.fact_kind for fact in selected}
         missing = tuple(
@@ -643,6 +670,7 @@ class DecisionFactGraphCache:
             {
                 "version": DECISION_FACT_VERSION,
                 "project": issue.get("project_id"),
+                "build_context_id": issue_build_context_id(issue),
                 "revision": issue.get("revision"),
                 "index_epoch": issue.get("index_epoch") or pack.get("index_epoch"),
                 "source_fingerprint": issue.get("dependency_code_hash")
@@ -727,12 +755,7 @@ def required_fact_kinds_for_issue(issue: Mapping[str, Any]) -> tuple[str, ...]:
         "obligation_required_fact_kinds"
     )
     if isinstance(explicit, Sequence) and not isinstance(explicit, str):
-        # Preserve the caller's order while de-duplicating.  The field is an
-        # echo of the frozen obligation's own ``required_fact_kinds``; sorting
-        # it here would rebuild a different tuple than the rule-branch literal
-        # below produced, so a live rebuild could never match the stored
-        # obligation identity.
-        return tuple(dict.fromkeys(str(item) for item in explicit if str(item)))
+        return tuple(sorted({str(item) for item in explicit if str(item)}))
     rule = str(issue.get("rule") or pack.get("rule") or "").lower()
     defect = str(issue.get("defect_class") or issue.get("category") or "").lower()
     text = f"{rule} {defect}"
@@ -833,6 +856,7 @@ def security_obligation_for(
         or []
     )
     region = {
+        "build_context_id": issue_build_context_id(issue),
         "function": str(
             issue.get("function_signature") or issue.get("function") or path.get("function") or ""
         ),
@@ -877,6 +901,7 @@ def security_obligation_for(
         sink_uid=normalize_subject(sink_uid),
         decision_region_uid="REGION_" + _digest(region),
         required_fact_kinds=required_fact_kinds_for_issue(issue),
+        build_context_id=issue_build_context_id(issue),
     )
 
 
@@ -914,7 +939,7 @@ def deterministic_proofs_from_facts(
         facts: Sequence[str],
         summary: str,
         *,
-        scope: str = "complete deterministic decision-fact slice",
+        scope: str = "完整的确定性决策事实切片",
     ) -> Dict[str, Any]:
         return {
             "outcome": outcome,
@@ -944,7 +969,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "out_of_range_value_reaches_sink",
                 ("source_to_sink_complete", "out_of_range_value"),
-                "a signed result reaches an unsigned length sink without a terminating range check",
+                "有符号结果到达无符号长度汇点，且缺少终止性范围检查",
             )
         )
 
@@ -984,7 +1009,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "use_after_free_path",
                 ("free_before_use", "source_to_sink_complete"),
-                "the same field-sensitive object is released before a reachable use",
+                "同一字段敏感对象在可达使用之前已被释放",
             )
         )
     if len({line for line in release_lines if line}) >= 2:
@@ -993,7 +1018,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "double_release_path",
                 ("first_release", "second_release", "same_object_path"),
-                "the same field-sensitive object is released twice on a complete path",
+                "同一字段敏感对象在完整路径上被释放两次",
             )
         )
 
@@ -1005,7 +1030,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "missing_cleanup_path",
                 ("allocation_reachable", "cleanup_missing"),
-                "a successful acquisition reaches an explicit exit without release or transfer",
+                "成功的获取到达显式出口，且没有释放或转移",
             )
         )
 
@@ -1026,7 +1051,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "race_without_happens_before",
                 ("conflicting_accesses", "no_happens_before"),
-                "two conflicting shared-object accesses have no proven happens-before relation",
+                "两个冲突的共享对象访问之间没有已证明的 happens-before 关系",
             )
         )
 
@@ -1039,7 +1064,7 @@ def deterministic_proofs_from_facts(
                 "reject",
                 "guard_dominates_sink",
                 ("guard_dominates_sink",),
-                "an explicit terminating guard dominates the reported sink",
+                "显式的终止性防护支配所报告的汇点",
             )
         )
     if proof_facts.get("cleanup_all_paths") is True:
@@ -1048,7 +1073,7 @@ def deterministic_proofs_from_facts(
                 "reject",
                 "ownership_cleanup_complete",
                 ("cleanup_all_paths",),
-                "all successful ownership paths release or transfer the same resource",
+                "所有成功的所有权路径都释放或转移同一资源",
             )
         )
     if (
@@ -1060,7 +1085,7 @@ def deterministic_proofs_from_facts(
                 "reject",
                 "lock_dominates_access",
                 ("lock_dominates_access", "all_accesses_guarded"),
-                "the same lock covers every conflicting access in the complete decision scope",
+                "同一把锁覆盖完整决策范围内的所有冲突访问",
             )
         )
     if ownership.get("cleanup_all_paths") is True:
@@ -1069,7 +1094,7 @@ def deterministic_proofs_from_facts(
                 "reject",
                 "ownership_cleanup_complete",
                 ("cleanup_all_paths",),
-                "ownership evidence records cleanup or transfer on all complete exits",
+                "所有权证据在所有完整出口上均记录了清理或转移",
             )
         )
     return results

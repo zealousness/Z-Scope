@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.project-constraint.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "constraint_id",
+    "subject",
+    "scope",
+    "kind",
+    "statement",
+    "authority",
+    "normativity",
+    "status",
+    "source_refs",
+    "conflicts_with",
+    "source_manifest_digest",
+    "created_revision_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.project-constraint.v1"
+    },
+    "constraint_id": {
+      "type": "string",
+      "pattern": "^constraint_[a-z0-9_:-]+$"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "canonical_id"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "project",
+            "module",
+            "api",
+            "symbol",
+            "resource",
+            "lock",
+            "type",
+            "configuration",
+            "topic"
+          ]
+        },
+        "canonical_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "module_ids",
+        "path_globs"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "module_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^module:[a-z0-9_.:/-]+$"
+          }
+        },
+        "path_globs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*\\.\\.)"
+          }
+        }
+      }
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "module_boundary",
+        "public_api",
+        "entry_exposure",
+        "input_range",
+        "input_format",
+        "caller_precondition",
+        "return_contract",
+        "error_contract",
+        "nullability",
+        "size_contract",
+        "ownership_acquire",
+        "ownership_release",
+        "ownership_transfer",
+        "resource_lifecycle",
+        "requires_lock",
+        "protects_state",
+        "lock_order",
+        "threading_contract",
+        "configuration_constraint",
+        "sanitizer_or_guard",
+        "documented_exception",
+        "known_false_positive_pattern"
+      ]
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "authority": {
+      "const": "documented_contract"
+    },
+    "normativity": {
+      "type": "string",
+      "enum": [
+        "required",
+        "recommended",
+        "descriptive",
+        "unknown"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "active",
+        "stale",
+        "superseded",
+        "conflicted",
+        "quarantined",
+        "retired"
+      ]
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^docref_[a-z0-9_:-]+$"
+      }
+    },
+    "conflicts_with": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^constraint_[a-z0-9_:-]+$"
+      }
+    },
+    "source_manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "created_revision_id": {
+      "type": "string",
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "supersedes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^constraint_[a-z0-9_:-]+$"
+      }
+    }
+  }
+}

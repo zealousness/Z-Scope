@@ -1,0 +1,62 @@
+# Active Wiki overlay for the llm_wiki_demo trial.
+config_version: 2
+
+llms:
+  default:
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
+    models: ["${Z_SCOPE_LLM_MODEL}"]
+    api_key: ${Z_SCOPE_API_KEY}
+    max_tokens: 8192
+    max_retries: 2
+    timeout: 180
+
+project:
+  root: test/llm_wiki_demo
+  source_root: .
+  language: c_cpp
+  compile_commands_path: build/compile_commands.json
+  include_paths: [include, src]
+  exclude_paths: [build]
+  wiki:
+    mode: "active"
+    auto_maintain: false
+    compiler_enabled: true
+    compiler_max_tokens: 20000
+    state_dir: .zscope_knowledge/wiki
+    documents:
+      exclude:
+        - .zscope_conversations/**
+        - .zscope_knowledge/**
+        - benchmark/README.md
+        - benchmark_runs/**
+        - zscope_batch_report*.md
+  entry_discovery:
+    enabled: true
+    search_root: .
+    interface_files: ["include/**/*.h"]
+    max_entries: 5
+    max_functions: 100
+
+scan:
+  task: ""
+
+indexing:
+  backend: unified
+  svf:
+    scope: auto
+    entry_depth: 3
+    fallback: full
+  tools:
+    clangd: clangd
+    gclang: gclang
+    get_bc: get-bc
+    llvm_link: llvm-link
+
+concurrency:
+  entry_workers: 2
+  validator_workers: 2
+  investigator_workers: 1
+  evidence_completion_workers: 1
+  index_workers: 2
+  svf_workers: 1
+  llm_max_inflight: 2

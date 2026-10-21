@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from .shared_access import SharedAccessIndex
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .models import (
@@ -119,20 +120,36 @@ STAGES = (
 
 class RegexConcurrencySharedStateRules:
     def _rule_lock_balance_and_callbacks(self, lines: List[CodeLine], emit) -> None:
-        held: List[CodeLine] = []
+        held: List[Tuple[str, str, CodeLine]] = []
+        uncertain: set[str] = set()
         for line in lines:
-            if self._lock_re.search(line.text):
-                held.append(line)
+            for api, obj in self._bound_api_calls(line.text, {"lock"}):
+                held.append((api, obj, line))
+            for api, obj in self._bound_api_calls(line.text, {"unlock"}):
+                for index in range(len(held) - 1, -1, -1):
+                    if held[index][1] == obj and self.semantics.contracts.allows(
+                        held[index][0], api
+                    ):
+                        if (
+                            self.semantics.contracts.release_in_text(
+                                held[index][0], api, line.text, obj
+                            )
+                            == "applies"
+                        ):
+                            held.pop(index)
+                        else:
+                            uncertain.add(obj)
+                        break
             callback_call = self._callback_like_call(line.text)
-            if held and callback_call:
-                lock_line = held[-1]
+            if held and held[-1][1] not in uncertain and callback_call:
+                lock_line = held[-1][2]
                 emit(
                     defect_class="held_lock_callback",
                     rule="callback_while_lock_held",
                     line=line,
-                    description="Callback/function-pointer style call is made while a lock is held.",
-                    root_cause="External callback code can re-enter the same subsystem or acquire conflicting locks.",
-                    suggested_fix="Copy required state under the lock, release the lock, then invoke the callback.",
+                    description="在持有锁的情况下发起了回调/函数指针风格的调用。",
+                    root_cause="外部回调代码可能重新进入同一子系统，或获取冲突的锁。",
+                    suggested_fix="在锁内复制所需状态，释放锁后再调用回调。",
                     source=f"lock at line {lock_line.number}",
                     sink=line.text.strip(),
                     confidence=0.78,
@@ -142,15 +159,15 @@ class RegexConcurrencySharedStateRules:
                         f"line {line.number}: callback-like call `{callback_call}` before unlock",
                     ],
                 )
-            if held and re.search(r"\breturn\b", line.text):
-                lock_line = held[-1]
+            if held and held[-1][1] not in uncertain and re.search(r"\breturn\b", line.text):
+                lock_line = held[-1][2]
                 emit(
                     defect_class="missing_unlock",
                     rule="return_while_lock_held",
                     line=line,
-                    description="Function returns while a mutex/rwlock appears to be held.",
-                    root_cause="A path exits the function before the matching unlock.",
-                    suggested_fix="Release the lock before every return path or use a single cleanup label.",
+                    description="函数在互斥锁/读写锁看似仍被持有的时候返回。",
+                    root_cause="某条路径在匹配的解锁发生之前就退出了函数。",
+                    suggested_fix="在每个返回路径之前释放锁，或使用单一的清理标签。",
                     source=f"lock at line {lock_line.number}",
                     sink=line.text.strip(),
                     confidence=0.8,
@@ -160,11 +177,8 @@ class RegexConcurrencySharedStateRules:
                         f"line {line.number}: return before matching unlock",
                     ],
                 )
-            if self._unlock_re.search(line.text) and held:
-                held.pop()
 
-    @staticmethod
-    def _callback_like_call(text: str) -> str:
+    def _callback_like_call(self, text: str) -> str:
         pointer_call = re.search(r"\(\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*\)\s*\(", text)
         if pointer_call:
             name = pointer_call.group("name")
@@ -180,13 +194,18 @@ class RegexConcurrencySharedStateRules:
         leaf = name.split("->")[-1].split(".")[-1]
         if leaf in {"if", "for", "while", "switch", "return", "sizeof"}:
             return ""
+        registrar_names = set(getattr(self, "_callback_registrar_names", set()) or set())
+        if leaf in registrar_names:
+            return name
         if re.search(r"(?:callback|cb|handler|hook|pfn|^on_|^on[A-Z])", leaf, re.I):
             return name
         return ""
 
     def _rule_condvar_wait(self, lines: List[CodeLine], emit) -> None:
         for line in lines:
-            if "pthread_cond_wait" not in line.text:
+            if not re.search(
+                self._literal_api_pattern(r"\bpthread_cond_(?:timed)?wait\s*\("), line.text
+            ):
                 continue
             previous = self._previous_nonempty(lines, line.index, limit=4)
             if any(re.search(r"\bif\s*\(", item.text) for item in previous) and not any(
@@ -196,9 +215,9 @@ class RegexConcurrencySharedStateRules:
                     defect_class="lost_wakeup",
                     rule="cond_wait_guarded_by_if",
                     line=line,
-                    description="Condition variable wait is guarded by `if` rather than a predicate loop.",
-                    root_cause="Spurious wakeups or missed predicate changes can make the thread continue incorrectly.",
-                    suggested_fix="Guard pthread_cond_wait with a while loop that rechecks the shared predicate.",
+                    description="条件变量等待被 `if` 而非谓词循环所保护。",
+                    root_cause="虚假唤醒或遗漏的谓词变化可能使线程错误地继续执行。",
+                    suggested_fix="用 while 循环保护 pthread_cond_wait，以重新检查共享谓词。",
                     source="condition predicate",
                     sink=line.text.strip(),
                     confidence=0.83,
@@ -211,6 +230,14 @@ class RegexConcurrencySharedStateRules:
 
     def _rule_concurrency_state(self, lines: List[CodeLine], emit) -> None:
         seen_race_globals: set[str] = set()
+        shared_accesses = SharedAccessIndex(
+            lines,
+            getattr(self, "program_facts", {}),
+            self._lock_names,
+            self._unlock_names,
+            self.semantics.contracts,
+            restrict_to_semantics=self.restrict_to_semantics,
+        )
         for idx, line in enumerate(lines):
             dcl = re.search(r"\bif\s*\(\s*!\s*(?P<obj>g_[A-Za-z_]\w*)\s*\)", line.text)
             if dcl:
@@ -223,9 +250,9 @@ class RegexConcurrencySharedStateRules:
                         defect_class="double_checked_locking",
                         rule="double_checked_global_without_atomic",
                         line=line,
-                        description=f"`{obj}` uses double-checked locking without visible atomic publication.",
-                        root_cause="Readers outside the lock can observe a partially initialized object or stale pointer.",
-                        suggested_fix="Guard all accesses with the same lock or publish through atomic acquire/release.",
+                        description=f"`{obj}` 使用了双重检查锁定，却缺少可见的原子发布。",
+                        root_cause="锁外的读者可能观察到部分初始化的对象或过期的指针。",
+                        suggested_fix="用同一把锁保护所有访问，或通过原子的获取/释放(acquire/release)进行发布。",
                         source=obj,
                         sink="double checked locking",
                         confidence=0.74,
@@ -248,9 +275,9 @@ class RegexConcurrencySharedStateRules:
                         defect_class="object_publication",
                         rule="object_published_before_initialization",
                         line=line,
-                        description=f"`{obj}` is published through `{publish.group('global')}` before later field initialization.",
-                        root_cause="Concurrent readers can observe the object before all fields are initialized.",
-                        suggested_fix="Fully initialize the object before linking/publishing it to shared state.",
+                        description=f"`{obj}` 在后续字段初始化之前就通过 `{publish.group('global')}` 被发布。",
+                        root_cause="并发读者可能在所有字段都被初始化之前就观察到该对象。",
+                        suggested_fix="在将该对象链接/发布到共享状态之前，先完成其初始化。",
                         source=obj,
                         sink=line.text.strip(),
                         confidence=0.81,
@@ -261,20 +288,20 @@ class RegexConcurrencySharedStateRules:
                         ],
                     )
 
-            helper_publish = re.search(
-                r"\b(?P<fn>[A-Za-z_]\w*(?:insert|add|publish|register|attach|link)[A-Za-z_0-9]*)"
-                r"\s*\(\s*(?P<obj>[A-Za-z_]\w*)\s*(?:,|\))",
-                line.text,
-                re.IGNORECASE,
-            )
-            if helper_publish:
-                obj = helper_publish.group("obj")
+            for helper_name, obj in self._bound_api_calls(line.text, {"ownership_transfer"}):
+                if (
+                    self.semantics.contracts.effect_status(
+                        helper_name, "ownership_transfer", line.text, object_name=obj
+                    )
+                    != "applies"
+                ):
+                    continue
                 earlier = lines[max(0, idx - 12) : idx]
                 later = lines[idx + 1 : idx + 10]
                 allocated_before = any(
                     re.search(
                         rf"\b{re.escape(obj)}\s*=\s*(?:\([^)]*\)\s*)?"
-                        rf"(?:{self._names_pattern(self._allocator_names | self._calloc_names)}|[A-Za-z_]\w*(?:Alloc|Create|New))\s*\(",
+                        rf"(?:{self._names_pattern(self._allocator_names | self._calloc_names)})\s*\(",
                         item.text,
                     )
                     for item in earlier
@@ -285,7 +312,10 @@ class RegexConcurrencySharedStateRules:
                         for item in later
                         if re.search(rf"\b{re.escape(obj)}->[A-Za-z_]\w*\s*=", item.text)
                         or re.search(
-                            rf"\bpthread_mutex_init\s*\(\s*&\s*{re.escape(obj)}->", item.text
+                            self._literal_api_pattern(
+                                rf"\bpthread_mutex_init\s*\(\s*&\s*{re.escape(obj)}->"
+                            ),
+                            item.text,
                         )
                     ),
                     None,
@@ -296,17 +326,16 @@ class RegexConcurrencySharedStateRules:
                         rule="object_published_by_helper_before_initialization",
                         line=line,
                         description=(
-                            f"`{obj}` is passed to publication helper `{helper_publish.group('fn')}` "
-                            "before later field initialization."
+                            f"`{obj}` 被传给发布辅助函数 `{helper_name}`，" "随后才进行字段初始化。"
                         ),
-                        root_cause="Concurrent readers can observe the object after helper publication but before all fields are initialized.",
-                        suggested_fix="Complete all field initialization before calling the helper that links/publishes the object.",
+                        root_cause="并发读者可能在对象经辅助函数发布之后、所有字段初始化完成之前就观察到它。",
+                        suggested_fix="在调用负责链接/发布对象的辅助函数之前，先完成所有字段初始化。",
                         source=obj,
                         sink=line.text.strip(),
                         confidence=0.78,
                         impact_level="high",
                         positive=[
-                            f"line {line.number}: object is passed to publication helper `{helper_publish.group('fn')}`",
+                            f"line {line.number}: object is passed to configured ownership-transfer API `{helper_name}`",
                             f"line {initialized_after.number}: field initialization occurs after publication",
                         ],
                     )
@@ -331,9 +360,9 @@ class RegexConcurrencySharedStateRules:
                                 defect_class="refcount_race",
                                 rule="refcount_update_after_unlock",
                                 line=item,
-                                description=f"`{var}->ref_count` is modified after releasing the protecting lock.",
-                                root_cause="Reference count update is not atomic or protected by the lock that found the object.",
-                                suggested_fix="Increment/decrement the reference count under the same lock or use atomics.",
+                                description=f"`{var}->ref_count` 在释放保护锁之后被修改。",
+                                root_cause="引用计数的更新不是原子的，也未受到定位该对象的那把锁的保护。",
+                                suggested_fix="在同一把锁下增减引用计数，或改用原子操作。",
                                 source=var,
                                 sink=item.text.strip(),
                                 confidence=0.84,
@@ -359,9 +388,9 @@ class RegexConcurrencySharedStateRules:
                         defect_class="use_after_free",
                         rule="global_callback_context_borrowed_under_lock",
                         line=line,
-                        description="A global callback context stores a borrowed cache entry that can be freed later.",
-                        root_cause="The entry pointer is saved globally without taking ownership or a protected reference.",
-                        suggested_fix="Store an owned reference/copy or unregister/clear the callback before entry removal.",
+                        description="全局回调上下文保存了一个之后可能被释放的借用缓存条目。",
+                        root_cause="该条目指针被保存到全局，却既未取得所有权，也未持有受保护的引用。",
+                        suggested_fix="保存一份拥有所有权的引用/副本，或在移除条目之前注销/清除该回调。",
                         source=callback_ctx.group("obj"),
                         sink=line.text.strip(),
                         confidence=0.8,
@@ -372,11 +401,7 @@ class RegexConcurrencySharedStateRules:
                         ],
                     )
 
-            race = re.search(
-                r"\b(?P<global>g_[A-Za-z_0-9]*(?:counter|flag|running|shutdown|state|status|ready|stop|done|active|enabled)[A-Za-z_0-9]*)\b",
-                line.text,
-                re.IGNORECASE,
-            )
+            race = shared_accesses.match(line)
             if race and not (self._lock_re.search(line.text) or self._unlock_re.search(line.text)):
                 global_name = race.group("global")
                 if global_name not in seen_race_globals and re.search(
@@ -387,12 +412,11 @@ class RegexConcurrencySharedStateRules:
                         defect_class="race",
                         rule="unsynchronized_shared_flag_or_counter",
                         line=line,
-                        description=f"`{global_name}` is accessed without an evident lock or atomic operation.",
-                        root_cause="Shared flag/counter access is not consistently synchronized across threads.",
-                        suggested_fix="Use a mutex or atomic operations for all reads and writes of the shared state.",
+                        description=f"`{global_name}` 在未见到明显锁或原子操作的情况下被访问。",
+                        root_cause="共享标志/计数器的访问未能跨线程一致地同步。",
+                        suggested_fix="对该共享状态的所有读写都使用互斥锁或原子操作。",
                         source=global_name,
                         sink=line.text.strip(),
-                        thread_object=global_name,
                         confidence=0.68,
                         positive=[f"line {line.number}: unsynchronized shared global access"],
                     )
@@ -417,15 +441,16 @@ class GraphConcurrencySharedStateRules:
         issues: List[Dict[str, Any]],
     ) -> None:
         held: List[Tuple[str, GraphLine]] = []
+        uncertain: Set[str] = set()
         for line in view.lines:
             lock = self._lock_arg(line.text)
             if lock:
                 held.append((lock, line))
                 continue
-            if self._unlock_call_re.search(line.text) and held:
-                held.pop()
+            if self._release_held_lock(line.text, held, uncertain):
                 continue
-            if not held:
+            possible = [item for item in held if item[0] not in uncertain]
+            if not possible:
                 continue
             for call_name in self._call_targets_for_line(view.name, line):
                 callee = by_name.get(call_name) or self._view_for(call_name)
@@ -435,7 +460,7 @@ class GraphConcurrencySharedStateRules:
                 callee_locks = [(lock_id, item) for lock_id, item in callee_locks if lock_id]
                 if not callee_locks:
                     continue
-                held_lock, held_line = held[-1]
+                held_lock, held_line = possible[-1]
                 same_lock = next(
                     (
                         (lock_id, lock_line)
@@ -455,11 +480,11 @@ class GraphConcurrencySharedStateRules:
                         view=view,
                         line=line,
                         description=(
-                            f"`{view.name}` calls `{call_name}` while `{held_lock}` is held; "
-                            f"`{call_name}` can acquire `{same_lock[0]}` again."
+                            f"`{view.name}` 可能在 `{held_lock}` 被持有期间调用 `{call_name}`；"
+                            f"而 `{call_name}` 可能再次获取 `{same_lock[0]}`。"
                         ),
-                        root_cause="A helper with its own locking contract is reached under an already-held lock.",
-                        suggested_fix="Use a no-lock helper variant, document the caller-held lock contract, or release before calling.",
+                        root_cause="一个自带加锁约定的辅助函数在锁已被持有的情况下被调用。",
+                        suggested_fix="使用不加锁的辅助函数变体、记录调用方持锁约定，或在调用前先释放锁。",
                         source=f"{view.name}:{held_line.number}:{held_lock}",
                         sink=f"{call_name}:{same_lock[1].number}:{same_lock[0]}",
                         confidence=0.86,
@@ -470,7 +495,12 @@ class GraphConcurrencySharedStateRules:
                             reachability,
                             f"{call_name} line {same_lock[1].number}: callee acquires `{same_lock[0]}`",
                         ],
+                        negative=[
+                            "Verify feasible acquisition-success branches, lock identity and recursive mutex attributes; lexical order is not a path proof."
+                        ],
                         evidence={
+                            "proof_authority": False,
+                            "acquisition_applicability": "possible_success",
                             "path": {
                                 "caller": view.name,
                                 "callee": call_name,
@@ -479,8 +509,9 @@ class GraphConcurrencySharedStateRules:
                                 "path_constraints": [
                                     "same thread",
                                     "callee reachable from locked region",
+                                    "both acquisitions succeed on the same feasible execution",
                                 ],
-                            }
+                            },
                         },
                     )
                 )
@@ -522,7 +553,9 @@ class GraphConcurrencySharedStateRules:
                                 and not re.search(r"=\s*(?:0|NULL|nullptr)\s*;", line.text)
                             )
                             or re.search(
-                                rf"\bpthread_(?:mutex|cond|rwlock)_init\s*\([^;]*\b{re.escape(var)}->",
+                                self._literal_api_pattern(
+                                    rf"\bpthread_(?:mutex|cond|rwlock)_init\s*\([^;]*\b{re.escape(var)}->"
+                                ),
                                 line.text,
                             )
                         )
@@ -536,11 +569,9 @@ class GraphConcurrencySharedStateRules:
                             rule="published_before_member_initialization",
                             view=view,
                             line=publish_line,
-                            description=(
-                                f"`{var}` is linked or published before later member initialization completes."
-                            ),
-                            root_cause="Concurrent readers can observe a partially initialized object after it is inserted into shared state.",
-                            suggested_fix="Initialize all fields and embedded synchronization primitives before publishing the object.",
+                            description=(f"`{var}` 在后续成员初始化完成之前就被链接或发布。"),
+                            root_cause="并发读者可能在该对象被插入共享状态之后观察到部分初始化的对象。",
+                            suggested_fix="在发布对象之前，先初始化所有字段和内嵌的同步原语。",
                             source=f"{view.name}:{alloc_line.number}:{var}",
                             sink=publish_line.text.strip(),
                             confidence=0.84,
@@ -592,7 +623,9 @@ class GraphConcurrencySharedStateRules:
                     if unlock_line
                     and line.index > unlock_line.index
                     and re.search(
-                        rf"\b(?:SAFE_FREE|free|kfree)\s*\(\s*(?:{re.escape(var)}(?:->\w+)?|{re.escape(var)})\s*\)",
+                        self._semantic_api_pattern(
+                            rf"\b(?:free|kfree)\s*\(\s*(?:{re.escape(var)}(?:->\w+)?|{re.escape(var)})\s*\)"
+                        ),
                         line.text,
                     )
                 ),
@@ -605,11 +638,9 @@ class GraphConcurrencySharedStateRules:
                         rule="container_unlink_free_after_unlock",
                         view=view,
                         line=unlink_line,
-                        description=(
-                            f"`{var}` is unlinked under the container lock, then released after the lock is dropped."
-                        ),
-                        root_cause="Concurrent readers that observed the node before unlink can race with member or node release after unlock.",
-                        suggested_fix="Use refcounts/RCU or keep the lifetime lock held until no reader can still dereference the node.",
+                        description=(f"`{var}` 在容器锁下被解除链接，随后该锁被释放才被释放内存。"),
+                        root_cause="在解除链接之前就观察到该节点的并发读者，可能与解锁后的成员或节点释放产生竞态。",
+                        suggested_fix="使用引用计数/RCU，或将生存期锁一直持有到没有任何读者仍可能解引用该节点为止。",
                         source=unlink_line.text.strip(),
                         sink=free_line.text.strip(),
                         confidence=0.82,
@@ -658,9 +689,9 @@ class GraphConcurrencySharedStateRules:
                 rule="mutable_global_mode_drives_callback_without_lock",
                 view=view,
                 line=assign_line,
-                description="A mutable global mode selects a callback path without synchronization across registration and use.",
-                root_cause="Concurrent callers can change the global mode between callback registration and dispatch.",
-                suggested_fix="Protect the mode and callback table with the same lock or pass an immutable mode snapshot through the operation.",
+                description="一个可变的全局模式在注册与使用之间缺少同步的情况下，选择了回调路径。",
+                root_cause="并发调用方可能在回调注册与派发之间改变该全局模式。",
+                suggested_fix="用同一把锁保护模式和回调表，或在操作中传递一个不可变的模式快照。",
                 source=assign_line.text.strip(),
                 sink=callback_line.text.strip(),
                 confidence=0.82,
@@ -683,7 +714,9 @@ class GraphConcurrencySharedStateRules:
             view,
             re.compile(r"\(void\)\s*__sync_bool_compare_and_swap|__sync_bool_compare_and_swap"),
         )
-        if not cas_line:
+        if not cas_line or not self._semantic_call_allowed(
+            "__sync_bool_compare_and_swap", "standard_operation"
+        ):
             return
         text = "\n".join(line.text for line in view.lines)
         if not re.search(r"\(void\)\s*__sync_bool_compare_and_swap", text):
@@ -705,9 +738,9 @@ class GraphConcurrencySharedStateRules:
                 rule="cas_result_ignored_before_slot_publication",
                 view=view,
                 line=cas_line,
-                description="A compare-and-swap claim result is ignored before writing into the shared slot.",
-                root_cause="If another caller wins the CAS, subsequent field writes can corrupt a slot owned by that caller.",
-                suggested_fix="Check the CAS result and retry or fail before writing any slot fields.",
+                description="一次比较并交换(CAS)的声明结果在写入共享槽位之前被忽略。",
+                root_cause="如果另一个调用方赢得了 CAS，后续的字段写入就可能破坏由该调用方所占有的槽位。",
+                suggested_fix="在写入任何槽位字段之前检查 CAS 结果，并在必要时重试或失败。",
                 source=cas_line.text.strip(),
                 sink=write_line.text.strip(),
                 confidence=0.86,
@@ -733,7 +766,9 @@ class GraphConcurrencySharedStateRules:
         if not enqueue_line:
             return
         if re.search(
-            r"\b(?:pthread_cond_signal|pthread_cond_broadcast|eventfd_write|notify|trigger|wakeup)\s*\(",
+            self._literal_api_pattern(
+                r"\b(?:pthread_cond_signal|pthread_cond_broadcast|eventfd_write|notify|trigger|wakeup)\s*\("
+            ),
             text,
             re.I,
         ):
@@ -744,9 +779,9 @@ class GraphConcurrencySharedStateRules:
                 rule="queued_local_event_without_scheduler_wakeup",
                 view=view,
                 line=enqueue_line,
-                description="A local event is queued into shared scheduling state without a wakeup/trigger operation.",
-                root_cause="The producer publishes work but does not notify the consumer path that new work is available.",
-                suggested_fix="Trigger the local scheduler or signal the condition/eventfd after queueing the event.",
+                description="一个本地事件被加入共享调度状态，却没有相应的唤醒/触发操作。",
+                root_cause="生产者发布了工作，却没有通知消费者路径已有新工作可用。",
+                suggested_fix="在将事件入队之后，触发本地调度器或通过条件变量/eventfd 发出信号。",
                 source="local event enqueue",
                 sink=enqueue_line.text.strip(),
                 confidence=0.82,
@@ -796,9 +831,9 @@ class GraphConcurrencySharedStateRules:
                 rule="lookup_before_insert_lock",
                 view=view,
                 line=find_line,
-                description="A duplicate/existence lookup is performed before taking the lock that protects insertion.",
-                root_cause="Two creators can both observe absence and then insert duplicate shared resources.",
-                suggested_fix="Hold the insertion lock across lookup and insert, or use an atomic create-if-absent primitive.",
+                description="在获取保护插入操作的锁之前，先进行了一次重复存在性/查找检查。",
+                root_cause="两个创建方可能同时观察到“不存在”，进而插入重复的共享资源。",
+                suggested_fix="在查找与插入过程中始终持有插入锁，或使用原子的“不存在则创建”原语。",
                 source=find_line.text.strip(),
                 sink=insert_line.text.strip(),
                 confidence=0.84,
@@ -838,9 +873,9 @@ class GraphConcurrencySharedStateRules:
                 rule="partial_state_machine_publication",
                 view=view,
                 line=state_line,
-                description="One state-machine branch publishes a state transition while another publishes related identity fields without the state transition.",
-                root_cause="Consumers can observe initialized identity data while the shared state still advertises an old lifecycle state.",
-                suggested_fix="Update the lifecycle state consistently for every successful publication branch.",
+                description="一个状态机分支发布了状态转换，而另一个分支在未发布状态转换的情况下发布了相关的标识字段。",
+                root_cause="消费者可能观察到已初始化的标识数据，而共享状态却仍对外公告一个旧的生命周期状态。",
+                suggested_fix="对每个成功的发布分支，都要一致地更新生命周期状态。",
                 source=state_line.text.strip(),
                 sink=later_write.text.strip(),
                 confidence=0.76,
@@ -865,22 +900,34 @@ class GraphConcurrencySharedStateRules:
             return
         lock_line = self._first_line_matching(
             view,
-            re.compile(r"\b(?:pthread_mutex_trylock|LOCK)\s*\([^;]*(?:sem|signal|exception)", re.I),
+            re.compile(
+                self._literal_api_pattern(
+                    r"\b(?:pthread_mutex_trylock )\s*\([^;]*(?:sem|signal|exception)"
+                ),
+                re.I,
+            ),
         )
         log_line = self._first_line_matching(
-            view, re.compile(r"\b(?:snprintf|LOG_ERROR|printf)\s*\(")
+            view,
+            re.compile(
+                self._literal_api_pattern(
+                    rf"\b(?:{self._names_pattern(set(self.semantics.format_sinks) | {'snprintf', 'printf'})})\s*\("
+                )
+            ),
         )
         if not (lock_line and log_line):
             shared_write = self._first_line_matching(
                 view,
                 re.compile(
-                    r"\bg_[A-Za-z_0-9]+(?:->|\.)[A-Za-z_]\w+\s*=|__atomic_store_n\s*\(\s*&\s*g_",
+                    self._literal_api_pattern(
+                        r"\bg_[A-Za-z_0-9]+(?:->|\.)[A-Za-z_]\w+\s*=|__atomic_store_n\s*\(\s*&\s*g_"
+                    ),
                     re.I,
                 ),
             )
             alloc_line = self._first_line_matching(
                 view,
-                re.compile(r"\b(?:_safe_calloc|_safe_malloc|calloc|malloc)\s*\(", re.I),
+                re.compile(self._semantic_api_pattern(r"\b(?:calloc|malloc)\s*\("), re.I),
             )
             unsafe_line = log_line or alloc_line or shared_write
             if not (unsafe_line and shared_write):
@@ -891,12 +938,12 @@ class GraphConcurrencySharedStateRules:
                     rule="signal_path_mutates_shared_state_or_logs",
                     view=view,
                     line=unsafe_line,
-                    description="A signal/exception path mutates shared global state and/or performs non-async-signal-safe work.",
+                    description="信号/异常路径修改了共享全局状态，并/或执行了非异步信号安全的工作。",
                     root_cause=(
-                        "The asynchronous signal path writes shared callstack/runtime state and performs logging/allocation "
-                        "without a signal-safe handoff protocol."
+                        "异步信号路径写入了共享的调用栈/运行时状态，并执行日志/内存分配，"
+                        "却没有使用信号安全的交接协议。"
                     ),
-                    suggested_fix="Capture only atomic/minimal signal-safe data and defer allocation, logging, and shared-state updates to a normal thread.",
+                    suggested_fix="只捕获原子的/最小的信号安全数据，并将内存分配、日志和共享状态更新推迟到普通线程执行。",
                     source="signal/exception handler path",
                     sink=shared_write.text.strip(),
                     confidence=0.84,
@@ -915,9 +962,9 @@ class GraphConcurrencySharedStateRules:
                 rule="signal_path_uses_locking_and_formatting",
                 view=view,
                 line=lock_line,
-                description="A signal/exception path performs locking and formatting/logging work.",
-                root_cause="Signal handlers can interrupt code that owns the same lock or uses non-async-signal-safe routines.",
-                suggested_fix="Record only async-signal-safe data in the handler and defer formatting/logging to a normal thread.",
+                description="信号/异常路径执行了加锁以及格式化/日志操作。",
+                root_cause="信号处理程序可能打断拥有同一把锁、或使用非异步信号安全例程的代码。",
+                suggested_fix="只在处理程序中记录异步信号安全的数据，并将格式化/日志推迟到普通线程执行。",
                 source=lock_line.text.strip(),
                 sink=log_line.text.strip(),
                 confidence=0.84,
@@ -948,7 +995,9 @@ class GraphConcurrencySharedStateRules:
                 for line in view.lines
                 if line.index > condition_line.index
                 and re.search(
-                    r"\b(?:SAFE_FREE|free|destroy|release)[A-Za-z_0-9]*\s*\([^;]*(?:pool|pbuf|g_[A-Za-z_0-9]+)",
+                    self._semantic_api_pattern(
+                        r"\b(?:free)\s*\([^;]*(?:pool|pbuf|g_[A-Za-z_0-9]+)"
+                    ),
                     line.text,
                     re.I,
                 )
@@ -971,7 +1020,11 @@ class GraphConcurrencySharedStateRules:
                 line
                 for line in view.lines
                 if line.index > condition_line.index
-                and re.search(r"\b(?:SAFE_FREE|free)\s*\(\s*g_[A-Za-z_0-9.]+", line.text, re.I)
+                and re.search(
+                    self._semantic_api_pattern(r"\b(?:free)\s*\(\s*g_[A-Za-z_0-9.]+"),
+                    line.text,
+                    re.I,
+                )
             ),
             None,
         )
@@ -981,12 +1034,12 @@ class GraphConcurrencySharedStateRules:
                 rule="destroy_shared_pool_while_active_tasks_remain",
                 view=view,
                 line=condition_line,
-                description="A shared pool object can be destroyed even when the active-task count indicates users still exist.",
+                description="即使活动任务计数表明仍有用户存在，共享池对象也可能被销毁。",
                 root_cause=(
-                    "The destroy path publishes a shared pool pointer and then frees the global pool/buffer "
-                    "in the active-tasks branch, leaving active users with a dangling shared object."
+                    "销毁路径发布了共享池指针，随后在活动任务分支中释放了全局池/缓冲区，"
+                    "导致仍活跃的用户持有一个悬空的共享对象。"
                 ),
-                suggested_fix="Refcount the pool or reject/defer destruction while active tasks are non-zero.",
+                suggested_fix="对池进行引用计数，或在活动任务非零时拒绝/推迟销毁。",
                 source=condition_line.text.strip(),
                 sink=free_line.text.strip(),
                 confidence=0.86,
@@ -1051,9 +1104,9 @@ class GraphConcurrencySharedStateRules:
                 rule="global_registration_slot_checked_before_lock",
                 view=view,
                 line=check_line,
-                description="A global registration slot is checked before taking the lock that protects slot updates.",
-                root_cause="Concurrent registrants can observe or update the same ops slot across a check-then-act window.",
-                suggested_fix="Hold the registration lock across validation, lookup, and update of the slot.",
+                description="在获取保护槽位更新的锁之前，先对全局注册槽位进行了检查。",
+                root_cause="并发注册方可能在“先检查后操作”的窗口内观察或更新同一个 ops 槽位。",
+                suggested_fix="在槽位的校验、查找与更新的整个过程中都持有注册锁。",
                 source=check_line.text.strip(),
                 sink=update_line.text.strip(),
                 confidence=0.86,
@@ -1073,9 +1126,11 @@ class GraphConcurrencySharedStateRules:
     ) -> None:
         text = "\n".join(line.text for line in view.lines)
         path_check = self._first_line_matching(
-            view, re.compile(r"\b(?:_file_exists|access|stat|lstat)\s*\(")
+            view, re.compile(self._literal_api_pattern(r"\b(?:access|stat|lstat)\s*\("))
         )
-        key_line = self._first_line_matching(view, re.compile(r"\b(?:ftok|_hash_string)\s*\("))
+        key_line = self._first_line_matching(
+            view, re.compile(self._literal_api_pattern(r"\b(?:ftok)\s*\("))
+        )
         if not (path_check and key_line):
             return
         lock_line = self._first_line_matching(view, self._lock_call_re)
@@ -1089,9 +1144,9 @@ class GraphConcurrencySharedStateRules:
                 rule="path_state_checked_separately_from_key_generation",
                 view=view,
                 line=path_check,
-                description="A file path is checked separately from ftok-style key generation and later synchronization.",
-                root_cause="Path existence/state can change between the check and key derivation, creating unstable or colliding shared keys.",
-                suggested_fix="Generate/register the key under a single lock using a stable opened file descriptor or reject changing path state.",
+                description="文件路径的检查与 ftok 风格的键生成以及后续的同步过程是分开进行的。",
+                root_cause="路径的存在性/状态可能在检查与键推导之间发生变化，从而产生不稳定或冲突的共享键。",
+                suggested_fix="在单把锁下、使用一个稳定的已打开文件描述符来生成/注册键，或拒绝路径状态发生变化。",
                 source=path_check.text.strip(),
                 sink=key_line.text.strip(),
                 confidence=0.82,
@@ -1118,10 +1173,10 @@ class GraphConcurrencySharedStateRules:
                 continue
             callee_text = "\n".join(line.text for line in callee_view.lines)
             path_check = self._first_line_matching(
-                callee_view, re.compile(r"\b(?:_file_exists|access|stat|lstat)\s*\(")
+                callee_view, re.compile(self._literal_api_pattern(r"\b(?:access|stat|lstat)\s*\("))
             )
             key_line = self._first_line_matching(
-                callee_view, re.compile(r"\b(?:ftok|_hash_string)\s*\(")
+                callee_view, re.compile(self._literal_api_pattern(r"\b(?:ftok)\s*\("))
             )
             if not (path_check and key_line and "path" in callee_text):
                 continue
@@ -1137,12 +1192,12 @@ class GraphConcurrencySharedStateRules:
                     rule="callee_path_state_checked_separately_from_key_generation",
                     view=view,
                     line=call_line,
-                    description="The caller reaches a helper that checks path state separately from ftok-style key generation.",
+                    description="调用方到达了一个辅助函数，该辅助函数将路径状态的检查与 ftok 风格的键生成分开进行。",
                     root_cause=(
-                        "A path/key helper derives a shared key after an unlocked path-state check, "
-                        "so callers inherit a non-atomic key-generation race."
+                        "某个路径/键辅助函数在一次无锁的路径状态检查之后才推导共享键，"
+                        "因此调用方继承了非原子的键生成竞态。"
                     ),
-                    suggested_fix="Make the helper perform path check, key derivation, and registration under one lock or use a stable opened file descriptor.",
+                    suggested_fix="让辅助函数在单把锁下完成路径检查、键推导与注册，或使用一个稳定的已打开文件描述符。",
                     source=f"{callee}:{path_check.text.strip()}",
                     sink=f"{callee}:{key_line.text.strip()}",
                     confidence=0.8,
@@ -1200,8 +1255,8 @@ class GraphConcurrencySharedStateRules:
                     None,
                 )
                 description = (
-                    f"`{view.name}` can wait on `{callback_lock}` while `{blocking_edge.function}` "
-                    f"holds it before waiting on `{blocking_edge.second_lock}`."
+                    f"`{view.name}` 可能在等待 `{callback_lock}` 时，`{blocking_edge.function}` "
+                    f"已经持有它，并随后等待 `{blocking_edge.second_lock}`。"
                 )
                 positive = [
                     f"line {line.number}: timer/callback takes `{callback_lock}`",
@@ -1238,10 +1293,10 @@ class GraphConcurrencySharedStateRules:
                 sink = f"{blocking_edge.function}:{blocking_edge.first_line}->{blocking_edge.second_line}"
                 if scheduler_edge:
                     description = (
-                        f"`{view.name}` can wait on `{callback_lock}` while `{blocking_edge.function}` "
-                        f"holds it and waits on `{blocking_edge.second_lock}`; `{scheduler_edge.function}` "
-                        f"can hold `{scheduler_edge.first_lock}` while waiting on `{scheduler_edge.second_lock}`, "
-                        "forming a multi-party callback/close lock cascade."
+                        f"`{view.name}` 可能在等待 `{callback_lock}` 时，`{blocking_edge.function}` "
+                        f"持有它并等待 `{blocking_edge.second_lock}`；`{scheduler_edge.function}` "
+                        f"可能在持有 `{scheduler_edge.first_lock}` 的同时等待 `{scheduler_edge.second_lock}`，"
+                        "从而形成多方的回调/关闭锁级联。"
                     )
                     positive.append(
                         f"{scheduler_edge.function} lines {scheduler_edge.first_line}-{scheduler_edge.second_line}: holds `{scheduler_edge.first_lock}` before waiting on `{scheduler_edge.second_lock}`"
@@ -1269,8 +1324,8 @@ class GraphConcurrencySharedStateRules:
                         view=view,
                         line=line,
                         description=description,
-                        root_cause="Timer/callback code participates in a cascade wait through a lock held by a close/remove path.",
-                        suggested_fix="Avoid blocking timer/callback paths on control locks used by close/remove, or reorder the close path to follow the scheduler/control lock protocol.",
+                        root_cause="定时器/回调代码参与了经由 close/remove 路径所持锁的级联等待。",
+                        suggested_fix="避免定时器/回调路径阻塞在 close/remove 所用的控制锁上，或重排关闭路径以遵循调度器/控制锁协议。",
                         source=f"{view.name}:{line.number}:{callback_lock}",
                         sink=sink,
                         confidence=confidence,
@@ -1301,7 +1356,10 @@ class GraphConcurrencySharedStateRules:
                     for line in view.lines
                     if any(
                         re.search(
-                            rf"\b(?:SAFE_FREE|free|kfree)\s*\(\s*{re.escape(alias)}\s*\)", line.text
+                            self._semantic_api_pattern(
+                                rf"\b(?:free|kfree)\s*\(\s*{re.escape(alias)}\s*\)"
+                            ),
+                            line.text,
                         )
                         for alias in arg_aliases
                     )
@@ -1357,9 +1415,9 @@ class GraphConcurrencySharedStateRules:
                     rule="callback_can_free_current_event_before_reacquire",
                     view=view,
                     line=call_line,
-                    description="A callback receives the current object as its context and can free it before the caller resumes using it.",
-                    root_cause="The callback contract permits self-destruction, but the caller keeps dereferencing the object after the callback returns.",
-                    suggested_fix="Hold a reference across callback execution or mark/detach the current object before invoking callbacks that may destroy it.",
+                    description="回调将当前对象作为其上下文接收，并且可能在调用方恢复使用该对象之前将其释放。",
+                    root_cause="回调约定允许自我销毁，但调用方在回调返回后仍继续解引用该对象。",
+                    suggested_fix="跨回调执行期间持有引用，或在调用可能销毁该对象的回调之前标记/分离当前对象。",
                     source=f"{callback_name}:{free_line.number}",
                     sink=post_use.text.strip(),
                     confidence=0.88,
@@ -1392,8 +1450,7 @@ class GraphConcurrencySharedStateRules:
         names = re.findall(r"\b[A-Za-z_]\w*\b", str(rhs or ""))
         return [name for name in names if name not in skip and name.startswith("_")]
 
-    @staticmethod
-    def _callback_free_line(view: FunctionView) -> Optional[GraphLine]:
+    def _callback_free_line(self, view: FunctionView) -> Optional[GraphLine]:
         arg_aliases = {"arg"}
         for line in view.lines:
             alias = re.search(r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?arg\b", line.text)
@@ -1405,7 +1462,10 @@ class GraphConcurrencySharedStateRules:
                 for line in view.lines
                 if any(
                     re.search(
-                        rf"\b(?:SAFE_FREE|free|kfree)\s*\(\s*{re.escape(alias)}\s*\)", line.text
+                        self._literal_api_pattern(
+                            rf"\b(?:free|kfree)\s*\(\s*{re.escape(alias)}\s*\)"
+                        ),
+                        line.text,
                     )
                     for alias in arg_aliases
                 )
@@ -1420,8 +1480,16 @@ class GraphConcurrencySharedStateRules:
     ) -> None:
         edges = self._lock_order_edges(views)
         seen_pairs = set()
+        buckets: Dict[Tuple[str, str], List[LockOrderEdge]] = {}
+        by_name = {view.name: view for view in views}
+
+        def key(lock: str) -> str:
+            return self._normalize_lock(lock).split(".")[-1]
+
+        for edge in edges:
+            buckets.setdefault((key(edge.first_lock), key(edge.second_lock)), []).append(edge)
         for left in edges:
-            for right in edges:
+            for right in buckets.get((key(left.second_lock), key(left.first_lock)), []):
                 if left is right:
                     continue
                 if not (
@@ -1435,7 +1503,7 @@ class GraphConcurrencySharedStateRules:
                 if pair_key in seen_pairs:
                     continue
                 seen_pairs.add(pair_key)
-                view = next((item for item in views if item.name == right.function), None)
+                view = by_name.get(right.function)
                 if not view:
                     continue
                 line = self._line_by_number(view, right.second_line) or view.lines[0]
@@ -1446,11 +1514,11 @@ class GraphConcurrencySharedStateRules:
                         view=view,
                         line=line,
                         description=(
-                            f"Lock order inversion: `{left.function}` takes `{left.first_lock}` then `{left.second_lock}`, "
-                            f"while `{right.function}` takes `{right.first_lock}` then `{right.second_lock}`."
+                            f"锁顺序反转：`{left.function}` 先取 `{left.first_lock}` 再取 `{left.second_lock}`，"
+                            f"而 `{right.function}` 先取 `{right.first_lock}` 再取 `{right.second_lock}`。"
                         ),
-                        root_cause="Two reachable paths acquire the same lock pair in opposite order.",
-                        suggested_fix="Define a single global lock order and refactor one path to follow it.",
+                        root_cause="两条可达路径以相反的顺序获取同一对锁。",
+                        suggested_fix="定义一个单一的全局锁顺序，并重构其中一条路径以遵循它。",
                         source=f"{left.function}:{left.first_line}->{left.second_line}",
                         sink=f"{right.function}:{right.first_line}->{right.second_line}",
                         confidence=0.84,
@@ -1459,32 +1527,50 @@ class GraphConcurrencySharedStateRules:
                             f"{left.function} lines {left.first_line}-{left.second_line}: {left.first_lock} before {left.second_lock}",
                             f"{right.function} lines {right.first_line}-{right.second_line}: {right.first_lock} before {right.second_lock}",
                         ],
+                        negative=[
+                            "Verify both lock-order paths are feasible and acquisition outcomes succeed; mutually exclusive branches must not be merged."
+                        ],
+                        evidence={
+                            "proof_authority": False,
+                            "acquisition_applicability": "possible_success",
+                        },
                     )
                 )
 
     def _lock_order_edges(self, views: Sequence[FunctionView]) -> List[LockOrderEdge]:
         edges: List[LockOrderEdge] = []
         for view in views:
-            held: List[Tuple[str, GraphLine]] = []
-            for line in view.lines:
-                lock = self._lock_arg(line.text)
-                if lock:
-                    for prior, prior_line in held:
-                        if prior != lock:
-                            edges.append(
-                                LockOrderEdge(
-                                    function=view.name,
-                                    file_path=view.file_path,
-                                    first_lock=prior,
-                                    second_lock=lock,
-                                    first_line=prior_line.number,
-                                    second_line=line.number,
+
+            def build() -> List[LockOrderEdge]:
+                local_edges: List[LockOrderEdge] = []
+                held: List[Tuple[str, GraphLine]] = []
+                uncertain: Set[str] = set()
+                for line in view.lines:
+                    lock = self._lock_arg(line.text)
+                    if lock:
+                        for prior, prior_line in held:
+                            if prior != lock and prior not in uncertain:
+                                local_edges.append(
+                                    LockOrderEdge(
+                                        function=view.name,
+                                        file_path=view.file_path,
+                                        first_lock=prior,
+                                        second_lock=lock,
+                                        first_line=prior_line.number,
+                                        second_line=line.number,
+                                    )
                                 )
-                            )
-                    held.append((lock, line))
-                    continue
-                if self._unlock_call_re.search(line.text) and held:
-                    held.pop()
+                        held.append((lock, line))
+                        continue
+                    if self._release_held_lock(line.text, held, uncertain):
+                        pass
+                return local_edges
+
+            cache = getattr(self, "fact_cache", None)
+            if cache is None:
+                edges.extend(build())
+            else:
+                edges.extend(cache.compute((self.fact_context, "lock-edges", view), build))
         return edges
 
     def _call_targets_for_line(self, caller: str, line: GraphLine) -> List[str]:
@@ -1521,14 +1607,51 @@ class GraphConcurrencySharedStateRules:
         match = self._lock_call_re.search(text)
         if not match:
             return ""
-        return self._normalize_lock(match.group("arg"))
+        api = match.group("api")
+        arguments = self.semantics.contracts.call_arguments(api, text)
+        objects = {
+            event.object
+            for event in self.semantics.contracts.match_call(api, "lock", arguments or [])
+            if event.effects_trusted and event.applicability == "applies" and event.object
+        }
+        return self._normalize_lock(next(iter(objects))) if len(objects) == 1 else ""
+
+    def _release_held_lock(
+        self, text: str, held: List[Tuple[str, GraphLine]], uncertain: Optional[Set[str]] = None
+    ) -> bool:
+        release = self._unlock_call_re.search(text)
+        if release is None:
+            return False
+        raw_obj = self.semantics.contracts.resolve_object(
+            release.group("api"),
+            "unlock",
+            self.semantics.contracts.call_arguments(release.group("api"), text) or [],
+        )
+        obj = self._normalize_lock(raw_obj)
+        for index in range(len(held) - 1, -1, -1):
+            lock_id, line = held[index]
+            acquire = self._lock_call_re.search(line.text)
+            if obj and lock_id == obj and acquire:
+                status = self.semantics.contracts.release_in_text(
+                    acquire.group("api"), release.group("api"), text, lock_id
+                )
+                if status == "applies":
+                    held.pop(index)
+                    if uncertain is not None:
+                        uncertain.discard(obj)
+                    return True
+                if status == "unknown" and uncertain is not None:
+                    # Retain the obligation, but it cannot establish a later
+                    # recursive acquisition or lock-order edge by itself.
+                    uncertain.add(obj)
+                    return True
+        return False
 
     @staticmethod
     def _normalize_lock(value: str) -> str:
-        text = re.sub(r"\s+", "", str(value or ""))
-        text = text.strip("&()")
-        text = text.replace("->", ".")
-        return text
+        from ....semantics.contracts import ObjectBinding
+
+        return ObjectBinding("return").resolve([], str(value or ""))
 
     @classmethod
     def _locks_may_match(cls, left: str, right: str) -> bool:
@@ -1536,11 +1659,7 @@ class GraphConcurrencySharedStateRules:
             return False
         left_norm = cls._normalize_lock(left)
         right_norm = cls._normalize_lock(right)
-        if left_norm == right_norm:
-            return True
-        left_tail = left_norm.split(".")[-1]
-        right_tail = right_norm.split(".")[-1]
-        return bool(left_tail and left_tail == right_tail)
+        return left_norm == right_norm
 
     @staticmethod
     def _line_by_number(view: FunctionView, number: int) -> Optional[GraphLine]:
@@ -1556,12 +1675,39 @@ class ClangConcurrencySharedStateRules:
         lines: Sequence[ClangCfgLine],
         allowed_skills: Optional[Set[str]],
     ) -> None:
-        signature = "\n".join(item.text for item in lines[:3])
-        if re.search(r"\b[A-Za-z_]\w*unlock[A-Za-z_]\w*\s*\(", signature, re.I) and any(
-            re.search(r"\bpthread_(?:mutex|rwlock)_unlock\s*\(", item.text) for item in lines
+        from ....semantics.contract_compiler import read_source_facts
+
+        # Only the operation certified as consuming the caller's lock can be
+        # exempted. An unlock effect on a business function says nothing about
+        # its other acquisitions, exits, or recursive calls.
+        facts = read_source_facts(
+            {
+                "func_name": func_name,
+                "file_path": file_path,
+                "code": "\n".join(item.text for item in lines),
+            },
+            self.semantics.contracts,
+        )
+        inherited_unlocks: set[tuple[str, str]] = set()
+        if (
+            facts.complete
+            and not facts.unknown_calls
+            and len(facts.calls) == 1
+            and any(
+                c.effects_trusted
+                for c in self.semantics.contracts.find(func_name, "unlock", file_path)
+            )
         ):
-            return
+            operation = facts.calls[0]
+            inherited_unlocks = {
+                (operation.name, effect.object)
+                for effect in self.semantics.contracts.match_call(
+                    operation.name, "unlock", operation.arguments
+                )
+                if effect.effects_trusted and effect.object
+            }
         held: List[LockState] = []
+        uncertain_releases: set[str] = set()
         for line in lines:
             # Macro definitions and thin unlock wrappers describe a protocol;
             # they are not call sites that can establish whether a caller
@@ -1569,29 +1715,43 @@ class ClangConcurrencySharedStateRules:
             # produced one false candidate for every use of the macro.
             if line.text.lstrip().startswith("#"):
                 continue
-            if "wrapper" in func_name.lower() and re.search(
-                r"\b(?:unlock|pthread_mutex_unlock|pthread_rwlock_unlock)\b", line.text, re.I
-            ):
-                continue
             lock = self._match_lock(line.text)
             if lock:
                 api, lock_id = lock
-                held.append(LockState(lock_id=lock_id, api=api, line=line))
+                held.append(
+                    LockState(
+                        lock_id=lock_id,
+                        api=api,
+                        line=line,
+                        definite=self.semantics.contracts.effect_status(
+                            api, "lock", line.text, object_name=lock_id
+                        )
+                        == "applies",
+                    )
+                )
             unlock = self._match_unlock(line.text)
             if unlock and not held:
                 api, lock_id = unlock
-                self._emit_unlock_without_matching_lock(
-                    issues,
-                    func_name,
-                    file_path,
-                    lines,
-                    allowed_skills,
-                    line,
-                    api,
-                    lock_id,
-                )
+                if (api, lock_id) in inherited_unlocks:
+                    continue
+                if (
+                    self.semantics.contracts.effect_status(
+                        api, "unlock", line.text, object_name=lock_id
+                    )
+                    == "applies"
+                ):
+                    self._emit_unlock_without_matching_lock(
+                        issues,
+                        func_name,
+                        file_path,
+                        lines,
+                        allowed_skills,
+                        line,
+                        api,
+                        lock_id,
+                    )
             elif unlock and held:
-                _, lock_id = unlock
+                release_api, lock_id = unlock
                 # An unlock on a branch that returns does not release the
                 # fall-through path.  Keeping it in the linear state machine
                 # made the later normal-path unlock look unmatched.
@@ -1601,17 +1761,38 @@ class ClangConcurrencySharedStateRules:
                             idx
                             for idx in range(len(held) - 1, -1, -1)
                             if held[idx].lock_id == lock_id
+                            and self.semantics.contracts.allows(held[idx].api, release_api)
                         ),
-                        len(held) - 1,
+                        None,
                     )
-                    held.pop(match_idx)
+                    if match_idx is not None:
+                        if (
+                            self.semantics.contracts.release_in_text(
+                                held[match_idx].api, release_api, line.text, lock_id
+                            )
+                            == "applies"
+                        ):
+                            held.pop(match_idx)
+                            uncertain_releases.discard(lock_id)
+                        else:
+                            uncertain_releases.add(lock_id)
             if not held or not self._is_return(line.text):
                 continue
-            if self._is_terminal_conditional_branch_line(lines, line):
-                continue
-            if self._return_is_error_guard_for_lock(line.text, held[-1].lock_id):
-                continue
             lock_state = held[-1]
+            if not lock_state.definite and lock_state.lock_id in uncertain_releases:
+                # Two unknown effects do not establish a missing-unlock defect.
+                # A definitely acquired lock retains its obligation instead.
+                continue
+            branch_return = self._is_terminal_conditional_branch_line(lines, line)
+            if branch_return:
+                # 终态分支内的 return：仅当分支体没有释放该锁、而
+                # fall-through 路径会释放（说明锁确实需要释放）时，
+                # 这才是"特定分支漏解锁"缺陷。其余情形维持原来的
+                # 保守豁免（线性状态机对分支解锁建模会产生误报）。
+                if not self._branch_return_misses_unlock(lines, line, lock_state.lock_id):
+                    continue
+            elif self._return_is_error_guard_for_lock(line.text, lock_state.lock_id):
+                continue
             self._emit(
                 issues,
                 func_name,
@@ -1621,15 +1802,12 @@ class ClangConcurrencySharedStateRules:
                 defect_class="missing_unlock",
                 rule="clang_cfg_return_with_lock_held",
                 line=line,
-                description=f"Function returns while `{lock_state.lock_id}` appears to be held.",
-                root_cause=(
-                    "The synthesized CFG path enters a return edge after a lock acquire "
-                    "without a matching unlock event."
+                description=(
+                    f"函数在 `{lock_state.lock_id}` 看似仍被持有的时候返回。"
+                    + ("（早退分支未释放锁，正常路径会释放。）" if branch_return else "")
                 ),
-                suggested_fix=(
-                    "Release the lock on every return path or route exits through a common "
-                    "cleanup block."
-                ),
+                root_cause=("合成的 CFG 路径在一次锁获取之后进入返回边，" "却没有相应的解锁事件。"),
+                suggested_fix=("在每条返回路径上释放锁，或让所有退出都经由一个" "公共清理块。"),
                 source=f"{lock_state.api}({lock_state.lock_id}) at line {lock_state.line.number}",
                 sink=line.text,
                 confidence=0.8,
@@ -1678,14 +1856,10 @@ class ClangConcurrencySharedStateRules:
             defect_class="lock_protocol_violation",
             rule="clang_cfg_unlock_without_matching_lock",
             line=line,
-            description=f"`{api}` releases `{lock_id}` without a visible matching acquire in the local function body.",
-            root_cause=(
-                "The local lock-state path reaches an unlock operation while no matching lock "
-                "acquire has been observed."
-            ),
+            description=f"`{api}` 释放了 `{lock_id}`，但在本地函数体中缺少可见的匹配获取。",
+            root_cause=("本地锁状态路径到达了一次解锁操作，" "却未观察到任何匹配的锁获取。"),
             suggested_fix=(
-                "Acquire the same lock before the unlock, remove the stray unlock, or document "
-                "and enforce a caller-held-lock contract."
+                "在解锁之前获取同一把锁、移除多余的解锁，或记录" "并强制一个“调用方持锁”的约定。"
             ),
             source="local lock-state machine",
             sink=line.text,
@@ -1712,17 +1886,32 @@ class ClangConcurrencySharedStateRules:
         allowed_skills: Optional[Set[str]],
     ) -> None:
         writes: List[Tuple[ClangCfgLine, str, str, bool]] = []
-        held: List[str] = []
+        held: List[Tuple[str, str]] = []
         for line in lines:
             lock = self._match_lock(line.text)
-            if lock:
-                held.append(lock[1])
+            if (
+                lock
+                and self.semantics.contracts.effect_status(
+                    lock[0], "lock", line.text, object_name=lock[1]
+                )
+                == "applies"
+            ):
+                held.append(lock)
             lhs = self._global_write_lhs(line.text)
             if lhs:
                 writes.append((line, lhs, self._global_state_family(lhs), bool(held)))
             unlock = self._match_unlock(line.text)
-            if unlock and held:
-                held.pop()
+            if unlock:
+                for index in range(len(held) - 1, -1, -1):
+                    if (
+                        held[index][1] == unlock[1]
+                        and self.semantics.contracts.release_in_text(
+                            held[index][0], unlock[0], line.text, unlock[1]
+                        )
+                        == "applies"
+                    ):
+                        held.pop(index)
+                        break
 
         families: Dict[str, List[Tuple[ClangCfgLine, str, bool]]] = {}
         for line, lhs, family, locked in writes:
@@ -1746,7 +1935,7 @@ class ClangConcurrencySharedStateRules:
                     source=locked_line.text,
                     sink=unlocked_line.text,
                     resource=family,
-                    description=f"Global shared state `{family}` is written both with and without a lock.",
+                    description=f"全局共享状态 `{family}` 有时在有锁、有时在无锁的情况下被写入。",
                     positive=[
                         f"line {locked_line.number}: `{locked_lhs}` is written while a lock appears held",
                         f"line {unlocked_line.number}: `{unlocked_lhs}` is written without the same local lock evidence",
@@ -1769,7 +1958,7 @@ class ClangConcurrencySharedStateRules:
                     source=first_line.text,
                     sink=last_line.text,
                     resource=family,
-                    description=f"Global pointer/length state `{family}` is published without visible synchronization.",
+                    description=f"全局指针/长度状态 `{family}` 在缺少可见同步的情况下被发布。",
                     positive=[
                         f"line {first_line.number}: `{first_lhs}` is written as part of a global state pair",
                         f"line {last_line.number}: `{last_lhs}` is written without a common lock around the publication",
@@ -1818,9 +2007,9 @@ class ClangConcurrencySharedStateRules:
             defect_class="deadlock",
             rule="clang_cfg_timer_callback_object_lock_without_scheduler_lock",
             line=object_lock,
-            description="Timer/callback path locks an object from a global scheduler/list without holding the scheduler lock.",
-            root_cause="A close/destroy path can hold the object lock while waiting for the scheduler/global lock, creating a lock-order cycle with the callback path.",
-            suggested_fix="Use one lock order for scheduler/list and per-object locks, or snapshot/refcount the object before dropping the scheduler lock.",
+            description="定时器/回调路径在未持有调度器锁的情况下，对来自全局调度器/链表的对象加锁。",
+            root_cause="close/destroy 路径可能持有对象锁，同时等待调度器/全局锁，从而与回调路径形成锁顺序循环。",
+            suggested_fix="对调度器/链表锁和逐对象锁使用统一的锁顺序，或在释放调度器锁之前对对象进行快照/引用计数。",
             source=global_walk.text,
             sink=object_lock.text,
             confidence=0.74,
@@ -1872,8 +2061,8 @@ class ClangConcurrencySharedStateRules:
             rule=rule,
             line=line,
             description=description,
-            root_cause="Global shared state is updated without a single synchronization protocol protecting all related writes/readers.",
-            suggested_fix="Protect all writes and readers of the state family with the same lock or publish an immutable snapshot atomically.",
+            root_cause="全局共享状态的更新，缺少一个保护所有相关读写方的单一同步协议。",
+            suggested_fix="用同一把锁保护该状态族的所有写入方与读取方，或以原子方式发布一个不可变快照。",
             source=source,
             sink=sink,
             confidence=0.74,
@@ -1914,12 +2103,16 @@ class ClangConcurrencySharedStateRules:
         )
         cap_assign = re.search(rf"\b{re.escape(cap)}\s*=\s*[A-Za-z_]\w*\s*;", text)
         old_free = re.search(
-            r"\b(?:SAFE_FREE|free)\s*\(\s*(?:old_[A-Za-z_]\w*|old_array)\s*\)", text
+            self._semantic_api_pattern(r"\b(?:free)\s*\(\s*(?:old_[A-Za-z_]\w*|old_array)\s*\)"),
+            text,
         )
         if not (global_assign and cap_assign and old_free):
             return
         pre_window = "\n".join(item.text for item in lines[max(0, line.index - 5) : line.index])
-        if re.search(r"\b(?:LOCK|pthread_mutex_lock|spin_lock|mtx_lock)\s*\(", pre_window):
+        if re.search(
+            self._semantic_api_pattern(r"\b(?:pthread_mutex_lock|spin_lock|mtx_lock)\s*\("),
+            pre_window,
+        ):
             return
         assign_line = (
             self._first_line_matching_in(
@@ -1936,9 +2129,9 @@ class ClangConcurrencySharedStateRules:
             defect_class="dynamic_array_race",
             rule="clang_cfg_global_dynamic_array_resize_without_lock",
             line=line,
-            description=f"Global dynamic array `{global_assign.group('array')}` is resized and the old storage is freed without a visible lock.",
-            root_cause="Concurrent creators can race while publishing a new global array pointer/capacity pair and freeing the old array.",
-            suggested_fix="Protect the capacity check, allocation handoff, pointer publish, and old-array free with the same mutex or atomic ownership protocol.",
+            description=f"全局动态数组 `{global_assign.group('array')}` 被调整大小，旧存储则在缺少可见锁的情况下被释放。",
+            root_cause="并发创建方可能在发布新的全局数组指针/容量对、并释放旧数组时发生竞态。",
+            suggested_fix="用同一把互斥锁或原子所有权协议来保护容量检查、分配交接、指针发布和旧数组释放。",
             source=line.text,
             sink=assign_line.text,
             confidence=0.87,
@@ -1986,7 +2179,7 @@ class ClangConcurrencySharedStateRules:
         body_hint = f"{self._function_name_hint(func_name, lines)}\n" + "\n".join(
             item.text for item in lines
         )
-        if not re.search(r"(?:key|ftok|_file_exists|file_exists)", body_hint, re.IGNORECASE):
+        if not re.search(r"(?:key|ftok|file_exists)", body_hint, re.IGNORECASE):
             return
         if not re.search(
             r"\b[A-Za-z_]\w*\s*=\s*[^;]*(?:hash|ftok|project|path)[^;]*;", line.text, re.IGNORECASE
@@ -1998,7 +2191,10 @@ class ClangConcurrencySharedStateRules:
             (
                 item
                 for item in reversed(prefix)
-                if re.search(r"\b(?:access|stat|lstat|_file_exists|file_exists)\s*\(", item.text)
+                if re.search(
+                    self._literal_api_pattern(r"\b(?:access|stat|lstat|file_exists)\s*\("),
+                    item.text,
+                )
             ),
             None,
         )
@@ -2006,7 +2202,7 @@ class ClangConcurrencySharedStateRules:
             (
                 item
                 for item in suffix
-                if re.search(r"\bLOCK\s*\(", item.text)
+                if self._match_lock(item.text)
                 and re.search(
                     r"\b[A-Za-z_]\w*(?:find|lookup|register|zone)[A-Za-z_0-9]*\s*\(",
                     item.text,
@@ -2026,9 +2222,9 @@ class ClangConcurrencySharedStateRules:
             defect_class="key_generation_race",
             rule="clang_cfg_path_state_key_generation_before_locked_registration",
             line=line,
-            description="Path/key state is checked and hashed before the locked registration lookup.",
-            root_cause="A file/path based key can be generated from stale path state before the lock that protects registration and collision checks.",
-            suggested_fix="Hold one lock or use an atomic create/register operation across path validation, key generation, and registration lookup.",
+            description="路径/键状态在被锁保护的注册查找之前就被检查并哈希。",
+            root_cause="基于文件/路径的键，可能在保护注册与冲突检查的那把锁之前，根据过期的路径状态生成。",
+            suggested_fix="在路径校验、键生成与注册查找的整个过程中持有单把锁，或使用原子的创建/注册操作。",
             source=path_check.text,
             sink=line.text,
             confidence=0.74,
@@ -2084,7 +2280,9 @@ class ClangConcurrencySharedStateRules:
             item.text for item in lines[max(0, line.index - 12) : line.index + 1]
         )
         if re.search(
-            r"\b(?:LOCK|pthread_mutex_lock|spin_lock|refcount_dec_and_test|atomic_dec_and_test)\s*\(",
+            self._semantic_api_pattern(
+                r"\b(?:pthread_mutex_lock|spin_lock|refcount_dec_and_test|atomic_dec_and_test)\s*\("
+            ),
             guard_window,
         ):
             return
@@ -2097,12 +2295,12 @@ class ClangConcurrencySharedStateRules:
             defect_class="premature_destroy",
             rule="clang_cfg_active_owner_destroy_without_quiescence",
             line=line,
-            description=f"Shared resource `{resource}` is destroyed while an active-use guard is true.",
+            description=f"共享资源 `{resource}` 在活动使用保护为真时被销毁。",
             root_cause=(
-                "A pool/cache/global owner is released on a path that explicitly observes active users "
-                "or tasks, without a visible quiescence/refcount guard."
+                "某个池/缓存/全局所有者，在显式观察到活动用户或任务的路径上被释放，"
+                "却缺少可见的静默/引用计数保护。"
             ),
-            suggested_fix="Wait for active users to drain or transfer ownership through a refcounted shutdown path before freeing.",
+            suggested_fix="等待活动用户排空，或在释放之前通过引用计数的关闭路径转移所有权。",
             source=branch_text or line.text,
             sink=f"{api}({arg})",
             confidence=0.76,
@@ -2155,9 +2353,9 @@ class ClangConcurrencySharedStateRules:
             defect_class="race",
             rule="clang_cfg_macro_guarded_lock_may_compile_to_noop",
             line=line,
-            description=f"`{match.group('global')}` is updated under a macro-like lock guard that may compile to a no-op on some targets.",
-            root_cause="Configuration-sensitive macro locking can disappear on unsupported builds while the shared state remains mutable.",
-            suggested_fix="Use a lock implementation that is present on every supported target or reject unsupported builds.",
+            description=f"`{match.group('global')}` 在某个类似宏的锁保护下被更新，而在某些目标平台上该宏可能被编译为空操作(no-op)。",
+            root_cause="对配置敏感的宏加锁，在不被支持的构建上可能会消失，而共享状态仍保持可变。",
+            suggested_fix="使用在每个受支持目标上都存在的锁实现，或拒绝不支持的构建。",
             source=", ".join(sorted(macro_locks)),
             sink=line.text,
             confidence=0.74,
@@ -2187,9 +2385,12 @@ class ClangConcurrencySharedStateRules:
     ) -> None:
         if not held_locks:
             return
-        if not re.search(
+        callback_shape = re.search(
             r"\b[A-Za-z_]\w*(?:callback|cb|handler)[A-Za-z_0-9]*\s*\(", line.text, re.IGNORECASE
-        ):
+        )
+        registrar_call = getattr(self, "_callback_registrar_call_re", None)
+        registrar_hit = bool(registrar_call and registrar_call.search(line.text))
+        if not callback_shape and not registrar_hit:
             return
         lock_line = held_locks[-1]
         self._emit(
@@ -2201,9 +2402,9 @@ class ClangConcurrencySharedStateRules:
             defect_class="held_lock_callback",
             rule="clang_cfg_callback_while_lock_held",
             line=line,
-            description="Callback/function-pointer style call is made while a lock is held.",
-            root_cause="A callback contract can re-enter the same subsystem or acquire conflicting locks if callers can register nontrivial callback code.",
-            suggested_fix="Copy required state under the lock, release the lock, then invoke the callback.",
+            description="在持有锁的情况下发起了回调/函数指针风格的调用。",
+            root_cause="如果调用方能够注册非平凡的回调代码，回调约定就可能重新进入同一子系统或获取冲突的锁。",
+            suggested_fix="在锁内复制所需状态，释放锁后再调用回调。",
             source=f"lock at line {lock_line.number}",
             sink=line.text,
             confidence=0.68,
@@ -2235,6 +2436,7 @@ class ClangConcurrencySharedStateRules:
         line: ClangCfgLine,
         idx: int,
         emitted_shared_state: Set[str],
+        shared_accesses: SharedAccessIndex,
     ) -> None:
         dcl = re.search(r"\bif\s*\(\s*!\s*(?P<obj>g_[A-Za-z_]\w*)\s*\)", line.text)
         if dcl:
@@ -2252,9 +2454,9 @@ class ClangConcurrencySharedStateRules:
                     defect_class="double_checked_locking",
                     rule="clang_cfg_double_checked_global_without_atomic",
                     line=line,
-                    description=f"`{obj}` is checked outside the mutex before lazy initialization.",
-                    root_cause="Readers outside the lock can observe stale or partially initialized shared state.",
-                    suggested_fix="Guard all accesses with the same lock or use atomic acquire/release publication.",
+                    description=f"`{obj}` 在惰性初始化之前于互斥锁外被检查。",
+                    root_cause="锁外的读者可能观察到过期或部分初始化的共享状态。",
+                    suggested_fix="用同一把锁保护所有访问，或使用原子的获取/释放(acquire/release)发布。",
                     source=obj,
                     sink="double checked locking",
                     confidence=0.78,
@@ -2296,9 +2498,9 @@ class ClangConcurrencySharedStateRules:
                     defect_class="object_publication",
                     rule="clang_cfg_object_published_before_initialization",
                     line=line,
-                    description=f"`{obj}` is linked into shared state before later field initialization completes.",
-                    root_cause="Concurrent readers can observe a partially initialized object after publication.",
-                    suggested_fix="Initialize all fields before inserting the object into global/shared containers.",
+                    description=f"`{obj}` 在后续字段初始化完成之前就被链接进共享状态。",
+                    root_cause="并发读者可能在发布之后观察到部分初始化的对象。",
+                    suggested_fix="在将对象插入全局/共享容器之前，先初始化所有字段。",
                     source=obj,
                     sink=line.text,
                     confidence=0.84,
@@ -2315,7 +2517,7 @@ class ClangConcurrencySharedStateRules:
                     ),
                 )
 
-        if "pthread_cond_wait" in line.text:
+        if re.search(self._literal_api_pattern(r"\bpthread_cond_(?:timed)?wait\s*\("), line.text):
             previous = lines[max(0, idx - 4) : idx]
             if any(re.search(r"\bif\s*\(", item.text) for item in previous) and not any(
                 re.search(r"\bwhile\s*\(", item.text) for item in previous
@@ -2329,9 +2531,9 @@ class ClangConcurrencySharedStateRules:
                     defect_class="lost_wakeup",
                     rule="clang_cfg_cond_wait_guarded_by_if",
                     line=line,
-                    description="Condition variable wait is guarded by `if` rather than a predicate loop.",
-                    root_cause="Spurious wakeups or missed predicate changes can let execution continue with a false predicate.",
-                    suggested_fix="Guard pthread_cond_wait with a while loop that rechecks the shared predicate.",
+                    description="条件变量等待被 `if` 而非谓词循环所保护。",
+                    root_cause="虚假唤醒或遗漏的谓词变化可能让执行在谓词为假的情况下继续。",
+                    suggested_fix="用 while 循环保护 pthread_cond_wait，以重新检查共享谓词。",
                     source="condition predicate",
                     sink=line.text,
                     confidence=0.86,
@@ -2357,11 +2559,7 @@ class ClangConcurrencySharedStateRules:
             line,
         )
 
-        race = re.search(
-            r"\b(?P<global>g_[A-Za-z_0-9]*(?:counter|flag|running|shutdown|state|status|ready|stop|done|active|enabled)[A-Za-z_0-9]*)\b",
-            line.text,
-            re.IGNORECASE,
-        )
+        race = shared_accesses.match(line)
         if not race or self._match_lock(line.text) or self._match_unlock(line.text):
             return
         global_name = race.group("global")
@@ -2378,9 +2576,9 @@ class ClangConcurrencySharedStateRules:
                 defect_class="race",
                 rule="clang_cfg_unsynchronized_shared_flag_or_counter",
                 line=line,
-                description=f"`{global_name}` is accessed without an evident lock or atomic operation.",
-                root_cause="Shared flag/counter access is not consistently synchronized across threads.",
-                suggested_fix="Use a mutex or atomic operations for all reads and writes of the shared state.",
+                description=f"`{global_name}` 在未见到明显锁或原子操作的情况下被访问。",
+                root_cause="共享标志/计数器的访问未能跨线程一致地同步。",
+                suggested_fix="对该共享状态的所有读写都使用互斥锁或原子操作。",
                 source=global_name,
                 sink=line.text,
                 confidence=0.72,
@@ -2428,9 +2626,9 @@ class ClangConcurrencySharedStateRules:
             defect_class="use_after_free",
             rule="clang_cfg_borrowed_pointer_returned_after_unlock",
             line=line,
-            description=f"Borrowed pointer `{ret}` is returned after the protecting lock is released.",
-            root_cause="Concurrent mutation can free or replace the pointee after unlock and before caller use.",
-            suggested_fix="Return an owned copy or keep a protected reference before releasing the lock.",
+            description=f"借用指针 `{ret}` 在保护锁被释放之后被返回。",
+            root_cause="并发的修改可能在解锁之后、调用方使用之前释放或替换所指向的对象。",
+            suggested_fix="返回一份拥有所有权的副本，或在释放锁之前保留一个受保护的引用。",
             source=f"borrowed pointer assigned at line {assigned.number}",
             sink=line.text,
             confidence=0.84,
@@ -2487,9 +2685,9 @@ class ClangConcurrencySharedStateRules:
                 defect_class="refcount_race",
                 rule="clang_cfg_refcount_update_after_unlock",
                 line=item,
-                description=f"`{var}->ref_count` is modified after releasing the lock used for lookup.",
-                root_cause="The object reference is found under a mutex, but the reference count update happens after the protection is dropped.",
-                suggested_fix="Increment/decrement the reference count under the same lock or use atomic reference counting.",
+                description=f"`{var}->ref_count` 在释放用于查找的锁之后被修改。",
+                root_cause="对象引用在互斥锁下被找到，但引用计数的更新却发生在该保护被解除之后。",
+                suggested_fix="在同一把锁下增减引用计数，或使用原子的引用计数。",
                 source=f"lookup at line {line.number}",
                 sink=item.text,
                 confidence=0.88,
@@ -2533,7 +2731,7 @@ class ClangConcurrencySharedStateRules:
         if not match:
             return
         window = "\n".join(item.text for item in lines[max(0, idx - 6) : idx + 8])
-        if not self._match_lock(window) and "LOCK" not in window:
+        if not self._match_lock(window):
             return
         if not re.search(
             r"\bg_[A-Za-z_0-9]*(?:callback|cb|handler)[A-Za-z_0-9]*\s*=", window, re.IGNORECASE
@@ -2548,9 +2746,9 @@ class ClangConcurrencySharedStateRules:
             defect_class="use_after_free",
             rule="clang_cfg_global_callback_stores_borrowed_object",
             line=line,
-            description=f"Global callback context `{match.group('global')}` stores a borrowed object returned by `{match.group('lookup')}`.",
-            root_cause="A global callback can later use the borrowed object after another path removes or frees it.",
-            suggested_fix="Store an owned reference for callback context and release it during unregister/remove.",
+            description=f"全局回调上下文 `{match.group('global')}` 保存了一个由 `{match.group('lookup')}` 返回的借用对象。",
+            root_cause="另一条路径移除或释放该对象之后，全局回调仍可能随后使用这个借用对象。",
+            suggested_fix="为回调上下文保存一份拥有所有权的引用，并在注销/移除期间释放它。",
             source=line.text,
             sink="global callback context",
             confidence=0.78,
@@ -2587,7 +2785,9 @@ class ClangConcurrencySharedStateRules:
         line: ClangCfgLine,
     ) -> None:
         for api, args in self._calls(line.text):
-            if api not in {"munmap", "UnmapViewOfFile"}:
+            if api not in {"munmap", "UnmapViewOfFile"} or not self._semantic_call_allowed(
+                api, "io_release"
+            ):
                 continue
             first = self._resource_var(self._first_arg(args))
             if not first or not first.startswith("g_"):
@@ -2604,9 +2804,9 @@ class ClangConcurrencySharedStateRules:
                 defect_class="use_after_free",
                 rule="clang_cfg_global_mapping_unmapped_without_invalidation",
                 line=line,
-                description=f"Global mapping pointer `{first}` is unmapped without nearby invalidation.",
-                root_cause="Later readers can pass non-null guards and dereference an unmapped global mapping.",
-                suggested_fix="Clear the global mapping pointer and length under the same synchronization after unmap.",
+                description=f"全局映射指针 `{first}` 在附近没有任何失效操作的情况下被解除映射。",
+                root_cause="之后的读取方可能通过非空检查，并对一个已解除映射的全局映射进行解引用。",
+                suggested_fix="在解除映射之后，于相同的同步机制下清除全局映射指针和长度。",
                 source=first,
                 sink=line.text,
                 confidence=0.84,
@@ -2645,13 +2845,39 @@ class ClangConcurrencySharedStateRules:
             return False
         between = "\n".join(item.text for item in lines[start_idx : end_idx + 1])
         if re.search(
-            r"\b(?:pthread_create|thrd_create|VOS_TaskCreate|CreateThread|_beginthreadex)\s*\(",
+            r"\b(?:pthread_create|thrd_create|CreateThread|_beginthreadex)\s*\(",
             between,
         ):
             return False
         if re.search(r"\b[A-Za-z_]\w*(?:callback|cb|handler)\s*\(", between, re.IGNORECASE):
             return False
         return True
+
+    def _branch_return_misses_unlock(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        lock_id: str,
+    ) -> bool:
+        """分支早退漏解锁判定（确定性）。
+
+        终态条件分支内的 return：分支体（分支头到 return）没有释放
+        ``lock_id``，而分支之后的 fall-through 路径会释放同一把锁——
+        说明锁确实需要释放，但早退路径跳过了它（如分配失败的
+        error-guard 早退）。两侧任一不成立则维持豁免。
+        """
+        branch_start = self._enclosing_branch_start(lines, line)
+        if branch_start is None:
+            return False
+        for item in lines[branch_start.index : line.index + 1]:
+            unlock = self._match_unlock(item.text)
+            if unlock and unlock[1] == lock_id:
+                return False
+        for item in lines[line.index + 1 :]:
+            unlock = self._match_unlock(item.text)
+            if unlock and unlock[1] == lock_id:
+                return True
+        return False
 
     def _return_is_error_guard_for_lock(self, text: str, lock_id: str) -> bool:
         if lock_id == "global_lock":
@@ -2661,15 +2887,7 @@ class ClangConcurrencySharedStateRules:
 
     def _macro_guard_names(self, lines: Sequence[ClangCfgLine], *, lock: bool) -> Set[str]:
         configured = self._macro_lock_names if lock else self._macro_unlock_names
-        result = set(configured)
-        for line in lines:
-            for api, _args in self._calls(line.text):
-                upper = api.upper()
-                if lock and "LOCK" in upper and "UNLOCK" not in upper:
-                    result.add(api)
-                elif not lock and "UNLOCK" in upper:
-                    result.add(api)
-        return result
+        return set(configured)
 
     def _line_between_macro_guards(
         self,
@@ -2678,13 +2896,28 @@ class ClangConcurrencySharedStateRules:
         macro_locks: Set[str],
         macro_unlocks: Set[str],
     ) -> bool:
-        saw_lock = False
+        held: list[tuple[str, str]] = []
         for item in lines:
-            for api, _args in self._calls(item.text):
-                if api in macro_locks and item.index < line.index:
-                    saw_lock = True
-                if api in macro_unlocks and item.index > line.index and saw_lock:
+            lock = self._match_lock(item.text)
+            if (
+                lock
+                and lock[0] in macro_locks
+                and item.index < line.index
+                and self.semantics.contracts.effect_status(
+                    lock[0], "lock", item.text, object_name=lock[1]
+                )
+                == "applies"
+            ):
+                held.append(lock)
+            unlock = self._match_unlock(item.text)
+            if unlock and unlock[0] in macro_unlocks and item.index > line.index:
+                if any(
+                    obj == unlock[1]
+                    and self.semantics.contracts.release_in_text(api, unlock[0], item.text, obj)
+                    == "applies"
+                    for api, obj in held
+                ):
                     return True
-            if item.index > line.index and saw_lock and re.search(r"\breturn\b", item.text):
+            if item.index > line.index and held and re.search(r"\breturn\b", item.text):
                 return False
         return False

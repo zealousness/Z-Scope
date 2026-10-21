@@ -117,9 +117,10 @@ def resolve_function_info(
         index_hint,
     )
 
-    matches = list(code_index.find_function_infos(query, file_path=file_hint) or [])
+    find_metadata = getattr(code_index, "find_function_metadata", code_index.find_function_infos)
+    matches = list(find_metadata(query, file_path=file_hint) or [])
     if not matches and index_hint and index_hint != raw_func_name:
-        matches = list(code_index.find_function_infos(raw_func_name, file_path=file_hint) or [])
+        matches = list(find_metadata(raw_func_name, file_path=file_hint) or [])
     if not matches and file_hint and is_header_like_path(file_hint):
         logger.debug(
             "[snapshot-resolve] retrying header declaration without file constraint "
@@ -128,9 +129,9 @@ def resolve_function_info(
             file_hint,
             index_hint,
         )
-        matches = list(code_index.find_function_infos(query, file_path="") or [])
+        matches = list(find_metadata(query, file_path="") or [])
         if not matches and index_hint and index_hint != raw_func_name:
-            matches = list(code_index.find_function_infos(raw_func_name, file_path="") or [])
+            matches = list(find_metadata(raw_func_name, file_path="") or [])
         matches = _select_indexed_header_implementation(code_index, query, matches)
     if not matches:
         logger.warning(
@@ -197,6 +198,14 @@ def resolve_function_info(
             "function_info_incomplete",
             f"Function info is missing required fields: {', '.join(missing)}",
         )
+
+    get_types = getattr(code_index, "get_function_type_context", None)
+    if callable(get_types) and not info.get("is_macro"):
+        from ..retrieval.clang_type_state import TypeContextUnavailable
+        try:
+            info.update(get_types(resolved_index, resolved_file, resolved_start))
+        except TypeContextUnavailable as exc:
+            raise SemanticModelInputError("type_context_unavailable", str(exc)) from exc
 
     logger.debug(
         "[snapshot-resolve] resolved index_name=%s match_count=%d",

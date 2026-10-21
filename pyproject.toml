@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Z-SCOPE: AI-powered defect detection for C/C++ and Java projects"
 readme = "README.md"
 # Python compatibility and the linked SQLite runtime are independent on Linux.
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 license = {text = "MIT"}
 authors = [
     {name = "Z-SCOPE Team"}
@@ -22,6 +22,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+benchmark = ["ijson>=3.4,<4"]
+browser-test = ["playwright>=1.49.0"]
 java = [
     "cpgqls-client>=0.0.5",
 ]
@@ -38,11 +40,15 @@ dev = [
 zscope = "zscope.cli.cli:main"
 zscope-init = "zscope.cli.init:main"
 zscope-doctor = "zscope.cli.doctor:main"
+zscope-index-audit = "zscope.cli.index_audit:main"
+zscope-link-record = "zscope.cli.link_record:main"
 zscope-config = "zscope.cli.config_cli:main"
 zscope-rules = "zscope.cli.rules:main"
 zscope-maven-cache = "zscope.cli.maven_cache:main"
+zscope-wiki = "zscope.cli.wiki:main"
+zscope-review-memory = "zscope.cli.review_memory:main"
 zscope-benchmark = "zscope.cli.benchmark:main"
-zscope-explain = "zscope.cli.explain:main"
+zscope-report = "zscope.cli.report_export:main"
 
 # sqlite3 is part of Python's standard library and therefore is not a pip
 # dependency. This constrains the SQLite library reported by
@@ -56,6 +62,7 @@ include = ["zscope*"]
 
 [tool.setuptools.package-data]
 zscope = [
+    "retrieval/compiler_argument_policy.json",
     "benchmarking/*.json",
     "config/*.yaml",
     "rules/*.yaml",
@@ -64,18 +71,13 @@ zscope = [
     "skills/*/SKILL.md",
     "skills/*/references/*.md",
     "semantics/*.yaml",
-    "semantics/security_specs/schemas/*.json",
-    "semantics/security_specs/qualification/*.json",
-    "core/validation/proof_kernel/schemas/*.json",
-    "orchestration/hypothesis_hunter/schemas/*.json",
-    "orchestration/hypothesis_hunter/qualification/*.json",
-    "orchestration/schemas/*.json",
-    "orchestration/*.json",
-    "orchestration/successor-runtime-review-integration-receipt.v1.json",
-    "orchestration/successor-runtime-review-evidence/*",
-    "orchestration/successor-runtime-review-evidence/**/*",
     "workflows/*.yaml",
+    "wiki/schemas/*.json",
+    "review_memory/schemas/*.json",
     "web/static/*.html",
+    "web/static/*.js",
+    "web/static/*.css",
+    "web/static/vendor/*",
 ]
 
 [tool.setuptools.dynamic]
@@ -83,10 +85,10 @@ version = {attr = "zscope._version.__version__"}
 
 [tool.black]
 line-length = 100
-target-version = ['py39']
+target-version = ['py313']
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false

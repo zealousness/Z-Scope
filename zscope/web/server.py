@@ -6,6 +6,9 @@ from urllib.parse import parse_qs, urlparse
 from .._version import __version__
 from .dashboard_server import DashboardHttpServer
 from . import services as web_services
+from .review_reports import MAX_IMPORT_BYTES, ReportReviewService
+from .acceptance_service import AcceptanceReviewService
+from .scan_jobs_service import ScanJobsHttpService
 from ..orchestration.scan_request import ScanRequestError, ScanRequestService
 
 PORT = 8000
@@ -16,13 +19,15 @@ USER_CONFIG_WORKBOOK_NAME = "user_config.xlsx"
 
 _config_service = web_services.ConfigService()
 _rule_service = web_services.RuleService()
+_wiki_control_service = web_services.WikiControlService()
 _workbook_service = web_services.WorkbookService()
 _user_config_service = web_services.UserConfigService()
 _cpg_service = web_services.CpgService()
 _source_snippet_service = web_services.SourceSnippetService()
 _report_feedback_service = web_services.ReportFeedbackService()
-_security_spec_service = web_services.SecuritySpecReviewService()
 _scan_request_service = None
+_acceptance_review_service = None
+_scan_jobs_http_service = None
 
 
 def persist_validation_feedback(updates):
@@ -55,6 +60,42 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/findings":
             self._send_json(_report_feedback_service.selected_view_payload(self.path))
+        elif parsed.path == "/api/jobs" or parsed.path.startswith("/api/jobs/"):
+            if _scan_jobs_http_service is None:
+                self._send_json({"error": "持久作业服务不可用", "code": "unavailable"}, status=503)
+                return
+            status, response = _scan_jobs_http_service.get(parsed.path, parsed.query)
+            self._send_json(response, status=status)
+        elif parsed.path == "/api/acceptance/dispositions":
+            if _acceptance_review_service is None:
+                self._send_json({"error": "项目处置服务不可用", "code": "unavailable"}, status=503)
+                return
+            status, response = _acceptance_review_service.get(parsed.query)
+            self._send_json(response, status=status)
+        elif parsed.path in {"/api/issue_report", "/api/offline_report"}:
+            service = ReportReviewService(_report_feedback_service, _source_snippet_service)
+            try:
+                if parsed.path == "/api/issue_report":
+                    key = (parse_qs(parsed.query).get("issue_id") or [""])[0]
+                    self._send_json(service.issue_report(key))
+                else:
+                    body = service.offline_report()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header(
+                        "Content-Disposition", 'attachment; filename="zscope-report.zip"'
+                    )
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+            except KeyError as exc:
+                self._send_json({"error": str(exc)}, status=404)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except OSError as exc:
+                self._send_json({"error": f"报告读取或导出失败：{exc}"}, status=500)
         elif parsed.path == "/api/version":
             self._send_json({"version": __version__, "display": f"v{__version__}"})
         elif parsed.path == "/api/config/structured":
@@ -67,6 +108,11 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(_config_service.read_text())
             except OSError as exc:
                 self._send_json({"content": "", "error": str(exc)}, status=500)
+        elif parsed.path == "/api/scan/prepare":
+            try:
+                self._send_json(_config_service.prepare_project())
+            except (OSError, ValueError, TypeError) as exc:
+                self._send_json({"error": str(exc)}, status=400)
         elif parsed.path == "/api/scan/status":
             if _scan_request_service is None:
                 self._send_json({"error": "scan service is unavailable"}, status=503)
@@ -81,14 +127,38 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(_rule_service.payload(parsed.query))
             except Exception as exc:
                 self._send_json({"error": str(exc), "rules": []}, status=400)
-        elif parsed.path == "/api/security-specs":
-            self._send_json(_security_spec_service.list_payload(parsed.query))
-        elif parsed.path == "/api/security-specs/export":
-            self._handle_security_spec_export(parsed)
-        elif parsed.path.startswith("/api/security-specs/"):
-            spec_uid = parsed.path.removeprefix("/api/security-specs/").strip("/")
-            status, payload = _security_spec_service.detail_payload(spec_uid)
-            self._send_json(payload, status=status)
+        elif parsed.path == "/api/wiki/status":
+            try:
+                self._send_json(_wiki_control_service.status_payload())
+            except Exception:
+                self._send_json(
+                    {"error": "Wiki status is unavailable.", "available": False},
+                    status=400,
+                )
+        elif parsed.path == "/api/wiki/query":
+            try:
+                self._send_json(_wiki_control_service.query_payload(parsed.query))
+            except ValueError as exc:
+                message = str(exc)
+                safe_prefixes = (
+                    "unsupported Wiki query fields",
+                    "subject",
+                    "fact_kind",
+                    "candidate_file",
+                    "max_tokens",
+                )
+                self._send_json(
+                    {
+                        "error": (
+                            message[:500]
+                            if message.startswith(safe_prefixes)
+                            else "Wiki query is unavailable."
+                        )
+                    },
+                    status=400,
+                )
+            except Exception:
+                self._send_json({"error": "Wiki query is unavailable."}, status=400)
         elif parsed.path == "/api/cpg_status":
             self._handle_cpg_status()
         elif parsed.path == "/api/source_snippet":
@@ -106,29 +176,15 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
+        if self.path.startswith("/api/jobs") and content_length > 64 * 1024:
+            self._send_json({"error": "作业请求过大", "code": "invalid_request"}, status=413)
+            self.close_connection = True
+            return
+        if self.path.startswith("/api/import_reviews") and content_length > MAX_IMPORT_BYTES * 2:
+            self._send_json({"error": "导入请求过大"}, status=413)
+            self.close_connection = True
+            return
         post_data = self.rfile.read(content_length)
-        parsed = urlparse(self.path)
-        if parsed.path == "/api/security-specs/import":
-            query = parse_qs(parsed.query)
-            if str((query.get("apply") or [""])[0]).lower() in {"1", "true", "yes"}:
-                status, payload = _security_spec_service.write_rejected_payload()
-                self._send_json(payload, status=status)
-                return
-            import_format = str((query.get("format") or [""])[0]).lower()
-            if not import_format:
-                content_type = str(self.headers.get("Content-Type") or "").lower()
-                import_format = "xlsx" if "spreadsheet" in content_type else "json"
-            try:
-                payload = _security_spec_service.dry_run_import(post_data, import_format)
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"success": False, "error": str(exc)}, status=400)
-                return
-            self._send_json(payload)
-            return
-        if parsed.path.startswith("/api/security-specs/") and parsed.path.endswith("/reviews"):
-            status, payload = _security_spec_service.write_rejected_payload()
-            self._send_json(payload, status=status)
-            return
         if self.path == "/api/user_config/workbook/import":
             self._handle_user_config_workbook_import(post_data)
             return
@@ -138,6 +194,45 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"success": False, "error": "Invalid JSON"}, status=400)
             return
 
+        if self.path == "/api/jobs" or self.path.startswith("/api/jobs/"):
+            if _scan_jobs_http_service is None:
+                self._send_json({"error": "持久作业服务不可用", "code": "unavailable"}, status=503)
+                return
+            status, response = _scan_jobs_http_service.post(self.path, payload)
+            self._send_json(response, status=status)
+            return
+
+        if self.path == "/api/business_review":
+            from ..config.protocol_feedback import ProtocolAnswerConflict
+
+            try:
+                result = ReportReviewService(_report_feedback_service).save_business_review(payload)
+                self._send_json(result)
+            except ProtocolAnswerConflict as exc:
+                self._send_json({"success": False, "error": str(exc)}, status=409)
+            except (ValueError, KeyError, TypeError) as exc:
+                self._send_json({"success": False, "error": str(exc)}, status=400)
+            except Exception as exc:
+                self._send_json({"success": False, "error": f"业务前提保存失败：{exc}"}, status=500)
+            return
+        if self.path == "/api/acceptance/dispositions":
+            if _acceptance_review_service is None:
+                self._send_json({"error": "项目处置服务不可用", "code": "unavailable"}, status=503)
+                return
+            status, response = _acceptance_review_service.post(payload)
+            self._send_json(response, status=status)
+            return
+        if self.path in {"/api/import_reviews", "/api/import_reviews/resolve"}:
+            try:
+                result = ReportReviewService(_report_feedback_service).import_reviews(
+                    payload, resolve=self.path.endswith("/resolve")
+                )
+                self._send_json(result)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            except Exception as exc:
+                self._send_json({"success": False, "error": f"复核保存失败：{exc}"}, status=500)
+            return
         if self.path == "/api/config":
             content = payload.get("content", "")
             try:
@@ -244,20 +339,6 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         self._send_json(payload, status=status)
         return
 
-    def _handle_security_spec_export(self, parsed):
-        export_format = str((parse_qs(parsed.query).get("format") or ["json"])[0]).lower()
-        try:
-            data, content_type, filename = _security_spec_service.export_bytes(export_format)
-        except (OSError, ValueError) as exc:
-            self._send_json({"success": False, "error": str(exc)}, status=400)
-            return
-        self.send_response(200)
-        self.send_header("Content-type", content_type)
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
     # ── User config CRUD handlers ──
 
     def _handle_user_config_workbook_get(self):
@@ -354,7 +435,7 @@ def run_server(
     host="0.0.0.0",
     port=PORT,
 ):
-    global _config_service, _rule_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _security_spec_service, _scan_request_service
+    global _config_service, _rule_service, _wiki_control_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _scan_request_service, _acceptance_review_service, _scan_jobs_http_service
     config_file_path = (
         Path(config_path).resolve() if config_path else Path(CONFIG_FILENAME).resolve()
     )
@@ -364,6 +445,9 @@ def run_server(
         scan_depth=scan_depth,
     )
     _rule_service = web_services.RuleService(config_file_path, default_name=CONFIG_FILENAME)
+    _wiki_control_service = web_services.WikiControlService(
+        config_file_path, default_name=CONFIG_FILENAME
+    )
     _workbook_service = web_services.WorkbookService(user_config_store)
     _user_config_service = web_services.UserConfigService(user_config_store)
     _cpg_service = web_services.CpgService(code_index, project_config)
@@ -372,21 +456,34 @@ def run_server(
         user_config_store,
         snapshot_store,
         report_filename=REPORT_FILENAME,
+        project_config=project_config,
     )
-    snapshot_root = getattr(snapshot_store, "snapshot_dir", None)
-    _security_spec_service = web_services.SecuritySpecReviewService(
-        Path(snapshot_root) / "security_specs" if snapshot_root else None
-    )
+    worker = None
+    review_config = getattr(project_config, "review_memory", None)
+    if (review_config is not None and review_config.mode in {"extract", "active"}
+            and review_config.extraction == "auto_extract"
+            and _report_feedback_service.review_memory_store is not None):
+        from ..review_memory.worker import ReviewMemoryWorker
+        from ..cli.review_memory import _llm_client
+        from ..config.config import ConfigLoader
+        worker_config = ConfigLoader.load(str(config_file_path))
+        worker = ReviewMemoryWorker(
+            _report_feedback_service.review_memory_store,
+            llm_client_factory=lambda: _llm_client(worker_config),
+            llm_enabled=review_config.llm_enabled,
+        )
+        worker.start()
     _scan_request_service = ScanRequestService(
         config_file_path,
         default_scan_depth=scan_depth,
     )
-    DashboardHttpServer(
-        handler_class=ZScopeHandler,
-        web_dir=WEB_DIR,
-        host=host,
-        port=port,
-    ).serve_forever()
+    _acceptance_review_service = AcceptanceReviewService(_report_feedback_service, config_file_path)
+    _scan_jobs_http_service = ScanJobsHttpService(config_file_path, _report_feedback_service)
+    try:
+        DashboardHttpServer(handler_class=ZScopeHandler, web_dir=WEB_DIR, host=host, port=port).serve_forever()
+    finally:
+        if worker is not None:
+            worker.stop()
 
 
 if __name__ == "__main__":

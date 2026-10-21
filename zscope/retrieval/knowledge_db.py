@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "14"
+    SCHEMA_VERSION = "18"
     SUPPORTS_DEFERRED_TU_COMMITS = True
     DERIVED_INDEX_SYMBOL_CONTEXT = "function_symbol_context"
     DERIVED_INDEX_TYPE_REFS = "function_type_refs"
@@ -48,6 +48,14 @@ class KnowledgeDB:
     )
     TAINT_REINDEX_REQUIRED_KEY = "taint_signatures_reindex_required"
     TAINT_REINDEX_REASON_KEY = "taint_signatures_reindex_reason"
+    # Schema v18: a backend signal states which compile command produced it.
+    # Empty ``command_id`` means the producer could not attribute the location
+    # (header owner, ambiguous variant, unknown path); such rows are never
+    # usable as instance evidence.
+    SIGNAL_BUILD_IDENTITY = ("command_id", "attribution")
+    SIGNAL_ATTRIBUTION_EXACT = "exact"
+    SIGNAL_ATTRIBUTION_AMBIGUOUS = "ambiguous"
+    SIGNAL_ATTRIBUTION_UNATTRIBUTED = "unattributed"
 
     def __init__(self, db_path: str):
         self._db_path = Path(db_path)
@@ -160,7 +168,11 @@ class KnowledgeDB:
                 str(row["name"])
                 for row in conn.execute(f"PRAGMA index_info({quoted_index_name})").fetchall()
             )
-            if columns == cls.TAINT_SIGNATURE_IDENTITY:
+            # A later schema may append identity columns (v18 adds the signal
+            # build identity); the v14 flow identity must still be a prefix of
+            # the enforced key, otherwise this migration would rebuild the table
+            # back to the narrower v14 shape.
+            if columns[: len(cls.TAINT_SIGNATURE_IDENTITY)] == cls.TAINT_SIGNATURE_IDENTITY:
                 return True
         return False
 
@@ -272,10 +284,262 @@ class KnowledgeDB:
             old_count - migrated_count,
         )
 
+    @classmethod
+    def _signal_build_identity_is_current(cls, conn: sqlite3.Connection) -> bool:
+        """Return whether both signal tables carry the v18 build identity."""
+
+        for table, identity in (
+            ("indirect_calls", cls._indirect_call_identity()),
+            ("taint_signatures", cls._taint_signature_v18_identity()),
+        ):
+            columns = {
+                str(row["name"]): bool(row["notnull"])
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if not all(columns.get(name, False) for name in cls.SIGNAL_BUILD_IDENTITY):
+                return False
+            unique = False
+            for index_row in conn.execute(f"PRAGMA index_list({table})").fetchall():
+                if not bool(index_row["unique"]):
+                    continue
+                index_name = str(index_row["name"])
+                quoted = '"' + index_name.replace('"', '""') + '"'
+                index_columns = tuple(
+                    str(row["name"])
+                    for row in conn.execute(f"PRAGMA index_info({quoted})").fetchall()
+                )
+                if index_columns == identity:
+                    unique = True
+                    break
+            if not unique:
+                return False
+        return True
+
+    @classmethod
+    def _indirect_call_identity(cls) -> tuple:
+        return (
+            "caller_name",
+            "callee_name",
+            "call_file",
+            "call_line",
+            "callsite_id",
+            "pointer_symbol",
+            "source",
+            "svf_group",
+        ) + cls.SIGNAL_BUILD_IDENTITY
+
+    @classmethod
+    def _taint_signature_v18_identity(cls) -> tuple:
+        return cls.TAINT_SIGNATURE_IDENTITY + cls.SIGNAL_BUILD_IDENTITY
+
+    @classmethod
+    def _ensure_signal_command_indexes(cls, conn: sqlite3.Connection) -> None:
+        """Create the build-identity indexes once the columns are known to exist.
+
+        They cannot live in the shared ``executescript`` block: a legacy database
+        may still hold the old signal tables, where ``command_id`` does not exist
+        yet and ``CREATE INDEX`` would fail with "no such column".
+        """
+
+        for statement in (
+            "CREATE INDEX IF NOT EXISTS idx_ic_command ON indirect_calls(command_id)",
+            "CREATE INDEX IF NOT EXISTS idx_taint_command ON taint_signatures(command_id)",
+        ):
+            try:
+                conn.execute(statement)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
+    @classmethod
+    def _migrate_signal_build_identity(cls, conn: sqlite3.Connection) -> None:
+        """Add the producer-side compile-command identity to both signal tables.
+
+        Without the widened UNIQUE key ``INSERT OR IGNORE`` silently drops the
+        second variant of a source, so the column change and the key change ship
+        together. Existing rows keep ``command_id = ''`` and
+        ``attribution = 'unattributed'``: they were produced before the bitcode
+        layer published its identities, so no instance may claim them. Every SVF
+        cache layer that can skip a re-import is invalidated for the same reason —
+        otherwise the markers would report "current" for unattributed rows and the
+        channel would look permanently empty.
+        """
+
+        if cls._signal_build_identity_is_current(conn):
+            cls._ensure_signal_command_indexes(conn)
+            return
+
+        replacements = (
+            ("indirect_calls", "_indirect_calls_schema_v18"),
+            ("taint_signatures", "_taint_signatures_schema_v18"),
+        )
+        for _table, name in replacements:
+            existing = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+            ).fetchone()
+            if existing:
+                raise RuntimeError(
+                    "Refusing signal build-identity migration: temporary table "
+                    f"{name!r} already exists"
+                )
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            old_taint_count = int(
+                conn.execute("SELECT COUNT(*) AS count FROM taint_signatures").fetchone()["count"]
+            )
+            conn.execute(
+                """
+                CREATE TABLE "_indirect_calls_schema_v18" (
+                    id          INTEGER PRIMARY KEY,
+                    caller_name TEXT NOT NULL,
+                    callee_name TEXT NOT NULL,
+                    call_file   TEXT DEFAULT '',
+                    call_line   INTEGER DEFAULT 0,
+                    callsite_id TEXT DEFAULT '',
+                    pointer_symbol TEXT DEFAULT '',
+                    pointer_kind TEXT DEFAULT 'unknown',
+                    pointer_type TEXT DEFAULT '',
+                    pointer_signature TEXT DEFAULT '',
+                    callsite_expression TEXT DEFAULT '',
+                    call_guard  TEXT DEFAULT '',
+                    source      TEXT DEFAULT 'svf-ander',
+                    confidence  REAL DEFAULT 1.0,
+                    svf_group   TEXT DEFAULT 'default',
+                    command_id  TEXT NOT NULL DEFAULT '',
+                    attribution TEXT NOT NULL DEFAULT 'unattributed',
+                    UNIQUE(caller_name, callee_name, call_file, call_line, callsite_id,
+                           pointer_symbol, source, svf_group, command_id, attribution)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO "_indirect_calls_schema_v18"
+                    (id, caller_name, callee_name, call_file, call_line, callsite_id,
+                     pointer_symbol, pointer_kind, pointer_type, pointer_signature,
+                     callsite_expression, call_guard, source, confidence, svf_group,
+                     command_id, attribution)
+                SELECT id, caller_name, callee_name,
+                       COALESCE(call_file, ''), COALESCE(call_line, 0), COALESCE(callsite_id, ''),
+                       COALESCE(pointer_symbol, ''), COALESCE(pointer_kind, 'unknown'),
+                       COALESCE(pointer_type, ''), COALESCE(pointer_signature, ''),
+                       COALESCE(callsite_expression, ''), COALESCE(call_guard, ''),
+                       COALESCE(source, 'svf-ander'), COALESCE(confidence, 1.0),
+                       COALESCE(svf_group, 'default'), '', 'unattributed'
+                FROM indirect_calls
+                ORDER BY id
+                """
+            )
+            conn.execute("DROP TABLE indirect_calls")
+            conn.execute('ALTER TABLE "_indirect_calls_schema_v18" RENAME TO indirect_calls')
+            conn.execute("CREATE INDEX idx_ic_caller ON indirect_calls(caller_name)")
+            conn.execute("CREATE INDEX idx_ic_callee ON indirect_calls(callee_name)")
+            conn.execute("CREATE INDEX idx_ic_file_line ON indirect_calls(call_file, call_line)")
+
+            conn.execute(
+                """
+                CREATE TABLE "_taint_signatures_schema_v18" (
+                    id          INTEGER PRIMARY KEY,
+                    source_func TEXT NOT NULL DEFAULT '',
+                    sink_func   TEXT NOT NULL DEFAULT '',
+                    bug_type    TEXT NOT NULL,
+                    file_path   TEXT NOT NULL DEFAULT '',
+                    line        INTEGER NOT NULL DEFAULT 0,
+                    tool        TEXT NOT NULL DEFAULT 'saber',
+                    svf_group   TEXT NOT NULL DEFAULT 'default',
+                    command_id  TEXT NOT NULL DEFAULT '',
+                    attribution TEXT NOT NULL DEFAULT 'unattributed',
+                    UNIQUE(
+                        source_func,
+                        sink_func,
+                        bug_type,
+                        file_path,
+                        line,
+                        tool,
+                        svf_group,
+                        command_id,
+                        attribution
+                    )
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO "_taint_signatures_schema_v18"
+                    (id, source_func, sink_func, bug_type, file_path, line, tool, svf_group,
+                     command_id, attribution)
+                SELECT id, COALESCE(source_func, ''), COALESCE(sink_func, ''), bug_type,
+                       COALESCE(file_path, ''), COALESCE(line, 0), COALESCE(tool, 'saber'),
+                       COALESCE(svf_group, 'default'), '', 'unattributed'
+                FROM taint_signatures
+                ORDER BY id
+                """
+            )
+            conn.execute("DROP TABLE taint_signatures")
+            conn.execute('ALTER TABLE "_taint_signatures_schema_v18" RENAME TO taint_signatures')
+            conn.execute("CREATE INDEX idx_taint_type ON taint_signatures(bug_type)")
+            conn.execute("CREATE INDEX idx_taint_file ON taint_signatures(file_path)")
+
+            conn.execute(
+                "DELETE FROM metadata "
+                "WHERE key IN ('svf_source_hash', 'svf_artifact_hash') "
+                "OR key LIKE 'svf_tool_status:%' "
+                "OR key LIKE 'svf_db_import:%'"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+                (cls.TAINT_REINDEX_REQUIRED_KEY, "1"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+                (
+                    cls.TAINT_REINDEX_REASON_KEY,
+                    "schema_v18_signal_build_identity",
+                ),
+            )
+            new_taint_count = int(
+                conn.execute("SELECT COUNT(*) AS count FROM taint_signatures").fetchone()["count"]
+            )
+            conn.execute("CREATE INDEX idx_ic_command ON indirect_calls(command_id)")
+            conn.execute("CREATE INDEX idx_taint_command ON taint_signatures(command_id)")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        logger.warning(
+            "[signal-identity-migration] added command_id/attribution to signal tables; "
+            "taint_rows=%d dropped_duplicates=%d; invalidated SVF caches",
+            new_taint_count,
+            old_taint_count - new_taint_count,
+        )
+
     def _create_tables(self):
         c = self._conn
         c.executescript(
             """
+            CREATE TABLE IF NOT EXISTS compilation_instances (
+                context_id TEXT PRIMARY KEY,
+                command_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                manifest TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_compilation_source
+                ON compilation_instances(source, command_id);
+            CREATE TABLE IF NOT EXISTS compilation_facts (
+                context_id TEXT NOT NULL REFERENCES compilation_instances(context_id),
+                sequence INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY(context_id, sequence)
+            );
+            CREATE INDEX IF NOT EXISTS idx_compilation_fact_symbol
+                ON compilation_facts(symbol, file_path, kind, context_id);
+            CREATE INDEX IF NOT EXISTS idx_compilation_fact_file
+                ON compilation_facts(file_path, context_id);
             CREATE TABLE IF NOT EXISTS translation_units (
                 id          INTEGER PRIMARY KEY,
                 file_path   TEXT NOT NULL UNIQUE,
@@ -439,6 +703,25 @@ class KnowledgeDB:
             CREATE INDEX IF NOT EXISTS idx_function_type_refs_name
                 ON function_type_refs(referenced_name);
 
+            CREATE TABLE IF NOT EXISTS function_type_ref_state (
+                function_id INTEGER PRIMARY KEY,
+                identity TEXT NOT NULL,
+                context TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                generation TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempt TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                retry_after REAL NOT NULL DEFAULT 0,
+                FOREIGN KEY(function_id) REFERENCES functions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_type_ref_pending
+                ON function_type_ref_state(generation, status, file_path, start_line, function_id);
+            CREATE INDEX IF NOT EXISTS idx_type_ref_retry
+                ON function_type_ref_state(generation, status, retry_after);
+
             CREATE TABLE IF NOT EXISTS include_edges (
                 id          INTEGER PRIMARY KEY,
                 source_file TEXT NOT NULL,
@@ -471,8 +754,10 @@ class KnowledgeDB:
                 source      TEXT DEFAULT 'svf-ander',
                 confidence  REAL DEFAULT 1.0,
                 svf_group   TEXT DEFAULT 'default',
+                command_id  TEXT NOT NULL DEFAULT '',
+                attribution TEXT NOT NULL DEFAULT 'unattributed',
                 UNIQUE(caller_name, callee_name, call_file, call_line, callsite_id,
-                       pointer_symbol, source, svf_group)
+                       pointer_symbol, source, svf_group, command_id, attribution)
             );
             CREATE INDEX IF NOT EXISTS idx_ic_caller ON indirect_calls(caller_name);
             CREATE INDEX IF NOT EXISTS idx_ic_callee ON indirect_calls(callee_name);
@@ -487,6 +772,8 @@ class KnowledgeDB:
                 line        INTEGER NOT NULL DEFAULT 0,
                 tool        TEXT NOT NULL DEFAULT 'saber',
                 svf_group   TEXT NOT NULL DEFAULT 'default',
+                command_id  TEXT NOT NULL DEFAULT '',
+                attribution TEXT NOT NULL DEFAULT 'unattributed',
                 UNIQUE(
                     source_func,
                     sink_func,
@@ -494,12 +781,19 @@ class KnowledgeDB:
                     file_path,
                     line,
                     tool,
-                    svf_group
+                    svf_group,
+                    command_id,
+                    attribution
                 )
             );
             CREATE INDEX IF NOT EXISTS idx_taint_type ON taint_signatures(bug_type);
             CREATE INDEX IF NOT EXISTS idx_taint_file ON taint_signatures(file_path);
 
+            CREATE TABLE IF NOT EXISTS function_program_facts (
+                function TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL,
+                fact_kind TEXT NOT NULL, identity TEXT NOT NULL, data TEXT NOT NULL,
+                PRIMARY KEY(file_path, function, start_line, fact_kind, identity)
+            );
             CREATE TABLE IF NOT EXISTS ir_statements (
                 id          INTEGER PRIMARY KEY,
                 file_path   TEXT NOT NULL,
@@ -510,7 +804,9 @@ class KnowledgeDB:
                 ast_kind    TEXT DEFAULT '',
                 defs        TEXT DEFAULT '[]',
                 uses        TEXT DEFAULT '[]',
-                UNIQUE(file_path, line, function, normalized_code)
+                column_number INTEGER NOT NULL DEFAULT 1,
+                event_ordinal INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(file_path, line, function, normalized_code, column_number, event_ordinal)
             );
             CREATE INDEX IF NOT EXISTS idx_ir_stmt_func ON ir_statements(function);
             CREATE INDEX IF NOT EXISTS idx_ir_stmt_file_line ON ir_statements(file_path, line);
@@ -728,6 +1024,8 @@ class KnowledgeDB:
         # migrations. Older identities may have collapsed distinct flows, so
         # this migration also invalidates every reusable SVF materialization.
         self._migrate_taint_signature_identity(c)
+        # Schema v18 records which compile command produced each backend signal.
+        self._migrate_signal_build_identity(c)
 
         for column_sql in (
             "ALTER TABLE global_variables ADD COLUMN storage_class TEXT DEFAULT 'unknown'",
@@ -823,6 +1121,27 @@ class KnowledgeDB:
             CREATE INDEX IF NOT EXISTS idx_ir_path_sink_stmt ON ir_path_slices(sink_stmt);
             """
         )
+        if "event_ordinal" not in {row[1] for row in c.execute("PRAGMA table_info(ir_statements)")}:
+            # Rebuild the derived table without the old line/text uniqueness;
+            # retain IDs so existing IR edges still refer to the same nodes.
+            c.executescript(
+                """
+                CREATE TABLE ir_statements_v16 (
+                    id INTEGER PRIMARY KEY, file_path TEXT NOT NULL, line INTEGER NOT NULL,
+                    function TEXT NOT NULL, kind TEXT DEFAULT '', normalized_code TEXT DEFAULT '',
+                    ast_kind TEXT DEFAULT '', defs TEXT DEFAULT '[]', uses TEXT DEFAULT '[]',
+                    column_number INTEGER NOT NULL DEFAULT 1, event_ordinal INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(file_path,line,function,normalized_code,column_number,event_ordinal)
+                );
+                INSERT INTO ir_statements_v16
+                    SELECT id,file_path,line,function,kind,normalized_code,ast_kind,defs,uses,1,0
+                    FROM ir_statements;
+                DROP TABLE ir_statements;
+                ALTER TABLE ir_statements_v16 RENAME TO ir_statements;
+                CREATE INDEX idx_ir_stmt_func ON ir_statements(function);
+                CREATE INDEX idx_ir_stmt_file_line ON ir_statements(file_path,line);
+            """
+            )
         c.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             ("schema_version", self.SCHEMA_VERSION),
@@ -1009,6 +1328,11 @@ class KnowledgeDB:
                 self._thread_local.tu_facts_batch_derived_dirty = True
         deleted_svf_rows = 0
         self._conn.execute(
+            "DELETE FROM function_type_ref_state WHERE function_id IN "
+            "(SELECT id FROM functions WHERE tu_id = ?)",
+            (tu_id,),
+        )
+        self._conn.execute(
             "DELETE FROM function_type_refs WHERE function_id IN "
             "(SELECT id FROM functions WHERE tu_id = ?)",
             (tu_id,),
@@ -1028,6 +1352,17 @@ class KnowledgeDB:
             fp = row["file_path"]
             path_variants = self._path_variants(fp)
             placeholders = ",".join("?" for _ in path_variants)
+            instance_ids = self._conn.execute(
+                "SELECT context_id FROM compilation_instances "
+                f"WHERE source IN ({placeholders}) UNION "
+                "SELECT context_id FROM compilation_facts "
+                f"WHERE file_path IN ({placeholders})",
+                (*path_variants, *path_variants),
+            ).fetchall()
+            self._conn.executemany("DELETE FROM compilation_facts WHERE context_id=?", instance_ids)
+            self._conn.executemany(
+                "DELETE FROM compilation_instances WHERE context_id=?", instance_ids
+            )
             stmt_id_stage = "zscope_purge_statement_ids"
             self._conn.execute(
                 f"CREATE TEMP TABLE IF NOT EXISTS {stmt_id_stage} ("
@@ -1107,6 +1442,7 @@ class KnowledgeDB:
             )
             for table in (
                 "ir_statements",
+                "function_program_facts",
                 "ir_resource_events",
                 "ir_lock_events",
                 "ir_shared_accesses",
@@ -1260,17 +1596,30 @@ class KnowledgeDB:
         ast_kind: str = "",
         defs: str = "[]",
         uses: str = "[]",
+        column_number: int = 1,
+        event_ordinal: int = 0,
     ) -> int:
         self._conn.execute(
             "INSERT OR IGNORE INTO ir_statements "
-            "(file_path, line, function, kind, normalized_code, ast_kind, defs, uses) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (file_path, line, function, kind, normalized_code, ast_kind, defs, uses),
+            "(file_path, line, function, kind, normalized_code, ast_kind, defs, uses, column_number, event_ordinal) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                file_path,
+                line,
+                function,
+                kind,
+                normalized_code,
+                ast_kind,
+                defs,
+                uses,
+                column_number,
+                event_ordinal,
+            ),
         )
         row = self._conn.execute(
             "SELECT id FROM ir_statements WHERE file_path = ? AND line = ? "
-            "AND function = ? AND normalized_code = ?",
-            (file_path, line, function, normalized_code),
+            "AND function = ? AND normalized_code = ? AND column_number = ? AND event_ordinal = ?",
+            (file_path, line, function, normalized_code, column_number, event_ordinal),
         ).fetchone()
         return int(row["id"]) if row else 0
 
@@ -1601,6 +1950,12 @@ class KnowledgeDB:
             dict.fromkeys(self._canonical_derived_index_name(name) for name in requested_names)
         )
         with self._derived_index_lock:
+            if self.DERIVED_INDEX_TYPE_REFS in canonical_names and self.get_metadata(
+                "clang_type_refs_generation"
+            ):
+                import uuid
+
+                self._set_metadata_uncommitted("clang_type_refs_generation", uuid.uuid4().hex)
             for canonical in canonical_names:
                 previous = self.get_derived_index_state(canonical)
                 self._write_derived_index_state_uncommitted(
@@ -2041,6 +2396,64 @@ class KnowledgeDB:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_build_contexts(self, file_path: str = "") -> List[Dict[str, Any]]:
+        """List actual compilation instances, including repeated source paths."""
+        query = "SELECT manifest FROM compilation_instances"
+        args: tuple = ()
+        if file_path:
+            query += " WHERE source=?"
+            args = (file_path,)
+        query += " ORDER BY source,command_id,context_id"
+        return [json.loads(row[0]) for row in self._conn.execute(query, args)]
+
+    def get_build_context(self, context_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT manifest FROM compilation_instances WHERE context_id=?", (context_id,)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def get_compilation_facts(
+        self,
+        context_id: str,
+        *,
+        symbol: str = "",
+        file_path: str = "",
+        kinds: Sequence[str] = (),
+    ) -> List[Dict[str, Any]]:
+        """Exact context only: an unknown identity never falls back to another TU."""
+        terms, args = ["context_id=?"], [context_id]
+        if symbol:
+            terms.append(
+                "json_extract(data, '$.owner.usr')=?" if symbol.startswith("c:") else "symbol=?"
+            )
+            args.append(symbol)
+        if file_path:
+            terms.append("file_path=?")
+            args.append(file_path)
+        if kinds:
+            terms.append("kind IN (" + ",".join("?" for _ in kinds) + ")")
+            args.extend(kinds)
+        query = "SELECT data FROM compilation_facts WHERE " + " AND ".join(terms)
+        return [
+            json.loads(row[0]) for row in self._conn.execute(query + " ORDER BY sequence", args)
+        ]
+
+    def get_function_build_contexts(self, name: str, file_path: str = "") -> List[Dict[str, Any]]:
+        selector = (
+            "json_extract(f.data, '$.owner.usr')=?" if name.startswith("c:") else "f.symbol=?"
+        )
+        terms, args = [selector, "f.kind='program_function'"], [name]
+        if file_path:
+            terms.append("f.file_path=?")
+            args.append(file_path)
+        query = (
+            "SELECT DISTINCT c.manifest FROM compilation_instances c "
+            "JOIN compilation_facts f ON c.context_id=f.context_id WHERE "
+            + " AND ".join(terms)
+            + " ORDER BY c.context_id"
+        )
+        return [json.loads(row[0]) for row in self._conn.execute(query, args)]
+
     def get_all_functions(self) -> Dict[str, Dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT name, file_path, start_line, end_line, signature, is_static "
@@ -2120,6 +2533,21 @@ class KnowledgeDB:
             "ORDER BY name, file_path, line"
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        names = sorted(set(names))
+        result: List[Dict[str, Any]] = []
+        for offset in range(0, len(names), 500):
+            chunk = names[offset : offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                "SELECT name, type_str, file_path, line, is_extern, storage_class, "
+                "qualifiers, initializer, definition_kind FROM global_variables "
+                f"WHERE name IN ({placeholders}) ORDER BY name, file_path, line",
+                chunk,
+            ).fetchall()
+            result.extend(dict(row) for row in rows)
+        return result
 
     def get_all_macro_definitions(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
@@ -2311,6 +2739,116 @@ class KnowledgeDB:
             "referenced_globals": globals_result,
             "referenced_macros": macros_result,
         }
+
+    def query_symbol_references(
+        self,
+        *,
+        function_name: str = "",
+        function_file: str = "",
+        symbol_name: str = "",
+        symbol_kind: str = "",
+        symbol_file: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return directional function-to-symbol references without materializing bodies."""
+        rows: List[Dict[str, Any]] = []
+        if not symbol_kind or symbol_kind in {"global", "function"}:
+            clauses: List[str] = []
+            values: List[Any] = []
+            if function_name:
+                clauses.append("function_name = ?")
+                values.append(function_name)
+            if symbol_name:
+                clauses.append("symbol_name = ?")
+                values.append(symbol_name)
+            if symbol_kind:
+                clauses.append("symbol_kind = ?")
+                values.append(symbol_kind)
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            for row in self._conn.execute(
+                "SELECT function_name,function_file,symbol_name,symbol_kind,symbol_file,"
+                "reference_line,access_kind FROM function_symbol_refs"
+                + where
+                + " ORDER BY function_file,reference_line,function_name,symbol_name",
+                tuple(values),
+            ).fetchall():
+                item = dict(row)
+                if function_file and not self._paths_match_hint(
+                    item["function_file"], function_file
+                ):
+                    continue
+                if symbol_file and not self._paths_match_hint(item["symbol_file"], symbol_file):
+                    continue
+                rows.append(item)
+
+        if not symbol_kind or symbol_kind == "macro":
+            macro_clauses: List[str] = []
+            macro_values: List[Any] = []
+            if function_name:
+                macro_clauses.append("f.name = ?")
+                macro_values.append(function_name)
+            if symbol_name:
+                macro_clauses.append("m.name = ?")
+                macro_values.append(symbol_name)
+            macro_where = " WHERE " + " AND ".join(macro_clauses) if macro_clauses else ""
+            macro_rows = self._conn.execute(
+                "SELECT f.name AS function_name,f.file_path AS function_file,"
+                "m.name AS symbol_name,'macro' AS symbol_kind,m.file_path AS symbol_file,"
+                "r.reference_line AS reference_line,'read' AS access_kind "
+                "FROM function_macro_refs r JOIN functions f ON f.id=r.function_id "
+                "JOIN macro_definitions m ON m.id=r.macro_id"
+                + macro_where
+                + " ORDER BY f.file_path,r.reference_line,f.name,m.name",
+                tuple(macro_values),
+            ).fetchall()
+            for row in macro_rows:
+                item = dict(row)
+                if function_file and not self._paths_match_hint(
+                    item["function_file"], function_file
+                ):
+                    continue
+                if symbol_file and not self._paths_match_hint(item["symbol_file"], symbol_file):
+                    continue
+                rows.append(item)
+
+        if not symbol_kind or symbol_kind == "type":
+            type_clauses: List[str] = []
+            type_values: List[Any] = []
+            if function_name:
+                type_clauses.append("f.name = ?")
+                type_values.append(function_name)
+            if symbol_name:
+                type_clauses.append("r.referenced_name = ?")
+                type_values.append(symbol_name)
+            type_where = " WHERE " + " AND ".join(type_clauses) if type_clauses else ""
+            type_rows = self._conn.execute(
+                "SELECT f.name AS function_name,f.file_path AS function_file,"
+                "r.referenced_name AS symbol_name,'type' AS symbol_kind,"
+                "COALESCE(t.file_path,'') AS symbol_file,r.reference_line AS reference_line,"
+                "r.reference_kind AS access_kind FROM function_type_refs r "
+                "JOIN functions f ON f.id=r.function_id "
+                "LEFT JOIN type_definitions t ON t.id=r.type_id"
+                + type_where
+                + " ORDER BY f.file_path,r.reference_line,f.name,r.referenced_name",
+                tuple(type_values),
+            ).fetchall()
+            for row in type_rows:
+                item = dict(row)
+                if function_file and not self._paths_match_hint(
+                    item["function_file"], function_file
+                ):
+                    continue
+                if symbol_file and not self._paths_match_hint(item["symbol_file"], symbol_file):
+                    continue
+                rows.append(item)
+        rows.sort(
+            key=lambda item: (
+                str(item.get("function_file") or ""),
+                int(item.get("reference_line") or 0),
+                str(item.get("function_name") or ""),
+                str(item.get("symbol_name") or ""),
+            )
+        )
+        return rows
 
     @staticmethod
     def _merge_access_kind(left: str, right: str) -> str:
@@ -2709,10 +3247,7 @@ class KnowledgeDB:
         affected: Set[str] = set()
         for file_path in candidates:
             normalized = self._normalize_include_graph_path(file_path)
-            if (
-                Path(file_path).name in changed_basenames
-                or normalized in changed_variants
-            ):
+            if Path(file_path).name in changed_basenames or normalized in changed_variants:
                 affected.add(file_path)
                 continue
             for member in closures.get(file_path) or ():
@@ -3116,8 +3651,27 @@ class KnowledgeDB:
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
+        rows = self.find_callers_without_any_callee(
+            acquire_func, [release_func], limit=limit, offset=offset
+        )
+        return [
+            {key: value for key, value in row.items() if key != "release_funcs"} for row in rows
+        ]
+
+    def find_callers_without_any_callee(
+        self,
+        acquire_func: str,
+        release_funcs: List[str],
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        releases = sorted(set(release_funcs))
+        if not releases:
+            return []
+        placeholders = ",".join("?" for _ in releases)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT caller_name, caller_file, MIN(call_line) AS acquire_line
             FROM call_edges
             WHERE callee_name = ?
@@ -3125,13 +3679,13 @@ class KnowledgeDB:
                   SELECT 1 FROM call_edges rel
                   WHERE rel.caller_name = call_edges.caller_name
                     AND rel.caller_file = call_edges.caller_file
-                    AND rel.callee_name = ?
+                    AND rel.callee_name IN ({placeholders})
               )
             GROUP BY caller_name, caller_file
             ORDER BY caller_name, caller_file
             LIMIT ? OFFSET ?
             """,
-            (acquire_func, release_func, limit, max(0, int(offset))),
+            (acquire_func, *releases, limit, max(0, int(offset))),
         ).fetchall()
         return [
             {
@@ -3139,7 +3693,34 @@ class KnowledgeDB:
                 "file_path": r["caller_file"],
                 "line": r["acquire_line"],
                 "acquire_func": acquire_func,
-                "release_func": release_func,
+                "release_func": " or ".join(releases),
+                "release_funcs": releases,
+            }
+            for r in rows
+        ]
+
+    def find_acquisition_calls(
+        self, acquire_func: str, release_funcs: List[str], *, limit: int = 100, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Enumerate acquisition sites; release names cannot settle ownership.
+
+        Several AST calls can share a source line. The compiler obligation
+        adapter expands those into distinct objects after this coarse lookup.
+        """
+        rows = self._conn.execute(
+            "SELECT caller_name, caller_file, call_line, id FROM call_edges "
+            "WHERE callee_name = ? ORDER BY caller_file, caller_name, call_line, id LIMIT ? OFFSET ?",
+            (acquire_func, limit, max(0, int(offset))),
+        ).fetchall()
+        return [
+            {
+                "function": r["caller_name"],
+                "file_path": r["caller_file"],
+                "line": r["call_line"],
+                "call_edge_id": r["id"],
+                "acquire_func": acquire_func,
+                "release_func": " or ".join(sorted(set(release_funcs))),
+                "release_funcs": sorted(set(release_funcs)),
             }
             for r in rows
         ]
@@ -3207,13 +3788,16 @@ class KnowledgeDB:
         pointer_signature: str = "",
         callsite_expression: str = "",
         guard: str = "",
+        command_id: str = "",
+        attribution: str = "unattributed",
     ):
         self._invalidate_callgraph_query_cache()
         cursor = self._conn.execute(
             "INSERT OR IGNORE INTO indirect_calls "
             "(caller_name, callee_name, call_file, call_line, callsite_id, pointer_symbol, "
             "pointer_kind, pointer_type, pointer_signature, callsite_expression, call_guard, "
-            "source, confidence, svf_group) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source, confidence, svf_group, command_id, attribution) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 caller,
                 callee,
@@ -3229,6 +3813,8 @@ class KnowledgeDB:
                 source,
                 confidence,
                 svf_group,
+                str(command_id or ""),
+                str(attribution or "unattributed"),
             ),
         )
         return max(0, int(cursor.rowcount or 0))
@@ -3353,11 +3939,14 @@ class KnowledgeDB:
         line: int = 0,
         tool: str = "saber",
         svf_group: str = "default",
+        command_id: str = "",
+        attribution: str = "unattributed",
     ):
         cursor = self._conn.execute(
             "INSERT OR IGNORE INTO taint_signatures "
-            "(source_func, sink_func, bug_type, file_path, line, tool, svf_group) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(source_func, sink_func, bug_type, file_path, line, tool, svf_group, "
+            "command_id, attribution) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 str(source_func or ""),
                 str(sink_func or ""),
@@ -3366,6 +3955,8 @@ class KnowledgeDB:
                 int(line or 0),
                 str(tool or "saber"),
                 str(svf_group or "default"),
+                str(command_id or ""),
+                str(attribution or "unattributed"),
             ),
         )
         return max(0, int(cursor.rowcount or 0))
@@ -3443,9 +4034,11 @@ class KnowledgeDB:
             f"f.start_line AS func_start, f.end_line AS func_end "
             f"FROM ("
             f"SELECT source_func, sink_func, bug_type, file_path, line, tool, "
+            f"command_id, attribution, "
             f"MIN(svf_group) AS svf_group, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
             f"FROM taint_signatures "
-            f"GROUP BY source_func, sink_func, bug_type, file_path, line, tool"
+            f"GROUP BY source_func, sink_func, bug_type, file_path, line, tool, "
+            f"command_id, attribution"
             f") t "
             f"LEFT JOIN functions f ON f.file_path = t.file_path "
             f"AND f.start_line <= t.line AND f.end_line >= t.line "
@@ -3457,6 +4050,116 @@ class KnowledgeDB:
             params,
         ).fetchall()
         return [self._row_with_svf_groups(r) for r in rows]
+
+    def get_instance_taint_signals(
+        self,
+        *,
+        command_id: str,
+        func_names: Optional[List[str]] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return Saber signals produced by one compile command, enriched.
+
+        Only ``attribution = 'exact'`` rows qualify: any other verdict means the
+        producer could not prove which translation unit owns the location, so the
+        row is not evidence for an instance. The shape matches
+        :meth:`get_enriched_taint_bugs` so the candidate generator needs no new
+        branch.
+        """
+
+        normalized = str(command_id or "").strip()
+        if not normalized:
+            return []
+        where = ["t.attribution = ?", "t.command_id = ?"]
+        params: list = [self.SIGNAL_ATTRIBUTION_EXACT, normalized]
+        normalized_func_names = sorted(
+            {str(name).strip() for name in (func_names or []) if str(name).strip()}
+        )
+        if normalized_func_names:
+            where.append(
+                "EXISTS ("
+                "SELECT 1 FROM json_each(?) reachable "
+                "WHERE reachable.value = t.source_func "
+                "OR reachable.value = t.sink_func "
+                "OR reachable.value = f.name"
+                ")"
+            )
+            params.append(
+                json.dumps(
+                    normalized_func_names,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        params.extend([limit, max(0, int(offset))])
+        rows = self._conn.execute(
+            f"SELECT t.*, f.name AS func_name, f.signature, "
+            f"f.start_line AS func_start, f.end_line AS func_end "
+            f"FROM ("
+            f"SELECT source_func, sink_func, bug_type, file_path, line, tool, "
+            f"command_id, attribution, "
+            f"MIN(svf_group) AS svf_group, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
+            f"FROM taint_signatures "
+            f"GROUP BY source_func, sink_func, bug_type, file_path, line, tool, "
+            f"command_id, attribution"
+            f") t "
+            f"LEFT JOIN functions f ON f.file_path = t.file_path "
+            f"AND f.start_line <= t.line AND f.end_line >= t.line "
+            f"AND f.is_declaration = 0 "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY t.file_path, t.line, t.bug_type, t.tool, "
+            f"t.source_func, t.sink_func, f.file_path, f.start_line, "
+            f"f.name, f.signature LIMIT ? OFFSET ?",
+            params,
+        ).fetchall()
+        return [self._row_with_svf_groups(r) for r in rows]
+
+    def count_taint_signal_attribution(self, command_id: str = "") -> Dict[str, int]:
+        """Count Saber signals by attribution verdict for one command id."""
+
+        counts = {
+            self.SIGNAL_ATTRIBUTION_EXACT: 0,
+            self.SIGNAL_ATTRIBUTION_AMBIGUOUS: 0,
+            self.SIGNAL_ATTRIBUTION_UNATTRIBUTED: 0,
+        }
+        rows = self._conn.execute(
+            "SELECT attribution, COUNT(*) AS count FROM taint_signatures " "GROUP BY attribution"
+        ).fetchall()
+        for row in rows:
+            counts[str(row["attribution"] or self.SIGNAL_ATTRIBUTION_UNATTRIBUTED)] = int(
+                row["count"]
+            )
+        if command_id:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS count FROM taint_signatures "
+                "WHERE attribution = ? AND command_id = ?",
+                (self.SIGNAL_ATTRIBUTION_EXACT, str(command_id)),
+            ).fetchone()
+            counts["exact_for_command"] = int(row["count"] if row else 0)
+        return counts
+
+    def get_command_context_map(self, command_ids: Sequence[str]) -> Dict[str, List[str]]:
+        """Map ``command_id`` to the compilation contexts that were built with it.
+
+        ``command_id`` identifies the compile command; ``context_id`` additionally
+        binds tool, dependencies, target and link target. Two contexts may share a
+        command id, so callers must treat more than one match as ambiguous.
+        """
+
+        wanted = sorted({str(value).strip() for value in command_ids if str(value).strip()})
+        if not wanted:
+            return {}
+        rows = self._conn.execute(
+            "SELECT command_id, context_id FROM compilation_instances "
+            "WHERE command_id IN (SELECT value FROM json_each(?)) "
+            "ORDER BY command_id, context_id",
+            (json.dumps(wanted, separators=(",", ":")),),
+        ).fetchall()
+        mapping: Dict[str, List[str]] = {}
+        for row in rows:
+            mapping.setdefault(str(row["command_id"]), []).append(str(row["context_id"]))
+        return mapping
 
     @staticmethod
     def _split_svf_groups(raw: Any) -> List[str]:

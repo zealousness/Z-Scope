@@ -12,13 +12,14 @@ import threading
 import time
 import re
 import hashlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
     Callable,
+    Deque,
     Dict,
     Iterable,
     List,
@@ -33,6 +34,8 @@ from typing import (
 
 from ..common.utils import is_likely_function_call_identifier
 from .knowledge_db import KnowledgeDB
+from .clang_derived_cache import cache_key, encode_value, decode_value
+from .clang_resolution import DerivedResolver, derived_session
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +111,7 @@ class _OutboundMessage:
     body_size: int
     deadline: Optional[float]
     request_id: Optional[Any]
+    method: str = ""
     enqueued_at: float = field(default_factory=time.monotonic)
     written: threading.Event = field(default_factory=threading.Event)
 
@@ -173,6 +177,15 @@ class ClangExtractor:
     ]
     _REQUEST_LATENCY_SAMPLE_LIMIT = 256
     _MAX_INDEXING_WAIT_SECONDS = 120.0
+    # A begin/report token that has not emitted any update for this long is
+    # treated as wedged (e.g. a lost $/progress end) and evicted instead of
+    # blocking readiness forever.
+    _PROGRESS_TOKEN_STALE_SECONDS = 900.0
+    # Emit a compact stall summary while wait_for_indexing is still waiting.
+    _INDEXING_DIAG_LOG_INTERVAL_SECONDS = 30.0
+    _RECENT_PROGRESS_EVENT_LIMIT = 24
+    _RECENT_STDERR_LINE_LIMIT = 20
+    _PROGRESS_TOKEN_DETAIL_LIMIT = 160
     _WRITER_QUEUE_LIMIT = 1024
 
     def __init__(
@@ -206,11 +219,19 @@ class ClangExtractor:
         self._position_encoding = "utf-16"
         self._semantic_token_types: List[str] = []
         self._semantic_token_modifiers: List[str] = []
-        self._progress_tokens: Dict[Any, str] = {}
+        self._progress_tokens: Dict[Any, Dict[str, Any]] = {}
+        self._recent_progress_events: Deque[Tuple[str, str, float]] = deque(
+            maxlen=self._RECENT_PROGRESS_EVENT_LIMIT
+        )
+        self._recent_stderr_lines: Deque[str] = deque(maxlen=self._RECENT_STDERR_LINE_LIMIT)
         self._last_progress_time = time.monotonic()
         self._file_status: Dict[str, Tuple[str, float]] = {}
         self._lsp_request_metrics: Dict[str, Dict[str, Any]] = {}
         self._request_outcome_local = threading.local()
+        self._symbol_info_supported: Optional[bool] = None
+        self._declaration_supported: Optional[bool] = None
+        self._derived_index_ready = False
+        self._server_info: Dict[str, Any] = {}
         self._transport_metrics: Dict[str, Any] = {
             "messages_enqueued": 0,
             "messages_written": 0,
@@ -242,6 +263,11 @@ class ClangExtractor:
         self._base_publish_lock = threading.Lock()
         self._project_file_index_lock = threading.Lock()
         self._project_file_index: Optional[Dict[str, List[Path]]] = None
+        # Analysis selection is authoritative; the lazy include lookup can also
+        # contain scanner outputs and must never become the input manifest.
+        self._derived_source_files: Tuple[Path, ...] = ()
+        self._derived_resolver: Optional[DerivedResolver] = None
+        self._compile_preparation: Any = None
 
     # ── 生命周期 ──
 
@@ -259,6 +285,7 @@ class ClangExtractor:
                     "--header-insertion=never",
                     "--background-index",
                     "--pch-storage=memory",
+                    "--limit-references=1000",
                     f"-j={self.max_threads}",
                 ]
                 if self.compile_commands_dir:
@@ -337,6 +364,9 @@ class ClangExtractor:
                     init_result.get("capabilities", {}) if isinstance(init_result, dict) else {}
                 )
                 self._apply_server_capabilities(capabilities)
+                self._server_info = dict(init_result.get("serverInfo") or {})
+                self._symbol_info_supported = None
+                self._derived_index_ready = False
 
                 self.send_notification("initialized", {})
                 with self._condition:
@@ -440,6 +470,7 @@ class ClangExtractor:
                 "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
                 "callHierarchy": {"dynamicRegistration": False},
                 "definition": {},
+                "declaration": {},
                 "references": {},
                 "hover": {},
                 "typeDefinition": {},
@@ -457,6 +488,8 @@ class ClangExtractor:
         }
 
     def _apply_server_capabilities(self, capabilities: Dict[str, Any]) -> None:
+        declaration = capabilities.get("declarationProvider")
+        self._declaration_supported = declaration is True or isinstance(declaration, dict)
         self._call_hierarchy_supported = bool(capabilities.get("callHierarchyProvider"))
         self._position_encoding = str(capabilities.get("positionEncoding") or "utf-16")
         semantic_tokens = capabilities.get("semanticTokensProvider")
@@ -468,8 +501,22 @@ class ClangExtractor:
 
     # ── JSON-RPC 通信 ──
 
+    def cancel_pending_requests(self) -> None:
+        """Wake collectors before a resource handoff, without waiting for clangd."""
+        with self._condition:
+            identifiers = [key for key, value in self._pending_requests.items() if value is None]
+            for key in identifiers:
+                self._pending_requests[key] = {"id": key, "error": {
+                    "code": -32800, "message": "type collection suspended"}}
+            self._condition.notify_all()
+        for key in identifiers:
+            self.send_notification("$/cancelRequest", {"id": key})
+
     def send_request(self, method: str, params: Any, timeout: float = 120) -> Any:
         """发送 JSON-RPC 请求，在固定 monotonic deadline 内等待响应。"""
+        prepare_checkpoint = getattr(self, "_type_prepare_checkpoint", None)
+        if method != "shutdown" and prepare_checkpoint is not None:
+            prepare_checkpoint()
         started_at = time.monotonic()
         deadline = started_at + max(0.0, float(timeout))
         with self._condition:
@@ -490,6 +537,7 @@ class ClangExtractor:
                 self._pending_request_deadlines.pop(msg_id, None)
                 self._record_request_latency_locked(method, started_at, timed_out=False)
             self._record_thread_request_outcome(method, timed_out=False)
+            self._record_rpc_outcome(method, "transport_error")
             logger.debug("LSP request '%s' could not be queued (id=%d)", method, msg_id)
             return None
 
@@ -522,8 +570,12 @@ class ClangExtractor:
         if response is not None:
             self._record_thread_request_outcome(method, timed_out=False)
             if "error" in response:
+                self._record_rpc_outcome(method, "rpc_error", response.get("error"))
                 logger.debug("LSP error for %s: %s", method, response["error"])
                 return None
+            self._record_rpc_outcome(
+                method, "success_nonempty" if response.get("result") else "success_empty"
+            )
             return response.get("result")
         if timed_out:
             self.send_notification("$/cancelRequest", {"id": msg_id})
@@ -533,7 +585,35 @@ class ClangExtractor:
                 "LSP request '%s' aborted because the transport closed (id=%d)", method, msg_id
             )
         self._record_thread_request_outcome(method, timed_out=timed_out)
+        self._record_rpc_outcome(method, "timeout" if timed_out else "transport_error")
         return None
+
+    def _record_rpc_outcome(self, method: str, status: str, error: Any = None) -> None:
+        outcome = {"status": status, "code": error.get("code") if isinstance(error, dict) else None}
+        outcomes = getattr(self._request_outcome_local, "outcomes", None)
+        if outcomes is None:
+            outcomes = self._request_outcome_local.outcomes = {}
+        outcomes[method] = outcome
+        with self._condition:
+            metrics = self._lsp_request_metrics.setdefault(
+                method, {"count": 0, "timeouts": 0, "latencies_ms": []}
+            )
+            metrics[status] = int(metrics.get(status, 0)) + 1
+            if self._derived_resolver is not None:
+                self._derived_resolver.observe_rpc(method, status=status, code=outcome["code"])
+                state = getattr(self._derived_resolver.local, "state", None)
+                if state is not None and status in {"rpc_error", "timeout", "transport_error"}:
+                    state["transient"] = True
+            if status == "rpc_error":
+                codes = metrics.setdefault("error_codes", {})
+                code = str(outcome["code"])
+                codes[code] = int(codes.get(code, 0)) + 1
+                if method == "textDocument/symbolInfo" and outcome["code"] == -32601:
+                    self._symbol_info_supported = False
+
+    def get_thread_rpc_outcome(self, method: str, *, clear: bool = False) -> Dict[str, Any]:
+        outcomes = getattr(self._request_outcome_local, "outcomes", {})
+        return dict(outcomes.pop(method, {}) if clear else outcomes.get(method, {}))
 
     def _record_thread_request_outcome(self, method: str, *, timed_out: bool) -> None:
         self._request_outcome_local.last = (str(method), bool(timed_out))
@@ -552,10 +632,14 @@ class ClangExtractor:
         self, method: str, started_at: float, *, timed_out: bool
     ) -> None:
         metrics = self._lsp_request_metrics[method]
+        elapsed = max(0.0, (time.monotonic() - started_at) * 1000.0)
+        if self._derived_resolver is not None:
+            self._derived_resolver.observe_rpc(method, elapsed=elapsed)
+        metrics["latency_sum_ms"] = float(metrics.get("latency_sum_ms", 0.0)) + elapsed
         if timed_out:
             metrics["timeouts"] += 1
         samples = metrics["latencies_ms"]
-        samples.append(max(0.0, (time.monotonic() - started_at) * 1000.0))
+        samples.append(elapsed)
         if len(samples) > self._REQUEST_LATENCY_SAMPLE_LIMIT:
             del samples[: len(samples) - self._REQUEST_LATENCY_SAMPLE_LIMIT]
 
@@ -573,8 +657,14 @@ class ClangExtractor:
             samples = list(metrics["latencies_ms"])
             count = int(metrics["count"])
             timeouts = int(metrics["timeouts"])
+            extra: Dict[str, Any] = {
+                k: (dict(v) if isinstance(v, dict) else v)
+                for k, v in metrics.items()
+                if k not in {"latencies_ms", "count", "timeouts"}
+            }
         if not samples:
             return {
+                **extra,
                 "count": count,
                 "timeouts": timeouts,
                 "average_latency_ms": 0.0,
@@ -583,9 +673,10 @@ class ClangExtractor:
         ordered = sorted(float(value) for value in samples)
         p95_index = max(0, ((len(ordered) * 95 + 99) // 100) - 1)
         return {
+            **extra,
             "count": count,
             "timeouts": timeouts,
-            "average_latency_ms": sum(ordered) / len(ordered),
+            "average_latency_ms": float(extra.get("latency_sum_ms", sum(ordered))) / max(1, count),
             "p95_latency_ms": ordered[p95_index],
         }
 
@@ -631,6 +722,7 @@ class ClangExtractor:
                 body_size=len(body),
                 deadline=deadline,
                 request_id=request_id,
+                method=str(msg.get("method") or ""),
             )
             try:
                 outbound.put_nowait(item)
@@ -692,6 +784,11 @@ class ClangExtractor:
                 stdin.flush()
 
                 with self._condition:
+                    if item.request_id is not None and item.method in self._lsp_request_metrics:
+                        metrics = self._lsp_request_metrics[item.method]
+                        metrics["sent"] = int(metrics.get("sent", 0)) + 1
+                        if self._derived_resolver is not None:
+                            self._derived_resolver.observe_rpc(item.method, status="sent")
                     self._transport_metrics["messages_written"] += 1
                     self._transport_metrics["payload_bytes_written"] += item.body_size
                     self._transport_metrics["wire_bytes_written"] += len(item.payload)
@@ -703,6 +800,7 @@ class ClangExtractor:
                 with self._condition:
                     self._transport_metrics["write_failures"] += 1
                 logger.error("Failed to write to clangd stdin")
+                self._log_unexpected_exit(self.process)
                 self._signal_transport_closed(generation)
                 return
             finally:
@@ -782,7 +880,45 @@ class ClangExtractor:
         except OSError:
             pass
         finally:
+            # Distinguish "stop() asked us to shut down" from "clangd vanished":
+            # stop() clears _running (and usually bumps the generation) before the
+            # reader notices EOF, so an unexpected exit sees _running still True.
+            unexpected = False
+            with self._condition:
+                unexpected = bool(
+                    generation == self._generation
+                    and self._running
+                    and process is not None
+                    and getattr(process, "poll", lambda: None)() is not None
+                )
+            if unexpected:
+                self._log_unexpected_exit(process)
             self._signal_transport_closed(generation)
+
+    def _log_unexpected_exit(self, process: Optional[Any]) -> None:
+        """Log the clangd exit code plus transport diagnostics when it dies mid-run.
+
+        clangd crashing during batch extraction used to leave no trace of why:
+        stdout EOF silently closed the transport and every queued LSP request
+        was aborted.  Persist the exit code and the diagnostic ring buffers so
+        the crash signature (segfault, assert, OOM-kill, stderr tail) survives
+        in the run log.  Callers must not rely on this blocking: one poll()
+        snapshot, no waiting.
+        """
+        returncode: Any = "unknown"
+        try:
+            poll_value = process.poll() if process is not None else None
+            if poll_value is not None:
+                returncode = poll_value
+            diagnostics = self.dump_indexing_diagnostics()
+        except Exception:  # noqa: BLE001 - diagnostics must never raise
+            returncode = "unavailable"
+            diagnostics = "unavailable"
+        logger.error(
+            "clangd process exited unexpectedly (returncode=%s); " "transport diagnostics:\n%s",
+            returncode,
+            diagnostics,
+        )
 
     def _dispatch_message(self, msg: dict, *, generation: Optional[int] = None) -> None:
         """分发收到的 LSP 消息。"""
@@ -817,9 +953,17 @@ class ClangExtractor:
             params = msg.get("params")
             token = params.get("token") if isinstance(params, dict) else None
             if self._is_progress_token(token):
+                now = time.monotonic()
                 with self._condition:
-                    self._progress_tokens[token] = "created"
-                    self._last_progress_time = time.monotonic()
+                    self._progress_tokens[token] = {
+                        "status": "created",
+                        "title": "",
+                        "began_at": now,
+                        "updated_at": now,
+                        "detail": "",
+                    }
+                    self._last_progress_time = now
+                    self._record_progress_event_locked("create", token, "")
                     self._condition.notify_all()
             self._write_message({"jsonrpc": "2.0", "id": msg_id, "result": None})
             return
@@ -855,11 +999,36 @@ class ClangExtractor:
             return
         kind = str(value.get("kind") or "")
         with self._condition:
-            self._last_progress_time = time.monotonic()
+            now = time.monotonic()
+            self._last_progress_time = now
             if kind in {"begin", "report"}:
-                self._progress_tokens[token] = kind
+                entry = self._progress_tokens.get(token)
+                if not isinstance(entry, dict):
+                    entry = {
+                        "status": kind,
+                        "title": "",
+                        "began_at": now,
+                        "updated_at": now,
+                        "detail": "",
+                    }
+                    self._progress_tokens[token] = entry
+                else:
+                    entry["status"] = kind
+                    entry["updated_at"] = now
+                    if kind == "begin":
+                        entry["began_at"] = now
+                title = str(value.get("title") or "")
+                if title:
+                    entry["title"] = title[:80]
+                detail = str(value.get("message") or value.get("percentage") or "")
+                entry["detail"] = detail[: self._PROGRESS_TOKEN_DETAIL_LIMIT]
+                self._record_progress_event_locked(kind, token, entry["detail"])
             elif kind == "end":
-                self._progress_tokens.pop(token, None)
+                entry = self._progress_tokens.pop(token, None)
+                ended_detail = ""
+                if isinstance(entry, dict):
+                    ended_detail = str(entry.get("detail") or "")
+                self._record_progress_event_locked("end", token, ended_detail)
             self._condition.notify_all()
 
     @staticmethod
@@ -882,8 +1051,132 @@ class ClangExtractor:
             except queue.Full:
                 pass
 
+    def _record_progress_event_locked(self, kind: str, token: Any, detail: str) -> None:
+        """Append a bounded progress event for stall diagnostics (condition held)."""
+        self._recent_progress_events.append(
+            (
+                f"{kind}:{str(token)[:64]}",
+                str(detail or "")[:120],
+                time.monotonic(),
+            )
+        )
+
+    def _progress_token_statuses(self) -> Dict[str, str]:
+        """Snapshot of every tracked progress token and its lifecycle status."""
+        with self._condition:
+            return {
+                str(token): str(entry.get("status"))
+                for token, entry in self._progress_tokens.items()
+                if isinstance(entry, dict)
+            }
+
     def _has_active_progress_locked(self) -> bool:
-        return any(status in {"begin", "report"} for status in self._progress_tokens.values())
+        """True while any progress token is mid-flight.
+
+        Tokens in begin/report state that stopped reporting for longer than
+        ``_PROGRESS_TOKEN_STALE_SECONDS`` are evicted first, so a lost
+        ``$/progress`` end notification can never wedge readiness forever.
+        """
+        now = time.monotonic()
+        stale_tokens = [
+            token
+            for token, entry in self._progress_tokens.items()
+            if isinstance(entry, dict)
+            and entry.get("status") in {"begin", "report"}
+            and now - float(entry.get("updated_at", now)) > self._PROGRESS_TOKEN_STALE_SECONDS
+        ]
+        for token in stale_tokens:
+            entry = self._progress_tokens.pop(token, None)
+            detail = str(entry.get("detail") or "") if isinstance(entry, dict) else ""
+            self._record_progress_event_locked("stale", token, detail)
+        if stale_tokens:
+            logger.warning(
+                "Evicted %d stale clangd progress token(s) after %.0fs without updates: %s",
+                len(stale_tokens),
+                self._PROGRESS_TOKEN_STALE_SECONDS,
+                [str(token) for token in stale_tokens],
+            )
+        return any(
+            isinstance(entry, dict) and entry.get("status") in {"begin", "report"}
+            for entry in self._progress_tokens.values()
+        )
+
+    def _indexing_wait_summary_locked(self, now: float) -> str:
+        """Compact one-line stall summary; caller must hold the condition."""
+        active = [
+            (token, entry)
+            for token, entry in self._progress_tokens.items()
+            if isinstance(entry, dict) and entry.get("status") in {"begin", "report"}
+        ]
+        parts = [
+            "last_progress_age=%.1fs" % max(0.0, now - self._last_progress_time),
+            "active_progress_tokens=%d" % len(active),
+        ]
+        for token, entry in active[:3]:
+            began_at = float(entry.get("began_at", now))
+            updated_at = float(entry.get("updated_at", now))
+            parts.append(
+                "token[%s] %s age=%.0fs since_update=%.0fs %s msg=%s"
+                % (
+                    str(token)[:48],
+                    entry.get("status"),
+                    max(0.0, now - began_at),
+                    max(0.0, now - updated_at),
+                    str(entry.get("title") or "")[:40],
+                    str(entry.get("detail") or "")[:80],
+                )
+            )
+        return " ".join(parts)
+
+    def dump_indexing_diagnostics(self) -> str:
+        """Human-readable snapshot of clangd state for diagnosing a stalled wait."""
+        with self._condition:
+            now = time.monotonic()
+            lines: List[str] = []
+            process = self.process
+            lines.append(
+                "transport_closed=%s running=%s initialized=%s process_alive=%s"
+                % (
+                    self._transport_closed,
+                    self._running,
+                    self._initialized,
+                    "unknown" if process is None else str(process.poll() is None),
+                )
+            )
+            if process is not None:
+                pid_value = getattr(process, "pid", None)
+                lines.append("clangd_pid=%s" % ("unknown" if pid_value is None else pid_value))
+            lines.append("last_progress_age=%.1fs" % max(0.0, now - self._last_progress_time))
+            lines.append("tracked_progress_tokens=%s" % self._indexing_wait_summary_locked(now))
+            if self._file_status:
+                state_counts: Dict[str, int] = {}
+                latest_uri = ""
+                latest_state = ""
+                latest_ts = 0.0
+                for uri, (state, ts) in self._file_status.items():
+                    state_counts[state] = state_counts.get(state, 0) + 1
+                    if ts >= latest_ts:
+                        latest_uri, latest_state, latest_ts = uri, state, ts
+                lines.append(
+                    "file_status_counts=%s latest=%s(%s, %.1fs ago)"
+                    % (
+                        state_counts,
+                        latest_uri.rsplit("/", 1)[-1],
+                        latest_state,
+                        max(0.0, now - latest_ts),
+                    )
+                )
+            events = list(self._recent_progress_events)
+            if events:
+                lines.append("recent_progress_events:")
+                for label, detail, ts in events[-10:]:
+                    lines.append("  [%5.1fs ago] %-28s %s" % (now - ts, label, detail))
+            stderr_lines = list(self._recent_stderr_lines)
+            if stderr_lines:
+                lines.append("recent_stderr:")
+                for line_text in stderr_lines[-8:]:
+                    lines.append("  %s" % line_text[:200])
+            return "\n".join(lines)
 
     def _stderr_loop(self, process: Optional[Any] = None, generation: Optional[int] = None) -> None:
         """后台线程：读取 clangd stderr 日志。"""
@@ -899,20 +1192,29 @@ class ClangExtractor:
                 if not line:
                     break
                 text = ANSI_ESCAPE.sub("", line.decode("utf-8", errors="ignore")).strip()
-                if text and "Indexing" in text:
+                if text:
                     with self._condition:
                         if generation != self._generation:
                             break
-                        self._last_progress_time = time.monotonic()
-                        self._condition.notify_all()
-                    logger.debug("clangd: %s", text)
+                        self._recent_stderr_lines.append(text[:240])
+                        if "Indexing" in text:
+                            self._last_progress_time = time.monotonic()
+                            self._condition.notify_all()
+                    if "Indexing" in text:
+                        logger.debug("clangd: %s", text)
             except OSError:
                 break
 
     # ── 文档管理 ──
 
+    def _document_path(self, file_path: Path) -> Path:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return Path(resolver.canonical_path(file_path))
+        return Path(file_path).resolve()
+
     def open_document(self, file_path: Path) -> bool:
-        file_path = Path(file_path).resolve()
+        file_path = self._document_path(file_path)
         uri = file_path.as_uri()
         with self._documents_lock:
             lease_count = self._opened_documents.get(uri, 0)
@@ -942,7 +1244,7 @@ class ClangExtractor:
             return True
 
     def close_document(self, file_path: Path) -> None:
-        uri = Path(file_path).resolve().as_uri()
+        uri = self._document_path(file_path).as_uri()
         with self._documents_lock:
             lease_count = self._opened_documents.get(uri, 0)
             if lease_count <= 0:
@@ -969,7 +1271,7 @@ class ClangExtractor:
 
     def get_file_status(self, file_path: Path) -> Optional[str]:
         """Return clangd's latest extension status for a file, when available."""
-        uri = Path(file_path).resolve().as_uri()
+        uri = self._document_path(file_path).as_uri()
         with self._condition:
             value = self._file_status.get(uri)
             return value[0] if value is not None else None
@@ -982,7 +1284,7 @@ class ClangExtractor:
         require_notification: bool = False,
     ) -> bool:
         """Wait for clangd fileStatus=idle without penalizing servers lacking the extension."""
-        uri = Path(file_path).resolve().as_uri()
+        uri = self._document_path(file_path).as_uri()
         deadline = time.monotonic() + max(0.0, float(timeout))
         with self._condition:
             while True:
@@ -1029,6 +1331,27 @@ class ClangExtractor:
         )
         return cast(Optional[List], result)
 
+    def get_declaration(self, file_path: Path, line: int, character: int = 0) -> Optional[List]:
+        """Resolve in the use TU even when symbolInfo supplies no coordinates."""
+        method = "textDocument/declaration"
+        if self._declaration_supported is False:
+            self._record_rpc_outcome(method, "unsupported")
+            return None
+        result = self.send_request(
+            method,
+            {
+                "textDocument": {"uri": file_path.as_uri()},
+                "position": {
+                    "line": line,
+                    "character": self._python_offset_to_lsp(file_path, line, character),
+                },
+            },
+            timeout=30,
+        )
+        if self.get_thread_rpc_outcome(method).get("code") == -32601:
+            self._declaration_supported = False
+        return [result] if isinstance(result, dict) else cast(Optional[List], result)
+
     def get_references(
         self,
         file_path: Path,
@@ -1061,7 +1384,7 @@ class ClangExtractor:
         self, file_path: Path, range_info: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict]:
         """Query clangd's AST extension without coupling it to extraction policy."""
-        params: Dict[str, Any] = {"textDocument": {"uri": Path(file_path).resolve().as_uri()}}
+        params: Dict[str, Any] = {"textDocument": {"uri": self._document_path(file_path).as_uri()}}
         if range_info is not None:
             params["range"] = range_info
         result = self.send_request("textDocument/ast", params, timeout=60)
@@ -1150,12 +1473,14 @@ class ClangExtractor:
 
     def wait_for_indexing(self, timeout: int = 120, idle_threshold: float = 5.0) -> bool:
         """等待 work-done tokens 结束并达到空闲阈值，最多等待 120 秒。"""
+        self._derived_index_ready = False
         effective_timeout = min(
             self._MAX_INDEXING_WAIT_SECONDS,
             max(0.0, float(timeout)),
         )
         idle_threshold = max(0.0, float(idle_threshold))
         deadline = time.monotonic() + effective_timeout
+        next_diag_at = time.monotonic() + self._INDEXING_DIAG_LOG_INTERVAL_SECONDS
         with self._condition:
             while True:
                 now = time.monotonic()
@@ -1163,6 +1488,7 @@ class ClangExtractor:
                 progress_active = self._has_active_progress_locked()
                 if self._initialized and not progress_active and idle_elapsed >= idle_threshold:
                     logger.info("clangd indexing appears idle (%.1fs no progress)", idle_elapsed)
+                    self._derived_index_ready = True
                     return True
                 remaining = deadline - now
                 if remaining <= 0:
@@ -1172,8 +1498,20 @@ class ClangExtractor:
                 wait_time = remaining
                 if self._initialized and not progress_active:
                     wait_time = min(wait_time, max(0.0, idle_threshold - idle_elapsed))
+                if now >= next_diag_at:
+                    logger.warning(
+                        "wait_for_indexing still waiting (%.1fs elapsed, %.1fs left): %s",
+                        effective_timeout - remaining,
+                        remaining,
+                        self._indexing_wait_summary_locked(now),
+                    )
+                    next_diag_at = now + self._INDEXING_DIAG_LOG_INTERVAL_SECONDS
                 self._condition.wait(timeout=wait_time)
-        logger.warning("wait_for_indexing timed out after %.1fs", effective_timeout)
+        logger.warning(
+            "wait_for_indexing timed out after %.1fs; clangd diagnostics:\n%s",
+            effective_timeout,
+            self.dump_indexing_diagnostics(),
+        )
         return False
 
     # ── 批量提取 ──
@@ -1268,8 +1606,16 @@ class ClangExtractor:
             if not (collection_complete and defer_call_queries and call_work):
                 self.close_document(file_path)
 
-        local_function_targets = self._direct_callback_function_targets(file_path, func_rows)
-        call_work = [(*work, local_function_targets) for work in call_work]
+        local_function_names: set[str] = set()
+        if file_path.suffix.lower() == ".c":
+            counts: Dict[str, int] = {}
+            for row in func_rows:
+                if bool(row[7]):
+                    continue
+                local_name = str(row[0]).split("::")[-1]
+                counts[local_name] = counts.get(local_name, 0) + 1
+            local_function_names = {name for name, count in counts.items() if count == 1}
+        call_work = [(*work, local_function_names) for work in call_work]
         if not defer_call_queries:
             for work in call_work:
                 call_rows.extend(self._extract_deferred_call_edges(work))
@@ -1287,49 +1633,6 @@ class ClangExtractor:
             facts["_call_work"] = call_work
             facts["_deferred_document_path"] = file_path
         return facts
-
-    @staticmethod
-    def _direct_callback_function_names(
-        file_path: Path,
-        func_rows: Sequence[Tuple[Any, ...]],
-    ) -> set[str]:
-        return set(ClangExtractor._direct_callback_function_targets(file_path, func_rows))
-
-    @staticmethod
-    def _direct_callback_function_targets(
-        file_path: Path,
-        func_rows: Sequence[Tuple[Any, ...]],
-    ) -> Dict[str, str]:
-        """Map an unambiguous AST spelling to its exact indexed definition.
-
-        A direct C++ static method is represented by clangd as a simple
-        ``DeclRef`` while the index stores its qualified name.  Resolve it only
-        when exactly one non-declaration definition in the TU has that tail.
-        Overloads, a free function/method collision, duplicate definitions and
-        methods with the same tail all fail closed.
-        """
-
-        if Path(file_path).suffix.lower() not in {".c", ".cc", ".cpp", ".cxx", ".c++"}:
-            return {}
-        candidates: Dict[str, List[str]] = {}
-        for row in func_rows:
-            if len(row) < 8 or bool(row[7]):
-                continue
-            stored_name = str(row[0] or "")
-            if not stored_name:
-                continue
-            simple_name = stored_name.rsplit("::", 1)[-1]
-            candidates.setdefault(simple_name, []).append(stored_name)
-        result = {
-            simple_name: values[0] for simple_name, values in candidates.items() if len(values) == 1
-        }
-        # Preserve the existence of a local governed thread API even when
-        # overloads make its exact target ambiguous.  The callback extractor
-        # consumes key presence as a fail-closed collision marker and never
-        # emits this empty sentinel as a call target.
-        if "pthread_create" in candidates and "pthread_create" not in result:
-            result["pthread_create"] = ""
-        return result
 
     @staticmethod
     def _publish_tu_facts(
@@ -1773,6 +2076,7 @@ class ClangExtractor:
             paths.sort()
         with self._project_file_index_lock:
             self._project_file_index = path_index
+            self._derived_source_files = tuple(sorted(set(Path(p).absolute() for p in file_paths)))
 
     def _canonical_included_file(self, source_file: Path, included: str) -> str:
         clean = str(included or "").replace("\\", "/").strip()
@@ -1784,12 +2088,32 @@ class ClangExtractor:
             with self._project_file_index_lock:
                 path_index = self._project_file_index
                 if not isinstance(path_index, dict):
+                    # The backend did not seed the project file index: one
+                    # synchronous whole-project walk. Bounded to once per
+                    # process, but on network filesystems it is expensive
+                    # enough to warrant visibility; prefer seeding via
+                    # seed_project_file_index at extractor start.
+                    started = time.monotonic()
+                    self._project_file_index_fallback_walks = (
+                        int(getattr(self, "_project_file_index_fallback_walks", 0)) + 1
+                    )
+                    logger.warning(
+                        "[clang-extractor] project file index not seeded; "
+                        "walking %s (occurrence=%d)",
+                        self.project_root,
+                        self._project_file_index_fallback_walks,
+                    )
                     path_index = {}
                     for project_path in self.project_root.rglob("*"):
                         if project_path.is_file():
                             resolved = project_path.resolve()
                             path_index.setdefault(resolved.name, []).append(resolved)
                     self._project_file_index = path_index
+                    logger.info(
+                        "[clang-extractor] project file walk completed in %.1fs (%d files)",
+                        time.monotonic() - started,
+                        sum(len(paths) for paths in path_index.values()),
+                    )
                 basename_candidates = list(path_index.get(Path(clean).name, []))
             candidates = [
                 path
@@ -1856,7 +2180,13 @@ class ClangExtractor:
         "references_resolved",
         "reference_cache_evictions",
         "definition_requests",
+        "declaration_requests",
         "definition_timeouts",
+        "usr_resolved",
+        "files_reused",
+        "probe_budget_exhausted",
+        "probe_paused_groups",
+        "probe_pruned_candidates",
     )
 
     @staticmethod
@@ -1934,6 +2264,123 @@ class ClangExtractor:
     ) -> None:
         """Run bounded file jobs while keeping result consumption on the caller thread."""
         worker_count = self._derived_worker_count(len(work_items))
+        resolver = self._derived_resolver
+        original_worker = worker
+        original_consume = consume
+        if resolver is not None:
+            resolver.workload(len(work_items))
+
+        def consume_completed(result: _DerivedFileResult) -> None:
+            original_consume(result)
+            if resolver is not None:
+                resolver.file_completed()
+
+        consume = consume_completed
+
+        def resolve_file(item: Tuple[str, List[Dict[str, Any]]]) -> _DerivedFileResult:
+            if resolver is None:
+                return original_worker(item)
+            source_path = self._resolve_indexed_source_path(item[0])
+            if self._read_source_lines(source_path) is None:
+                raise OSError(f"Cannot read indexed source during derived rebuild: {source_path}")
+            names = resolver.index_names
+            saved_by_index = {
+                name: value
+                for name in names
+                if (
+                    value := resolver.cache.get(
+                        "file", cache_key([name, item[0], "source-views-v1"])
+                    )
+                )
+                is not None
+            }
+            for saved in saved_by_index.values():
+                resolver.sources.validate_receipts(saved["source_views"])
+
+            def restore(result: _DerivedFileResult) -> _DerivedFileResult:
+                for name, saved in saved_by_index.items():
+                    saved_stats = self._new_derived_worker_stats(name)
+                    saved_stats.update(
+                        files_processed=1,
+                        functions_processed=len(item[1]),
+                        files_reused=1,
+                        unresolved_reasons=saved.get("unresolved_reasons", {}),
+                        unresolved_samples=saved.get("unresolved_samples", []),
+                    )
+                    result.stats_by_index[name] = saved_stats
+                    if name == "function_symbol_context":
+                        result.symbol_rows = [tuple(row) for row in saved["symbols"]]
+                        result.macro_rows = [tuple(row) for row in saved["macros"]]
+                    else:
+                        result.type_rows = [tuple(row) for row in saved["types"]]
+                return result
+
+            if len(saved_by_index) == len(names):
+                return restore(_DerivedFileResult())
+            with resolver.file(source_path) as state:
+                state["skip_indexes"] = set(saved_by_index)
+                first = original_worker(item)
+                if state["pending"]:
+                    usr_before = {
+                        name: int(stats.get("usr_resolved", 0))
+                        for name, stats in first.stats_by_index.items()
+                    }
+                    resolver.flush(state)
+                    result = original_worker(item)
+                    result.errors.update(first.errors)
+                    for name, stats in result.stats_by_index.items():
+                        for metric in (
+                            "semantic_requests",
+                            "symbol_info_requests",
+                            "references_requests",
+                            "definition_requests",
+                            "declaration_requests",
+                            "definition_timeouts",
+                            "reference_cache_evictions",
+                            "canonical_groups",
+                            "references_resolved",
+                        ):
+                            stats[metric] = int(stats.get(metric, 0)) + int(
+                                first.stats_by_index[name].get(metric, 0)
+                            )
+                        stats["usr_resolved"] = (
+                            int(stats.get("usr_resolved", 0))
+                            + int(first.stats_by_index[name].get("usr_resolved", 0))
+                            - usr_before[name]
+                        )
+                else:
+                    result = first
+            # file() validates once at completion. Save checkpoints only after
+            # that succeeds, instead of loading and validating every referenced
+            # file twice (and decoding its full source a third time for receipts).
+            receipts = resolver.sources.receipts(state)
+            for name, local_stats in result.stats_by_index.items():
+                if name in saved_by_index:
+                    continue
+                if (
+                    name not in result.errors
+                    and not local_stats.get("_incomplete")
+                    and not state["transient"]
+                ):
+                    resolver.cache.put(
+                        "file",
+                        cache_key([name, item[0], "source-views-v1"]),
+                        {
+                            "symbols": (
+                                result.symbol_rows if name == "function_symbol_context" else []
+                            ),
+                            "macros": (
+                                result.macro_rows if name == "function_symbol_context" else []
+                            ),
+                            "types": result.type_rows if name == "function_type_refs" else [],
+                            "unresolved_reasons": local_stats.get("unresolved_reasons", {}),
+                            "unresolved_samples": local_stats.get("unresolved_samples", []),
+                            "source_views": receipts,
+                        },
+                    )
+            return restore(result)
+
+        worker = resolve_file
         metrics["worker_count"] = worker_count
         metrics["peak_inflight_files"] = 0
         if not work_items:
@@ -1942,6 +2389,8 @@ class ClangExtractor:
             metrics["peak_inflight_files"] = 1
             for item in work_items:
                 consume(worker(item))
+                if resolver is not None:
+                    resolver.cache.checkpoint()
             return
 
         active = 0
@@ -1976,25 +2425,38 @@ class ClangExtractor:
                     ordinal, item = next(iterator)
                 except StopIteration:
                     return False
-                pending[executor.submit(tracked_worker, item)] = ordinal
+                submitted = executor.submit(tracked_worker, item)
+                pending[submitted] = ordinal
+                if resolver is not None:
+                    submitted.add_done_callback(lambda _future: resolver.cache.wakeup.set())
                 return True
 
             for _ in range(min(max_pending, len(work_items))):
                 submit_next()
             try:
                 while pending:
-                    completed, _remaining = wait(
-                        tuple(pending),
-                        return_when=FIRST_COMPLETED,
-                    )
+                    if resolver is not None:
+                        resolver.cache.wakeup.clear()
+                        resolver.cache.pump()
+                        completed = {future for future in pending if future.done()}
+                        if not completed:
+                            resolver.cache.wakeup.wait(0.1)
+                            continue
+                    else:
+                        completed, _remaining = wait(tuple(pending), return_when=FIRST_COMPLETED)
                     for future in sorted(completed, key=lambda item: pending[item]):
                         pending.pop(future)
                         result = future.result()
                         submit_next()
                         consume(result)
+                        if resolver is not None:
+                            resolver.cache.checkpoint()
             except BaseException:
                 for future in pending:
                     future.cancel()
+                while resolver is not None and any(not f.done() for f in pending):
+                    resolver.cache.pump()
+                    wait(tuple(pending), timeout=0.01)
                 raise
 
     @staticmethod
@@ -2012,6 +2474,27 @@ class ClangExtractor:
         compute: Callable[[], Any],
     ) -> Any:
         """Memoize shared derived facts with per-key single-flight semantics."""
+        if self._derived_resolver is not None:
+            resolver = self._derived_resolver
+            state = getattr(resolver.local, "state", None)
+            scope = state["path"] if state else ""
+            if resolver.cooperative:
+                # A continuation must never park while owning an auxiliary
+                # single-flight Future that the next task might need. RPC
+                # single-flight still completes before each scheduling boundary.
+                namespace = "aux:" + cache_name
+                identity = cache_key([scope, encode_value(key)])
+                result = resolver.cache.get(namespace, identity)
+                if result is None:
+                    result = {"value": encode_value(compute()), "_volatile": True}
+                    resolver.cache.put(namespace, identity, result)
+                return decode_value(result["value"])
+            result = resolver.cache.compute(
+                "aux:" + cache_name,
+                cache_key([scope, encode_value(key)]),
+                lambda: {"value": encode_value(compute()), "_volatile": True},
+            )
+            return decode_value(result["value"])
         cache = semantic_context.setdefault(cache_name, {})
         lock = self._resolution_cache_lock(semantic_context)
         if lock is None:
@@ -2046,6 +2529,7 @@ class ClangExtractor:
         future.set_result(value)
         return value
 
+    @derived_session
     def rebuild_function_symbol_refs(
         self,
         db: KnowledgeDB,
@@ -2076,11 +2560,7 @@ class ClangExtractor:
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
         if only_files is not None:
-            functions = [
-                row
-                for row in functions
-                if str(row.get("file_path") or "") in only_files
-            ]
+            functions = [row for row in functions if str(row.get("file_path") or "") in only_files]
         globals_by_name = self._records_by_name(get_globals())
         macros_by_name = self._records_by_name(get_macros())
         indexed_symbol_names = set(globals_by_name).union(macros_by_name)
@@ -2216,6 +2696,11 @@ class ClangExtractor:
         if use_staging:
             result_count = staged_count
         else:
+            if self._derived_resolver is not None and not self._derived_resolver.validate():
+                raise RuntimeError(
+                    "Inputs changed before derived symbol publication: "
+                    + self._derived_resolver.identity_change_reason
+                )
             rows = [(*key, access) for key, access in sorted(aggregated.items())]
             replace_context = getattr(db, "replace_function_symbol_context", None)
             if callable(replace_context):
@@ -2233,6 +2718,7 @@ class ClangExtractor:
         self._finish_derived_stats(stats)
         return result_count
 
+    @derived_session
     def rebuild_function_type_refs(
         self,
         db: KnowledgeDB,
@@ -2255,11 +2741,7 @@ class ClangExtractor:
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
         if only_files is not None:
-            functions = [
-                row
-                for row in functions
-                if str(row.get("file_path") or "") in only_files
-            ]
+            functions = [row for row in functions if str(row.get("file_path") or "") in only_files]
         type_records = list(get_types())
         types_by_name = self._records_by_name(type_records)
         indexed_type_names = set(types_by_name)
@@ -2382,6 +2864,11 @@ class ClangExtractor:
         if use_staging:
             result_count = staged_count
         else:
+            if self._derived_resolver is not None and not self._derived_resolver.validate():
+                raise RuntimeError(
+                    "Inputs changed before derived type publication: "
+                    + self._derived_resolver.identity_change_reason
+                )
             assert callable(replace_refs)
             deduplicated = sorted(set(rows), key=lambda row: tuple(str(value) for value in row))
             replace_refs(deduplicated)
@@ -2391,6 +2878,7 @@ class ClangExtractor:
         self._finish_derived_stats(stats)
         return result_count
 
+    @derived_session
     def rebuild_function_derived_refs(
         self,
         db: KnowledgeDB,
@@ -2436,11 +2924,7 @@ class ClangExtractor:
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
         if only_files is not None:
-            functions = [
-                row
-                for row in functions
-                if str(row.get("file_path") or "") in only_files
-            ]
+            functions = [row for row in functions if str(row.get("file_path") or "") in only_files]
         functions_by_file: Dict[str, List[Dict[str, Any]]] = {}
         for function in functions:
             functions_by_file.setdefault(str(function.get("file_path") or ""), []).append(function)
@@ -2596,9 +3080,12 @@ class ClangExtractor:
                     except Exception:
                         pass
 
-            for local_stats in local_stats_by_index.values():
+            for name, local_stats in local_stats_by_index.items():
                 local_stats["functions_processed"] = len(file_functions)
                 local_stats["files_processed"] = 1
+                # A sibling worker or failed staging write can cancel this layer
+                # before all functions were visited. Never checkpoint that gap.
+                local_stats["_incomplete"] = stop_events[name].is_set()
             return _DerivedFileResult(
                 stats_by_index=local_stats_by_index,
                 symbol_rows=[(*key, access) for key, access in sorted(file_symbols.items())],
@@ -2675,13 +3162,26 @@ class ClangExtractor:
         semantic_context: Dict[str, Any],
         stats: Dict[str, Any],
     ) -> List[Tuple[Any, ...]]:
+        state = (
+            getattr(self._derived_resolver.local, "state", None) if self._derived_resolver else None
+        )
+        if state and "function_type_refs" in state.get("skip_indexes", ()):
+            return []
+        if self._derived_resolver is not None:
+            self._derived_resolver.progress(
+                layer="type-refs",
+                function=function.get("name"),
+                function_start_line=function.get("start_line"),
+            )
         function_id = int(function.get("id") or 0)
         if function_id <= 0:
             return []
         candidates = self._direct_function_type_candidates(function, lines, indexed_type_names)
         resolved_cache: Dict[Tuple[str, int, int], Tuple[Optional[Dict[str, Any]], str]] = {}
         rows: List[Tuple[Any, ...]] = []
-        for candidate in candidates:
+        for ordinal, candidate in enumerate(candidates, 1):
+            if ordinal % 64 == 0 and self._derived_resolver is not None:
+                self._derived_resolver.checkpoint()
             stats["candidates"] += 1
             if int(stats["candidates"]) % 1000 == 0:
                 self._log_derived_progress(stats)
@@ -2762,6 +3262,7 @@ class ClangExtractor:
         parameter_names = self._signature_parameter_names(signature_text, function_name)
         candidates: List[Dict[str, Any]] = []
         seen: set[Tuple[str, int, int, str]] = set()
+        candidate_work = 0
 
         def add(
             name: str,
@@ -2772,6 +3273,10 @@ class ClangExtractor:
             lookup_line: Optional[int] = None,
             lookup_char: Optional[int] = None,
         ) -> None:
+            nonlocal candidate_work
+            candidate_work += 1
+            if candidate_work % 64 == 0 and self._derived_resolver is not None:
+                self._derived_resolver.checkpoint()
             clean_name = str(name or "")
             if (
                 not clean_name
@@ -2800,6 +3305,8 @@ class ClangExtractor:
 
         running_offset = 0
         for line_offset, raw_line in enumerate(source_lines):
+            if line_offset % 64 == 0 and self._derived_resolver is not None:
+                self._derived_resolver.checkpoint()
             absolute_line = start_line + line_offset
             signature_line = absolute_line <= signature_end_line
             line_limit = len(raw_line)
@@ -2864,6 +3371,8 @@ class ClangExtractor:
             ),
         )
         for line_offset, raw_line in enumerate(source_lines):
+            if line_offset % 64 == 0 and self._derived_resolver is not None:
+                self._derived_resolver.checkpoint()
             absolute_line = start_line + line_offset
             if absolute_line <= signature_end_line:
                 continue
@@ -2987,6 +3496,17 @@ class ClangExtractor:
         semantic_context: Dict[str, Any],
         stats: Dict[str, Any],
     ) -> None:
+        state = (
+            getattr(self._derived_resolver.local, "state", None) if self._derived_resolver else None
+        )
+        if state and "function_symbol_context" in state.get("skip_indexes", ()):
+            return
+        if self._derived_resolver is not None:
+            self._derived_resolver.progress(
+                layer="symbol-context",
+                function=function.get("name"),
+                function_start_line=function.get("start_line"),
+            )
         start_line = max(1, int(function.get("start_line") or 1))
         end_line = min(len(lines), max(start_line, int(function.get("end_line") or start_line)))
         body_lines = lines[start_line - 1 : end_line]
@@ -3016,12 +3536,17 @@ class ClangExtractor:
                     stats["filtered_local_shadow"] += 1
                 if global_candidates and is_field:
                     stats["filtered_field"] += 1
-                callable_macros = [
-                    row
-                    for row in macro_candidates
-                    if not bool(row.get("is_function_like"))
-                    or bool(re.match(r"\s*\(", masked_line[match.end() :]))
-                ]
+                macro_candidates_cache = semantic_context.setdefault(
+                    "callable_macro_candidates", {}
+                )
+                macro_candidate_key = (name, bool(re.match(r"\s*\(", masked_line[match.end() :])))
+                if macro_candidate_key not in macro_candidates_cache:
+                    macro_candidates_cache[macro_candidate_key] = [
+                        row
+                        for row in macro_candidates
+                        if not bool(row.get("is_function_like")) or macro_candidate_key[1]
+                    ]
+                callable_macros = macro_candidates_cache[macro_candidate_key]
                 stats["filtered_non_call_macro"] += len(macro_candidates) - len(callable_macros)
                 active_globals = [] if is_shadowed or is_field else global_candidates
                 if not active_globals and not callable_macros:
@@ -3132,7 +3657,9 @@ class ClangExtractor:
             )
             for raw_line in lines[start_line - 1 : end_line]:
                 masked = self._mask_c_comments_and_literals(raw_line)
-                for token in re.finditer(r"\b[A-Za-z_]\w*\b", masked):
+                for ordinal, token in enumerate(re.finditer(r"\b[A-Za-z_]\w*\b", masked), 1):
+                    if ordinal % 64 == 0 and self._derived_resolver is not None:
+                        self._derived_resolver.checkpoint()
                     if token.group(0) in candidate_names:
                         return True
         return False
@@ -3254,7 +3781,8 @@ class ClangExtractor:
             "[%s] files=%d/%d functions=%d/%d candidates=%d "
             "filtered(shadow=%d field=%d macro_non_call=%d) "
             "semantic(req=%d resolved=%d) local=%d "
-            "references(req=%d resolved=%d) definitions(req=%d timeout=%d) unresolved=%d",
+            "references(req=%d resolved=%d) definitions(req=%d timeout=%d) unresolved=%d "
+            "usr(req=%d resolved=%d) reused_files=%d",
             stats.get("index_name"),
             int(stats.get("files_processed") or 0),
             int(stats.get("files_total") or 0),
@@ -3272,7 +3800,18 @@ class ClangExtractor:
             int(stats.get("definition_requests") or 0),
             int(stats.get("definition_timeouts") or 0),
             sum(int(value) for value in dict(stats.get("unresolved_reasons") or {}).values()),
+            int(stats.get("symbol_info_requests") or 0),
+            int(stats.get("usr_resolved") or 0),
+            int(stats.get("files_reused") or 0),
         )
+        if self._derived_resolver is not None:
+            logger.info(
+                "[derived-rpc] methods=%s cache=%s groups=%s memory=%s",
+                self._derived_resolver.rpc_snapshot(),
+                self._derived_resolver.cache.stats,
+                self._derived_resolver.group_snapshot(),
+                self._derived_resolver.memory_snapshot(),
+            )
         self._store_derived_stats_snapshot(stats)
 
     @staticmethod
@@ -3327,6 +3866,16 @@ class ClangExtractor:
 
     def _store_derived_stats_snapshot(self, stats: Dict[str, Any]) -> None:
         snapshot = {str(key): value for key, value in stats.items() if not str(key).startswith("_")}
+        if self._derived_resolver is not None:
+            resolver = self._derived_resolver
+            snapshot["rpc_methods"] = resolver.rpc_snapshot()
+            snapshot["candidate_groups"] = resolver.group_snapshot()
+            snapshot["resolution_cache"] = dict(
+                resolver.cache.stats,
+                resumable=resolver.reusable,
+                identity_reason=resolver.identity_reason,
+            )
+            snapshot["process_memory"] = resolver.memory_snapshot()
         started = stats.get("_started_monotonic")
         if isinstance(started, (int, float)):
             snapshot["elapsed_seconds"] = round(
@@ -3352,18 +3901,20 @@ class ClangExtractor:
         enabled: bool = True,
         stats: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        try:
-            stat = source_path.stat()
-            cache_key = (str(source_path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
-        except OSError:
-            cache_key = (str(source_path.resolve()), 0, 0)
+        cache_key = self._source_cache_key(source_path)
+        if cache_key is None:
+            cache_key = (str(self._document_path(source_path)), 0, 0)
         with self._derived_cache_lock:
             cache = getattr(self, "_semantic_context_cache", None)
             if not isinstance(cache, OrderedDict):
                 cache = OrderedDict()
                 setattr(self, "_semantic_context_cache", cache)
             cached = cache.get(cache_key)
-            if isinstance(cached, dict):
+            if isinstance(cached, dict) and (
+                self._derived_resolver is None
+                or not self._derived_resolver.cooperative
+                or cached.get("available")
+            ):
                 cache.move_to_end(cache_key)
                 return cached
 
@@ -3383,6 +3934,8 @@ class ClangExtractor:
         }
         can_query = enabled and (self.process is not None or "get_semantic_tokens" in self.__dict__)
         getter = getattr(self, "get_semantic_tokens", None)
+        if self._derived_resolver is not None and self._derived_resolver.cooperative:
+            getter = self._derived_resolver.semantic_tokens
         if can_query and callable(getter):
             if stats is not None:
                 stats["semantic_requests"] = int(stats.get("semantic_requests") or 0) + 1
@@ -3408,7 +3961,11 @@ class ClangExtractor:
 
         with self._derived_cache_lock:
             cached = cache.get(cache_key)
-            if isinstance(cached, dict):
+            if isinstance(cached, dict) and (
+                self._derived_resolver is None
+                or not self._derived_resolver.cooperative
+                or cached.get("available")
+            ):
                 cache.move_to_end(cache_key)
                 return cached
             cache[cache_key] = context
@@ -3589,6 +4146,23 @@ class ClangExtractor:
         character: int = 0,
     ) -> Optional[Dict[str, Any]]:
         """Return clangd's stable USR/symbol ID for the symbol at one coordinate."""
+        details = self.get_symbol_details(file_path, line, character)
+        return details[0] if details is not None and len(details) == 1 else None
+
+    def get_symbol_details(
+        self, file_path: Path, line: int, character: int = 0
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Preserve all identities; unsupported is scoped to the process generation."""
+        if self._symbol_info_supported is False:
+            return None
+        override = self.__dict__.get("get_symbol_info")
+        if callable(override):
+            result = override(file_path, line, character)
+            if isinstance(result, dict):
+                return [result]
+            return result if isinstance(result, list) else None
+        if self.process is None and "send_request" not in self.__dict__:
+            return None
         result = self.send_request(
             "textDocument/symbolInfo",
             {
@@ -3601,9 +4175,9 @@ class ClangExtractor:
             timeout=30,
         )
         if isinstance(result, dict):
-            return cast(Dict[str, Any], result)
-        if isinstance(result, list) and result and isinstance(result[0], dict):
-            return cast(Dict[str, Any], result[0])
+            return [result]
+        if isinstance(result, list):
+            return [item for item in result if isinstance(item, dict)]
         return None
 
     def _candidate_canonical_identity(
@@ -3619,23 +4193,49 @@ class ClangExtractor:
         fallback = ("candidate", kind, identity)
 
         def compute() -> Tuple[Any, ...]:
-            can_query = self.process is not None or "get_symbol_info" in self.__dict__
+            can_query = self._symbol_info_supported is not False and (
+                self.process is not None
+                or "get_symbol_info" in self.__dict__
+                or "get_symbol_details" in self.__dict__
+            )
             getter = getattr(self, "get_symbol_info", None)
             declaration = self._candidate_declaration_position(candidate, semantic_context)
             if not can_query or not callable(getter) or declaration is None:
                 return fallback
             declaration_path, declaration_line, declaration_character = declaration
-            stats["symbol_info_requests"] = int(stats.get("symbol_info_requests") or 0) + 1
             try:
-                info = getter(
-                    declaration_path,
-                    max(0, declaration_line - 1),
-                    max(0, declaration_character),
-                )
+                if self._derived_resolver is not None:
+                    with self._derived_resolver.lease(declaration_path) as opened:
+                        details = (
+                            self._derived_resolver._rpc(
+                                "symbolInfo",
+                                declaration_path,
+                                declaration_line,
+                                declaration_character,
+                                stats,
+                            )["items"]
+                            if opened
+                            else []
+                        )
+                        info = details[0] if len(details) == 1 else None
+                else:
+                    opened = self.open_document(declaration_path)
+                    try:
+                        stats["symbol_info_requests"] = int(
+                            stats.get("symbol_info_requests") or 0
+                        ) + int(opened)
+                        info = (
+                            getter(declaration_path, declaration_line - 1, declaration_character)
+                            if opened
+                            else None
+                        )
+                    finally:
+                        if opened:
+                            self.close_document(declaration_path)
             except Exception:
                 info = None
             if isinstance(info, list):
-                info = info[0] if info and isinstance(info[0], dict) else None
+                info = info[0] if len(info) == 1 and isinstance(info[0], dict) else None
             usr = str(info.get("usr") or "") if isinstance(info, dict) else ""
             symbol_id = str(info.get("id") or "") if isinstance(info, dict) else ""
             return (
@@ -3746,6 +4346,34 @@ class ClangExtractor:
             stats["filtered_local_shadow"] += 1
             stats["semantic_resolved"] += 1
             return None
+        if self._derived_resolver is not None:
+            # A file-owned C global plus an actual global-scope semantic token
+            # proves linkage without relying on an incomplete include closure.
+            if (
+                kind == "global"
+                and source_path.suffix == ".c"
+                and len(candidates) == 1
+                and not candidates[0].get("is_extern")
+                and self._resolve_indexed_source_path(str(candidates[0].get("file_path") or ""))
+                == self._document_path(source_path)
+                and self._semantic_token_proves_kind(semantic_token, "global")
+            ):
+                stats["semantic_resolved"] += 1
+                stats["local_resolved"] += 1
+                return candidates[0]
+            result, reason = self._derived_resolver.resolve(
+                candidates,
+                kind,
+                source_path,
+                line,
+                character,
+                semantic_context,
+                stats,
+                include_closure=include_closure,
+            )
+            if result is None:
+                self._record_unresolved(stats, reason, {"file": function_file, "line": line})
+            return result
         visible = self._visible_candidates(
             candidates, function_file, include_closure, semantic_context
         )
@@ -3797,6 +4425,53 @@ class ClangExtractor:
         semantic_token: Optional[Dict[str, Any]],
         stats: Dict[str, Any],
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        if self._derived_resolver is not None:
+            resolver = self._derived_resolver
+            global_record, global_reason = resolver.resolve(
+                global_candidates,
+                "global",
+                source_path,
+                line,
+                character,
+                semantic_context,
+                stats,
+                include_closure=include_closure,
+            )
+            global_source = resolver.local.last_binding
+            macro_record, macro_reason = resolver.resolve(
+                macro_candidates,
+                "macro",
+                source_path,
+                line,
+                character,
+                semantic_context,
+                stats,
+                include_closure=include_closure,
+            )
+            incomplete = {
+                "pending_reference",
+                "reference_incomplete",
+                "reference_ambiguous",
+                "symbol_info_ambiguous",
+            }
+            if (
+                global_record is not None
+                and macro_record is None
+                and not (global_source == "references" and macro_reason in incomplete)
+            ):
+                return "global", global_record
+            if (
+                macro_record is not None
+                and global_record is None
+                and not (
+                    resolver.local.last_binding == "references" and global_reason in incomplete
+                )
+            ):
+                return "macro", macro_record
+            self._record_unresolved(
+                stats, "cross_kind_ambiguous", {"file": function_file, "line": line}
+            )
+            return "", None
         visible_globals = self._visible_candidates(
             global_candidates,
             function_file,
@@ -3896,6 +4571,17 @@ class ClangExtractor:
         if self._semantic_token_is_local(token):
             stats["semantic_resolved"] += 1
             return None, "local_type_shadow"
+        if self._derived_resolver is not None:
+            return self._derived_resolver.resolve(
+                candidates,
+                "type",
+                source_path,
+                lookup_line,
+                lookup_char,
+                semantic_context,
+                stats,
+                include_closure=include_closure,
+            )
         visible = self._visible_candidates(
             candidates, function_file, include_closure, semantic_context
         )
@@ -3954,33 +4640,24 @@ class ClangExtractor:
             stats=stats,
         )
         representatives: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+        matched: Set[Tuple[Any, ...]] = set()
+        complete = True
+        expected = (self._project_relative_path(source_path), int(line), int(character))
         for canonical_key, representative, _members in groups:
             representatives[canonical_key] = representative
-            self._candidate_reference_locations(
+            locations = self._candidate_reference_locations(
                 representative,
                 kind=kind,
                 semantic_context=semantic_context,
                 stats=stats,
                 canonical_key=canonical_key,
             )
-        coordinate = self._reference_coordinate(
-            kind,
-            self._project_relative_path(source_path),
-            line,
-            character,
-        )
-        resolution_lock = self._resolution_cache_lock(semantic_context)
-        if resolution_lock is None:
-            coordinate_index = semantic_context.setdefault("reference_coordinate_index", {})
-            matched_keys = coordinate_index.get(coordinate)
-        else:
-            with resolution_lock:
-                coordinate_index = semantic_context.setdefault("reference_coordinate_index", {})
-                raw_matched = coordinate_index.get(coordinate)
-                matched_keys = set(raw_matched) if isinstance(raw_matched, set) else raw_matched
-        if not isinstance(matched_keys, set) or len(matched_keys) != 1:
+            if expected in locations:
+                matched.add(canonical_key)
+            complete &= bool(semantic_context.get("_last_reference_complete", True))
+        if not complete or len(matched) != 1:
             return None
-        return representatives.get(next(iter(matched_keys)))
+        return representatives.get(next(iter(matched)))
 
     @staticmethod
     def _reference_file_key(file_path: str) -> str:
@@ -4013,6 +4690,10 @@ class ClangExtractor:
         stats: Dict[str, Any],
         canonical_key: Optional[Tuple[Any, ...]] = None,
     ) -> set[Tuple[str, int, int]]:
+        if self._derived_resolver is not None:
+            return self._derived_resolver.reference_locations(
+                candidate, kind, semantic_context, stats, canonical_key
+            )
         cache_key = (
             kind,
             (
@@ -4285,7 +4966,7 @@ class ClangExtractor:
         stats: Dict[str, Any],
     ) -> List[Tuple[str, int]]:
         cache = semantic_context.setdefault("definition_cache", {})
-        cache_key = (str(source_path.resolve()), int(line), int(character))
+        cache_key = (str(self._document_path(source_path)), int(line), int(character))
         if cache_key in cache:
             return list(cache[cache_key])
         self._consume_thread_request_timeout("textDocument/definition")
@@ -4307,6 +4988,9 @@ class ClangExtractor:
         return locations
 
     def _resolve_indexed_source_path(self, file_path: str) -> Path:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return Path(resolver.sources.path(file_path)["absolute"])
         path = Path(str(file_path or ""))
         if not path.is_absolute():
             path = self.project_root / path
@@ -4541,10 +5225,16 @@ class ClangExtractor:
                         if call_tasks:
                             if not index_barrier_completed and index_barrier is not None:
                                 if not index_barrier():
-                                    raise TimeoutError(
-                                        "clangd indexing did not complete before call extraction"
+                                    logger.warning(
+                                        "clangd indexing did not complete before call "
+                                        "extraction; continuing without %d deferred "
+                                        "call-edge groups for this batch",
+                                        len(call_tasks),
                                     )
-                                index_barrier_completed = True
+                                    call_tasks = []
+                                else:
+                                    index_barrier_completed = True
+                        if call_tasks:
                             call_worker_count = min(
                                 max(1, int(self.max_threads or 1)),
                                 8,
@@ -4697,174 +5387,24 @@ class ClangExtractor:
         end_line: int,
         call_rows: List[Tuple[Any, ...]],
         sym: Optional[Dict[str, Any]] = None,
-        known_local_functions: Optional[Union[Mapping[str, str], set[str]]] = None,
+        known_local_functions: Optional[set[str]] = None,
     ):
         """Extract call edges, preferring clangd's AST-backed call hierarchy."""
         hierarchy_count = self._extract_call_edges_from_call_hierarchy(
             file_path, caller_name, caller_file, start_line, call_rows, sym
         )
-        if hierarchy_count is None:
-            self._extract_call_edges_by_regex(
-                file_path,
-                caller_name,
-                caller_file,
-                start_line,
-                end_line,
-                call_rows,
-                known_local_functions=known_local_functions,
-            )
-        self._extract_typed_thread_callback_edges(
+        if hierarchy_count is not None:
+            return
+
+        self._extract_call_edges_by_regex(
             file_path,
             caller_name,
             caller_file,
             start_line,
             end_line,
             call_rows,
-            sym=sym,
             known_local_functions=known_local_functions,
         )
-
-    def _extract_typed_thread_callback_edges(
-        self,
-        file_path: Path,
-        caller_name: str,
-        caller_file: str,
-        start_line: int,
-        end_line: int,
-        call_rows: List[Tuple[Any, ...]],
-        *,
-        sym: Optional[Dict[str, Any]],
-        known_local_functions: Optional[Union[Mapping[str, str], set[str]]],
-    ) -> int:
-        """Index exact ``pthread_create`` direct callback symbols.
-
-        A callback argument is not an ordinary outgoing call, so clangd call
-        hierarchy does not reliably expose the reverse worker-to-creator edge.
-        Source text is used only as a cheap query gate.  The edge itself is
-        authorized exclusively by clangd's typed AST: the callee must be the
-        direct FunctionDecl ``pthread_create`` and argument 3 must be an exact
-        FunctionToPointerDecay of one unique local FunctionDecl.  Casts,
-        variables, aliases, address expressions and unknown symbols fail
-        closed.
-        """
-
-        if not sym or not known_local_functions:
-            return 0
-        if any(
-            str(name or "").rsplit("::", 1)[-1] == "pthread_create"
-            for name in known_local_functions
-        ):
-            # clangd's typed AST proves only that the spelling resolves to a
-            # FunctionDecl; it does not by itself prove POSIX provenance.  A
-            # translation-unit definition with the governed name shadows the
-            # external API contract and must not authorize a thread edge.
-            return 0
-        lines = self._read_source_lines(file_path)
-        if lines is None:
-            return 0
-        body = "".join(lines[max(0, start_line - 1) : max(start_line - 1, end_line)])
-        if not re.search(r"\bpthread_create\s*\(", self._mask_c_comments_and_literals(body)):
-            return 0
-        range_info = sym.get("range")
-        if not isinstance(range_info, dict):
-            location = sym.get("location")
-            range_info = location.get("range") if isinstance(location, dict) else None
-        if not isinstance(range_info, dict):
-            return 0
-        try:
-            ast = self.get_ast(file_path, range_info)
-        except Exception as exc:
-            logger.debug("Failed to query typed callback AST in %s: %s", caller_name, exc)
-            return 0
-        if not isinstance(ast, dict):
-            return 0
-
-        added = 0
-        seen: set[tuple[str, int]] = set()
-        for node in self._clangd_ast_nodes(ast):
-            if node.get("kind") != "Call" or node.get("role") != "expression":
-                continue
-            children = [value for value in node.get("children") or [] if isinstance(value, dict)]
-            if len(children) < 4:
-                continue
-            if self._clangd_direct_function_symbol(children[0]) != "pthread_create":
-                continue
-            callback_spelling = self._clangd_direct_function_symbol(children[3])
-            if isinstance(known_local_functions, Mapping):
-                callback = str(known_local_functions.get(callback_spelling) or "")
-            else:
-                callback = callback_spelling if callback_spelling in known_local_functions else ""
-            if not callback:
-                continue
-            raw_range = node.get("range")
-            raw_range = raw_range if isinstance(raw_range, dict) else {}
-            raw_start = raw_range.get("start")
-            raw_start = raw_start if isinstance(raw_start, dict) else {}
-            raw_line = raw_start.get("line")
-            if raw_line is None:
-                continue
-            try:
-                call_line = int(raw_line) + 1
-            except (TypeError, ValueError):
-                continue
-            if call_line < start_line or call_line > end_line:
-                continue
-            key = (callback, call_line)
-            if key in seen:
-                continue
-            seen.add(key)
-            call_rows.append(
-                (
-                    caller_name,
-                    caller_file,
-                    callback,
-                    caller_file,
-                    call_line,
-                    "callback",
-                    "thread_entry_function",
-                    "",
-                )
-            )
-            added += 1
-        return added
-
-    @classmethod
-    def _clangd_ast_nodes(cls, node: Any) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = []
-        if not isinstance(node, dict):
-            return result
-        result.append(node)
-        for child in node.get("children") or []:
-            result.extend(cls._clangd_ast_nodes(child))
-        return result
-
-    @staticmethod
-    def _clangd_direct_function_symbol(node: Mapping[str, Any]) -> str:
-        if (
-            node.get("kind") != "ImplicitCast"
-            or node.get("role") != "expression"
-            or node.get("detail") != "FunctionToPointerDecay"
-        ):
-            return ""
-        children = [value for value in node.get("children") or [] if isinstance(value, dict)]
-        expression_children = [value for value in children if value.get("role") == "expression"]
-        if len(expression_children) != 1:
-            return ""
-        ref = expression_children[0]
-        name = str(ref.get("detail") or "")
-        arcana = str(ref.get("arcana") or "")
-        if (
-            not name
-            or ref.get("kind") != "DeclRef"
-            or ref.get("role") != "expression"
-            or re.search(
-                rf"\b(?:Function|CXXMethod)\s+0x[0-9A-Fa-f]+\s+" rf"'{re.escape(name)}'(?:\s|$)",
-                arcana,
-            )
-            is None
-        ):
-            return ""
-        return name
 
     def _extract_deferred_call_edges(
         self,
@@ -4890,7 +5430,7 @@ class ClangExtractor:
                 int(end_line),
                 rows,
                 cast(Optional[Dict[str, Any]], sym),
-                cast(Union[Mapping[str, str], set[str]], known_local_functions),
+                cast(set[str], known_local_functions),
             )
         except Exception as exc:
             logger.debug("Failed to extract deferred calls in %s: %s", caller_name, exc)
@@ -4960,7 +5500,7 @@ class ClangExtractor:
         end_line: int,
         call_rows: List[Tuple[Any, ...]],
         *,
-        known_local_functions: Optional[Union[Mapping[str, str], set[str]]] = None,
+        known_local_functions: Optional[set[str]] = None,
     ):
         """Fallback call extraction for clangd versions without call hierarchy."""
         try:
@@ -4974,7 +5514,7 @@ class ClangExtractor:
                 file_path,
                 masked_source,
             )
-            local_functions = set(known_local_functions or ())
+            local_functions = known_local_functions or set()
 
             call_pattern = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
             seen: set[tuple[str, int]] = set()
@@ -5221,6 +5761,9 @@ class ClangExtractor:
     def _uri_to_project_path(self, uri: str) -> str:
         if not uri or not uri.startswith("file://"):
             return ""
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return str(resolver.sources.path(uri, uri=True)["project"])
         try:
             from urllib.parse import urlparse
             from urllib.request import url2pathname
@@ -5232,6 +5775,9 @@ class ClangExtractor:
             return ""
 
     def _project_relative_path(self, path: Path) -> str:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return str(resolver.sources.path(path)["project"])
         resolved = Path(path).resolve()
         try:
             return resolved.relative_to(self.project_root).as_posix()
@@ -5292,6 +5838,9 @@ class ClangExtractor:
         return False
 
     def _source_cache_key(self, file_path: Path) -> Optional[Tuple[str, int, int]]:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return cast(Optional[Tuple[str, int, int]], resolver.sources.version_key(file_path))
         try:
             resolved = Path(file_path).resolve()
             stat = resolved.stat()
@@ -5300,6 +5849,10 @@ class ClangExtractor:
         return (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
 
     def _read_source_text(self, file_path: Path) -> Optional[str]:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            lines = resolver.sources.lines(file_path)
+            return "".join(lines) if lines is not None else None
         cache_key = self._source_cache_key(file_path)
         if cache_key is None:
             return None
@@ -5326,6 +5879,9 @@ class ClangExtractor:
         return text
 
     def _read_source_lines(self, file_path: Path) -> Optional[List[str]]:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return cast(Optional[List[str]], resolver.sources.lines(file_path))
         cache_key = self._source_cache_key(file_path)
         if cache_key is None:
             return None

@@ -85,19 +85,19 @@ def test_source_and_decision_attribution_are_independent_and_overlap() -> None:
     issues = [
         {
             "attribution": {
-                "schema_version": "zscope.finding-attribution.v2",
-                "discovered_by": ["deterministic_rule", "hypothesis_hunter"],
+                "schema_version": "zscope.finding-attribution.v1",
+                "discovered_by": ["deterministic_rule", "llm_active_discovery"],
                 "discovery_details": [],
-                "decided_by": "proof_engine",
+                "decided_by": "validator_llm",
                 "decision_level": "V1",
             }
         },
         {
             "attribution": {
-                "schema_version": "zscope.finding-attribution.v2",
-                "discovered_by": ["hypothesis_hunter"],
+                "schema_version": "zscope.finding-attribution.v1",
+                "discovered_by": ["llm_active_discovery"],
                 "discovery_details": [],
-                "decided_by": "proof_engine",
+                "decided_by": "validator_llm",
                 "decision_level": "V2",
             },
         },
@@ -111,14 +111,14 @@ def test_source_and_decision_attribution_are_independent_and_overlap() -> None:
 
     assert result["explicit_count"] == 2
     assert result["by_discovery"]["deterministic_rule"]["true_positives"] == 1
-    assert result["by_discovery"]["hypothesis_hunter"]["true_positives"] == 1
-    assert result["by_discovery"]["hypothesis_hunter"]["raw_false_positives"] == 1
-    assert result["exclusive_by_discovery"]["hypothesis_hunter"] == {
+    assert result["by_discovery"]["llm_active_discovery"]["true_positives"] == 1
+    assert result["by_discovery"]["llm_active_discovery"]["raw_false_positives"] == 1
+    assert result["exclusive_by_discovery"]["llm_active_discovery"] == {
         "issues": 1,
         "true_positives": 0,
         "raw_false_positives": 1,
     }
-    assert result["by_decision"]["proof_engine"]["issues"] == 2
+    assert result["by_decision"]["validator_llm"]["issues"] == 2
     assert result["by_decision_level"]["V1"]["true_positives"] == 1
     assert result["by_decision_level"]["V2"]["raw_false_positives"] == 1
 
@@ -137,7 +137,7 @@ def test_source_and_decision_attribution_are_independent_and_overlap() -> None:
 
 @pytest.mark.parametrize(
     "schema_version",
-    [None, "zscope.finding-attribution.v0", "zscope.finding-attribution.v1"],
+    [None, "zscope.finding-attribution.v0", "zscope.finding-attribution.v2"],
 )
 def test_explicit_attribution_requires_exact_schema_version(schema_version) -> None:
     attribution = {
@@ -162,7 +162,7 @@ def test_explicit_attribution_requires_exact_schema_version(schema_version) -> N
         for item in finding_attribution({"attribution": attribution})["errors"]
         if item.startswith("schema_version must be")
     ]
-    assert "zscope.finding-attribution.v2" in error
+    assert "zscope.finding-attribution.v1" in error
 
 
 def test_explicit_attribution_rejects_non_array_discovery_sources() -> None:
@@ -412,6 +412,57 @@ def test_candidate_funnel_reports_v3_eligibility_entry_and_fact_breakdown() -> N
     assert funnel["canonical_group_attribution"]["transition_counts"]["V1->V3"] == 1
     assert "V1->V2" not in funnel["canonical_group_attribution"]["transition_counts"]
 
+    rung = funnel["canonical_group_attribution"]
+    assert rung["reached_by_rung"]["R1_validator_v1"] == 1
+    assert rung["reached_by_rung"]["R2_v3_reattempt"] == 1
+    assert rung["reached_by_rung"]["R3_v2b_adjudication"] == 0
+    assert rung["confirmed_by_rung"]["R2_v3_reattempt"] == 1
+    assert rung["confirmed_by_rung"]["R1_validator_v1"] == 0
+    assert rung["drop_reason_by_rung"]["R2_v3_reattempt"]
+
+
+def test_candidate_funnel_rung_projection_covers_r1_only_and_r3_marker() -> None:
+    report = {
+        "candidate_terminal_states": [
+            {
+                "validation_cluster_uid": "VAL-R1",
+                "candidate_uid": "CAND-R1",
+                "candidate_disposition": "needs_review",
+                "validation_attempt_count": 1,
+                "issue": {
+                    "attribution": {"decided_by": "unresolved", "decision_level": "V1"},
+                    "validator_pass_history": [{"pass": "initial", "verdict": "uncertain"}],
+                    "stop_reason": "no_evidence_gain",
+                },
+            },
+            {
+                "validation_cluster_uid": "VAL-R3",
+                "candidate_uid": "CAND-R3",
+                "candidate_disposition": "confirmed",
+                "validation_attempt_count": 2,
+                "issue": {
+                    "attribution": {"decided_by": "validator_llm", "decision_level": "V3"},
+                    "validator_v2b_entered": True,
+                    "validator_pass_history": [
+                        {"pass": "initial", "verdict": "uncertain"},
+                        {"pass": "v2b_adjudication", "verdict": "verified"},
+                    ],
+                },
+            },
+        ],
+        "issues": [],
+    }
+
+    funnel = candidate_funnel(report)
+    rung = funnel["canonical_group_attribution"]
+    assert rung["reached_by_rung"] == {
+        "R1_validator_v1": 2,
+        "R2_v3_reattempt": 0,
+        "R3_v2b_adjudication": 1,
+    }
+    assert rung["confirmed_by_rung"]["R3_v2b_adjudication"] == 1
+    assert rung["drop_reason_by_rung"]["R1_validator_v1"]["no_evidence_gain"] == 1
+
 
 def test_validator_replay_bundle_excludes_truth_and_prior_outcomes() -> None:
     report = {
@@ -511,9 +562,6 @@ def test_oci_isolation_plan_is_non_release_evidence_until_executed(
         "mounts_verified": True,
         "security_verified": True,
         "network_restriction_verified": True,
-        "proxy_credential_metadata_safe": True,
-        "provider_identity_sha256": "b" * 64,
-        "endpoint_origin": "https://models.internal:443",
         "network_mode": "model-endpoint-only",
         "network_policy_sha256": "c" * 64,
         "scanner_cwd": "/zscope-input",
@@ -546,14 +594,7 @@ def test_oci_isolation_plan_is_non_release_evidence_until_executed(
                 "network_peers_verified": True,
                 "network_contract_verified": True,
                 "proxy_verified": True,
-                "proxy_credential_metadata_safe": True,
-                "provider_identity_sha256": "b" * 64,
                 "scanner_labels_verified": True,
-                "scanner_provider_environment_verified": True,
-                "scanner_provider_environment_keys": ["Z_SCOPE_API_KEY"],
-                "stdout_persisted": False,
-                "stderr_persisted": False,
-                "cancellation_cleanup_guard_verified": True,
                 "image_verified": True,
                 "unexpected_mount_count": 0,
                 "container_inspect_sha256": "d" * 64,

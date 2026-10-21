@@ -10,6 +10,8 @@ MODULE_DOC_NAMES = (
     "retrieval-backends.md",
     "agent-runtime.md",
     "configuration-state.md",
+    "review-memory.md",
+    "wiki.md",
     "interfaces-reporting.md",
     "benchmarking.md",
 )
@@ -133,6 +135,4 @@ def test_repository_markdown_encoding_configuration() -> None:
     assert "insert_final_newline = true" in editorconfig
 
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
-    lines = attributes.splitlines()
-    for pattern in ("*.md", "*.c", "*.h", "*.ph", "CMakeLists.txt"):
-        assert f"{pattern} text eol=lf" in lines
+    assert "*.md text eol=lf" in attributes.splitlines()

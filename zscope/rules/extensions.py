@@ -578,11 +578,7 @@ class RuleRegistry:
 
     @staticmethod
     def _provider_entry_points() -> Dict[str, Any]:
-        entries = importlib.metadata.entry_points()
-        if hasattr(entries, "select"):
-            selected = entries.select(group=RULE_PROVIDER_ENTRY_POINT)
-        else:  # Python 3.9 importlib.metadata API
-            selected = entries.get(RULE_PROVIDER_ENTRY_POINT, [])
+        selected = importlib.metadata.entry_points().select(group=RULE_PROVIDER_ENTRY_POINT)
         available: Dict[str, Any] = {}
         for entry in selected:
             name = str(entry.name)

@@ -133,7 +133,11 @@ SVF 可能将 `llvm.memset.*`、`llvm.memcpy.*`、`llvm.memmove.*`、`llvm.trap`
 7. 保留 `get_function_info_callees()` 的完整查询语义，并逐步让普通调用图查询复用同一套 edge projection/过滤规则。
 8. 增加以下回归测试：过滤项位于首批结果、跨分页重复项、direct/indirect 重名合并、稳定排序、超大间接调用集合以及后端分页提前停止。
 
-## KI-005 通用旧 tool result 压缩可能丢失语义建模关键证据
+## KI-005 通用旧 tool result 压缩可能丢失语义建模关键证据（已缓解）
+
+### 修复状态
+
+已缓解。/zscope/framework/llm_client.py设置MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS=50
 
 ### 问题描述
 
@@ -419,3 +423,127 @@ complete_source_to_sink=true：0/21
 10. 将 completeness 拆分为独立状态：后端路径是否存在、entry 调用链是否找到、source endpoint 是否映射、sink endpoint 是否映射、源码边是否连续、运行时可行性是否证明。
 11. 在 Prompt 中删除固定 checker/schema/profile、空 backend path、空 function context、重复 reported location 和通用 Validator 模板；完整原始记录保留在审计元数据中。
 12. 增加单元和端到端测试：Saber 2.x/3.x 路径解析、原始输出持久化、数据库 round-trip、空路径、真实多节点路径、bug type 不作为 symbol、function/value 分离、调用链与 value-flow 分离、错误 fallback 禁止，以及 complete/proven 状态计算。
+
+## KI-011 Validator 前后 Evidence Completion 基本重复，缺失事实请求未驱动补全
+
+### 问题描述
+
+当前 Validator 流程存在两次 Evidence Completion：
+
+1. Validator 前，`complete_prevalidation()` 基于 Candidate 和已构建的 validation evidence 运行本地确定性 provider；如果得到可路由的 confirmation/rejection proof，可以直接处理 Candidate 并跳过 LLM。
+2. Validator 后，当 Validator 结果进入 `needs_review` 时，`complete()` 再运行同一组 `_completion_proofs()` provider；找到 proof 后重新执行一次 Validation Pipeline，未找到则标记为 `exhausted`。
+
+两次补全使用相同的 Candidate、代码、CFG/AST 事实和 evidence pack，中间没有重新执行事实后端，也没有增加新的代码证据。Validator 返回的：
+
+```json
+"missing_fact_request": [
+  {
+    "fact_kind": "value_range",
+    "subject": "wire_len",
+    "reason": "缺少 wire_len 的确定上界"
+  }
+]
+```
+
+目前只会被 Runner 校验并写入 `validator_missing_fact_requests`，随后复制到 `EvidenceCompletionRequest` 和报告遥测。Evidence Completion 不会根据 `fact_kind` 选择对应 provider，不会针对 `subject` 查询或计算事实，也不会判断生成的 proof 是否回答了具体请求。因此“完整请求数组贯通”目前只是数据与审计字段贯通，并不代表定向事实补全已经实现。
+
+后置补全与前置补全并非在所有情况下严格相同。Validator Pipeline 会在后置补全前写入 `blocking_negative_evidence`；当该字段为 `true` 时，Evidence Completion 会过滤 rejection proof。因此后置结果可能比前置结果更少，但通常不会产生前置阶段不存在的新 proof。其他 Validator 状态字段一般不参与 provider 的事实计算。
+
+此外，`EvidenceCompletionQueue` 当前同步运行一次本地 provider 集合，并不是真正的异步任务队列；`max_workers` 没有参与这条 provider 调度。
+
+### 影响
+
+- 对同一 Candidate 和同一 evidence，后置 Evidence Completion 通常重复前置计算并再次得到无 proof 的结果。
+- `missing_fact_request` 看起来像可执行补全请求，实际主要承担解释、报告和审计作用，接口名称容易高估系统能力。
+- 后置补全通常只增加重复计算和 `exhausted` 状态，不能补齐 LLM 指出的 value range、caller contract、ownership、lockset 等具体事实。
+- 当前状态只能表示整次聚合补全 `completed/exhausted`，不能表示每个 `(fact_kind, subject)` 请求的完成情况。
+- 即使任意 provider 生成 proof，也没有建立 proof 与具体请求之间的对应关系，无法证明请求已经得到回答。
+
+### 当前结论
+
+在没有新 evidence、且 `blocking_negative_evidence` 不改变 proof 过滤的常见情况下，Validator 前后 Evidence Completion 的结果等价。前置阶段若已找到权威 proof，Candidate 通常会跳过 Validator，因此后置阶段真正执行时大多是在重复一次已经失败的确定性补全。
+
+当前 Evidence Completion 应理解为“在已有材料上运行确定性证明规则”，而不是“执行 Validator 提出的缺失事实请求”。
+
+### 后续建议
+
+应明确选择以下一种方向：
+
+1. 如果短期不实现事实补采，删除后置重复补全，仅保留 Validator 前的 deterministic prevalidation；Validator 的 `missing_fact_request` 明确定位为审计信息。
+2. 如果保留后置补全，则建立真正的定向补全链路：
+   - 以 `(fact_kind, subject)` 路由到对应的确定性 fact provider；
+   - 对 subject 执行新的值域、调用者契约、ownership/cleanup、lockset/HB、对象 identity 或 reachability 查询；
+   - 将新事实写回 DecisionFactGraph 或等价稳定事实层；
+   - 逐项记录 `completed`、`exhausted`、`unsupported` 和生成的 fact/proof 引用；
+   - 仅在获得新事实后重新运行 deterministic proof 和 Validation Pipeline。
+3. 为补全建立 request-to-fact/proof 对应关系，禁止无关 provider 生成的任意 proof 将全部请求笼统标记为 completed。
+4. 如果保留 Queue 命名和 `max_workers` 配置，应实现真实的有界 provider 调度；否则重命名为同步 completion pass，并删除无效并发配置，避免错误预期。
+5. 增加端到端测试：前后 evidence 不变时不得重复执行无收益补全；特定 fact kind/subject 只调用匹配 provider；多请求逐项状态；空请求行为；新事实写回后 proof 重算；`blocking_negative_evidence` 的过滤差异。
+
+## KI-012 思考过程未回传且叠加输出上限，导致思维链断裂与无限思考（已缓解）
+
+### 修复状态
+
+已缓解。当上一轮 API 返回 finish_reason="length" 时，下一次续写请求保留最近一轮 reasoning。更早轮次的思考过程仍会删除，避免上下文持续膨胀。
+
+### 问题描述
+
+`LLMClient.run_conversation_with_tools()` 在内存中保留 provider 返回的 `reasoning_content`，但发送下一轮请求前，`_prepare_messages_for_model()` 会删除历史 assistant message 中的 `reasoning_content`。因此，模型在一次响应因输出上限（`finish_reason=length`）被截断后，下一轮只能看到不完整或空的 assistant 内容，无法接续上一轮已经进行的思考。
+
+当前逻辑在 `finish_reason=length` 后无条件追加“请继续”。当 completion budget 主要被思考过程消耗、最终 `content` 为空时，后续请求没有可供续写的思维状态；模型只能重新推演，重新消耗输出上限，形成“思考—截断—重新思考”的循环，表现为无限思考而无法产生最终 JSON。
+
+### 实际证据
+
+在 `test/range/.zscope_conversations/run_20260813_123452_52026/zscope-validator-2-validator_agent-0016.md` 中，最后一轮保留约 33,674 字符 `reasoning_content`，但 `content` 为空并以 `finish_reason=length` 结束。此前多轮 reasoning 已反复接近同一 `uncertain` 判断，但由于后续请求看不到这些思考内容，模型持续重新分析，最终达到 `50/50` 轮仍未输出 validation JSON。
+
+### 影响
+
+- 被截断的思考无法在下一轮恢复，模型重复消耗 reasoning token；
+- “请继续”无法真正续写空的 assistant 输出，可能演变为无限思考；
+- 单个候选的 wall time、API 调用和 token 成本失控，并可能达到最大迭代次数；
+- 已形成但未落盘的判断丢失，候选被迫降级为 Needs Review 或 protocol-exhausted。
+
+### 暂缓原因
+
+续写需要在上下文长度、reasoning 可见性、结构化终态协议和输出预算之间取得一致策略。当前主会话投影、自动续写和失败后的 Repair 没有共享明确的状态边界，贸然保留全部 reasoning 可能造成上下文膨胀，完全删除又无法恢复思考状态。
+
+### 后续建议
+
+1. 为 `finish_reason=length` 定义专用 continuation 状态：保留可恢复的 reasoning 摘要或尾部，并明确要求直接输出最终 JSON，而不是无条件追加“请继续”。
+2. 当 `content` 为空且仅有 reasoning 时，限制续写次数；再次出现 `length` 或空输出时立即停止主循环并进入有界的结构化 Repair/降级路径。
+3. 在 API 调用前对 continuation 和 Repair envelope 执行硬 token 上限检查，避免截断响应触发更大的上下文膨胀。
+4. 让主会话与 Repair 共享明确的 projection contract，仅保留生成终态所需的证据、状态摘要和最后失败输出。
+5. 增加回归测试：reasoning-only `length`、连续空 assistant、continuation 状态保留、续写次数上限、Repair 上下文上限和 `budget_exhausted` 降级。
+
+## KI-013 Loop Guard 触发后禁用全部工具（已修复）
+
+### 修复状态
+
+已修复。`LLMClient.run_conversation_with_tools()` 现在只会禁用触发 Loop Guard 的工具，保留其他普通工具和终态工具。即使模型继续请求已禁用工具，执行层也会拒绝该调用而不影响其他同轮工具调用。
+
+### 问题描述
+
+修复前，`LLMClient.run_conversation_with_tools()` 触发 Loop Guard 后，会设置 `loop_guard_recovery`，并从后续请求中移除全部普通工具 schema；如果没有配置终态工具，模型将无法再调用任何工具。Loop Guard 通常是针对同一个工具及同一组参数的重复调用，但旧恢复策略却把其他尚未尝试的工具一并禁用。
+
+### 实际证据
+
+在 `test/range/.zscope_conversations/run_20260813_123452_52026/zscope-validator-2-validator_agent-0016.md` 中，第 11 轮重复请求 `get_file_snippet(src/lifecycle.c,147-167)` 后触发 Loop Guard。随后普通工具均不可用，模型失去了继续获取其他证据的能力；该会话最终未生成 validation JSON。
+
+### 影响
+
+- 一个工具的重复调用会阻断其他工具提供补充证据；
+- Validator 可能在证据尚未完成时被迫作出不充分的终态判断；
+- 触发 Loop Guard 的候选更容易进入 Needs Review 或 protocol-exhausted；
+- 当前禁用范围无法区分“重复调用的工具”与“仍然安全可用的工具”。
+
+### 暂缓原因
+
+Loop Guard 需要与工具调用去重、参数规范化、结果缓存、工具依赖关系和终态工具发射保持一致。缩小禁用范围前，必须明确重复调用的精确签名及其生命周期，否则可能只是绕过当前拦截而重新进入同一循环。
+
+### 后续建议
+
+1. 首次触发时按“工具名 + 规范化参数”记录并封禁精确调用签名，只阻止该重复调用，其他工具继续可用。
+2. 再次请求相同签名时返回已有结果或明确的 Loop Guard 提示，不重复执行；只有多个不同签名连续触发时，才升级为禁用全部普通工具。
+3. 始终保留 `emit_validation_result` 等终态工具，确保模型仍能提交结构化终态。
+4. 将 Loop Guard 的触发签名、实际禁用工具、升级原因和最终退出状态写入 conversation 与 batch report，供 metrics 和异常附录核对。
+5. 增加回归测试：同签名重复调用只禁用该签名；其他工具仍可调用；重复签名命中缓存；多签名升级策略；终态工具保持可用。

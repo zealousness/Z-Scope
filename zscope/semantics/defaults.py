@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List
 import yaml
 
 from .models import LocalPatternSemantics
+from .contracts import ApiContract, ApiPair, SymbolIdentity
 
 
 DEFAULT_SEMANTICS_SOURCE = "builtin_defaults"
@@ -22,6 +23,12 @@ _ROLE_TO_CATEGORY = {
     "copy_sinks": "copy",
     "lock_apis": "lock",
     "unlock_apis": "unlock",
+    "io_acquirers": "io_acquire",
+    "io_releasers": "io_release",
+    "send_sinks": "send_sink",
+    "recv_sources": "recv_source",
+    "format_sinks": "format_sink",
+    "callback_registrars": "callback_register",
 }
 
 
@@ -53,10 +60,41 @@ def default_local_pattern_semantics() -> LocalPatternSemantics:
         for role_name, category in _ROLE_TO_CATEGORY.items():
             for api in _string_list(roles.get(role_name)):
                 semantics.add_api(category, api, DEFAULT_SEMANTICS_SOURCE)
+                contract = ApiContract.from_row(
+                    {"symbol_name": api, "kind": category, "source": DEFAULT_SEMANTICS_SOURCE}
+                )
+                if contract is not None:
+                    semantics.contracts.add(contract)
+    for family in (data.get("resource_families") or {}).values():
+        for acquire in family.get("acquire", []):
+            for release in family.get("release", []):
+                semantics.contracts.pairs.append(
+                    ApiPair(
+                        SymbolIdentity(acquire),
+                        SymbolIdentity(release),
+                        source=DEFAULT_SEMANTICS_SOURCE,
+                    )
+                )
+    from .standard_api import standard_contracts
+
+    for raw in standard_contracts():
+        contract = ApiContract.from_row({"contract": raw})
+        if contract is None:
+            raise ValueError("Invalid built-in API contract: " + raw["symbol"]["name"])
+        semantics.contracts.contracts = [
+            c for c in semantics.contracts.contracts
+            if not (c.source == DEFAULT_SEMANTICS_SOURCE and c.symbol == contract.symbol and c.role == contract.role)
+        ]
+        semantics.contracts.add(contract)
+        semantics.add_api(contract.role, contract.symbol.name, DEFAULT_SEMANTICS_SOURCE)
+        for target in contract.pairs:
+            edge = ApiPair(contract.symbol, target, source=DEFAULT_SEMANTICS_SOURCE)
+            if edge not in semantics.contracts.pairs:
+                semantics.contracts.pairs.append(edge)
     return semantics
 
 
-def default_overlay_models() -> Dict[str, List[Dict[str, Any]]]:
+def default_overlay_models() -> Dict[str, Any]:
     """Return checker-facing overlay rows for built-in API semantics."""
 
     data = load_default_semantics_data()
@@ -64,9 +102,11 @@ def default_overlay_models() -> Dict[str, List[Dict[str, Any]]]:
     roles: Dict[str, Any] = raw_roles if isinstance(raw_roles, dict) else {}
     resources: List[Dict[str, Any]] = []
     locks: List[Dict[str, Any]] = []
+    registry = default_local_pattern_semantics().contracts
     for role_name, category in _ROLE_TO_CATEGORY.items():
         for api in _string_list(roles.get(role_name)):
             model = _api_model(api, category)
+            model["pair"] = ", ".join(sorted(registry.releases(api)))
             if category in {"lock", "unlock"}:
                 locks.append(model)
             else:
@@ -75,6 +115,9 @@ def default_overlay_models() -> Dict[str, List[Dict[str, Any]]]:
         "resource_models": resources,
         "lock_models": locks,
         "macro_models": [],
+        "api_contracts": [c.to_dict() for c in registry.contracts],
+        "api_pairs": [p.to_dict() for p in registry.pairs],
+        "contract_version": registry.version,
     }
 
 
@@ -106,6 +149,18 @@ def _carrier(kind: str) -> str:
         return "copy_arguments"
     if kind in {"lock", "unlock"}:
         return "lock_argument"
+    if kind == "io_acquire":
+        return "return_value"
+    if kind == "io_release":
+        return "argument_resource"
+    if kind == "send_sink":
+        return "copy_arguments"
+    if kind == "recv_source":
+        return "return_value"
+    if kind == "format_sink":
+        return "format_arguments"
+    if kind == "callback_register":
+        return "callback_arguments"
     return "unknown"
 
 

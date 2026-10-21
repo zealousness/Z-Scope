@@ -9,11 +9,5 @@
 *.toml text eol=lf
 *.c text eol=lf
 *.h text eol=lf
-*.ph text eol=lf
-CMakeLists.txt text eol=lf
 *.java text eol=lf
 *.xml text eol=lf
-
-# Preserve the byte-identical cJSON qualification snapshot, including upstream
-# whitespace. The source-manifest binds and verifies each vendored file hash.
-tests/fixtures/p5_cjson/source/** -text whitespace=-trailing-space,-blank-at-eof

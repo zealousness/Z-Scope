@@ -4,14 +4,24 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Z-SCOPE | AI 代码审计看板</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.css" rel="stylesheet" type="text/css" />
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
+    <link rel="stylesheet" href="vendor/tailwind.css">
+    <link href="vendor/daisyui.css" rel="stylesheet" type="text/css" />
+    <script defer src="vendor/alpine.js"></script>
+    <link rel="stylesheet" href="vendor/prism.css">
+    <script src="vendor/prism.js"></script>
+    <script src="vendor/prism-c.js"></script>
+    <script src="vendor/markdown-it.js"></script>
+    <script src="vendor/js-yaml.js"></script>
+    <script src="vendor/fflate.js"></script>
+    <script src="vendor/prism-cpp.js"></script>
+    <script src="vendor/prism-java.js"></script>
+    <script src="report_view.js"></script>
+    <script src="dashboard_reports.js"></script>
+    <script src="dashboard_workbench.js"></script>
+    <script src="dashboard_config.js"></script>
+    <link rel="stylesheet" href="report_view.css">
+    <link rel="stylesheet" href="dashboard_workbench.css">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;600;700&display=swap');
         body { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
         .code-font { font-family: 'Fira Code', monospace; }
         .glass {
@@ -535,12 +545,34 @@
             grid-column: 1 / -1;
             min-width: 0;
         }
-        .audit-decision-textarea {
+        .audit-decision-fields {
             grid-column: 1;
             grid-row: 2;
+            min-width: 0;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 0.45rem;
+        }
+        .audit-decision-field {
+            min-width: 0;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 0.3rem;
+        }
+        .audit-validator-textarea {
+            width: 100%;
+            height: clamp(52px, 26%, 120px);
+            resize: none;
+            font-size: 0.72rem;
+            line-height: 1.45;
+            background: #f8fafc;
+        }
+        .audit-rebuttal-textarea {
             width: 100%;
             height: 100%;
-            min-height: 96px;
+            min-height: 64px;
             resize: none;
         }
         .audit-decision-controls {
@@ -646,32 +678,39 @@
         <div class="flex items-center gap-3">
             <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-white">Z</div>
             <div>
-                <h1 class="text-lg font-bold tracking-tight text-slate-950">Z-SCOPE <span class="text-xs font-normal text-slate-500" x-text="appVersion">v1.3.1</span></h1>
+                <h1 class="text-lg font-bold tracking-tight text-slate-950">Z-SCOPE <span class="text-xs font-normal text-slate-500" x-text="appVersion">v1.3.2</span></h1>
                 <p class="text-xs text-slate-500">AI 代码审计工作台</p>
             </div>
         </div>
         <div class="flex flex-wrap gap-2 items-center">
-            <div class="tabs tabs-boxed bg-slate-100">
-                <a class="tab tab-sm" :class="activeTab==='findings' && 'tab-active'" @click="activeTab='findings'">审计发现</a>
-                <a class="tab tab-sm" :class="activeTab==='rules' && 'tab-active'" @click="activeTab='rules';loadRules()">规则目录</a>
-                <a class="tab tab-sm" :class="activeTab==='specs' && 'tab-active'" @click="activeTab='specs';loadSecuritySpecs()">Security Specs</a>
-                <a class="tab tab-sm" :class="activeTab==='project' && 'tab-active'" @click="activeTab='project';loadStructuredConfig()">项目配置</a>
-                <a class="tab tab-sm" :class="activeTab==='config' && 'tab-active'" @click="activeTab='config';configSubTab='workbook';loadWorkbookConfig()">用户配置</a>
-                <a class="tab tab-sm" :class="activeTab==='warnings' && 'tab-active'" @click="openDashboard()">看板</a>
+            <div class="wb-topnav" aria-label="扫描工作流程">
+                <button type="button" :aria-current="activeTab==='prepare' ? 'page' : null" @click="activeTab='prepare'"><small>01</small>项目准备</button>
+                <button type="button" :aria-current="activeTab==='jobs' ? 'page' : null" @click="activeTab='jobs';loadJobs()"><small>02</small>夜间作业</button>
+                <button type="button" :aria-current="activeTab==='acceptance' ? 'page' : null" @click="activeTab='acceptance'"><small>03</small>集中验收</button>
+                <button type="button" :aria-current="activeTab==='findings' ? 'page' : null" @click="activeTab='findings'">问题详情</button>
+                <details class="wb-technical">
+                    <summary>配置与工具</summary>
+                    <button type="button" @click="activeTab='project'">项目配置</button>
+                    <button type="button" @click="activeTab='rules';loadRules()">规则目录</button>
+                    <button type="button" @click="activeTab='config';configSubTab='workbook';loadWorkbookConfig()">业务模型</button>
+                    <button type="button" @click="openDashboard()">诊断看板</button>
+                </details>
             </div>
-            <div class="badge badge-outline gap-2" :class="cpgStatusClass">
+            <div x-show="activeTab==='findings'" class="badge badge-outline gap-2" :class="cpgStatusClass">
                 <span class="w-2 h-2 rounded-full" :class="cpgDotClass"></span>
                 CPG: <span x-text="cpgStatus">unknown</span>
             </div>
-            <div class="badge badge-outline gap-2" :class="statusClass">
+            <div x-show="activeTab==='findings'" class="badge badge-outline gap-2" :class="statusClass">
                 <span class="w-2 h-2 rounded-full" :class="statusDotClass"></span>
                 <span x-text="statusText">正在加载...</span>
             </div>
-            <button @click="refreshData()" class="btn btn-outline btn-sm">刷新</button>
-            <button @click="exportOfflinePage()" class="btn btn-ghost btn-sm">离线导出</button>
-            <button @click="triggerOfflineImport()" class="btn btn-ghost btn-sm">导入</button>
-            <button @click="saveFindings()" class="btn btn-primary btn-sm" :disabled="savingFindings || savingSingleFinding" x-text="savingFindings ? '保存中...' : '回写验证结果'">回写验证结果</button>
-            <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".html,text/html">
+            <button x-show="activeTab==='findings'" @click="refreshData()" class="btn btn-outline btn-sm">刷新</button>
+            <button x-show="activeTab==='findings'" @click="exportOfflinePage()" class="btn btn-ghost btn-sm" :disabled="exportingReport" x-text="exportingReport ? '导出中…' : '离线导出'"></button>
+            <button x-show="activeTab==='findings'" @click="triggerOfflineImport()" class="btn btn-ghost btn-sm" :disabled="importingReviews">导入</button>
+            <button x-show="activeTab==='findings'" @click="triggerDirectoryImport()" class="btn btn-ghost btn-sm" :disabled="importingReviews">导入目录</button>
+            <input type="file" x-ref="reviewDirectoryInput" @change="importOfflinePage($event)" class="hidden" webkitdirectory multiple>
+            <button x-show="activeTab==='findings'" @click="saveFindings()" class="btn btn-primary btn-sm" :disabled="savingFindings || savingSingleFinding" x-text="savingFindings ? '保存中...' : '回写验证结果'">回写验证结果</button>
+            <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".md,.zip" multiple>
         </div>
     </nav>
 
@@ -684,6 +723,186 @@
     </div>
 
     <main class="main-shell p-5">
+
+    <section class="wb-shell" x-show="activeTab==='prepare'" x-cloak aria-labelledby="wb-prepare-title">
+        <div class="wb-heading">
+            <div><div class="wb-eyebrow">01 / PREPARE</div><h2 id="wb-prepare-title">把工程准备好，交给这一夜。</h2><p>核对本轮实际范围和运行条件；已有配置可以直接开始。</p></div>
+            <button type="button" class="wb-button" @click="activeTab='project'" x-text="'编辑项目配置'"></button>
+        </div>
+        <div class="wb-grid">
+            <div class="wb-stack">
+                <section class="wb-card" :aria-busy="preparationLoading">
+                    <div class="wb-card-head"><h3>本轮工程</h3><button type="button" class="wb-button" @click="loadPreparation()" :disabled="preparationLoading || configDirty" x-text="preparationLoading ? '检查中…' : '重新检查'"></button></div>
+                    <p class="wb-notice wb-notice-warning" x-show="configDirty">配置有未保存修改。请先保存，再核对本轮扫描范围。</p>
+                    <p class="wb-notice wb-notice-error" x-show="preparationError" x-text="preparationError" role="alert"></p>
+                    <p class="wb-empty" x-show="!preparation && !preparationLoading && !preparationError && !configDirty">尚未读取工程配置。检查已保存配置后开始。</p>
+                    <p class="wb-muted" x-show="preparationLoading" role="status">正在读取工程路径、编译配置和本地工具…</p>
+                    <template x-if="preparation && !configDirty">
+                        <div>
+                            <dl class="wb-list">
+                                <div><dt>工程位置</dt><dd class="wb-path" x-text="preparation.project.root"></dd></div>
+                                <div><dt>实际配置</dt><dd class="wb-path" x-text="preparation.config_path"></dd></div>
+                                <div><dt>执行目录</dt><dd class="wb-path" x-text="preparation.working_directory"></dd></div>
+                                <div><dt>语言 / 后端</dt><dd x-text="preparation.project.language + ' / ' + preparation.project.backend"></dd></div>
+                                <div><dt>构建范围</dt><dd x-text="preparationBuildText()"></dd></div>
+                                <div><dt>扫描入口</dt><dd x-text="preparation.scan.entry || (preparation.scan.entry_discovery ? '自动发现入口' : '按已保存配置选择')"></dd></div>
+                                <div><dt>扫描重点</dt><dd x-text="preparation.version3 ? '见下方配置意图及接入状态' : preparation.scan.focus"></dd></div>
+                                <div><dt>源码版本</dt><dd>以作业启动时记录的实际输入为准，包含未提交修改。</dd></div>
+                            </dl>
+                            <hr class="wb-rule">
+                            <template x-for="(message, index) in preparation.messages" :key="index"><p class="wb-notice wb-notice-warning" x-text="message.message"></p></template>
+                            <p class="wb-muted" x-show="preparation.build.link_targets === 'unverified'">链接目标尚未核验。编译实例数量不代表所有目标均已完成扫描。</p>
+                        </div>
+                    </template>
+                </section>
+                <template x-if="preparation?.version3 && !configDirty"><section class="wb-card" id="wb-v3-preparation">
+                    <div class="wb-card-head"><h3>构建目标与配置意图</h3><span class="wb-tag">配置 v3</span></div>
+                    <p class="wb-muted">逐个核对已声明目标；能够读取配置，不代表每项能力都已参与执行。</p>
+                    <dl class="wb-list">
+                        <div><dt>目标平台</dt><dd x-text="preparation.version3.platform"></dd></div>
+                        <div><dt>分析预设</dt><dd x-text="presetLabel(preparation.version3.preset.preset) + ' · 当前映射为 ' + ({fast:'快速',balanced:'均衡',deep:'深入'})[preparation.version3.preset.mapped_depth]"></dd></div>
+                        <div><dt>声明的重点</dt><dd x-text="preparation.version3.focus.join('、') || '未指定'"></dd></div>
+                        <div><dt>声明的复现</dt><dd x-text="({auto:'自动',off:'关闭',manual:'手动'})[preparation.version3.reproduction] || preparation.version3.reproduction"></dd></div>
+                        <div><dt>声明的工作数</dt><dd x-text="numberText(preparation.version3.max_workers)"></dd></div>
+                        <div><dt>配置运行时区</dt><dd x-text="preparation.version3.execution.timezone || '未指定'"></dd></div>
+                        <div><dt>配置停止边界</dt><dd class="wb-path" x-text="preparation.version3.execution.resolved_stop_time || '未设置'"></dd></div>
+                    </dl>
+                    <p class="wb-notice wb-notice-warning" x-show="!preparation.version3.execution.scheduler_consumer_wired">配置停止边界尚未接入任务调度。可另设本轮停止时间；本条仅表示当前配置停止边界未接入，不代表全部停止能力不可用。</p>
+                    <template x-for="target in preparation.version3.targets" :key="target.id"><article class="wb-target">
+                        <h4 x-text="target.id"></h4><p class="wb-path" x-text="target.compile_commands || '此目标未声明编译数据库'"></p>
+                        <p x-text="targetBuildText(target)"></p><template x-for="(message,index) in target.messages" :key="index"><p class="wb-notice wb-notice-warning" x-text="message.message"></p></template>
+                    </article></template>
+                    <template x-for="field in preparation.version3.declared_not_consumed" :key="field"><p class="wb-notice wb-notice-warning" x-text="declaredFieldLabel(field) + '：已声明，尚未参与执行。'"></p></template>
+                    <template x-for="(reason,index) in preparation.version3.start_capability.reasons" :key="index"><p class="wb-notice wb-notice-error" role="alert" x-text="capabilityReason(reason)"></p></template>
+                </section></template>
+                <section class="wb-card" x-show="preparation && !configDirty">
+                    <h3>模型与工具</h3>
+                    <div class="wb-actions"><template x-for="tool in (preparation?.tools || [])" :key="tool.name"><span class="wb-tag" x-text="tool.name + (tool.available_on_path ? ' · 已找到' : ' · 未找到')"></span></template></div>
+                    <div class="wb-list"><template x-for="model in (preparation?.models || [])" :key="model.profile"><p class="wb-muted" x-text="model.profile + (model.configured ? '：连接参数已配置' : '：连接参数不完整') + (model.connection_checked ? '，已检查连接' : '，连接尚未实测')"></p></template></div>
+                    <p class="wb-notice">准备检查只确认配置与工具存在性；工具能否运行、模型能否连接及实际覆盖会在执行时记录。</p>
+                </section>
+            </div>
+            <section class="wb-card">
+                <h3>安排本轮扫描</h3>
+                <p class="wb-muted">关闭页面后，已启动的后台作业继续运行。请保持主机、WSL 和模型服务运行；休眠期间不会继续计算。</p>
+                <label class="wb-field">本轮分析深度<select aria-label="本轮分析深度" x-model="workbenchDepth"><option value="">沿用已保存配置 / 预设</option><option value="fast">快速检查</option><option value="balanced" :disabled="preparation?.project.language === 'java'">均衡分析</option><option value="deep" :disabled="preparation?.project.language === 'java'">深入分析</option></select><small x-show="isV3Config()">只覆盖本轮深度，不改写已保存的预设。</small></label>
+                <label class="wb-field">本轮停止时间（可选）<input type="datetime-local" step="1" aria-label="本轮停止时间（可选）" x-model="workbenchStopAt"><small>按浏览器时区 <span x-text="localTimezone()"></span>。留空使用已保存 v3 配置的停止窗口（如有）；无配置窗口则不设置截止。填写此处会覆盖配置窗口。</small></label>
+                <p class="wb-notice wb-notice-warning">到时停止新增工作，协作收尾并记录未决范围；仍可能留下未完成项，不保证逐实例候选与义务的完整恢复。</p>
+                <dl class="wb-list">
+                    <div><dt>自动复现</dt><dd x-text="preparation?.version3 && !preparation.version3.machine_flags.reproduction_wired ? '配置意图尚未接入执行' : ({off: '关闭', shadow: '仅收集证据', on: '启用'})[preparation?.scan.reproduction] || '以已保存配置为准'"></dd></div>
+                    <div><dt>独立产物位置</dt><dd class="wb-path" x-text="preparation?.scan.artifact_directory || '检查配置后显示'"></dd></div>
+                </dl>
+                <hr class="wb-rule">
+                <div class="wb-notice wb-notice-error" x-show="jobsError" role="alert"><strong>夜间作业暂不可用</strong><p x-text="jobsError"></p><button type="button" class="wb-button" @click="loadJobs()" :disabled="jobsLoading">重试连接</button></div>
+                <template x-for="(reason, index) in (jobCapabilities.reasons || [])" :key="index"><p class="wb-notice wb-notice-warning" x-text="capabilityReason(reason)"></p></template>
+                <p class="wb-muted" x-show="jobsLoading && !jobsReady" role="status">正在检查作业服务…</p>
+                <p class="wb-notice wb-notice-error" x-show="jobActionError" x-text="jobActionError" role="alert"></p>
+                <div class="wb-actions"><button type="button" class="wb-button wb-button-primary" @click="startWorkbenchJob()" :disabled="!canStartJob()" x-text="jobBusy ? '正在提交…' : '开始夜间扫描'"></button><button type="button" class="wb-button" @click="startWorkbenchJob(true)" :disabled="!canStartJob()">快速检查</button></div>
+                <div class="wb-notice wb-notice-warning" x-show="jobCommand && !jobBusy">上次请求结果尚未确认。重试会使用同一请求标识，不重复创建作业。<button type="button" class="wb-button" @click="sendJobCommand()">核对并重试原请求</button></div>
+                <p class="wb-muted" style="margin-top:16px">业务未知会保留为待验收问题，其他工作继续。未测范围与部分结果会清楚标记。</p>
+            </section>
+        </div>
+    </section>
+
+    <section class="wb-shell" x-show="activeTab==='jobs'" x-cloak aria-labelledby="wb-jobs-title">
+        <div class="wb-heading"><div><div class="wb-eyebrow">02 / RUN</div><h2 id="wb-jobs-title">作业状态与进展，有据可查。</h2><p>页面重连后读取后台保存的状态；断线时保留最近一次记录。</p></div><button type="button" class="wb-button" @click="loadJobs(); if(job) loadJob(job.job_id)" :disabled="jobsLoading">刷新作业</button></div>
+        <p class="wb-notice wb-notice-error" x-show="jobsError" role="alert"><span x-text="jobsError"></span> 最近状态可能已过期，控制操作暂不可用。</p>
+        <p class="wb-notice wb-notice-error" x-show="jobActionError" x-text="jobActionError" role="alert"></p>
+        <div class="wb-notice wb-notice-warning" x-show="jobCommand && !jobBusy">操作结果尚未确认，原请求标识已保留。<button type="button" class="wb-button" @click="sendJobCommand()">核对并重试原请求</button></div>
+        <div class="wb-grid">
+            <div class="wb-stack">
+                <section class="wb-card" x-show="!job"><h3>尚未选择作业</h3><p class="wb-empty" x-text="jobsLoading ? '正在读取后台作业…' : '从项目准备开始扫描，或从右侧选择已有作业。'"></p><button type="button" class="wb-button" @click="activeTab='prepare'">返回项目准备</button></section>
+                <template x-if="job"><section class="wb-card">
+                    <div class="wb-card-head"><h3 x-text="jobStatusText(job.status)"></h3><span class="wb-tag" x-text="job.owner?.state === 'alive' ? '执行进程在线' : '执行进程：' + ({exited:'已退出',lost:'失联',unknown:'待核实'})[job.owner?.state || 'unknown']"></span></div>
+                    <p class="wb-muted" x-text="jobPhaseText(job.phase)"></p>
+                    <progress class="wb-progress" x-show="jobProgressPercent() !== null" :value="job.progress?.completed || 0" :max="job.progress?.total || 1" aria-label="已完成工作项"></progress>
+                    <p class="wb-muted" x-show="job.progress?.completed == null">当前工作量尚未测量，不估算百分比。</p>
+                    <p class="wb-muted" x-show="job.progress?.completed != null"><span x-text="numberText(job.progress?.completed)"></span> 项已完成 <span x-show="job.progress?.total !== null && job.progress?.total !== undefined"> / <span x-text="numberText(job.progress?.total)"></span> 项</span><span x-show="jobProgressPercent() === null"> · 总量尚未确定，不估算百分比</span></p>
+                    <dl class="wb-list"><div><dt>开始时间</dt><dd x-text="timeText(job.started_at)"></dd></div><div><dt>最近更新</dt><dd x-text="timeText(job.updated_at)"></dd></div><div><dt>本轮时窗</dt><dd x-text="job.resolved_stop_time ? timeText(job.resolved_stop_time) : '运行至结束'"></dd></div><div><dt>剩余工作</dt><dd x-text="numberText(job.pending_count)"></dd></div><div><dt>延期工作</dt><dd x-text="numberText(job.progress?.deferred)"></dd></div></dl>
+                    <p class="wb-muted" x-text="'已记录业务问题：' + numberText(job.questions?.length)"></p>
+                    <p class="wb-notice" x-text="coverageText(job.coverage)"></p>
+                    <template x-for="(gap, index) in coverageGaps(job.coverage)" :key="index"><p class="wb-notice wb-notice-warning" x-text="gapText(gap)"></p></template>
+                    <p class="wb-notice wb-notice-error" x-show="job.error" x-text="jobErrorText(job.error)" role="alert"></p>
+                    <template x-for="(reason, index) in (job.capabilities?.reasons || [])" :key="index"><p class="wb-muted" x-text="capabilityReason(reason)"></p></template>
+                    <div class="wb-actions" style="margin-top:20px"><button type="button" class="wb-button wb-button-primary" @click="openJobResult()" :disabled="!job.report?.available">查看本轮结果</button><button type="button" class="wb-button" @click="controlJob('resume')" :disabled="!job.capabilities?.resume || jobBusy || !!jobCommand || !!jobsError">重新尝试此作业</button><button type="button" class="wb-button wb-button-danger" @click="controlJob('cancel')" :disabled="!job.capabilities?.cancel || jobBusy || !!jobCommand || !!jobsError">停止并保留已有结果</button></div>
+                    <p class="wb-muted" x-show="job.status === 'stopping'">已请求停止，仍在等待后台确认扫描进程退出；当前并非已停止。</p>
+                    <p class="wb-notice wb-notice-warning">停止会停止新增工作、协作收尾并记录未决范围。重新尝试会创建新的运行并重核输入，不保证只处理剩余项；恢复时清空上轮停止窗口，不自动沿用配置或上轮截止时间。</p>
+                    <p class="wb-notice wb-notice-error" x-show="jobResultError" x-text="jobResultError" role="alert"></p>
+                    <details class="wb-technical"><summary>作业身份与产物</summary><dl class="wb-list"><div><dt>作业</dt><dd class="wb-path" x-text="job.job_id"></dd></div><div><dt>本次运行</dt><dd class="wb-path" x-text="job.run_id"></dd></div><div><dt>输入版本</dt><dd class="wb-path" x-text="job.input_revision || '未记录'"></dd></div></dl><template x-for="(artifact,index) in (job.artifacts || [])" :key="index"><p class="wb-path" x-text="artifact.kind + ' · ' + artifact.status + ' · ' + artifact.path"></p></template></details>
+                </section></template>
+                <section class="wb-card" x-show="job"><h3>集中待回答</h3><p class="wb-muted">问题不会阻塞其他工作。验收时补充前提，再核验受影响结论。</p><p class="wb-empty" x-show="!job?.questions?.length">当前没有已记录的业务问题。</p><template x-for="question in (job?.questions || [])" :key="question.id"><article class="wb-notice"><strong x-text="question.question"></strong><p x-text="'影响范围：' + (question.affected_scope || '待明确')"></p><p x-text="question.impact"></p><p x-text="'当前处理：' + (question.current_assumption || '保留未知')"></p></article></template></section>
+            </div>
+            <div class="wb-stack">
+                <section class="wb-card"><h3>本工程作业</h3><p class="wb-empty" x-show="!jobs.length" x-text="jobsReady ? '还没有后台作业。' : '等待作业服务连接。'"></p><div class="wb-list"><template x-for="item in jobs" :key="item.job_id"><button type="button" class="wb-job-row" :aria-pressed="job?.job_id === item.job_id" @click="loadJob(item.job_id)"><span><strong x-text="jobStatusText(item.status)"></strong><small x-text="timeText(item.started_at || item.updated_at)"></small></span><span x-text="item.job_id.slice(0, 8)"></span></button></template></div></section>
+                <section class="wb-card" x-show="job"><h3>最近活动</h3><p class="wb-notice wb-notice-warning" x-show="jobEventsError" x-text="jobEventsError"></p><p class="wb-empty" x-show="!jobEvents.length">尚无活动记录。</p><template x-for="event in jobEvents.slice().reverse()" :key="event.seq"><div class="wb-event"><time x-text="timeText(event.at)"></time><span x-text="jobEventText(event)"></span></div></template><p class="wb-muted" x-show="jobEvents.length >= 80">显示最近 80 条已读取活动。</p></section>
+            </div>
+        </div>
+    </section>
+
+    <section class="wb-shell" x-show="activeTab==='acceptance'" x-cloak aria-labelledby="wb-acceptance-title">
+        <div class="wb-heading"><div><div class="wb-eyebrow">03 / ACCEPT</div><h2 id="wb-acceptance-title">先看问题，再看它成立的条件。</h2><p>按报告中的根因逐条验收，保留对象、构建和来源的边界。</p></div><button type="button" class="wb-button" @click="loadAcceptance()" :disabled="acceptanceLoading">加载当前报告</button></div>
+        <p class="wb-notice" x-show="acceptanceSource !== 'current'">正在查看选定作业的报告。详细验收前将核对它是否仍是当前报告。</p>
+        <p class="wb-notice wb-notice-error" x-show="acceptanceError" x-text="acceptanceError" role="alert"></p>
+        <p class="wb-muted" x-show="acceptanceLoading" role="status">正在读取包含待复核项的完整问题列表…</p>
+        <div class="wb-stats"><template x-for="state in ['confirmed','business_conditional','pending','gaps']" :key="state"><button type="button" class="wb-stat" :aria-pressed="acceptanceFilter === state" @click="setAcceptanceFilter(state)"><span x-text="acceptanceLabel(state)"></span><strong x-text="acceptanceCount(state)"></strong><small x-text="({confirmed:'已有验证结论，查看触发条件',business_conditional:'技术证据与业务前提分开验收',pending:'证据尚未闭合，继续保留风险',gaps:'未覆盖或未完成的范围'})[state]"></small></button></template></div>
+        <p class="wb-notice" x-text="coverageText(acceptanceCoverage)"></p>
+        <section class="wb-card" aria-labelledby="wb-instance-title" x-show="acceptanceLoaded">
+            <div class="wb-card-head"><h3 id="wb-instance-title">编译实例结果</h3><span class="wb-tag">按编译变体分别记录</span></div>
+            <p class="wb-muted">同一函数在不同编译配置下可能产生不同结果。以下计数属于当前展示的报告；已分析数量可能包含复用结果。</p>
+            <dl class="wb-list">
+                <div><dt>已规划</dt><dd x-text="instanceCount(instancePlan?.planned_instances)"></dd></div>
+                <div><dt>已调度</dt><dd x-text="instanceCount(instancePlan?.instance_analysis?.scheduled_instances ?? instancePlan?.scheduled_instances)"></dd></div>
+                <div><dt>已分析（含复用）</dt><dd x-text="instanceCount(instancePlan?.instance_analysis?.analyzed_instances)"></dd></div>
+                <div><dt>本轮实际执行</dt><dd x-text="instanceCount(instanceJob?.executed_instances)"></dd></div>
+                <div><dt>本轮复用结果</dt><dd x-text="instanceCount(instanceJob?.cached_instances)"></dd></div>
+                <div><dt>实例身份范围</dt><dd x-text="instanceCompleteness(instancePlan?.instance_analysis?.instance_scope_complete)"></dd></div>
+                <div><dt>扫描覆盖</dt><dd x-text="instanceCompleteness(instancePlan?.scan_coverage_complete)"></dd></div>
+            </dl>
+            <p class="wb-notice wb-notice-warning">实例身份范围完整不等于全扫描覆盖完整，也不代表项目安全。缺少执行或复用计数时保持未测量。</p>
+            <p class="wb-empty" x-show="!instancePlan">此报告未提供逐编译实例结果，覆盖状态未知。</p>
+            <label class="wb-field" x-show="instanceRows().length">查找编译实例<input type="search" class="wb-search" x-model="instanceSearch" @input="instanceLimit=12" placeholder="函数、源文件或构建身份"></label>
+            <template x-for="item in instanceFiltered().slice(0, instanceLimit)" :key="item.rowKey">
+                <article class="wb-card">
+                    <div class="wb-card-head"><h4 class="wb-path" x-text="item.displayName + ' · 实例 ' + (item.rowKey + 1)"></h4><span class="wb-tag" x-text="instanceStatus(item)"></span></div>
+                    <p class="wb-path" x-text="item.source || '源文件未记录'"></p>
+                    <p x-text="instanceCandidateText(item)"></p>
+                    <p x-text="instanceCandidateLabels(item)"></p>
+                    <p class="wb-notice wb-notice-warning" x-show="!item.build_context_id || !item.usr">精确编译身份不完整，不能与其他实例合并。</p>
+                    <p class="wb-notice wb-notice-warning" x-show="item.scope_gaps?.length || item.blocked_consumers?.length || item.error">此实例仍有分析能力或证据缺口，详见下方记录。</p>
+                    <details class="wb-technical"><summary>查看编译身份与范围记录</summary>
+                        <dl class="wb-list"><div><dt>构建身份</dt><dd class="wb-path" x-text="item.build_context_id || '未知'"></dd></div><div><dt>函数符号 USR</dt><dd class="wb-path" x-text="item.usr || '未知'"></dd></div><div><dt>实例身份</dt><dd class="wb-path" x-text="item.identity || '未知'"></dd></div></dl>
+                        <template x-for="(gap, index) in (item.scope_gaps || [])" :key="index"><p class="wb-path" x-text="gapText(gap)"></p></template>
+                        <p class="wb-path" x-show="item.blocked_consumers?.length" x-text="'未覆盖的分析能力：' + (item.blocked_consumers || []).join('、')"></p>
+                        <p class="wb-path" x-show="item.error" x-text="item.error"></p>
+                    </details>
+                </article>
+            </template>
+            <p class="wb-empty" x-show="instancePlan && !instanceFiltered().length" x-text="instanceSearch ? '没有匹配的编译实例。' : '报告未列出实例；不能据此推断已完成。'"></p>
+            <button type="button" class="wb-button" x-show="instanceFiltered().length > instanceLimit" @click="instanceLimit += 12">继续显示编译实例</button>
+            <details class="wb-technical" x-show="instancePlan?.gaps?.length || instancePlan?.scan_coverage_reasons?.length"><summary>查看实例规划与扫描覆盖缺口</summary>
+                <template x-for="(gap, index) in (instancePlan?.gaps || [])" :key="index"><p class="wb-path" x-text="gapText(gap)"></p></template>
+                <template x-for="(reason, index) in (instancePlan?.scan_coverage_reasons || [])" :key="index"><p class="wb-path" x-text="reason"></p></template>
+            </details>
+        </section>
+        <p class="wb-notice wb-notice-warning" x-show="acceptanceLoaded && acceptanceIssues.some(item => !item.acceptance)">此报告尚无服务端验收投影，问题暂列待验证。请更新服务后刷新，不从置信度推定确认。</p>
+        <section class="wb-card" x-show="acceptanceFilter === 'gaps'">
+            <h3>覆盖范围与剩余工作</h3><p class="wb-muted">零问题不代表安全；未测量与已完成的范围分别记录。</p>
+            <dl class="wb-list"><div><dt>延期项</dt><dd x-text="numberText(acceptanceCoverage?.deferred_count)"></dd></div><div><dt>编译事实提取</dt><dd x-text="acceptanceCoverage?.build_coverage?.extraction_complete === true ? '提取完成' : acceptanceCoverage?.build_coverage?.extraction_complete === false ? '提取不完整' : '未测量'"></dd></div><div><dt>构建扫描覆盖</dt><dd x-text="acceptanceCoverage?.build_coverage?.scan_complete === true ? '覆盖已完成' : acceptanceCoverage?.build_coverage?.scan_complete === false ? '覆盖不完整' : '未测量'"></dd></div></dl>
+            <template x-for="(gap, index) in coverageGaps(acceptanceCoverage)" :key="index"><article class="wb-notice wb-notice-warning" x-text="gapText(gap)"></article></template>
+            <p class="wb-empty" x-show="!coverageGaps(acceptanceCoverage).length" x-text="acceptanceCoverage ? '报告未列出具体缺口，请结合上方完整性与构建覆盖判断。' : '尚无覆盖数据。'"></p>
+        </section>
+        <section class="wb-card" x-show="acceptanceFilter !== 'gaps'" :aria-busy="acceptanceLoading">
+            <div class="wb-card-head"><h3 x-text="acceptanceLabel(acceptanceFilter) + '问题'"></h3><button type="button" class="wb-button" @click="setAcceptanceFilter('ruled_out')" x-text="'已排除（' + acceptanceCount('ruled_out') + '）'"></button></div>
+            <label class="wb-field">查找问题<input class="wb-search" type="search" x-model="acceptanceSearch" @input="acceptanceLimit=30" placeholder="函数、文件、资源、触发条件或构建"></label>
+            <p class="wb-empty" x-show="!acceptanceFiltered().length" x-text="!acceptanceLoaded ? '尚无可验收报告。完成扫描后在这里查看结果。' : acceptanceSearch ? '没有匹配的问题，试试其他关键词。' : '此分类暂无问题。请同时检查其他分类与覆盖缺口。'"></p>
+            <template x-for="(issue, index) in acceptanceFiltered().slice(0, acceptanceLimit)" :key="issue.issue_id || index"><article class="wb-result">
+                <div><span class="wb-tag" :class="'wb-tag-' + acceptanceState(issue)" x-text="acceptanceLabel(acceptanceState(issue))"></span><p x-text="issue.impact_level || '严重度未定'"></p><p x-text="issue.category || issue.defect_class"></p></div>
+                <div><h4 x-text="issue.acceptance?.trigger_summary || issue.root_cause || issue.description || issue.function || '待核对的问题'"></h4><p class="wb-path" x-text="issue.location || issue.file || '位置尚未定位'"></p><p x-text="'资源：' + (issue.acceptance?.resource_label || '尚未标注') + ' · 来源：' + numberText(issue.acceptance?.sources_count)"></p><p class="wb-path" x-text="'构建：' + (issue.acceptance?.build_context_id || '身份未知，不与其他构建合并')"></p><p x-text="'复现：' + (issue.acceptance?.reproduction?.summary || ({not_measured:'未测量',not_run:'未运行',unavailable:'暂不可用',reproduced:'已复现',not_reproduced:'本次未复现，不等于安全'})[issue.acceptance?.reproduction?.status] || '详见证据材料')"></p></div>
+                <button type="button" class="wb-button" @click="openAcceptanceIssue(issue)">查看证据与反馈</button>
+            </article></template>
+            <button type="button" class="wb-button" x-show="acceptanceFiltered().length > acceptanceLimit" @click="acceptanceLimit += 30" x-text="'继续显示（剩余 ' + (acceptanceFiltered().length - acceptanceLimit) + ' 条）'"></button>
+        </section>
+    </section>
 
     <!-- ── Findings Tab ── -->
     <div x-show="activeTab==='findings'" class="findings-shell">
@@ -834,7 +1053,7 @@
 
         <div class="finding-detail-pane" :class="mobileFindingView === 'queue' ? 'mobile-hidden' : ''">
             <template x-if="selectedFinding">
-                <div class="finding-workspace glass rounded-lg">
+                <div class="finding-workspace markdown-workspace glass rounded-lg">
                     <section class="finding-summary-bar">
                         <div class="flex flex-wrap gap-3 justify-between items-start">
                             <div class="min-w-0">
@@ -856,144 +1075,74 @@
                         </div>
                     </section>
 
-                    <section class="code-evidence-panel">
-                        <div class="px-4 py-3 border-b border-slate-200 flex justify-between items-center gap-3">
-                            <h3 class="text-sm font-semibold text-slate-950">代码证据</h3>
-                            <span class="text-xs subtle-text code-font truncate" x-text="activeCodeLabel(selectedFinding)"></span>
-                        </div>
-                        <div class="code-and-evidence" :style="codeEvidenceSplitStyle()">
-                            <div class="code-evidence-body code-panel">
-                                <table class="code-table">
-                                    <tbody>
-                                        <template x-for="line in findingCodeLines(selectedFinding)" :key="line.key">
-                                            <tr :class="isActiveCodeLine(line.no) ? 'code-line-active' : ''">
-                                                <td class="code-line-no" x-text="line.no"></td>
-                                                <td class="code-line-text" x-text="line.text || ' '"></td>
-                                            </tr>
-                                        </template>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div
-                                class="evidence-splitter"
-                                role="separator"
-                                tabindex="0"
-                                aria-label="调整代码证据和 Evidence Timeline 的占用比例"
-                                :aria-orientation="evidenceSplitOrientation()"
-                                :aria-valuenow="Math.round(activeEvidenceSplitPercent())"
-                                aria-valuemin="20"
-                                aria-valuemax="65"
-                                @pointerdown="startEvidenceSplitResize($event)"
-                                @keydown="handleEvidenceSplitKeydown($event)"
-                                title="拖动调整代码证据和 Evidence Timeline 的占用比例">
-                            </div>
-                            <aside class="evidence-panel">
-                                <div class="evidence-panel-head">
-                                    <h3 class="text-sm font-semibold text-slate-950">Evidence Timeline</h3>
-                                    <p class="text-xs subtle-text mt-1">source、sink、正反向证据按可点击事件组织。</p>
+                    <nav class="report-toc" aria-label="报告章节">
+                        <template x-for="item in reportToc" :key="item.id"><button type="button" @click="jumpReport(item.id)" x-text="item.label"></button></template>
+                    </nav>
+                    <div class="report-scroll" x-ref="reportScroll" :aria-busy="reportLoading">
+                        <p class="report-notice" x-show="reportLoading">正在加载完整 Markdown 报告…</p>
+                        <p class="report-notice" x-show="reportError" x-text="reportError" role="alert"></p>
+                        <article class="markdown-report" x-ref="markdownReport" x-show="!reportLoading && !reportError"></article>
+                    </div>
+                    <section class="report-review-editor" x-show="businessReview?.questions?.length">
+                        <strong>业务前提验收</strong>
+                        <p class="report-notice">回答仅适用于报告列出的对象、调用路径和源码版本；不会直接改写历史结论或创建误报规则。</p>
+                        <p class="report-notice" x-show="businessReview?.revalidation_required">业务回答与扫描时不同，下次扫描将重新核验受影响结论。</p>
+                        <p class="report-notice" x-show="businessReview?.stale">报告证据已变化，草稿已保留。核对后可重新载入前提。</p>
+                        <fieldset :disabled="savingBusinessReview || reportLoading || !businessReview?.available || !!businessReview?.stale">
+                            <template x-for="question in (businessReview?.questions || [])" :key="question.subject_key">
+                                <div>
+                                    <p x-text="question.statement"></p>
+                                    <label>该前提是否成立？
+                                        <select x-model="question.answer" aria-label="业务前提回答">
+                                            <option value="unknown">尚不确定</option>
+                                            <option value="yes">成立</option>
+                                            <option value="no">不成立，需要重新分析</option>
+                                        </select>
+                                    </label>
+                                    <textarea aria-label="业务约定来源或说明" placeholder="例如：接口规范章节、负责人确认的约定" maxlength="4000" x-model="question.source_note"></textarea>
                                 </div>
-                                <div class="evidence-list" @click="selectEvidenceById($event.target.closest('.evidence-item')?.dataset.evidenceId)">
-                                    <template x-for="item in findingEvidenceItems(selectedFinding)" :key="item.id">
-                                        <article class="evidence-item" :data-evidence-id="item.id" :class="activeEvidenceId === item.id ? 'active' : ''">
-                                            <div class="flex items-center justify-between gap-2">
-                                                <span class="line-ref" x-text="item.refLabel"></span>
-                                                <button type="button" class="copy-chip" @click.stop="copyText(item.copyText)">复制</button>
-                                            </div>
-                                            <strong x-text="item.title"></strong>
-                                            <small x-text="item.detail"></small>
-                                        </article>
-                                    </template>
-                                </div>
-                            </aside>
+                            </template>
+                        </fieldset>
+                        <div class="report-review-controls">
+                            <button type="button" class="btn btn-primary btn-xs" @click="saveBusinessReview()" :disabled="savingBusinessReview || reportLoading || !businessReview?.available || businessReview?.stale || !businessAnswersChanged()" x-text="savingBusinessReview ? '保存中…' : '保存业务前提'"></button>
+                            <button type="button" class="btn btn-ghost btn-xs" @click="reloadBusinessReview()" :disabled="savingBusinessReview || reportLoading">舍弃前提草稿并重新载入</button>
+                            <span x-show="businessReview && !businessReview.available">项目反馈状态库不可用</span>
                         </div>
                     </section>
-
-                    <section class="audit-review-dock">
-                        <div class="detail-tabbar">
-                            <button type="button" class="btn btn-xs" :class="activeDetailTab === 'evidence' ? 'btn-primary' : 'btn-outline'" @click="activeDetailTab='evidence'">证据摘要</button>
-                            <button type="button" class="btn btn-xs" :class="activeDetailTab === 'reasoning' ? 'btn-primary' : 'btn-outline'" @click="activeDetailTab='reasoning'">AI 推理</button>
-                            <button type="button" class="btn btn-xs" :class="activeDetailTab === 'fix' ? 'btn-primary' : 'btn-outline'" @click="activeDetailTab='fix'">根因 / 修复</button>
-                            <button type="button" class="btn btn-xs context-tab-only" :class="activeDetailTab === 'context' ? 'btn-primary' : 'btn-outline'" @click="activeDetailTab='context'">上下文</button>
+                    <section class="report-review-editor">
+                        <div class="report-review-controls">
+                            <strong>人工反驳 / 复核说明</strong>
+                            <select aria-label="验证状态" x-model="selectedFinding.validation_status" @change="setFindingValidationStatus(selectedFinding, $event.target.value)" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError">
+                                <option value="pending">待处理</option><option value="needs_review">需要复核</option>
+                                <option value="validated">确认问题</option><option value="rejected">这条是误报</option>
+                                <option value="uncertain">尚不确定</option><option value="unvalidated">未验证</option>
+                            </select>
+                            <button class="btn btn-ghost btn-xs" @click="reviewPreview=!reviewPreview">预览说明</button>
+                            <button class="btn btn-primary btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError" x-text="savingSingleFinding ? '保存中…' : '保存当前条'"></button>
+                            <span x-show="selectedFinding._validation_dirty">未保存</span>
                         </div>
-                        <div class="detail-tab-content">
-                            <div x-show="activeDetailTab === 'evidence'" class="audit-claim-card">
-                                <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">规则 / 证据摘要</div>
-                                <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="formatFindingEvidence(selectedFinding) || '暂无规则证据'"></p>
-                            </div>
-                            <div x-show="activeDetailTab === 'reasoning'" class="audit-claim-card">
-                                <div class="text-[11px] font-semibold uppercase tracking-wider text-blue-700">AI 推理链</div>
-                                <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="selectedFinding.reasoning || selectedFinding.reasoning_process || '暂无推理过程'"></p>
-                            </div>
-                            <div x-show="activeDetailTab === 'fix'" class="detail-info-grid">
-                                <article class="audit-claim-card border-l-4" :class="getBorderClass(selectedFinding.impact_level)">
-                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">根本原因</div>
-                                    <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="selectedFinding.root_cause || '暂无根因说明'"></p>
-                                </article>
-                                <article class="audit-claim-card border-l-4 border-emerald-500">
-                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">修复建议</div>
-                                    <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="selectedFinding.suggested_fix || '暂无修复建议'"></p>
-                                </article>
-                            </div>
-                            <div x-show="activeDetailTab === 'context'" class="detail-info-grid">
-                                <section class="audit-claim-card">
-                                    <h3 class="text-sm font-semibold text-slate-950">Evidence Map</h3>
-                                    <div class="metric-grid">
-                                        <template x-for="item in evidenceMetrics(selectedFinding)" :key="item.label">
-                                            <div class="metric">
-                                                <b x-text="item.value"></b>
-                                                <span x-text="item.label"></span>
-                                            </div>
-                                        </template>
-                                    </div>
-                                </section>
-                                <section class="audit-claim-card">
-                                    <h3 class="text-sm font-semibold text-slate-950">Confidence</h3>
-                                    <template x-for="item in confidenceBreakdown(selectedFinding).slice(0, 3)" :key="item.label">
-                                        <div class="confidence-row">
-                                            <div class="confidence-row-head">
-                                                <span x-text="item.label"></span>
-                                                <div class="confidence-bar"><i :style="`width:${item.percent}%`"></i></div>
-                                                <b x-text="item.value"></b>
-                                            </div>
-                                        </div>
-                                    </template>
-                                </section>
-                            </div>
-                        </div>
+                        <textarea x-ref="rebuttalInput" aria-label="人工反驳 / 复核说明" placeholder="填写人工复核依据，支持 Markdown。" :value="selectedFinding.user_rebuttal" @input="setFindingUserRebuttal(selectedFinding, $event.target.value)" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError"></textarea>
+                        <div class="markdown-report report-review-preview" x-show="reviewPreview" x-html="renderReviewPreview()"></div>
+                        <p class="text-xs subtle-text" x-show="saveFeedbackStatus" x-text="saveFeedbackStatus"></p>
                     </section>
-
-                    <section class="audit-decision-panel">
-                        <div class="audit-decision-title">
-                            <h3 class="text-sm font-semibold text-slate-950">验证决策</h3>
-                            <p class="text-xs subtle-text">可直接引用 evidence ref、文件路径和行号。</p>
-                        </div>
-                        <textarea
-                            class="textarea textarea-bordered audit-decision-textarea"
-                            placeholder="填写人工验证依据，例如：为什么确认为真阳性 / 为什么拒绝 / 还需要检查哪些路径。"
-                            :value="selectedFinding.validation_reasoning"
-                            @input="setFindingValidationReasoning(selectedFinding, $event.target.value)"></textarea>
-                        <div class="audit-decision-controls">
-                            <div class="audit-status-stack">
-                                <template x-for="status in validationStatusOptions" :key="status">
-                                    <button
-                                        type="button"
-                                        class="btn btn-xs"
-                                        :class="selectedFinding.validation_status === status ? 'btn-primary' : 'btn-outline'"
-                                        @click="setFindingValidationStatus(selectedFinding, status)"
-                                        x-text="status"></button>
-                                </template>
-                            </div>
-                            <div></div>
-                            <div class="audit-decision-footer">
-                                <div class="text-[11px] subtle-text leading-relaxed">
-                                    当前引用：
-                                    <span x-text="findingEvidenceRefs(selectedFinding).slice(0, 5).join(', ') || '暂无 evidence refs'"></span>
-                                </div>
-                                <p class="text-[11px] leading-snug" x-show="saveFeedbackStatus" :class="saveFeedbackType === 'success' ? 'text-emerald-700' : (saveFeedbackType === 'warning' ? 'text-amber-700' : 'text-error')" x-text="saveFeedbackStatus"></p>
-                                <button type="button" class="btn btn-outline btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings || savingSingleFinding" x-text="savingSingleFinding ? '保存中...' : '保存当前条'">保存当前条</button>
-                            </div>
-                        </div>
-                    </section>
+                    <details class="wb-disposition">
+                        <summary>其他处置：重复、风险接受、后续修复</summary>
+                        <p class="wb-muted">处置与验证结论分开保存。接受风险或标记重复不会把待验证问题变成安全，也不抑制相似问题。</p>
+                        <p x-show="dispositionLoading" role="status">正在读取此问题的处置…</p>
+                        <p class="wb-notice wb-notice-error" x-show="dispositionError" x-text="dispositionError" role="alert"></p>
+                        <template x-if="disposition"><div>
+                            <p class="wb-notice" x-show="disposition.disposition" x-text="'当前记录：' + ({duplicate:'标记重复',risk_accept:'暂时接受风险',followup:'后续修复任务'})[disposition.disposition?.type] + ' · ' + (disposition.disposition?.reason || '')"></p>
+                            <p class="wb-notice wb-notice-warning" x-show="disposition.stale">线上记录、证据或适用构建已变化，草稿已保留。请核对当前版本后重新载入。</p>
+                            <fieldset :disabled="dispositionSaving || !disposition.writable || disposition.stale" @input="persistDispositionDraft()" @change="persistDispositionDraft()">
+                                <label class="wb-field">本次处置<select aria-label="本次处置" x-model="disposition.type"><option value="risk_accept">暂时接受风险</option><option value="duplicate">标记重复</option><option value="followup">创建本地后续修复任务</option><option value="clear">撤回已有处置</option></select></label>
+                                <label class="wb-field" x-show="disposition.type === 'duplicate'">重复的问题 ID<input x-model="disposition.duplicate_of" placeholder="同一报告、同一构建中的问题 ID"></label>
+                                <label class="wb-field" x-show="disposition.type === 'followup'">任务标题（可选）<input x-model="disposition.title" placeholder="需要完成的修复与验证"></label>
+                                <label class="wb-field">原因与依据<textarea x-model="disposition.reason" placeholder="为什么做此处置，适用范围和后续计划是什么？"></textarea></label>
+                            </fieldset>
+                            <div class="wb-actions"><button type="button" class="wb-button wb-button-primary" @click="saveDisposition()" :disabled="dispositionSaving || !disposition.writable || disposition.stale || !dispositionChanged()" x-text="dispositionSaving ? '保存中…' : '保存处置'"></button><button type="button" class="wb-button" @click="reloadDisposition()" :disabled="dispositionSaving">重新载入</button><span x-show="dispositionChanged()">草稿未保存</span></div>
+                        </div></template>
+                        <button type="button" class="wb-button" x-show="!disposition && !dispositionLoading" @click="loadDisposition(selectedFinding)">重试读取处置</button>
+                    </details>
                 </div>
             </template>
             <template x-if="!selectedFinding">
@@ -1212,22 +1361,113 @@
     <!-- ── Project Config Tab ── -->
     <div x-show="activeTab==='project'" class="h-full overflow-auto">
         <div class="glass rounded-lg p-6 space-y-5 max-w-6xl mx-auto">
-            <div class="flex items-center justify-between">
+            <div class="wb-config-heading">
                 <div>
                     <h2 class="text-lg font-semibold text-slate-950">项目配置</h2>
-                    <p class="text-xs subtle-text">以表单方式编辑 zscope.yaml，保存时由系统生成 YAML，避免缩进导致解析失败。</p>
+                    <p class="text-xs subtle-text" x-text="isV3Config() ? '编辑公开 v3 配置。保存后重新检查工程和全部构建目标。' : '以表单方式编辑 zscope.yaml，保存时由系统生成 YAML，避免缩进导致解析失败。'"></p>
                 </div>
-                <div class="flex items-center gap-2">
-                    <span class="text-sm subtle-text">
+                <div class="wb-config-actions">
+                    <span class="text-sm subtle-text" role="status" aria-live="polite">
                         <span x-text="structuredConfigStatus"></span>
                         <span x-show="configDirty" class="text-warning"> · 未保存</span>
                     </span>
-                    <button @click="reloadStructuredConfig()" class="btn btn-ghost btn-sm">重新载入</button>
-                    <button @click="saveStructuredConfig()" class="btn btn-primary btn-sm">保存项目配置</button>
+                    <button @click="reloadStructuredConfig()" :disabled="configSaving || configLoading" class="btn btn-ghost btn-sm">重新载入</button>
+                    <button @click="saveStructuredConfig()" :disabled="!structuredConfigAvailable || configLoading || configSaving" class="btn btn-primary btn-sm">保存项目配置</button>
                 </div>
             </div>
 
-            <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <p class="wb-notice wb-notice-warning" role="alert" x-show="configError" x-text="configError"></p>
+            <section id="wb-config-preparation" class="soft-panel rounded-lg p-4 space-y-3">
+                <div class="wb-config-heading">
+                    <h3 class="font-semibold text-slate-950">扫描准备</h3>
+                    <button @click="loadPreparation()" :disabled="preparationLoading || configDirty" class="btn btn-outline btn-sm" x-text="preparationLoading ? '检查中…' : '检查已保存配置'"></button>
+                </div>
+                <p class="text-xs subtle-text">保存配置后，集中核对工程路径、编译变体和本地工具。此检查不调用模型或启动扫描。</p>
+                <p class="text-sm text-warning" x-show="configDirty">配置尚未保存，请先保存再重新检查。</p>
+                <p class="text-sm text-error" x-show="preparationError" x-text="preparationError"></p>
+                <template x-if="preparation && !configDirty">
+                    <div class="space-y-3">
+                        <dl class="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-2 text-xs">
+                            <dt class="subtle-text">实际配置</dt><dd class="code-font break-all" x-text="preparation.config_path"></dd>
+                            <dt class="subtle-text">工程目录</dt><dd class="code-font break-all" x-text="preparation.project.root"></dd>
+                            <dt class="subtle-text">语言 / 后端</dt><dd x-text="preparation.project.language + ' / ' + preparation.project.backend"></dd>
+                            <dt class="subtle-text">编译数据库</dt><dd x-text="preparationBuildText()"></dd>
+                            <dt class="subtle-text">扫描深度</dt><dd x-text="preparation.scan.depth"></dd>
+                            <dt class="subtle-text">自动复现</dt><dd x-text="({off: '关闭', shadow: '仅收集证据', on: '启用'})[preparation.scan.reproduction] || preparation.scan.reproduction"></dd>
+                            <dt class="subtle-text">产物目录</dt><dd class="code-font break-all" x-text="preparation.scan.artifact_directory"></dd>
+                        </dl>
+                        <div class="flex flex-wrap gap-2">
+                            <template x-for="tool in preparation.tools" :key="tool.name"><span class="badge badge-outline badge-sm" :class="tool.available_on_path ? 'badge-success' : 'badge-warning'" x-text="tool.name + (tool.available_on_path ? ' · 已找到' : ' · 未找到')"></span></template>
+                        </div>
+                        <template x-for="message in preparation.messages" :key="message.code"><p class="text-sm" x-text="'需核对：' + message.message"></p></template>
+                        <p class="text-xs subtle-text">这里只读检查已保存配置；工具是否能实际运行、模型连接和扫描覆盖将在后续执行时确认。</p>
+                    </div>
+                </template>
+            </section>
+
+            <template x-if="structuredConfigAvailable && v3Form">
+            <div id="wb-v3-editor" class="wb-config-editor" :aria-busy="configSaving || configLoading">
+                <p class="wb-notice">相对 root 以配置文件所在目录为基准；各目标的 compile_commands 相对 root。未编辑的值与环境变量引用原样保留。</p>
+                <div class="wb-config-grid">
+                    <section class="wb-card">
+                        <h3>工程与平台</h3>
+                        <label>项目根目录 root<input x-model="v3Form.project.root" @input="markConfigDirty()" autocomplete="off"></label>
+                        <label>项目语言<select aria-label="项目语言" x-model="v3Form.project.language" @change="markConfigDirty()"><option value="c_cpp">C/C++</option><option value="java">Java</option><template x-if="!['c_cpp','java'].includes(v3Form.project.language)"><option :value="v3Form.project.language" x-text="v3Form.project.language"></option></template></select></label>
+                        <p class="wb-muted" x-show="v3Form.project.language === 'java'">Java 当前仅支持 quick 预设；保存为 Java 时会移除各目标的编译数据库字段。</p>
+                        <label>目标平台<select aria-label="目标平台" x-model="v3Form.project.platform" @change="markConfigDirty()"><option value="linux_user">Linux 用户态</option><template x-if="v3Form.project.platform !== 'linux_user'"><option :value="v3Form.project.platform" x-text="v3Form.project.platform"></option></template></select></label>
+                        <p class="wb-muted">平台仅声明用途，尚未驱动执行策略。</p>
+                    </section>
+                    <section class="wb-card">
+                        <h3>扫描意图</h3>
+                        <label>扫描预设<select aria-label="扫描预设" x-model="v3Form.scan.preset" @change="markConfigDirty()"><option value="overnight">夜间分析 overnight</option><option value="quick">快速检查 quick</option><template x-if="!['overnight','quick'].includes(v3Form.scan.preset)"><option :value="v3Form.scan.preset" x-text="v3Form.scan.preset"></option></template></select></label>
+                        <label>扫描重点 focus<textarea rows="3" x-model="v3Form.scan.focus" @input="markConfigDirty()"></textarea></label>
+                        <p class="wb-muted">每行一个：memory、resources、async_lifecycle。扫描重点已声明，尚未参与执行。</p>
+                        <label>自动复现<select aria-label="自动复现" x-model="v3Form.scan.reproduction" @change="markConfigDirty()"><option value="auto">自动 auto</option><template x-if="v3Form.scan.reproduction !== 'auto'"><option :value="v3Form.scan.reproduction" x-text="v3Form.scan.reproduction"></option></template></select></label>
+                        <p class="wb-muted">auto 是配置意图，尚未启用自动复现。预设当前映射到既有扫描深度。</p>
+                    </section>
+                </div>
+                <section class="wb-card">
+                    <div class="wb-config-heading"><h3>全部构建目标</h3><button type="button" class="wb-button" @click="addV3Target()">添加目标</button></div>
+                    <p class="wb-notice wb-notice-warning" x-show="v3Form.targets.length > 1">多目标执行尚未接入；保存多个目标后仍不能启动扫描。</p>
+                    <template x-for="(target, index) in v3Form.targets" :key="target._key">
+                        <div class="wb-config-target">
+                            <label><span x-text="'目标 ' + (index + 1) + ' 标识'"></span><input x-model="target.id" @input="markConfigDirty()" autocomplete="off"></label>
+                            <label x-show="v3Form.project.language !== 'java'"><span x-text="'目标 ' + (index + 1) + ' 编译数据库'"></span><input x-model="target.compile_commands" @input="markConfigDirty()" autocomplete="off"></label>
+                            <button type="button" class="wb-button" :aria-label="'删除目标 ' + (index + 1)" :disabled="v3Form.targets.length <= 1" @click="removeV3Target(target._key)">删除</button>
+                        </div>
+                    </template>
+                </section>
+                <section class="wb-card">
+                    <h3>执行意图</h3>
+                    <div class="wb-config-grid">
+                        <label>运行时区 timezone<input placeholder="Asia/Taipei" x-model="v3Form.execution.timezone" @input="markConfigDirty()" autocomplete="off"></label>
+                        <label>配置停止时间 stop_at<input placeholder="07:00 或 ${STOP_AT}" x-model="v3Form.execution.stop_at" @input="markConfigDirty()" autocomplete="off"></label>
+                        <label>最大工作数 max_workers<input inputmode="numeric" placeholder="留空使用默认值" x-model="v3Form.execution.max_workers" @input="markConfigDirty()" autocomplete="off"></label>
+                    </div>
+                    <p class="wb-muted">停止时间用 HH:MM，必须同时填写 IANA 时区；配置窗口已用于扫描停止令牌与持久作业。新建作业未填显式时间时使用此窗口，显式时间按浏览器时区换算后覆盖它。未配置窗口时不设置截止。最大工作数 max_workers 仍仅声明，尚未驱动执行。</p>
+                </section>
+                <section class="wb-card">
+                    <h3>模型设置</h3>
+                    <p class="wb-muted">保留所有命名 profile。连接参数的保存不代表模型连接已实测。密钥留空保留已有设置，也可输入 ${API_KEY} 引用。</p>
+                    <template x-for="profile in v3Form.profiles" :key="profile.name">
+                        <details class="wb-config-profile">
+                            <summary x-text="'模型 profile：' + profile.name"></summary>
+                            <div class="wb-config-grid">
+                                <label>服务地址 base_urls<textarea rows="2" x-model="profile.base_urls" @input="markConfigDirty()" autocomplete="off"></textarea></label>
+                                <label>模型 models<textarea rows="2" x-model="profile.models" @input="markConfigDirty()" autocomplete="off"></textarea></label>
+                                <label>替换 API 密钥<input type="password" x-model="profile.api_key" @input="markConfigDirty()" autocomplete="new-password" placeholder="留空保留已有密钥"></label>
+                            </div>
+                            <p class="wb-muted">地址和模型每行一个；高级字段留空恢复默认。支持已有环境变量引用。</p>
+                            <details><summary>高级模型参数</summary><div class="wb-config-grid">
+                                <template x-for="field in modelNumberFields" :key="field"><label><span x-text="field"></span><input x-model="profile[field]" @input="markConfigDirty()" autocomplete="off"></label></template>
+                                <template x-for="field in modelBooleanFields" :key="field"><label><span x-text="field"></span><select x-model="profile[field]" @change="markConfigDirty()"><option value="">使用默认值</option><option value="true">是</option><option value="false">否</option><template x-if="!['','true','false'].includes(profile[field])"><option :value="profile[field]" x-text="profile[field]"></option></template></select></label></template>
+                            </div></details>
+                        </details>
+                    </template>
+                </section>
+            </div>
+            </template>
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-4" x-show="!isV3Config() && structuredConfigAvailable">
                 <section class="soft-panel rounded-lg p-4 space-y-3">
                     <h3 class="font-semibold text-slate-950">项目范围</h3>
                     <p class="text-xs subtle-text">路径字段说明来自根目录 zscope.c_cpp.yaml / zscope.java.yaml 注释：相对路径基于 project.root 或 source_root 解析。</p>
@@ -1332,7 +1572,7 @@
                     <h3 class="font-semibold text-slate-950">并发资源</h3>
                     <p class="text-xs subtle-text">全部为正整数，请按机器容量、endpoint 限流和 LLM 额度调整。</p>
                     <div class="grid grid-cols-2 gap-3">
-                        <template x-for="field in ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'llm_max_inflight']" :key="field">
+                        <template x-for="field in ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'wiki_compiler_workers', 'llm_max_inflight']" :key="field">
                             <label class="form-control"><span class="label-text" x-text="field"></span><input type="number" min="1" class="input input-bordered input-sm" x-model.number="configForm.concurrency[field]" @input="markConfigDirty()"></label>
                         </template>
                         <label class="form-control" x-show="configForm.project.language === 'c_cpp'"><span class="label-text">svf_workers</span><input type="number" min="1" class="input input-bordered input-sm" x-model.number="configForm.concurrency.svf_workers" @input="markConfigDirty()"></label>
@@ -1520,68 +1760,15 @@
         </div>
     </div><!-- end dashboard tab -->
 
-    <div x-show="activeTab==='specs'" class="space-y-4">
-        <section class="card bg-white border border-slate-200 shadow-sm">
-            <div class="card-body p-5 gap-4">
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                        <div class="flex items-center gap-2">
-                            <h2 class="card-title text-base">Security Spec Review Center</h2>
-                            <span class="badge badge-warning">只读</span>
-                            <span class="badge badge-outline" x-text="securitySpecPayload.security_spec_mode || 'shadow'"></span>
-                        </div>
-                        <p class="text-xs subtle-text mt-1">当前部署没有可信 reviewer identity；审阅和 apply-import 已 fail-closed。</p>
-                    </div>
-                    <div class="flex flex-wrap gap-2">
-                        <select class="select select-bordered select-sm" x-model="securitySpecStatus" @change="loadSecuritySpecs()">
-                            <option value="">全部状态</option>
-                            <option>observation</option><option>proposed</option><option>verified_scoped</option>
-                            <option>project_active</option><option>stable</option><option>conflicting</option>
-                            <option>rejected</option><option>quarantined</option>
-                        </select>
-                        <a class="btn btn-outline btn-sm" href="/api/security-specs/export?format=json">导出 JSON</a>
-                        <a class="btn btn-outline btn-sm" href="/api/security-specs/export?format=xlsx">导出 XLSX</a>
-                        <button class="btn btn-ghost btn-sm" @click="$refs.securitySpecImport.click()">校验导入</button>
-                        <input x-ref="securitySpecImport" type="file" class="hidden" accept=".json,.xlsx" @change="dryRunSecuritySpecImport($event)">
-                    </div>
-                </div>
-                <div x-show="securitySpecError" class="alert alert-error py-2 text-sm" x-text="securitySpecError"></div>
-                <div class="grid grid-cols-1 lg:grid-cols-[minmax(18rem,0.8fr)_minmax(0,1.6fr)] gap-4">
-                    <div class="border border-slate-200 rounded-lg overflow-auto max-h-[62vh]">
-                        <template x-if="!(securitySpecPayload.specs || []).length">
-                            <div class="p-5 text-sm subtle-text">当前没有 Security Spec artifact。</div>
-                        </template>
-                        <template x-for="spec in (securitySpecPayload.specs || [])" :key="spec.spec_uid + ':' + spec.revision">
-                            <button class="w-full text-left p-3 border-b border-slate-100 hover:bg-slate-50"
-                                    :class="selectedSecuritySpec?.spec?.spec_uid === spec.spec_uid && 'bg-blue-50'"
-                                    @click="loadSecuritySpecDetail(spec.spec_uid)">
-                                <div class="flex justify-between gap-2"><span class="font-semibold code-font text-xs" x-text="spec.spec_uid"></span><span class="badge badge-sm" x-text="spec.status"></span></div>
-                                <div class="text-xs mt-1" x-text="spec.predicate + ' · ' + spec.scope.kind + ':' + spec.scope.target"></div>
-                                <div class="text-[11px] subtle-text mt-1" x-text="spec.explanation"></div>
-                            </button>
-                        </template>
-                    </div>
-                    <div class="border border-slate-200 rounded-lg p-4 overflow-auto max-h-[62vh]">
-                        <template x-if="!selectedSecuritySpec"><div class="text-sm subtle-text">选择规格查看 scope、证据、冲突、qualification、编译和影响预览。</div></template>
-                        <template x-if="selectedSecuritySpec">
-                            <div class="space-y-4">
-                                <div><h3 class="font-semibold">Scope 与 Subject</h3><pre class="text-xs code-font bg-slate-50 p-3 rounded mt-2 whitespace-pre-wrap" x-text="JSON.stringify({subject:selectedSecuritySpec.spec.subject,scope:selectedSecuritySpec.spec.scope}, null, 2)"></pre></div>
-                                <div><h3 class="font-semibold">Evidence / Dependencies</h3><pre class="text-xs code-font bg-slate-50 p-3 rounded mt-2 whitespace-pre-wrap" x-text="JSON.stringify({evidence_refs:selectedSecuritySpec.spec.evidence_refs,dependency_hashes:selectedSecuritySpec.spec.dependency_hashes,qualification_ref:selectedSecuritySpec.spec.qualification_ref}, null, 2)"></pre></div>
-                                <div><h3 class="font-semibold">编译预览</h3><pre class="text-xs code-font bg-slate-50 p-3 rounded mt-2 whitespace-pre-wrap" x-text="JSON.stringify(selectedSecuritySpec.compilation_preview, null, 2)"></pre></div>
-                                <div><h3 class="font-semibold">影响预览</h3><div class="flex flex-wrap gap-2 mt-2"><template x-for="item in selectedSecuritySpec.impact_preview" :key="item"><span class="badge badge-outline" x-text="item"></span></template></div></div>
-                            </div>
-                        </template>
-                    </div>
-                </div>
-            </div>
-        </section>
-    </div><!-- end Security Spec tab -->
-
     </main>
 
     <script>
         function zscopeApp() {
             return {
+                ...ZScopeDashboardReports,
+                ...ZScopeWorkbench,
+                ...ZScopeConfigEditor,
+                currentReportId: '',
                 findings: [],
                 selectedFinding: null,
                 activeEvidenceId: '',
@@ -1598,7 +1785,7 @@
                 reportViewCache: {},
                 reportViewRequests: {},
                 findingsRequestSeq: 0,
-                appVersion: 'v1.3.1',
+                appVersion: 'v1.3.2',
                 statusText: '就绪',
                 statusClass: 'badge-ghost',
                 statusDotClass: 'bg-ghost',
@@ -1618,6 +1805,10 @@
                 originalConfigContent: '',
                 configDirty: false,
                 configStatus: '',
+                preparation: null,
+                preparationLoading: false,
+                preparationError: '',
+                preparationRequest: 0,
                 structuredConfig: {},
                 structuredConfigStatus: '',
                 configForm: {
@@ -1650,12 +1841,12 @@
                         investigator_workers: 1,
                         evidence_completion_workers: 2,
                         index_workers: 4,
+                        wiki_compiler_workers: 4,
                         svf_workers: 2,
                         llm_max_inflight: 4,
                     },
                 },
-                offlineTemplateCache: null,
-                activeTab: 'findings',
+                activeTab: 'prepare',
                 rulePayload: { rules: [], summary: {}, facets: {} },
                 rules: [],
                 selectedRule: null,
@@ -1663,10 +1854,6 @@
                 rulesError: '',
                 ruleFilters: { language: '', engine: '', skill: '', status: '', q: '' },
                 ruleRequestSeq: 0,
-                securitySpecPayload: { specs: [], summary: {} },
-                selectedSecuritySpec: null,
-                securitySpecStatus: '',
-                securitySpecError: '',
                 configSubTab: 'workbook',
                 cpgStatus: 'unknown',
                 cpgError: '',
@@ -1690,6 +1877,9 @@
                 intentForm: { func_name:'', file_path:'', concurrency_group:'', concurrent_str:'', caller_constraints:'', notes:'' },
 
                 init() {
+                    window.addEventListener('beforeunload', event => {
+                        if (this.configDirty || this.configSaving) { event.preventDefault(); event.returnValue = ''; }
+                    });
                     window.addEventListener('resize', () => {
                         this.viewportWidth = window.innerWidth || this.viewportWidth;
                     });
@@ -1698,6 +1888,7 @@
                     this.loadStructuredConfig();
                     this.loadWorkbookConfig();
                     this.pollCpgStatus();
+                    this.initWorkbench();
                 },
 
                 get toastClass() {
@@ -1799,7 +1990,7 @@
                     if (!issue) {
                         return '';
                     }
-                    return String(issue.dedup_key || issue.stable_fingerprint || [
+                    return String(issue.issue_id || issue.dedup_key || issue.stable_fingerprint || [
                         issue.id || '',
                         issue.function || '',
                         issue.location || '',
@@ -1815,12 +2006,17 @@
                     return String(issue?.validation_reasoning || '');
                 },
 
+                validationRebuttal(issue) {
+                    return String(issue?.user_rebuttal || '');
+                },
+
                 resetFindingValidationBaseline(issue, options = {}) {
                     if (!issue || typeof issue !== 'object') {
                         return issue;
                     }
                     issue._validation_original_status = this.validationStatus(issue);
                     issue._validation_original_reasoning = this.validationReasoning(issue);
+                    issue._validation_original_rebuttal = this.validationRebuttal(issue);
                     issue._validation_dirty = false;
                     issue._snapshot_sync_pending = Boolean(options.snapshotPending);
                     return issue;
@@ -1834,7 +2030,8 @@
                         this.resetFindingValidationBaseline(issue);
                     }
                     issue._validation_dirty = this.validationStatus(issue) !== String(issue._validation_original_status || 'pending')
-                        || this.validationReasoning(issue) !== String(issue._validation_original_reasoning || '');
+                        || this.validationReasoning(issue) !== String(issue._validation_original_reasoning || '')
+                        || this.validationRebuttal(issue) !== String(issue._validation_original_rebuttal || '');
                     return issue._validation_dirty;
                 },
 
@@ -1844,6 +2041,7 @@
                         ...source,
                         validation_status: source.validation_status || 'pending',
                         validation_reasoning: source.validation_reasoning || '',
+                        user_rebuttal: source.user_rebuttal || '',
                         uid: `${view || 'view'}-${source.id || 'issue'}-${source.function || 'fn'}-${source.location || 'loc'}-${index}`
                     };
                     return this.resetFindingValidationBaseline(normalized);
@@ -1877,6 +2075,7 @@
                         }
                         issue.validation_status = source.validation_status;
                         issue.validation_reasoning = source.validation_reasoning;
+                        issue.user_rebuttal = source.user_rebuttal;
                         this.updateFindingDirtyFlag(issue);
                     });
                 },
@@ -1892,13 +2091,18 @@
                     }
                     issue.validation_status = status || 'pending';
                     this.markFindingValidationDirty(issue);
+                    if (issue.validation_status === 'rejected' && !this.validationRebuttal(issue)) {
+                        this.$nextTick(() => {
+                            this.$refs.rebuttalInput?.focus();
+                        });
+                    }
                 },
 
-                setFindingValidationReasoning(issue, reasoning) {
+                setFindingUserRebuttal(issue, rebuttal) {
                     if (!issue) {
                         return;
                     }
-                    issue.validation_reasoning = reasoning || '';
+                    issue.user_rebuttal = rebuttal || '';
                     this.markFindingValidationDirty(issue);
                 },
 
@@ -1979,6 +2183,7 @@
                 },
 
                 ingestFindingsPayload(data, requestedView) {
+                    this.currentReportId = data.report_id || '';
                     this.reportSummary = data.report?.summary || this.reportSummary;
                     this.mergeReportViewMetadata(data.report?.report_views || {});
                     this.viewSummary = data.views || data.report?.metadata?.report_view_summary || this.viewSummary;
@@ -2111,6 +2316,7 @@
                 },
 
                 loadConfig() {
+                    this.clearPreparation();
                     this.configStatus = '加载中...';
                     fetch('/api/config')
                         .then(res => res.json())
@@ -2133,8 +2339,10 @@
                     this.loadConfig();
                 },
 
-                markConfigDirty() {
-                    this.configDirty = true;
+                preparationBuildText() {
+                    const build = this.preparation?.build || {};
+                    const status = ({available: '已读取', partial: '部分记录有效', missing: '未找到', invalid: '无法读取', not_applicable: '此语言不需要', multi_target: '多个构建目标，需逐个核对；暂不能执行'})[build.status] || build.status;
+                    return build.compilation_instances === undefined ? status : `${status} · ${build.sources} 个源文件 / ${build.compilation_instances} 个编译实例`;
                 },
 
                 listToText(value) {
@@ -2148,31 +2356,9 @@
                         .filter(Boolean);
                 },
 
-                loadStructuredConfig() {
-                    this.structuredConfigStatus = '加载中...';
-                    fetch('/api/config/structured')
-                        .then(res => res.json())
-                        .then(data => {
-                            const cfg = data.config || {};
-                            this.structuredConfig = cfg;
-                            this.populateConfigForm(cfg);
-                            this.configDirty = false;
-                            this.structuredConfigStatus = Object.keys(cfg).length ? '配置已载入' : '未找到配置文件';
-                        })
-                        .catch(() => {
-                            this.structuredConfigStatus = '配置加载失败';
-                            this.showToast('项目配置加载失败', 'error');
-                        });
-                },
-
-                reloadStructuredConfig() {
-                    if (this.configDirty && !confirm('当前项目配置有未保存修改，确定重新载入并丢弃这些修改？')) {
-                        return;
-                    }
-                    this.loadStructuredConfig();
-                },
-
                 populateConfigForm(cfg) {
+                    if (cfg.config_version === 3) { this.populateV3Form(cfg); return; }
+                    this.v3Form = null;
                     const project = cfg.project || {};
                     const discovery = project.entry_discovery || {};
                     const indexing = cfg.indexing || {};
@@ -2205,6 +2391,7 @@
                         investigator_workers: concurrency.investigator_workers ?? 1,
                         evidence_completion_workers: concurrency.evidence_completion_workers ?? 2,
                         index_workers: concurrency.index_workers ?? 4,
+                        wiki_compiler_workers: concurrency.wiki_compiler_workers ?? 4,
                         svf_workers: concurrency.svf_workers ?? 2,
                         llm_max_inflight: concurrency.llm_max_inflight ?? 4,
                     };
@@ -2218,6 +2405,7 @@
                 },
 
                 buildStructuredConfig() {
+                    if (this.structuredConfig?.config_version === 3) return this.buildV3Config();
                     const cfg = JSON.parse(JSON.stringify(this.structuredConfig || {}));
                     cfg.config_version = 2;
                     cfg.project = cfg.project || {};
@@ -2256,7 +2444,7 @@
                     cfg.project.entry_discovery.interface_files = this.textToList(this.configForm.entryDiscovery.interface_files);
                     cfg.indexing.backend = this.configForm.indexing.backend || (cfg.project.language === 'java' ? 'java_unified' : 'unified');
                     cfg.scan.task = this.configForm.scan.task || '';
-                    ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'llm_max_inflight'].forEach(key => {
+                    ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'wiki_compiler_workers', 'llm_max_inflight'].forEach(key => {
                         cfg.concurrency[key] = Math.max(1, Number(this.configForm.concurrency[key]) || 1);
                     });
                     if (cfg.project.language === 'c_cpp') {
@@ -2283,289 +2471,6 @@
                     return cfg;
                 },
 
-                saveStructuredConfig() {
-                    this.structuredConfigStatus = '保存中...';
-                    const config = this.buildStructuredConfig();
-                    fetch('/api/config/structured', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ config }),
-                    })
-                        .then(res => res.json())
-                        .then(data => {
-                            if (!data.success) {
-                                this.structuredConfigStatus = data.error || '保存失败';
-                                this.showToast(this.structuredConfigStatus, 'error');
-                                return;
-                            }
-                            this.structuredConfig = data.config || config;
-                            this.populateConfigForm(this.structuredConfig);
-                            this.configDirty = false;
-                            this.structuredConfigStatus = '项目配置已保存';
-                            this.showToast('项目配置已保存', 'success');
-                        })
-                        .catch(() => {
-                            this.structuredConfigStatus = '保存失败';
-                            this.showToast('项目配置保存失败', 'error');
-                        });
-                },
-
-
-                decodeBase64Utf8(base64Text) {
-                    const binary = atob(base64Text);
-                    const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
-                    return new TextDecoder('utf-8').decode(bytes);
-                },
-
-                encodeBase64Utf8(plainText) {
-                    const bytes = new TextEncoder().encode(plainText);
-                    let binary = '';
-                    bytes.forEach(b => {
-                        binary += String.fromCharCode(b);
-                    });
-                    return btoa(binary);
-                },
-
-                bytesToBase64(bytes) {
-                    let binary = '';
-                    const chunkSize = 0x8000;
-                    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-                        const chunk = bytes.subarray(offset, offset + chunkSize);
-                        binary += String.fromCharCode(...chunk);
-                    }
-                    return btoa(binary);
-                },
-
-                base64ToBytes(base64Text) {
-                    const binary = atob(base64Text);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i += 1) {
-                        bytes[i] = binary.charCodeAt(i);
-                    }
-                    return bytes;
-                },
-
-                async compressOfflineText(plainText) {
-                    if (typeof CompressionStream !== 'undefined') {
-                        const stream = new Blob([plainText]).stream().pipeThrough(new CompressionStream('gzip'));
-                        const buffer = await new Response(stream).arrayBuffer();
-                        return `gzip-base64:${this.bytesToBase64(new Uint8Array(buffer))}`;
-                    }
-                    return `base64:${this.encodeBase64Utf8(plainText)}`;
-                },
-
-                async decompressOfflineText(encodedText) {
-                    const text = String(encodedText || '');
-                    if (text.startsWith('gzip-base64:')) {
-                        const bytes = this.base64ToBytes(text.slice('gzip-base64:'.length));
-                        if (typeof DecompressionStream === 'undefined') {
-                            throw new Error('当前浏览器不支持 gzip 离线数据解压');
-                        }
-                        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-                        return new Response(stream).text();
-                    }
-                    if (text.startsWith('base64:')) {
-                        return this.decodeBase64Utf8(text.slice('base64:'.length));
-                    }
-                    return text;
-                },
-
-                parseOfflineState(rawText) {
-                    const trimmed = String(rawText || '').trim();
-                    if (!trimmed) {
-                        return {};
-                    }
-                    if (trimmed.startsWith('base64:')) {
-                        const decoded = this.decodeBase64Utf8(trimmed.slice('base64:'.length));
-                        return JSON.parse(decoded);
-                    }
-                    return JSON.parse(trimmed);
-                },
-
-                limitOfflineText(value, limit = 4000) {
-                    if (value === undefined || value === null) {
-                        return value;
-                    }
-                    const text = String(value);
-                    if (text.length <= limit) {
-                        return text;
-                    }
-                    return `${text.slice(0, limit)}\n... [truncated ${text.length - limit} chars]`;
-                },
-
-                compactOfflineValue(value, depth = 0) {
-                    if (value === undefined || value === null) {
-                        return value;
-                    }
-                    if (typeof value === 'string') {
-                        return this.limitOfflineText(value, depth > 0 ? 1200 : 4000);
-                    }
-                    if (typeof value === 'number' || typeof value === 'boolean') {
-                        return value;
-                    }
-                    if (Array.isArray(value)) {
-                        const maxItems = depth > 0 ? 8 : 16;
-                        const result = value.slice(0, maxItems).map(item => this.compactOfflineValue(item, depth + 1));
-                        if (value.length > maxItems) {
-                            result.push(`... [truncated ${value.length - maxItems} items]`);
-                        }
-                        return result;
-                    }
-                    if (typeof value === 'object') {
-                        if (depth >= 3) {
-                            return this.limitOfflineText(JSON.stringify(value), 1200);
-                        }
-                        const result = {};
-                        const entries = Object.entries(value).slice(0, 40);
-                        entries.forEach(([key, item]) => {
-                            result[key] = this.compactOfflineValue(item, depth + 1);
-                        });
-                        const omitted = Object.keys(value).length - entries.length;
-                        if (omitted > 0) {
-                            result._truncated_keys = omitted;
-                        }
-                        return result;
-                    }
-                    return String(value);
-                },
-
-                offlineIssueKey(issue, fallback = '') {
-                    if (!issue || typeof issue !== 'object') {
-                        return `issue:${fallback}`;
-                    }
-                    const stable = issue.dedup_key || issue.stable_fingerprint || issue.fingerprint;
-                    if (stable) {
-                        return String(stable);
-                    }
-                    const identity = [
-                        issue.id || '',
-                        issue.function || issue.func_name || '',
-                        issue.location || issue.file || issue.file_path || '',
-                        issue.subcategory || issue.defect_class || issue.category || '',
-                    ].map(part => String(part).replace(/\s+/g, ' ').trim());
-                    const key = identity.join('|');
-                    return identity.some(Boolean) ? key : `issue:${fallback}`;
-                },
-
-                compactOfflineEvidencePack(pack) {
-                    if (!pack || typeof pack !== 'object') {
-                        return undefined;
-                    }
-                    const keep = [
-                        'checker', 'candidate_source', 'candidate_is_conclusion', 'validation_required',
-                        'final_score', 'score', 'entry_function', 'sink_function', 'target_function',
-                        'resource', 'resource_kind', 'path', 'source_path', 'value_flow',
-                        'lifecycle_pair', 'ast_cfg', 'clang_matcher_fact', 'semantic_overlay_evidence',
-                    ];
-                    const compact = {};
-                    keep.forEach(key => {
-                        if (pack[key] !== undefined) {
-                            compact[key] = this.compactOfflineValue(pack[key], 1);
-                        }
-                    });
-                    return Object.keys(compact).length ? compact : undefined;
-                },
-
-                compactOfflineIssue(issue, fallback = '') {
-                    const compact = {};
-                    if (!issue || typeof issue !== 'object') {
-                        return compact;
-                    }
-                    const textLimits = {
-                        code_snippet: 12000,
-                        reasoning: 10000,
-                        reasoning_process: 10000,
-                        validation_reasoning: 10000,
-                        description: 5000,
-                        root_cause: 5000,
-                        suggested_fix: 5000,
-                        guard_analysis: 4000,
-                        exploit_scenario: 4000,
-                    };
-                    const keep = [
-                        'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
-                        'category', 'subcategory', 'description', 'root_cause', 'suggested_fix',
-                        'reasoning', 'reasoning_process', 'code_snippet', 'validation_status',
-                        'validation_reasoning', 'confidence', 'impact_level', 'dedup_key',
-                        'stable_fingerprint', 'defect_class', 'rule', 'rule_id', 'cwe', 'source', 'sink',
-                        'guard_analysis', 'exploit_scenario', 'final_score', 'file', 'line',
-                        'start_line', 'end_line', 'entry_function', 'sink_function', 'target_function',
-                        'analyzed_from', 'reachable_from_entry', 'internal_sink_lifted',
-                        'normalized_category', 'source_loc', 'sink_loc',
-                    ];
-                    keep.forEach(key => {
-                        if (issue[key] === undefined) {
-                            return;
-                        }
-                        compact[key] = typeof issue[key] === 'string'
-                            ? this.limitOfflineText(issue[key], textLimits[key] || 2000)
-                            : issue[key];
-                    });
-                    ['positive_evidence', 'negative_evidence', 'evidence_refs', 'call_path', 'path_constraints'].forEach(key => {
-                        if (Array.isArray(issue[key])) {
-                            compact[key] = this.compactOfflineValue(issue[key]);
-                        }
-                    });
-                    const evidencePack = this.compactOfflineEvidencePack(issue.evidence_pack);
-                    if (evidencePack) {
-                        compact.evidence_pack = evidencePack;
-                    }
-                    if (Array.isArray(issue.call_paths)) {
-                        compact.call_paths = this.compactOfflineValue(issue.call_paths);
-                    }
-                    if (Array.isArray(issue.related_needs_review_observations)) {
-                        compact.related_needs_review_observations = issue.related_needs_review_observations
-                            .slice(0, 6)
-                            .map((item, index) => this.compactOfflineIssue(item, `${fallback}:related:${index}`));
-                    }
-                    compact._offline_id = this.offlineIssueKey(issue, fallback);
-                    return compact;
-                },
-
-                compactOfflineIssueSummary(issue, fallback = '') {
-                    if (!issue || typeof issue !== 'object') {
-                        return {};
-                    }
-                    const summary = {};
-                    [
-                        'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
-                        'category', 'subcategory', 'validation_status', 'validation_reasoning',
-                        'confidence', 'impact_level', 'dedup_key', 'stable_fingerprint',
-                        'defect_class', 'rule', 'rule_id', 'cwe', 'final_score',
-                        'file', 'line', 'start_line', 'end_line', 'entry_function', 'sink_function',
-                        'target_function', 'analyzed_from', 'reachable_from_entry',
-                        'internal_sink_lifted', 'normalized_category', 'source_loc', 'sink_loc',
-                    ].forEach(key => {
-                        if (issue[key] !== undefined) {
-                            summary[key] = issue[key];
-                        }
-                    });
-                    ['description', 'root_cause', 'suggested_fix', 'source', 'sink'].forEach(key => {
-                        if (issue[key] !== undefined) {
-                            summary[key] = this.limitOfflineText(issue[key], 600);
-                        }
-                    });
-                    summary._offline_id = this.offlineIssueKey(issue, fallback);
-                    summary._detail_lazy = true;
-                    return summary;
-                },
-
-                compactOfflineReportView(view) {
-                    const compact = {};
-                    if (!view || typeof view !== 'object') {
-                        return compact;
-                    }
-                    [
-                        'label', 'description', 'issue_count', 'included_needs_review_count',
-                        'independent_needs_review_count', 'attached_needs_review_count',
-                    ].forEach(key => {
-                        if (view[key] !== undefined) {
-                            compact[key] = this.compactOfflineValue(view[key]);
-                        }
-                    });
-                    return compact;
-                },
-
                 stripOfflineRuntimeFields(issue) {
                     if (!issue || typeof issue !== 'object') {
                         return issue;
@@ -2575,6 +2480,7 @@
                         _offline_id,
                         _validation_original_status,
                         _validation_original_reasoning,
+                        _validation_original_rebuttal,
                         _validation_dirty,
                         _snapshot_sync_pending,
                         ...rest
@@ -2582,228 +2488,6 @@
                     return { ...rest };
                 },
 
-                hydrateOfflineState(rawState) {
-                    const state = rawState && typeof rawState === 'object' ? rawState : {};
-                    state.reportViews = state.reportViews || {};
-                    state.reportView = state.reportView || 'default';
-                    const summaries = state.issueSummaries && typeof state.issueSummaries === 'object'
-                        ? state.issueSummaries
-                        : null;
-                    if (summaries) {
-                        Object.entries(state.reportViews).forEach(([, view]) => {
-                            if (!view || typeof view !== 'object' || !Array.isArray(view.issueRefs)) {
-                                return;
-                            }
-                            view.issues = view.issueRefs
-                                .map(ref => summaries[ref])
-                                .filter(issue => issue && typeof issue === 'object');
-                        });
-                        if (!Array.isArray(state.findings) || !state.findings.length) {
-                            const selectedView = state.reportViews[state.reportView] || {};
-                            const refs = Array.isArray(state.currentIssueRefs)
-                                ? state.currentIssueRefs
-                                : (Array.isArray(selectedView.issueRefs) ? selectedView.issueRefs : []);
-                            state.findings = refs
-                                .map(ref => summaries[ref])
-                                .filter(issue => issue && typeof issue === 'object');
-                        }
-                    }
-                    const store = state.issueStore && typeof state.issueStore === 'object' ? state.issueStore : null;
-                    if (store) {
-                        Object.entries(state.reportViews).forEach(([, view]) => {
-                            if (!view || typeof view !== 'object' || !Array.isArray(view.issueRefs)) {
-                                return;
-                            }
-                            view.issues = view.issueRefs
-                                .map(ref => store[ref])
-                                .filter(issue => issue && typeof issue === 'object');
-                        });
-                        if (!Array.isArray(state.findings) || !state.findings.length) {
-                            const selectedView = state.reportViews[state.reportView] || {};
-                            const refs = Array.isArray(state.currentIssueRefs)
-                                ? state.currentIssueRefs
-                                : (Array.isArray(selectedView.issueRefs) ? selectedView.issueRefs : []);
-                            state.findings = refs
-                                .map(ref => store[ref])
-                                .filter(issue => issue && typeof issue === 'object');
-                        }
-                    }
-                    if (!Array.isArray(state.findings) || !state.findings.length) {
-                        const selectedView = state.reportViews[state.reportView] || {};
-                        if (Array.isArray(selectedView.issues)) {
-                            state.findings = selectedView.issues;
-                        }
-                    }
-                    state.findings = Array.isArray(state.findings) ? state.findings : [];
-                    return state;
-                },
-
-                allOfflineIssues(state) {
-                    const items = [];
-                    const add = (issue) => {
-                        if (issue && typeof issue === 'object') {
-                            items.push(issue);
-                        }
-                    };
-                    if (state.issueStore && typeof state.issueStore === 'object') {
-                        Object.values(state.issueStore).forEach(add);
-                    }
-                    if (state.issueSummaries && typeof state.issueSummaries === 'object') {
-                        Object.values(state.issueSummaries).forEach(add);
-                    }
-                    Object.values(state.reportViews || {}).forEach(view => {
-                        if (view && Array.isArray(view.issues)) {
-                            view.issues.forEach(add);
-                        }
-                    });
-                    if (Array.isArray(state.findings)) {
-                        state.findings.forEach(add);
-                    }
-                    const unique = new Map();
-                    items.forEach((issue, index) => {
-                        unique.set(this.offlineIssueKey(issue, index), this.stripOfflineRuntimeFields(issue));
-                    });
-                    return Array.from(unique.values());
-                },
-
-                async buildOfflinePayload() {
-                    const issueSummaries = {};
-                    const issueChunks = {};
-                    const addIssue = async (issue, fallback) => {
-                        const key = this.offlineIssueKey(issue, fallback);
-                        const summary = this.compactOfflineIssueSummary(issue, fallback);
-                        summary._offline_id = key;
-                        issueSummaries[key] = { ...(issueSummaries[key] || {}), ...summary };
-                        if (!issueChunks[key]) {
-                            const compact = this.compactOfflineIssue(issue, fallback);
-                            compact._offline_id = key;
-                            issueChunks[key] = await this.compressOfflineText(JSON.stringify(compact));
-                        }
-                        return key;
-                    };
-
-                    const reportViews = {};
-                    for (const [name, view] of Object.entries(this.reportViews || {})) {
-                        if (!view || typeof view !== 'object') {
-                            continue;
-                        }
-                        const compactView = this.compactOfflineReportView(view);
-                        const issues = Array.isArray(view.issues) ? view.issues : [];
-                        compactView.issueRefs = [];
-                        for (let index = 0; index < issues.length; index += 1) {
-                            compactView.issueRefs.push(await addIssue(issues[index], `${name}:${index}`));
-                        }
-                        compactView.issue_count = compactView.issue_count ?? compactView.issueRefs.length;
-                        reportViews[name] = compactView;
-                    }
-
-                    const currentIssueRefs = [];
-                    for (let index = 0; index < (this.findings || []).length; index += 1) {
-                        currentIssueRefs.push(await addIssue(this.findings[index], `${this.reportView || 'current'}:${index}`));
-                    }
-                    if (!reportViews[this.reportView]) {
-                        reportViews[this.reportView] = {
-                            label: this.reportView || 'Current',
-                            description: 'Current dashboard view.',
-                            issue_count: currentIssueRefs.length,
-                            included_needs_review_count: 0,
-                            issueRefs: currentIssueRefs,
-                        };
-                    } else if (!Array.isArray(reportViews[this.reportView].issueRefs) || !reportViews[this.reportView].issueRefs.length) {
-                        reportViews[this.reportView].issueRefs = currentIssueRefs;
-                        reportViews[this.reportView].issue_count = currentIssueRefs.length;
-                    }
-
-                    return {
-                        schemaVersion: 3,
-                        reportSummary: this.compactOfflineValue(this.reportSummary || {}),
-                        reportViews,
-                        reportView: this.reportView,
-                        viewSummary: this.compactOfflineValue(this.viewSummary || {}),
-                        currentIssueRefs,
-                        issueSummaries,
-                        issueChunks,
-                        exportedAt: new Date().toISOString(),
-                    };
-                },
-
-
-                triggerOfflineImport() {
-                    this.$refs.offlineImportInput.value = '';
-                    this.$refs.offlineImportInput.click();
-                },
-
-                importOfflinePage(event) {
-                    const file = event.target.files && event.target.files[0];
-                    if (!file) {
-                        return;
-                    }
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        try {
-                            const html = String(reader.result || '');
-                            const match = html.match(/<script id="zscope-offline-state" type="application\/json">([\s\S]*?)<\/script>/i);
-                            if (!match) {
-                                throw new Error('未检测到离线状态数据');
-                            }
-                            const offlineState = this.hydrateOfflineState(this.parseOfflineState(match[1]));
-                            const importedFindings = Array.isArray(offlineState.findings) ? offlineState.findings : [];
-                            if (!importedFindings.length) {
-                                throw new Error('离线页面中没有可导入的问题数据');
-                            }
-                            this.findings = importedFindings.map((issue, index) =>
-                                this.prepareFinding(this.stripOfflineRuntimeFields(issue), 'offline', index)
-                            );
-                            this.reportSummary = offlineState.reportSummary || this.reportSummary;
-                            this.reportViews = offlineState.reportViews || this.reportViews;
-                            this.reportView = offlineState.reportView || this.reportView;
-                            this.viewSummary = offlineState.viewSummary || this.viewSummary;
-                            this.selectFinding(this.findings[0]);
-                            this.saveFindings(this.allOfflineIssues(offlineState));
-                        } catch (error) {
-                            alert(`导入失败：${error.message || error}`);
-                        }
-                    };
-                    reader.readAsText(file, 'utf-8');
-                },
-
-                async loadOfflineTemplate() {
-                    if (this.offlineTemplateCache) {
-                        return this.offlineTemplateCache;
-                    }
-                    const response = await fetch('/offline_template.html', { cache: 'no-store' });
-                    if (!response.ok) {
-                        throw new Error(`离线模板加载失败（HTTP ${response.status}）`);
-                    }
-                    const template = await response.text();
-                    if (!template.includes('__ZCOPE_OFFLINE_STATE__')) {
-                        throw new Error('离线模板缺少状态占位符');
-                    }
-                    this.offlineTemplateCache = template;
-                    return template;
-                },
-
-                async createOfflineHtml(payload) {
-                    const safeJson = JSON.stringify(payload).replace(/<\/script>/gi, '<\\/script>');
-                    const template = await this.loadOfflineTemplate();
-                    return template.replace('__ZCOPE_OFFLINE_STATE__', safeJson);
-                },
-
-                async exportOfflinePage() {
-                    try {
-                        await this.ensureReportViewsCached();
-                        const payload = await this.buildOfflinePayload();
-                        const offlineHtml = await this.createOfflineHtml(payload);
-                        const blob = new Blob([offlineHtml], { type: 'text/html;charset=utf-8' });
-                        const link = document.createElement('a');
-                        link.href = URL.createObjectURL(blob);
-                        link.download = 'zscope-offline-dashboard.html';
-                        link.click();
-                        URL.revokeObjectURL(link.href);
-                    } catch (error) {
-                        alert(`导出离线页面失败：${error.message || error}`);
-                    }
-                },
                 saveConfig() {
                     this.configStatus = '保存中...';
                     fetch('/api/config', {
@@ -2881,6 +2565,9 @@
                                 this.markSavedFindingsClean(issuesToSave, {
                                     snapshotPending: Boolean(snapshotPersistence.skipped),
                                 });
+                                if (issuesToSave.includes(this.selectedFinding)) {
+                                    this.loadMarkdownReport(this.selectedFinding);
+                                }
                                 if (isSingleFindingSave && snapshotPersistence.skipped) {
                                     const count = persistence.baseline_upserts ?? 0;
                                     const suppressions = persistence.suppression_upserts ?? 0;
@@ -3270,14 +2957,8 @@
                     if (!options.keepMobileView) {
                         this.mobileFindingView = 'detail';
                     }
-                    const firstEvidence = this.findingEvidenceItems(finding)[0];
-                    this.activeEvidenceId = firstEvidence ? firstEvidence.id : '';
-                    if (firstEvidence) {
-                        this.loadEvidenceSnippet(firstEvidence);
-                    }
-                    this.$nextTick(() => {
-                        Prism.highlightAll();
-                    });
+                    this.loadMarkdownReport(finding);
+                    this.loadDisposition(finding);
                 },
 
                 currentFindingIndex() {
@@ -3500,6 +3181,7 @@
 
                 extractLineNumber(value) {
                     const text = String(value || '');
+                    if (/^ir_[a-z_]+:\d+$/.test(text.trim())) return null;
                     const locationMatch = text.match(/:(\d+)(?:-\d+)?(?::\d+)?/);
                     if (locationMatch) {
                         return Number(locationMatch[1]);
@@ -3726,7 +3408,6 @@
                         const explicitLine =
                             this.extractLineNumber(cleanTitle) ||
                             this.extractLineNumber(detail) ||
-                            this.extractLineNumber(ref) ||
                             this.extractLineNumber(endpointText);
                         const endpointLocation = (type === 'source' || type === 'sink')
                             ? this.findingEndpointLocation(finding, type)
@@ -4159,38 +3840,6 @@
                     fetch('/api/user_config/function_intents',{method:'POST',headers:{'Content-Type':'application/json'},
                         body:JSON.stringify(p)
                     }).then(r=>r.json()).then(()=>{this.intentForm={func_name:'',file_path:'',concurrency_group:'',concurrent_str:'',caller_constraints:'',notes:''};this.loadAllConfigs();});
-                },
-                loadSecuritySpecs() {
-                    const query = this.securitySpecStatus ? `?status=${encodeURIComponent(this.securitySpecStatus)}` : '';
-                    this.securitySpecError = '';
-                    fetch('/api/security-specs' + query).then(r => r.json()).then(data => {
-                        this.securitySpecPayload = data;
-                    }).catch(error => { this.securitySpecError = String(error); });
-                },
-                loadSecuritySpecDetail(specUid) {
-                    this.securitySpecError = '';
-                    fetch(`/api/security-specs/${encodeURIComponent(specUid)}`).then(async response => {
-                        const data = await response.json();
-                        if (!response.ok) throw new Error(data.error || '加载规格失败');
-                        return data;
-                    }).then(data => { this.selectedSecuritySpec = data; })
-                      .catch(error => { this.securitySpecError = String(error); });
-                },
-                dryRunSecuritySpecImport(event) {
-                    const file = event.target.files && event.target.files[0];
-                    if (!file) return;
-                    const format = file.name.toLowerCase().endsWith('.xlsx') ? 'xlsx' : 'json';
-                    file.arrayBuffer().then(buffer => fetch(`/api/security-specs/import?format=${format}`, {
-                        method: 'POST',
-                        headers: {'Content-Type': format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/json'},
-                        body: buffer,
-                    })).then(async response => {
-                        const data = await response.json();
-                        if (!response.ok) throw new Error(data.error || '导入校验失败');
-                        return data;
-                    }).then(data => this.showToast(`只读校验通过：${data.summary.spec_count} specs，未写入`, 'success'))
-                      .catch(error => { this.securitySpecError = String(error); this.showToast(this.securitySpecError, 'error'); })
-                      .finally(() => { event.target.value = ''; });
                 }
             }
         }

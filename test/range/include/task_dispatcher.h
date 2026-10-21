@@ -112,6 +112,8 @@ int td_handle_network_task(Task* task);
 int td_serialize_task_message(const Task* task, void** buffer, size_t* len);
 
 int td_process_control_message(const char* msg, int transport_id);
+/** Schedule an asynchronous lifecycle cache flush; return 0 on success, -1 on failure. */
+int td_schedule_flush(const char* path);
 int td_manage_runtime_config(const char* text, size_t metric_count);
 int td_format_and_parse_frame(const char* prefix, uint32_t id, char* out, size_t out_size);
 int td_watch_connection_event(int fd, char* buffer, size_t len);

@@ -23,12 +23,10 @@ from .catalog import EffectiveRuleSet, serialize_effective_rules
 from .extensions import preflight_rules
 from ..orchestration.agent_policy import attach_agent_contract, tool_policy_for_agent
 from ..orchestration.candidates import CandidateLedger, CandidateRegistrar
-from ..orchestration.decision_trace import ensure_decision_trace_store
 from ..orchestration.specs import SpecRegistry
 from ..reporting.attribution import FindingAttribution
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..reporting.schema import apply_report_schema_v2
-from ..reporting.assembler import ReportAssembler
 from ..reporting.views import build_report_views
 from ..framework.llm_client import LLMClient
 from ..framework.llm_usage import (
@@ -71,7 +69,6 @@ class RuleDrivenAnalyzer:
                 api_key=llm_cfg.api_key,
                 base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                 models=llm_cfg.models,
-                response_model_map=getattr(llm_cfg, "response_model_map", {}),
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
                 retry_until_available=getattr(llm_cfg, "retry_until_available", False),
@@ -84,9 +81,6 @@ class RuleDrivenAnalyzer:
                 ),
                 global_max_concurrent_requests=config.concurrency.llm_max_inflight,
                 supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
-                require_exact_response_model=getattr(
-                    llm_cfg, "require_exact_response_model", False
-                ),
                 token_usage_ledger=token_usage_ledger,
                 llm_ref=name,
             )
@@ -170,13 +164,13 @@ class RuleDrivenAnalyzer:
             attach_agent_contract=self._attach_agent_contract,
             remember_validation_result=self._remember_validation_result,
         )
-        factory = getattr(self, "_proof_engine_agent_factory", None)
+        factory = getattr(self, "_validator_agent_factory", None)
         if callable(factory):
-            runner.proof_engine_agent_factory = factory
+            runner.validator_agent_factory = factory
         return runner
 
     def _get_tools(self, agent_name: Optional[str] = None) -> List[Any]:
-        """Build the same bounded read-only Proof Engine tools as the main pipeline."""
+        """Build the same bounded read-only Validator tools as the main pipeline."""
 
         from ..tools.registry import build_tool_registry
 
@@ -286,7 +280,6 @@ class RuleDrivenAnalyzer:
             project_id=project_id,
             project_root=project_root,
             revision=revision,
-            decision_trace_store=ensure_decision_trace_store(self.config),
         )
         registrar = CandidateRegistrar(
             ledger,
@@ -406,8 +399,6 @@ class RuleDrivenAnalyzer:
                 "candidate_ledger_summary": ledger_summary,
                 "candidate_lifecycle_records": list(lifecycle.get("records") or []),
                 "candidate_terminal_states": list(lifecycle.get("outcomes") or []),
-                "candidate_lifecycle_snapshot": lifecycle,
-                "decision_trace_store": ensure_decision_trace_store(self.config),
             }
         )
         return terminal
@@ -723,14 +714,6 @@ class RuleDrivenAnalyzer:
         return filtered
 
     def _build_report(self, issues: List[Dict[str, Any]], notes: List[str]) -> Dict[str, Any]:
-        validation_state = dict(getattr(self, "_last_validation_state", {}) or {})
-        validation_state.setdefault("finding_root_projection_enabled", True)
-        config = getattr(self, "config", None)
-        if config is not None:
-            validation_state.setdefault("decision_trace_store", ensure_decision_trace_store(config))
-        canonical = ReportAssembler._canonical_outcome_items(validation_state)
-        if canonical is not None:
-            issues = canonical
         confirmed = [
             issue
             for issue in issues
@@ -774,6 +757,7 @@ class RuleDrivenAnalyzer:
                     native_ids.add(native_id)
             for native_id in native_ids:
                 backend_signal_counts[native_id] = backend_signal_counts.get(native_id, 0) + 1
+        config = getattr(self, "config", None)
         scan = getattr(config, "scan", None)
         llm_usage = scan_token_usage_snapshot(config) if config is not None else {}
         report.metadata = {
@@ -803,6 +787,7 @@ class RuleDrivenAnalyzer:
             observations,
             canonical_projection=True,
         )
+        validation_state = dict(getattr(self, "_last_validation_state", {}) or {})
         lifecycle_terminal_states = validation_state.get("candidate_terminal_states")
         if not isinstance(lifecycle_terminal_states, list):
             lifecycle_terminal_states = issues
@@ -845,7 +830,7 @@ class RuleDrivenAnalyzer:
             ),
             "ledger_summary": dict(validation_state.get("candidate_ledger_summary") or {}),
         }
-        from ..reporting.funnel import candidate_funnel
+        from ..benchmarking.protocol import candidate_funnel
 
         report_dict["metadata"]["candidate_funnel"] = candidate_funnel(report_dict)
         report.metadata = dict(report_dict["metadata"])

@@ -176,9 +176,7 @@ def test_analyzer_annotation_uses_active_backend_profile() -> None:
     analyzer = object.__new__(Analyzer)
     analyzer.code_index = FakeUnifiedIndex()
     analyzer.user_config = FakeUserConfig()
-    analyzer._semantic_overlay = {
-        "pointer_target_models": [{"name": "dispatch", "targets": ["handler"]}]
-    }
+    analyzer._semantic_overlay = None
 
     issues = analyzer._annotate_candidate_issues(
         [{"id": "GRAPH_1", "evidence_pack": {}}],
@@ -198,3 +196,6 @@ def test_backend_profile_downgrades_when_backend_is_unavailable() -> None:
         backend = None
 
     assert backend_profile_for_code_index(FailedUnifiedIndex()) == "regex"
+
+
+

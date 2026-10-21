@@ -6,7 +6,7 @@ maps LLVM IR locations back to C source via DWARF debug info.
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class CallGraphParser:
                 continue
             attributes = m.group("attributes") or ""
             color_match = _DOT_COLOR_RE.search(attributes)
-            edge_color = (color_match.group("color").lower() if color_match else "")
+            edge_color = color_match.group("color").lower() if color_match else ""
             caller_port = m.group("caller_port") or ""
             key = (caller, callee, caller_port, edge_color)
             if key in seen:
@@ -84,11 +84,72 @@ class CallGraphParser:
 class SvfOutputMapper:
     """将 SVF 分析结果映射回源码并写入 KnowledgeDB。"""
 
-    def __init__(self, db, svf_group: str = "default", project_root: Optional[Path] = None):
-        """db: KnowledgeDB 实例。"""
+    def __init__(
+        self,
+        db,
+        svf_group: str = "default",
+        project_root: Optional[Path] = None,
+        tu_identities: Optional[Mapping[str, Any]] = None,
+    ):
+        """db: KnowledgeDB 实例。
+
+        ``tu_identities`` is the group's per-TU compile-command identity
+        (``BitcodeBuilder.group_tu_identities``). Attribution is a verdict, never
+        a guess: a location is ``exact`` only when it names one translation-unit
+        source of this group compiled under exactly one command id. Header
+        locations, sources linked under several command ids (the default when a
+        group mixes macro variants) and unknown paths stay ``ambiguous`` /
+        ``unattributed`` so no instance can inherit them.
+        """
         self.db = db
         self.svf_group = svf_group
         self.project_root = Path(project_root) if project_root else None
+        self.source_to_command_ids: Dict[str, Set[str]] = {}
+        self.tu_sources: Set[str] = set()
+        rows = (tu_identities or {}).get("tus") if isinstance(tu_identities, dict) else None
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            source = str(row.get("source") or "")
+            command_id = str(row.get("command_id") or "")
+            if not source or not command_id:
+                continue
+            self.tu_sources.add(source)
+            self.source_to_command_ids.setdefault(source, set()).add(command_id)
+
+    def attribution(self, raw_path: Any) -> Tuple[str, str]:
+        """Return ``(command_id, verdict)`` for one reported location."""
+
+        path = self._normalize_signal_path(raw_path)
+        if not path:
+            return "", "unattributed"
+        if path not in self.tu_sources:
+            # A header/inline location belongs to every TU that includes it; a
+            # path outside the group's TU set is not evidence for any instance.
+            return "", (
+                "ambiguous"
+                if self.project_root and (self.project_root / path).exists()
+                else "unattributed"
+            )
+        command_ids = self.source_to_command_ids.get(path) or set()
+        if len(command_ids) != 1:
+            return "", "ambiguous"
+        return next(iter(command_ids)), "exact"
+
+    def _normalize_signal_path(self, raw_path: Any) -> str:
+        text = str(raw_path or "").strip()
+        if not text:
+            return ""
+        candidate = Path(text)
+        if not candidate.is_absolute() and self.project_root:
+            candidate = self.project_root / candidate
+        if self.project_root:
+            for base, label in ((self.project_root, ""), (self.project_root.resolve(), "")):
+                try:
+                    return candidate.resolve().relative_to(base.resolve()).as_posix()
+                except (ValueError, OSError):
+                    continue
+        return candidate.as_posix()
 
     def import_callgraph(
         self,
@@ -131,16 +192,26 @@ class SvfOutputMapper:
                 if context
                 else (f"svf:{edge['caller_port']}" if edge["caller_port"] else "")
             )
+            command_id, attribution = self.attribution(call_file)
             inserted = self.db.insert_indirect_call(
-                caller, edge["callee"], "svf-ander",
-                call_file=call_file, call_line=call_line,
+                caller,
+                edge["callee"],
+                "svf-ander",
+                call_file=call_file,
+                call_line=call_line,
                 svf_group=self.svf_group,
                 callsite_id=callsite_id,
+                command_id=command_id,
+                attribution=attribution,
                 pointer_symbol=str(context.get("pointer_symbol") or "") if context else "",
-                pointer_kind=str(context.get("pointer_kind") or "unknown") if context else "unknown",
+                pointer_kind=(
+                    str(context.get("pointer_kind") or "unknown") if context else "unknown"
+                ),
                 pointer_type=str(context.get("pointer_type") or "") if context else "",
                 pointer_signature=str(context.get("pointer_signature") or "") if context else "",
-                callsite_expression=str(context.get("callsite_expression") or "") if context else "",
+                callsite_expression=(
+                    str(context.get("callsite_expression") or "") if context else ""
+                ),
             )
             count += int(inserted if inserted is not None else 1)
         if commit:
@@ -186,9 +257,7 @@ class SvfOutputMapper:
     ) -> Optional[Dict[str, str]]:
         raw_line = source_lines[line - 1]
         escaped = re.escape(pointer_name)
-        member = re.search(
-            rf"(?P<expr>[A-Za-z_]\w*\s*(?:->|\.)\s*{escaped})\s*\(", raw_line
-        )
+        member = re.search(rf"(?P<expr>[A-Za-z_]\w*\s*(?:->|\.)\s*{escaped})\s*\(", raw_line)
         expression = ""
         pointer_kind = ""
         pointer_type = ""
@@ -197,17 +266,13 @@ class SvfOutputMapper:
         if member:
             expression = re.sub(r"\s+", "", member.group("expr"))
             base = re.split(r"->|\.", expression, maxsplit=1)[0]
-            variable = re.search(
-                rf"\b(?P<type>[A-Za-z_]\w*)\s+\**\s*{re.escape(base)}\b", prefix
-            )
+            variable = re.search(rf"\b(?P<type>[A-Za-z_]\w*)\s+\**\s*{re.escape(base)}\b", prefix)
             if not variable or not hasattr(self.db, "get_type_info"):
                 return None
             container_type = str(variable.group("type") or "")
             container = self.db.get_type_info(container_type) or {}
             definition = str(container.get("full_definition") or "")
-            member_type = re.search(
-                rf"\b(?P<type>[A-Za-z_]\w*)\s+{escaped}\s*;", definition
-            )
+            member_type = re.search(rf"\b(?P<type>[A-Za-z_]\w*)\s+{escaped}\s*;", definition)
             if not member_type:
                 return None
             pointer_type = str(member_type.group("type") or "")
@@ -218,9 +283,7 @@ class SvfOutputMapper:
             if not local:
                 return None
             expression = re.sub(r"\s+", "", local.group("expr"))
-            declaration = re.search(
-                rf"\b(?P<type>[A-Za-z_]\w*)\s+(?:\*\s*)?{escaped}\b", prefix
-            )
+            declaration = re.search(rf"\b(?P<type>[A-Za-z_]\w*)\s+(?:\*\s*)?{escaped}\b", prefix)
             if not declaration:
                 return None
             pointer_type = str(declaration.group("type") or "")
@@ -284,6 +347,7 @@ class SvfOutputMapper:
             )
         if not match:
             return ""
+
         def normalize_params(value: str) -> str:
             parts = []
             for raw in value.split(","):
@@ -293,9 +357,8 @@ class SvfOutputMapper:
                     tokens = tokens[:-1]
                 parts.append(" ".join(tokens).replace(" *", "*"))
             return ",".join(parts)
-        return_type = re.sub(
-            r"\b(?:static|extern|inline)\b", "", match.group("return")
-        )
+
+        return_type = re.sub(r"\b(?:static|extern|inline)\b", "", match.group("return"))
         return_type = " ".join(return_type.split())
         return f"{return_type} (*)({normalize_params(match.group('params'))})"
 
@@ -308,6 +371,7 @@ class SvfOutputMapper:
         """将 saber 检测到的 bug 写入 taint_signatures 表。"""
         count = 0
         for bug in bugs:
+            command_id, attribution = self.attribution(bug.get("file"))
             inserted = self.db.insert_taint_signature(
                 source_func="",
                 sink_func="",
@@ -316,6 +380,8 @@ class SvfOutputMapper:
                 line=bug.get("line", 0),
                 tool="saber",
                 svf_group=self.svf_group,
+                command_id=command_id,
+                attribution=attribution,
             )
             count += int(inserted if inserted is not None else 1)
         if commit:

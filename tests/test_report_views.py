@@ -1,8 +1,5 @@
 from types import SimpleNamespace
 
-import pytest
-
-from zscope.orchestration.candidates import CandidateLedger
 from zscope.orchestration.parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
 from zscope.reporting.views import build_report_views, findings_for_view
 
@@ -121,45 +118,6 @@ def test_canonical_projection_does_not_hide_review_related_to_confirmed() -> Non
         "ISSUE_CONFIRMED",
         "ISSUE_REVIEW",
     ]
-    assert views["default"]["is_subset_of_with_needs_review"] is True
-    assert with_review["contains_all_default"] is True
-    assert with_review["contains_all_canonical_needs_review"] is True
-
-
-def test_canonical_projection_keeps_shadow_audit_out_of_both_security_views() -> None:
-    confirmed = {
-        "id": "ISSUE_CONFIRMED",
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": "VAL_confirmed",
-    }
-    review = {
-        "id": "ISSUE_REVIEW",
-        "candidate_disposition": "needs_review",
-        "validation_status": "needs_review",
-        "validation_cluster_uid": "VAL_review",
-    }
-    audit = {
-        "id": "AUDIT_ONLY",
-        "candidate_disposition": "shadow_observation",
-        # A stale legacy status must not leak an audit observation back into
-        # the with-needs-review security projection.
-        "validation_status": "needs_review",
-        "validation_cluster_uid": "VAL_audit",
-    }
-
-    views = build_report_views(
-        [confirmed],
-        [review, audit],
-        canonical_projection=True,
-    )
-
-    assert [item["id"] for item in views["default"]["issues"]] == ["ISSUE_CONFIRMED"]
-    assert [item["id"] for item in views["with_needs_review"]["issues"]] == [
-        "ISSUE_CONFIRMED",
-        "ISSUE_REVIEW",
-    ]
-    assert views["with_needs_review"]["included_needs_review_count"] == 1
-    assert views["with_needs_review"]["contains_all_canonical_needs_review"] is True
 
 
 def test_build_report_views_treats_null_related_observations_as_empty() -> None:
@@ -343,7 +301,7 @@ def test_needs_review_numeric_category_variant_attaches_by_root() -> None:
     )
 
 
-def test_parallel_combined_report_rejects_noncanonical_report_only_input() -> None:
+def test_parallel_combined_report_exposes_needs_review_view() -> None:
     analyzer = object.__new__(ParallelAnalyzer)
     analyzer.max_workers = 12
     results = {
@@ -372,133 +330,178 @@ def test_parallel_combined_report_rejects_noncanonical_report_only_input() -> No
         )
     }
 
-    with pytest.raises(RuntimeError, match="requires a Candidate Ledger"):
-        analyzer.generate_combined_report(results)
-
-
-def test_parallel_combined_report_does_not_fall_back_when_frozen_outcomes_are_empty() -> None:
-    analyzer = object.__new__(ParallelAnalyzer)
-    analyzer.max_workers = 12
-    analyzer._candidate_ledger = CandidateLedger()
-    results = {
-        "entry": ParallelAnalysisResult(
-            function_name="entry",
-            verdict="issues_found",
-            issues=[
-                {
-                    "id": "RAW_ISSUE",
-                    "function": "entry",
-                    "location": "src/demo.c:10",
-                    "category": "bounds",
-                    "description": "must not bypass the Candidate Ledger",
-                }
-            ],
-        )
-    }
-
     report = analyzer.generate_combined_report(results)
 
-    assert report["summary"]["total_issues"] == 0
-    assert report["summary"]["total_issues_with_needs_review"] == 0
-    assert report["metadata"]["audit_observation_count"] == 0
+    assert report["summary"]["total_issues"] == 1
+    assert report["summary"]["total_issues_with_needs_review"] == 2
+    assert report["metadata"]["audit_observation_count"] == 1
     assert report["metadata"]["candidate_funnel"]["schema_version"] == (
         "zscope.candidate-funnel.v1"
     )
-    assert findings_for_view(report, "default") == []
-    assert findings_for_view(report, "with_needs_review") == []
-    assert report["run_manifest"]["report_invariant_status"]["canonical_projection"] is True
+    assert len(findings_for_view(report, "default")) == 1
+    assert len(findings_for_view(report, "with_needs_review")) == 2
 
 
-def test_parallel_combined_report_separates_review_and_audit_with_terminal_conservation(
-    monkeypatch,
-) -> None:
-    def finalize_trace(_self, issue, *, view_memberships):
-        issue["decision_trace_ref"] = f"trace:{issue['validation_cluster_uid']}"
-        issue["decision_trace_view_memberships"] = list(view_memberships)
-        return issue
+def test_parallel_combined_report_records_llm_dedup_suggestion(monkeypatch) -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.max_workers = 12
+    analyzer._semantic_dedup_llm_cache = {}
+    analyzer.base_config = SimpleNamespace(
+        reporting=SimpleNamespace(
+            semantic_dedup=SimpleNamespace(
+                enabled=True,
+                llm_enabled=True,
+                llm_confidence_threshold=0.85,
+                max_cluster_size=8,
+            )
+        )
+    )
+    calls = []
 
-    # TerminalAuthority v4 is covered independently.  Keep this report-level
-    # integration focused on the final frozen projection and its conservation
-    # without manufacturing a proof envelope in the fixture.
+    class FakeReconciler:
+        def run(self, payload):
+            calls.append(payload)
+            primary_uid = payload["issues"][0]["id"]
+            duplicate_uid = payload["issues"][1]["id"]
+            return SimpleNamespace(
+                success=True,
+                data={
+                    "duplicate_groups": [
+                        {
+                            "primary_issue_id": primary_uid,
+                            "duplicate_issue_ids": [duplicate_uid],
+                            "root_cause_key": "same_bounds_guard",
+                            "confidence": 0.95,
+                            "reasoning": "Both findings describe the same missing bounds guard.",
+                        }
+                    ],
+                    "must_keep_distinct_issue_ids": [],
+                },
+            )
+
     monkeypatch.setattr(
-        "zscope.orchestration.decision_trace.DecisionTraceStore.finalize_issue",
-        finalize_trace,
+        analyzer,
+        "_make_issue_reconciler_agent",
+        lambda: FakeReconciler(),
     )
 
-    class FrozenLedger:
-        @staticmethod
-        def freeze():
-            return {
-                "outcomes": [
-                    {
-                        "validation_cluster_uid": "VAL_REVIEW_ONLY",
-                        "terminal_disposition": "needs_review",
-                        "status": "needs_review",
-                        "issue": {
-                            "id": "REVIEW_ONLY",
-                            "candidate_uid": "CAND_REVIEW_ONLY",
-                            "occurrence_uid": "OCC_REVIEW_ONLY",
-                            "validation_cluster_uid": "VAL_REVIEW_ONLY",
-                            "function": "review_sink",
-                            "location": "src/review.c:11",
-                            "category": "bounds",
-                            "source_identity": "review_length",
-                        },
-                    },
-                    {
-                        "validation_cluster_uid": "VAL_AUDIT_ONLY",
-                        "terminal_disposition": "shadow_observation",
-                        "status": "uncertain",
-                        "issue": {
-                            "id": "AUDIT_ONLY",
-                            "candidate_uid": "CAND_AUDIT_ONLY",
-                            "occurrence_uid": "OCC_AUDIT_ONLY",
-                            "validation_cluster_uid": "VAL_AUDIT_ONLY",
-                            "function": "audit_sink",
-                            "location": "src/audit.c:22",
-                            "category": "generic",
-                            "source_identity": "broad_pattern",
-                            # A stale legacy field must not make this item
-                            # actionable after its terminal disposition is
-                            # frozen as audit-only.
-                            "validation_status": "needs_review",
-                        },
-                    },
-                ],
-                "summary": {
-                    "validation_group_count": 2,
-                    "terminal_validation_count": 2,
-                    "nonterminal_validation_count": 0,
-                },
-            }
-
-    analyzer = object.__new__(ParallelAnalyzer)
-    analyzer.max_workers = 1
-    analyzer._candidate_ledger = FrozenLedger()
     results = {
-        "entry": ParallelAnalysisResult(
-            function_name="entry",
-            verdict="no_issue_found",
-        )
+        "entry_a": ParallelAnalysisResult(
+            function_name="entry_a",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "ISSUE_A",
+                    "function": "parse_packet",
+                    "location": "src/demo.c:10",
+                    "category": "bounds",
+                    "description": "array access lacks a guard on the first branch.",
+                    "validation_status": "validated",
+                }
+            ],
+        ),
+        "entry_b": ParallelAnalysisResult(
+            function_name="entry_b",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "ISSUE_B",
+                    "function": "parse_packet",
+                    "location": "src/demo.c:42",
+                    "category": "bounds",
+                    "description": "array access lacks a guard on the second branch.",
+                    "validation_status": "validated",
+                }
+            ],
+        ),
     }
 
     report = analyzer.generate_combined_report(results)
 
-    assert findings_for_view(report, "default") == []
-    assert [item["id"] for item in findings_for_view(report, "with_needs_review")] == [
-        "REVIEW_ONLY"
-    ]
-    assert [item["id"] for item in report["metadata"]["audit_observations"]] == ["AUDIT_ONLY"]
-    terminal = {
-        item["id"]: item["candidate_disposition"] for item in report["candidate_terminal_states"]
+    semantic_summary = report["summary"]["semantic_dedup"]
+    assert len(calls) == 1
+    assert report["summary"]["total_issues"] == 2
+    assert report["issues"][0]["id"] == "ISSUE_A"
+    assert "duplicate_count" not in report["issues"][0]
+    assert report["issues"][0]["dedup_cluster_suggestions"][0]["role"] == "primary"
+    assert semantic_summary["llm_enabled"] is True
+    assert semantic_summary["after_programmatic_issue_count"] == 2
+    assert semantic_summary["llm_clusters_called"] == 1
+    assert semantic_summary["llm_merge_count"] == 0
+    assert semantic_summary["llm_suggestion_count"] == 1
+    assert semantic_summary["output_issue_count"] == 2
+    assert report["metadata"]["semantic_dedup_summary"] == semantic_summary
+
+
+def test_parallel_combined_report_skips_llm_semantic_dedup_when_interrupted(monkeypatch) -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.max_workers = 12
+    analyzer._interrupted = True
+    analyzer._semantic_dedup_llm_cache = {}
+    analyzer.base_config = SimpleNamespace(
+        reporting=SimpleNamespace(
+            semantic_dedup=SimpleNamespace(
+                enabled=True,
+                llm_enabled=True,
+                llm_confidence_threshold=0.85,
+                max_cluster_size=8,
+            )
+        )
+    )
+    calls = []
+
+    class FakeReconciler:
+        def run(self, payload):
+            calls.append(payload)
+            return SimpleNamespace(success=True, data={})
+
+    monkeypatch.setattr(
+        analyzer,
+        "_make_issue_reconciler_agent",
+        lambda: FakeReconciler(),
+    )
+
+    results = {
+        "entry_a": ParallelAnalysisResult(
+            function_name="entry_a",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "ISSUE_A",
+                    "function": "parse_packet",
+                    "location": "src/demo.c:10",
+                    "category": "bounds",
+                    "description": "array access lacks a guard on the first branch.",
+                    "validation_status": "validated",
+                }
+            ],
+        ),
+        "entry_b": ParallelAnalysisResult(
+            function_name="entry_b",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "ISSUE_B",
+                    "function": "parse_packet",
+                    "location": "src/demo.c:42",
+                    "category": "bounds",
+                    "description": "array access lacks a guard on the second branch.",
+                    "validation_status": "validated",
+                }
+            ],
+        ),
     }
-    assert terminal == {
-        "AUDIT_ONLY": "shadow_observation",
-        "REVIEW_ONLY": "needs_review",
-    }
-    assert report["summary"]["needs_review_issues"] == 1
-    assert report["summary"]["audit_observations"] == 1
-    assert len(report["candidate_terminal_states"]) == 2
+
+    report = analyzer.generate_combined_report(results)
+
+    semantic_summary = report["summary"]["semantic_dedup"]
+    assert calls == []
+    assert report["summary"]["interrupted"] is True
+    assert report["summary"]["total_issues"] == 2
+    assert semantic_summary["llm_configured"] is True
+    assert semantic_summary["llm_enabled"] is False
+    assert semantic_summary["llm_disabled_reason"] == "interrupted_fast_shutdown"
+    assert semantic_summary["output_issue_count"] == 2
 
 
 def test_review_view_coalesces_88_equivalent_entry_occurrences() -> None:
@@ -557,41 +560,19 @@ def test_validator_v3_outcome_summary_reports_fact_success_and_transitions() -> 
     summary = ParallelAnalyzer._validator_v3_outcome_summary(
         [
             {
-                "validator_fact_resolutions": [
-                    {
-                        "fact_kind": "caller_contract",
-                        "status": "completed_partial",
-                        "terminal_status": "resolved",
-                    }
-                ],
+                "validator_fact_resolution": {"status": "completed_partial"},
                 "validator_pass_history": [
                     {"pass": "initial", "verdict": "uncertain"},
                     {"pass": "evidence_recheck", "verdict": "verified"},
                 ],
             },
-            {
-                "validator_fact_resolutions": [
-                    {
-                        "fact_kind": "value_range",
-                        "status": "unsupported",
-                        "terminal_status": "unsupported",
-                    }
-                ]
-            },
+            {"validator_fact_resolution": {"status": "unsupported"}},
         ]
     )
 
     assert summary["validator_fact_request_count"] == 2
     assert summary["validator_fact_resolution_success_count"] == 1
     assert summary["validator_fact_resolution_success_rate"] == 0.5
-    assert summary["validator_fact_resolution_by_kind"] == {
-        "caller_contract": {"resolved": 1},
-        "value_range": {"unsupported": 1},
-    }
-    assert summary["validator_fact_terminal_status_counts"] == {
-        "resolved": 1,
-        "unsupported": 1,
-    }
     assert summary["validator_verdict_transitions"] == {
         "initial:uncertain->evidence_recheck:verified": 1
     }

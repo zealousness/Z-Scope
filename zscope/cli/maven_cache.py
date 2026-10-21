@@ -74,6 +74,7 @@ def prepare(project: Path, output: Path) -> None:
     "--destination",
     type=click.Path(file_okay=False, path_type=Path),
     default=Path("~/.cache/zscope/maven"),
+    envvar="Z_SCOPE_MAVEN_REPO",
     show_default=True,
 )
 def install(source: Path, destination: Path) -> None:

@@ -1065,8 +1065,7 @@ def validate_validator_replay_experiment(result: Mapping[str, Any]) -> None:
             or row.get("total_tokens") != scored_trial.get("total_tokens")
             or row.get("ledger_complete") is not scored_trial.get("complete")
             or row.get("arm_spec_sha256") != arms[run_arm_id]["arm_spec_sha256"]
-            or row.get("expected_total_tokens")
-            != arms[run_arm_id]["configured_cost_expectation_tokens"]
+            or row.get("expected_total_tokens") != arms[run_arm_id]["configured_cost_expectation_tokens"]
             or not _is_sha256(row.get("file_sha256"))
         ):
             raise ValidatorExperimentError("run input does not bind its scored trial")

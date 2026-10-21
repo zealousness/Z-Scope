@@ -19,12 +19,24 @@ class VerifyTaintReachabilityTool(BaseTool):
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         bug_type = arguments.get("bug_type", "")
         limit = arguments.get("limit", 50)
+        try:
+            parsed_limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            parsed_limit = 50
         backend = getattr(self.code_index, "backend", None)
         if backend and hasattr(backend, "get_taint_bugs"):
-            bugs = backend.get_taint_bugs(bug_type, limit=limit)
+            fetched = backend.get_taint_bugs(bug_type, limit=parsed_limit + 1)
         else:
-            bugs = []
-        return {"success": True, "data": {"bugs": bugs, "count": len(bugs)}}
+            fetched = []
+        truncated = len(fetched) > parsed_limit
+        bugs = fetched[:parsed_limit]
+        data = {"bugs": bugs, "count": len(bugs), "truncated": truncated}
+        if truncated:
+            data["note"] = (
+                f"More than {parsed_limit} signatures match; re-run with a "
+                "larger limit to see the remaining taint findings."
+            )
+        return {"success": True, "data": data}
 
     def get_schema(self) -> Dict[str, Any]:
         return {
@@ -36,7 +48,11 @@ class VerifyTaintReachabilityTool(BaseTool):
                     "type": "object",
                     "properties": {
                         "bug_type": {"type": "string"},
-                        "limit": {"type": "integer", "default": 50},
+                        "limit": {
+                            "type": "integer",
+                            "default": 50,
+                            "description": "Max signatures to return; truncated=true means more exist",
+                        },
                     },
                 },
             },

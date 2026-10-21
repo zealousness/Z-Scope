@@ -18,6 +18,8 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional,
 
 import yaml
 
+from ..common.portable import default_svf_directory, default_tool
+
 from .config import (
     AgentConfig,
     AnalysisConfig,
@@ -27,6 +29,7 @@ from .config import (
     IndexingConfig,
     LLMConfig,
     ProjectConfig,
+    ReviewMemoryConfig,
     ReportingConfig,
     RulesConfig,
     RuntimeAgentConfig,
@@ -34,14 +37,33 @@ from .config import (
     RuntimeSpecProvenance,
     ScanConfig,
     ScanLLMProfiles,
+    SemanticDedupConfig,
+    WikiConfig,
     UserConfigV2,
+    _optional_positive_int,
 )
 
-
 PUBLIC_CONFIG_VERSION = 2
+# Version 3 documents dispatch to zscope/config/v3.py.  The constant lives
+# here so the version check needs no import cycle with that module.
+PUBLIC_CONFIG_VERSION_V3 = 3
 RUNTIME_SPEC_VERSION = 1
 ENV_PATTERN = re.compile(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 SCAN_DEPTHS = frozenset({"fast", "balanced", "deep"})
+# Shared LLM profile field table: consumed by _parse_llms and reused by the
+# v3 formal model as the single source for its generated JSON schema.
+LLM_PROFILE_KEYS = (
+    "base_urls",
+    "models",
+    "api_key",
+    "base_url_rate_limit_per_minute",
+    "base_url_max_concurrent_requests",
+    "max_tokens",
+    "timeout",
+    "max_retries",
+    "retry_until_available",
+    "supports_structured_output",
+)
 SCAN_DEPTHS_BY_LANGUAGE = {
     "c_cpp": SCAN_DEPTHS,
     # Java balanced/deep require a separate quality gate.  Keeping the
@@ -157,6 +179,26 @@ def _positive_number_or_none(value: Any, path: str) -> Optional[float]:
     return float(value)
 
 
+def _optional_bool_or_none(value: Any, path: str) -> Optional[bool]:
+    """Parse an optional tri-state boolean (absent -> None = depth-scoped)."""
+    if value is None:
+        return None
+    return _boolean(value, path)
+
+
+def _optional_fraction_or_none(value: Any, path: str) -> Optional[float]:
+    """Validate an optional confidence threshold in (0.5, 1.0]; None disables."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{path} must be a number in (0.5, 1.0] or null")
+    parsed = float(value)
+    if not 0.5 < parsed <= 1.0:
+        raise ValueError(f"{path} must be in (0.5, 1.0] or null")
+    return parsed
+
+
 def _boolean(value: Any, path: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{path} must be true or false")
@@ -204,35 +246,10 @@ def _deep_merge(base: MutableMapping[str, Any], override: Mapping[str, Any]) -> 
 
 
 _RUNTIME_AGENT_NAMES = {
-    "security_spec_miner",
-    "hypothesis_hunter",
-    "history_maintenance_agent",
-    "proof_engine",
-}
-
-_REMOVED_RUNTIME_AGENTS = {
-    "semantic_modeler": "security_spec_miner",
-    "global_modeler": "security_spec_miner",
-    "active_discovery": "hypothesis_hunter",
-    "validator_agent": "proof_engine",
-    "vulnerability_analyzer": "hypothesis_hunter",
-    "issue_reconciler_agent": "history_maintenance_agent",
-    "deep_worker": "hypothesis_hunter",
-    "subagent_orchestrator": "hypothesis_hunter",
-}
-
-_REMOVED_ANALYSIS_KEYS = {
-    "enable_subagent_workers",
-    "max_subagent_tickets",
-    "subagent_max_turns",
-    "subagent_ticket_timeout",
-    "subagent_spawn_allowlist",
-    "subagent_skill_llm_refs",
-    "subagent_skill_efforts",
-    "enable_global_model",
-    "max_premodel_depth",
-    "max_premodel_callees",
-    "security_semantic_enrichment_mode",
+    "semantic_modeler",
+    "vulnerability_analyzer",
+    "issue_reconciler_agent",
+    "validator_agent",
 }
 
 
@@ -249,31 +266,12 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
 
     agents = _mapping(raw.get("agents"), "runtime.agents")
     for name, value in agents.items():
-        if name in _REMOVED_RUNTIME_AGENTS:
-            replacement = _REMOVED_RUNTIME_AGENTS[name]
-            raise ValueError(
-                f"runtime.agents.{name} was removed in Z-Scope 2.0 P1; "
-                f"migrate explicitly to runtime.agents.{replacement}, save the migrated file, "
-                "then reload it"
-            )
         if name not in _RUNTIME_AGENT_NAMES:
             raise _unknown_key("runtime.agents", name, _RUNTIME_AGENT_NAMES)
         item = _mapping(value, f"runtime.agents.{name}", required=True)
-        if "can_spawn_subagents" in item:
-            raise ValueError(
-                f"runtime.agents.{name}.can_spawn_subagents was removed in Z-Scope 2.0 P1; "
-                "remove it, save the migrated file, then reload it"
-            )
-        _check_keys(item, {"enabled", "llm_role"}, f"runtime.agents.{name}")
+        _check_keys(item, {"enabled", "llm_role", "can_spawn_subagents"}, f"runtime.agents.{name}")
 
     analysis = _mapping(raw.get("analysis"), "runtime.analysis")
-    removed_analysis = sorted(_REMOVED_ANALYSIS_KEYS.intersection(analysis))
-    if removed_analysis:
-        raise ValueError(
-            "removed Z-Scope 2.0 P1 runtime.analysis field(s): "
-            + ", ".join(removed_analysis)
-            + "; run the explicit compat migration, save the migrated file, then reload it"
-        )
     _check_keys(
         analysis,
         {
@@ -282,24 +280,65 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
             "max_tool_iterations",
             "enable_snapshot_cache",
             "validation_cache_entries",
+            "enable_global_model",
+            "semantic_model_max_rounds",
+            "max_premodel_depth",
+            "max_premodel_callees",
             "trivial_function_max_lines",
+            "llm_interface_inference",
+            "llm_interface_inference_budget",
+            "llm_decision_explanation",
+            "llm_decision_explanation_budget",
+            "enable_subagent_workers",
+            "security_semantic_enrichment_mode",
+            "active_investigation_mode",
+            "active_investigation_max_rounds",
+            "active_investigation_timeout_seconds",
+            "active_investigation_max_scope_extensions",
+            "semantic_snapshot_candidate_mode",
+            "semantic_model_demand_mode",
+            "dynamic_reproduction_mode",
+            "dynamic_reproduction_required_replays",
+            "dynamic_reproduction_max_replays",
+            "dynamic_reproduction_timeout_seconds",
+            "dynamic_reproduction_deadline_seconds",
+            "dynamic_reproduction_memory_limit_mb",
+            "dynamic_reproduction_isolation",
+            "max_subagent_tickets",
+            "subagent_max_turns",
             "request_deadline_seconds",
             "validation_deadline_seconds",
+            "subagent_ticket_timeout",
             "entry_deadline_seconds",
             "scan_deadline_seconds",
             "budget_exhaustion_policy",
+            "subagent_spawn_allowlist",
+            "subagent_skill_llm_refs",
+            "subagent_skill_efforts",
             "tool_audit_log",
+            "validation_uncertain_confirm_threshold",
+            "validation_v3_reattempt",
+            "validation_v2b_adjudication",
+            "validation_review_protocol",
+            "validation_checked_proofs",
+            "validation_positive_case",
+            "validation_related_findings",
+            "validation_review_checkpoint",
+            "validation_uncertain_replay_review",
+            "validation_demote_source_lifecycle_confirm",
+            "validation_obligation_infunction_release_guard",
         },
         "runtime.analysis",
     )
 
     reporting = _mapping(raw.get("reporting"), "runtime.reporting")
-    if "semantic_dedup" in reporting:
-        raise ValueError(
-            "runtime.reporting.semantic_dedup was removed in Z-Scope 2.0 P1; "
-            "Finding-root v2 is the sole live report projection"
-        )
-    _check_keys(reporting, set(), "runtime.reporting")
+    _check_keys(reporting, {"semantic_dedup"}, "runtime.reporting")
+    semantic = _mapping(reporting.get("semantic_dedup"), "runtime.reporting.semantic_dedup")
+    _check_keys(
+        semantic,
+        {"enabled", "llm_enabled", "llm_confidence_threshold", "max_cluster_size"},
+        "runtime.reporting.semantic_dedup",
+    )
 
     paths = _mapping(raw.get("paths"), "runtime.paths")
     _check_keys(
@@ -325,6 +364,18 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
     def deadline(name: str, default: Optional[float]) -> Optional[float]:
         return _positive_number_or_none(data.get(name, default), f"runtime.analysis.{name}")
 
+    spawn_allowlist = data.get("subagent_spawn_allowlist", ["deep_worker"])
+    llm_refs = data.get("subagent_skill_llm_refs", {})
+    efforts = data.get("subagent_skill_efforts", {})
+    if not isinstance(llm_refs, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in llm_refs.items()
+    ):
+        raise ValueError("runtime.analysis.subagent_skill_llm_refs must map strings to strings")
+    if not isinstance(efforts, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in efforts.items()
+    ):
+        raise ValueError("runtime.analysis.subagent_skill_efforts must map strings to strings")
+
     policy = _string(
         data.get("budget_exhaustion_policy", "observe"),
         "runtime.analysis.budget_exhaustion_policy",
@@ -338,16 +389,106 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
         max_tool_iterations=integer("max_tool_iterations", 50),
         enable_snapshot_cache=boolean("enable_snapshot_cache", True),
         validation_cache_entries=integer("validation_cache_entries", 4096, non_negative=True),
+        enable_global_model=boolean("enable_global_model", False),
+        semantic_model_max_rounds=integer("semantic_model_max_rounds", 3),
+        max_premodel_depth=integer("max_premodel_depth", 3, non_negative=True),
+        max_premodel_callees=integer("max_premodel_callees", 20, non_negative=True),
         trivial_function_max_lines=integer("trivial_function_max_lines", 5, non_negative=True),
+        llm_interface_inference=boolean("llm_interface_inference", True),
+        llm_interface_inference_budget=integer(
+            "llm_interface_inference_budget", 50, non_negative=True
+        ),
+        llm_decision_explanation=boolean("llm_decision_explanation", True),
+        llm_decision_explanation_budget=integer(
+            "llm_decision_explanation_budget", 50, non_negative=True
+        ),
+        enable_subagent_workers=boolean("enable_subagent_workers", False),
+        security_semantic_enrichment_mode=_string(
+            data.get("security_semantic_enrichment_mode", "shadow"),
+            "runtime.analysis.security_semantic_enrichment_mode",
+        ),
+        active_investigation_mode=_string(
+            data.get("active_investigation_mode", "off"),
+            "runtime.analysis.active_investigation_mode",
+        ),
+        semantic_snapshot_candidate_mode=_string(
+            data.get("semantic_snapshot_candidate_mode", "off"),
+            "runtime.analysis.semantic_snapshot_candidate_mode",
+        ),
+        semantic_model_demand_mode=_string(
+            data.get("semantic_model_demand_mode", "off"),
+            "runtime.analysis.semantic_model_demand_mode",
+        ),
+        dynamic_reproduction_mode=_string(
+            data.get("dynamic_reproduction_mode", "off"),
+            "runtime.analysis.dynamic_reproduction_mode",
+        ),
+        dynamic_reproduction_required_replays=integer(
+            "dynamic_reproduction_required_replays", 2
+        ),
+        dynamic_reproduction_max_replays=integer("dynamic_reproduction_max_replays", 3),
+        dynamic_reproduction_timeout_seconds=integer(
+            "dynamic_reproduction_timeout_seconds", 30
+        ),
+        dynamic_reproduction_deadline_seconds=integer(
+            "dynamic_reproduction_deadline_seconds", 900
+        ),
+        dynamic_reproduction_memory_limit_mb=integer(
+            "dynamic_reproduction_memory_limit_mb", 512, non_negative=True
+        ),
+        dynamic_reproduction_isolation=_string(
+            data.get("dynamic_reproduction_isolation", "process"),
+            "runtime.analysis.dynamic_reproduction_isolation",
+        ),
+        active_investigation_max_rounds=integer("active_investigation_max_rounds", 4),
+        active_investigation_timeout_seconds=data.get("active_investigation_timeout_seconds", 120.0),
+        active_investigation_max_scope_extensions=integer(
+            "active_investigation_max_scope_extensions", 1, non_negative=True
+        ),
+        max_subagent_tickets=integer("max_subagent_tickets", 4, non_negative=True),
+        subagent_max_turns=integer("subagent_max_turns", 20),
         request_deadline_seconds=deadline("request_deadline_seconds", 120.0),
-        validation_deadline_seconds=deadline("validation_deadline_seconds", 240.0),
+        validation_deadline_seconds=deadline("validation_deadline_seconds", 600.0),
+        subagent_ticket_timeout=deadline("subagent_ticket_timeout", 300.0),
         entry_deadline_seconds=deadline("entry_deadline_seconds", 1800.0),
         scan_deadline_seconds=deadline("scan_deadline_seconds", None),
         budget_exhaustion_policy=policy,
+        subagent_spawn_allowlist=_string_list(
+            spawn_allowlist,
+            "runtime.analysis.subagent_spawn_allowlist",
+        ),
+        subagent_skill_llm_refs={str(key): str(value) for key, value in llm_refs.items()},
+        subagent_skill_efforts={str(key): str(value) for key, value in efforts.items()},
         tool_audit_log=_string(
             data.get("tool_audit_log", ""),
             "runtime.analysis.tool_audit_log",
             allow_empty=True,
+        ),
+        validation_uncertain_confirm_threshold=_optional_fraction_or_none(
+            data.get("validation_uncertain_confirm_threshold"),
+            "runtime.analysis.validation_uncertain_confirm_threshold",
+        ),
+        validation_v3_reattempt=boolean("validation_v3_reattempt", True),
+        validation_v2b_adjudication=boolean("validation_v2b_adjudication", False),
+        validation_review_protocol=boolean("validation_review_protocol", False),
+        validation_checked_proofs=_optional_bool_or_none(
+            data.get("validation_checked_proofs"),
+            "runtime.analysis.validation_checked_proofs",
+        ),
+        validation_positive_case=boolean("validation_positive_case", False),
+        validation_related_findings=boolean("validation_related_findings", False),
+        validation_review_checkpoint=boolean("validation_review_checkpoint", False),
+        validation_uncertain_replay_review=_optional_bool_or_none(
+            data.get("validation_uncertain_replay_review"),
+            "runtime.analysis.validation_uncertain_replay_review",
+        ),
+        validation_demote_source_lifecycle_confirm=_optional_bool_or_none(
+            data.get("validation_demote_source_lifecycle_confirm"),
+            "runtime.analysis.validation_demote_source_lifecycle_confirm",
+        ),
+        validation_obligation_infunction_release_guard=_optional_bool_or_none(
+            data.get("validation_obligation_infunction_release_guard"),
+            "runtime.analysis.validation_obligation_infunction_release_guard",
         ),
     )
 
@@ -394,15 +535,49 @@ def load_runtime_spec() -> RuntimeSpec:
             raise ValueError(
                 f"runtime.agents.{name}.llm_role must be modeling, analysis, or validation"
             )
+        can_spawn = data.get("can_spawn_subagents")
+        if can_spawn is not None:
+            can_spawn = _boolean(can_spawn, f"runtime.agents.{name}.can_spawn_subagents")
         agents.append(
             RuntimeAgentConfig(
                 name=name,
                 llm_role=role,
                 enabled=_boolean(data.get("enabled", True), f"runtime.agents.{name}.enabled"),
+                can_spawn_subagents=can_spawn,
             )
         )
 
-    reporting = ReportingConfig()
+    reporting_data = _mapping(base.get("reporting"), "runtime.reporting")
+    semantic_data = _mapping(
+        reporting_data.get("semantic_dedup"),
+        "runtime.reporting.semantic_dedup",
+    )
+    confidence = semantic_data.get("llm_confidence_threshold", 0.85)
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise ValueError(
+            "runtime.reporting.semantic_dedup.llm_confidence_threshold must be numeric"
+        )
+    if not 0 <= float(confidence) <= 1:
+        raise ValueError(
+            "runtime.reporting.semantic_dedup.llm_confidence_threshold must be between 0 and 1"
+        )
+    reporting = ReportingConfig(
+        semantic_dedup=SemanticDedupConfig(
+            enabled=_boolean(
+                semantic_data.get("enabled", True),
+                "runtime.reporting.semantic_dedup.enabled",
+            ),
+            llm_enabled=_boolean(
+                semantic_data.get("llm_enabled", False),
+                "runtime.reporting.semantic_dedup.llm_enabled",
+            ),
+            llm_confidence_threshold=float(confidence),
+            max_cluster_size=_positive_int(
+                semantic_data.get("max_cluster_size", 8),
+                "runtime.reporting.semantic_dedup.max_cluster_size",
+            ),
+        )
+    )
     paths = _mapping(base.get("paths"), "runtime.paths", required=True)
     return RuntimeSpec(
         analysis=_runtime_analysis(_mapping(base.get("analysis"), "runtime.analysis")),
@@ -422,20 +597,7 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
     if "default" not in data:
         raise ValueError("llms.default is required")
     result: Dict[str, LLMConfig] = {}
-    allowed = {
-        "base_urls",
-        "models",
-        "response_model_map",
-        "api_key",
-        "base_url_rate_limit_per_minute",
-        "base_url_max_concurrent_requests",
-        "max_tokens",
-        "timeout",
-        "max_retries",
-        "retry_until_available",
-        "supports_structured_output",
-        "require_exact_response_model",
-    }
+    allowed = set(LLM_PROFILE_KEYS)
     for name, value in data.items():
         if not isinstance(name, str) or not name.strip():
             raise ValueError("llms profile names must be non-empty strings")
@@ -446,22 +608,6 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
             profile.get("base_urls"), f"{profile_path}.base_urls", allow_empty=False
         )
         models = _string_list(profile.get("models"), f"{profile_path}.models", allow_empty=False)
-        raw_response_model_map = _mapping(
-            profile.get("response_model_map"), f"{profile_path}.response_model_map"
-        )
-        response_model_map = {
-            requested: _string(
-                response,
-                f"{profile_path}.response_model_map.{requested}",
-            )
-            for requested, response in raw_response_model_map.items()
-        }
-        unknown_response_models = set(response_model_map) - set(models)
-        if unknown_response_models:
-            names = ", ".join(sorted(unknown_response_models))
-            raise ValueError(
-                f"{profile_path}.response_model_map contains unconfigured model(s): {names}"
-            )
         api_key = _string(profile.get("api_key"), f"{profile_path}.api_key")
 
         rate_limit = profile.get("base_url_rate_limit_per_minute")
@@ -482,7 +628,6 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
             base_url_rate_limit_per_minute=rate_limit,
             base_url_max_concurrent_requests=endpoint_limit,
             models=models,
-            response_model_map=response_model_map,
             max_tokens=_positive_int(profile.get("max_tokens", 4096), f"{profile_path}.max_tokens"),
             timeout=_positive_number_or_none(
                 profile.get("timeout", 120), f"{profile_path}.timeout"
@@ -496,10 +641,6 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
                 profile.get("supports_structured_output", False),
                 f"{profile_path}.supports_structured_output",
             ),
-            require_exact_response_model=_boolean(
-                profile.get("require_exact_response_model", False),
-                f"{profile_path}.require_exact_response_model",
-            ),
         )
     return result
 
@@ -511,6 +652,18 @@ def _interface_patterns(value: Any, path: str) -> List[str]:
             raise ValueError(f"{path}[{index}] must use POSIX '/' separators")
         if pattern.startswith("^") or pattern.endswith("$"):
             raise ValueError(f"{path}[{index}] must be a glob, not a regular expression")
+    return patterns
+
+
+def _wiki_document_patterns(value: Any, path: str) -> List[str]:
+    patterns = _interface_patterns(value, path)
+    for index, pattern in enumerate(patterns):
+        if (
+            pattern.startswith("/")
+            or re.match(r"^[A-Za-z]:/", pattern)
+            or ".." in Path(pattern).parts
+        ):
+            raise ValueError(f"{path}[{index}] must be project-root relative")
     return patterns
 
 
@@ -532,10 +685,15 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
             "exclude_paths",
             "compile_commands_path",
             "user_config_file",
+            "wiki",
+            "review_memory",
         },
         "project",
     )
     root = _string(data.get("root"), "project.root")
+    # 相对 project.root 保持既有约定：基于加载进程的当前工作目录解析（子进程继承
+    # 同一 CWD，因此 CLI / Web 仪表盘 / MCP 对同一份配置得到一致的工程路径）。
+    root_path = Path(root)
     source_root = _string(data.get("source_root", "."), "project.source_root")
     compile_commands = data.get("compile_commands_path")
     if language == "java" and compile_commands is not None:
@@ -569,8 +727,90 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         ),
     )
 
+    wiki_data = _mapping(data.get("wiki"), "project.wiki")
+    _check_keys(
+        wiki_data,
+        {
+            "mode",
+            "auto_maintain",
+            "state_dir",
+            "compiler_enabled",
+            "documents",
+            "max_file_bytes",
+            "max_files",
+            "max_total_bytes",
+            "compiler_max_tokens",
+            "max_wall_seconds",
+            "max_constraints",
+        },
+        "project.wiki",
+    )
+    documents = _mapping(wiki_data.get("documents"), "project.wiki.documents")
+    _check_keys(documents, {"exclude", "classify"}, "project.wiki.documents")
+    classify = _mapping(documents.get("classify"), "project.wiki.documents.classify")
+    _check_keys(classify, {"explanatory", "generated"}, "project.wiki.documents.classify")
+    document_exclude = _wiki_document_patterns(
+        documents.get("exclude", []),
+        "project.wiki.documents.exclude",
+    )
+    explanatory_overrides = _wiki_document_patterns(
+        classify.get("explanatory", []),
+        "project.wiki.documents.classify.explanatory",
+    )
+    generated_overrides = _wiki_document_patterns(
+        classify.get("generated", []),
+        "project.wiki.documents.classify.generated",
+    )
+    conflicting_overrides = sorted(set(explanatory_overrides).intersection(generated_overrides))
+    if conflicting_overrides:
+        raise ValueError(
+            "project.wiki.documents.classify assigns the same glob to explanatory "
+            f"and generated: {conflicting_overrides[0]!r}"
+        )
+    wiki = WikiConfig(
+        mode=_string(wiki_data.get("mode", "off"), "project.wiki.mode"),
+        auto_maintain=_boolean(wiki_data.get("auto_maintain", False), "project.wiki.auto_maintain"),
+        state_dir=_string(
+            wiki_data.get("state_dir", ".zscope_knowledge/wiki"), "project.wiki.state_dir"
+        ),
+        compiler_enabled=_boolean(
+            wiki_data.get("compiler_enabled", False), "project.wiki.compiler_enabled"
+        ),
+        document_exclude=document_exclude,
+        explanatory_overrides=explanatory_overrides,
+        generated_overrides=generated_overrides,
+        max_file_bytes=_positive_int(
+            wiki_data.get("max_file_bytes", 10 * 1024 * 1024), "project.wiki.max_file_bytes"
+        ),
+        max_files=_positive_int(wiki_data.get("max_files", 10_000), "project.wiki.max_files"),
+        max_total_bytes=_positive_int(
+            wiki_data.get("max_total_bytes", 100 * 1024 * 1024), "project.wiki.max_total_bytes"
+        ),
+        compiler_max_tokens=_optional_positive_int(wiki_data.get("compiler_max_tokens"), None),
+        max_wall_seconds=_optional_positive_int(wiki_data.get("max_wall_seconds"), None),
+        max_constraints=_optional_positive_int(wiki_data.get("max_constraints"), None),
+    )
+
+    review_data = _mapping(data.get("review_memory"), "project.review_memory")
+    _check_keys(review_data, {
+        "mode", "state_dir", "project_scope", "extraction", "llm_enabled",
+        "max_patterns_per_finding", "max_context_tokens", "stale_on_source_drift",
+        "allow_direct_suppression",
+    }, "project.review_memory")
+    review_memory = ReviewMemoryConfig(
+        mode=_string(review_data.get("mode", "off"), "project.review_memory.mode"),
+        state_dir=_string(review_data.get("state_dir", ".zscope/review-memory"), "project.review_memory.state_dir"),
+        project_scope=_string(review_data.get("project_scope", "project"), "project.review_memory.project_scope"),
+        extraction=_string(review_data.get("extraction", "auto_extract"), "project.review_memory.extraction"),
+        llm_enabled=_boolean(review_data.get("llm_enabled", True), "project.review_memory.llm_enabled"),
+        max_patterns_per_finding=_non_negative_int(review_data.get("max_patterns_per_finding", 3), "project.review_memory.max_patterns_per_finding"),
+        max_context_tokens=_non_negative_int(review_data.get("max_context_tokens", 1200), "project.review_memory.max_context_tokens"),
+        stale_on_source_drift=_boolean(review_data.get("stale_on_source_drift", True), "project.review_memory.stale_on_source_drift"),
+        allow_direct_suppression=_boolean(review_data.get("allow_direct_suppression", False), "project.review_memory.allow_direct_suppression"),
+    )
+
     project = ProjectConfig(
-        project_root=Path(root),
+        project_root=root_path,
         source_root=Path(source_root),
         project_id=_string(data.get("id", ""), "project.id", allow_empty=True),
         language=language,
@@ -603,13 +843,16 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         include_paths=_string_list(data.get("include_paths", []), "project.include_paths"),
         exclude_paths=_string_list(data.get("exclude_paths", []), "project.exclude_paths"),
         entry_discovery=discovery,
+        wiki=wiki,
+        review_memory=review_memory,
     )
     if project.entry_discovery.search_root:
         try:
-            project.entry_discovery.search_root.relative_to(project.project_root)
+            # search_root 必须位于 source_root 之下（相对路径同样基于 source_root 解析）。
+            project.entry_discovery.search_root.relative_to(project.source_root)
         except ValueError as exc:
             raise ValueError(
-                "project.entry_discovery.search_root must be inside project.root"
+                "project.entry_discovery.search_root must be inside project.source_root"
             ) from exc
     return project
 
@@ -681,12 +924,16 @@ def _parse_concurrency(raw: Any, *, language: str) -> ConcurrencyConfig:
         "investigator_workers",
         "evidence_completion_workers",
         "index_workers",
+        "wiki_compiler_workers",
         "llm_max_inflight",
     }
     if language == "c_cpp":
         allowed.add("svf_workers")
     _check_keys(data, allowed, "concurrency")
-    required = set(allowed)
+    # Wiki compiler concurrency was added after the original v2 schema.  Keep
+    # old configurations loadable while making the new value explicit when
+    # present.
+    required = set(allowed) - {"wiki_compiler_workers"}
     missing = sorted(required - set(data))
     if missing:
         raise ValueError("concurrency is missing required key(s): " + ", ".join(missing))
@@ -701,6 +948,9 @@ def _parse_concurrency(raw: Any, *, language: str) -> ConcurrencyConfig:
             "concurrency.evidence_completion_workers",
         ),
         index_workers=_positive_int(data["index_workers"], "concurrency.index_workers"),
+        wiki_compiler_workers=_positive_int(
+            data.get("wiki_compiler_workers", 4), "concurrency.wiki_compiler_workers"
+        ),
         svf_workers=(
             _positive_int(data["svf_workers"], "concurrency.svf_workers")
             if language == "c_cpp"
@@ -738,7 +988,7 @@ def _parse_pool_list(value: Any, path: str, *, shared: bool) -> List[Dict[str, A
 
 def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> IndexingConfig:
     data = _mapping(raw, "indexing", required=True)
-    _check_keys(data, {"backend", "svf", "java", "tools"}, "indexing")
+    _check_keys(data, {"backend", "clang", "svf", "java", "tools"}, "indexing")
     backend = _string(data.get("backend"), "indexing.backend").lower().replace("-", "_")
     allowed_backends = (
         {"unified", "clang", "regex"}
@@ -752,8 +1002,12 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
     tools = _mapping(data.get("tools"), "indexing.tools")
     svf = _mapping(data.get("svf"), "indexing.svf")
     java = _mapping(data.get("java"), "indexing.java")
+    clang = _mapping(data.get("clang"), "indexing.clang")
+    _check_keys(clang, {"frontend"}, "indexing.clang")
 
     if language == "java":
+        if clang:
+            raise ValueError("indexing.clang is not valid for Java")
         if svf:
             raise ValueError("indexing.svf is not valid for Java")
         _check_keys(
@@ -800,7 +1054,10 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
             ),
             java_signal_backends=signals,
             java_signal_provider_commands=provider_commands,
-            joern_path=_string(joern.get("command", "joern"), "indexing.tools.joern.command"),
+            joern_path=_string(
+                joern["command"] if "command" in joern else default_tool("joern"),
+                "indexing.tools.joern.command",
+            ),
             joern_server_host=_string(joern.get("host", "127.0.0.1"), "indexing.tools.joern.host"),
             joern_server_port=port,
             joern_heap_size=_string(joern.get("heap", "8g"), "indexing.tools.joern.heap"),
@@ -810,7 +1067,7 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
         raise ValueError("indexing.java is not valid for C/C++")
     _check_keys(
         tools,
-        {"clangd", "svf_bin_dir", "gclang", "get_bc", "llvm_link"},
+        {"clangd", "clang_indexer", "svf_bin_dir", "gclang", "get_bc", "llvm_link"},
         "indexing.tools",
     )
     _check_keys(
@@ -860,13 +1117,31 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
     return IndexingConfig(
         backend=backend,
         knowledge_db_path=runtime.knowledge_db_path,
-        clangd_path=_string(tools.get("clangd", "clangd"), "indexing.tools.clangd"),
-        svf_bin_dir=_string(
-            tools.get("svf_bin_dir", ""), "indexing.tools.svf_bin_dir", allow_empty=True
+        clang_frontend=_string(clang.get("frontend", "auto"), "indexing.clang.frontend"),
+        clang_indexer_path=_string(
+            tools["clang_indexer"] if "clang_indexer" in tools else default_tool("zscope-clang-indexer"),
+            "indexing.tools.clang_indexer",
         ),
-        gclang_path=_string(tools.get("gclang", "gclang"), "indexing.tools.gclang"),
-        get_bc_path=_string(tools.get("get_bc", "get-bc"), "indexing.tools.get_bc"),
-        llvm_link_path=_string(tools.get("llvm_link", "llvm-link"), "indexing.tools.llvm_link"),
+        clangd_path=_string(
+            tools["clangd"] if "clangd" in tools else default_tool("clangd"),
+            "indexing.tools.clangd",
+        ),
+        svf_bin_dir=_string(
+            tools["svf_bin_dir"] if "svf_bin_dir" in tools else default_svf_directory(),
+            "indexing.tools.svf_bin_dir", allow_empty=True
+        ),
+        gclang_path=_string(
+            tools["gclang"] if "gclang" in tools else default_tool("gclang"),
+            "indexing.tools.gclang",
+        ),
+        get_bc_path=_string(
+            tools["get_bc"] if "get_bc" in tools else default_tool("get-bc"),
+            "indexing.tools.get_bc",
+        ),
+        llvm_link_path=_string(
+            tools["llvm_link"] if "llvm_link" in tools else default_tool("llvm-link"),
+            "indexing.tools.llvm_link",
+        ),
         svf_heap_limit_mb=_positive_int(
             svf.get("heap_limit_mb", 32768), "indexing.svf.heap_limit_mb"
         ),
@@ -935,8 +1210,9 @@ def _agents_from_runtime(runtime: RuntimeSpec, scan: ScanConfig) -> List[AgentCo
             AgentConfig(
                 name=spec.name,
                 enabled=spec.enabled,
-                task=scan.task if spec.name == "hypothesis_hunter" else "",
+                task=scan.task if spec.name == "vulnerability_analyzer" else "",
                 llm_ref=role_refs[spec.llm_role],
+                can_spawn_subagents=spec.can_spawn_subagents,
             )
         )
     return agents
@@ -945,16 +1221,26 @@ def _agents_from_runtime(runtime: RuntimeSpec, scan: ScanConfig) -> List[AgentCo
 def load_user_config_v2(config_path: Optional[str] = None) -> EffectiveConfig:
     path = _resolve_config_path(config_path)
     raw = _expand_env(load_yaml_unique(path))
+    # The version gate comes before shape validation so a document that
+    # declares version 3 dispatches to its own key tables, and a malformed
+    # or legacy document reports its version problem first.
+    version = raw.get("config_version")
+    if version == PUBLIC_CONFIG_VERSION_V3:
+        # v3 is the one-user-entry document; parsing and composition live in
+        # zscope/config/v3.py so the v2 surface below stays unchanged.
+        from .v3 import load_user_config_v3
+
+        return load_user_config_v3(path, raw)
+    if version != PUBLIC_CONFIG_VERSION:
+        raise ValueError(
+            "config.config_version must be 2 or 3; run "
+            "'zscope-config migrate --input OLD --output NEW' for legacy YAML"
+        )
     _check_keys(
         raw,
         {"config_version", "llms", "project", "scan", "indexing", "concurrency", "rules"},
         "config",
     )
-    if raw.get("config_version") != PUBLIC_CONFIG_VERSION:
-        raise ValueError(
-            "config.config_version must be 2; run "
-            "'zscope-config migrate --input OLD --output NEW' for legacy YAML"
-        )
 
     project_data = _mapping(raw.get("project"), "project", required=True)
     language = project_data.get("language")

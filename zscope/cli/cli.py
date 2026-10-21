@@ -3,6 +3,7 @@ Command Line Interface for Z-SCOPE.
 """
 
 import click
+import hashlib
 import json
 import logging
 import sys
@@ -14,41 +15,21 @@ from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
 from ..config.config import ConfigLoader
 from ..framework.conversation_recorder import enable_conversation_recording
-from ..framework.llm_client import ProviderFailureError
-from ..framework import provider_failure_marker
 from ..framework.llm_usage import (
-    P6BalancedTokenAdmissionError,
     ensure_scan_token_usage_ledger,
     scan_token_usage_snapshot,
 )
 from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner, _task_slug
+from ..orchestration.execution_profile import (
+    ExpiredStopWindowError,
+    InvalidJobBindingError,
+    arm_persisted_deadline,
+    arm_session_deadline,
+    session_stop_window_authority,
+    stop_window_from_config,
+)
 from ..orchestration.rollout import rollout_runtime_policy
 from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
-
-
-def _persist_p6_provider_failure(error: ProviderFailureError) -> bool:
-    """Persist only the fixed typed marker when the P6 container requests it."""
-
-    try:
-        provider_failure_marker.write_p6_provider_failure_marker(
-            Path(provider_failure_marker.P6_PROVIDER_FAILURE_CONTAINER_PATH),
-            failure_class=error.failure_class,
-        )
-    except Exception:
-        return False
-    return True
-
-
-def _provider_failure_exit_code(
-    error: ProviderFailureError,
-    *,
-    p6_pilot: bool,
-) -> int:
-    """Reserve exit 2 for a complete marker; marker failures fail closed."""
-
-    if not p6_pilot:
-        return 2
-    return 2 if _persist_p6_provider_failure(error) else 3
 
 
 @click.command()
@@ -140,6 +121,12 @@ def _provider_failure_exit_code(
     "--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio."
 )
 @click.option(
+    "--mcp-profile",
+    type=click.Choice(["default", "read_only", "candidate_blind"]),
+    default="default",
+    show_default=True,
+)
+@click.option(
     "--mcp-http",
     is_flag=True,
     default=False,
@@ -186,7 +173,6 @@ def _provider_failure_exit_code(
     default=None,
     help="Override scan.depth for this run. Java currently accepts fast only.",
 )
-@click.option("--p6-pilot", is_flag=True, default=False, hidden=True)
 def main(
     config: Path,
     verbose: bool,
@@ -207,6 +193,7 @@ def main(
     diff_path: tuple[str, ...],
     infer_user_config: bool,
     mcp_stdio: bool,
+    mcp_profile: str,
     mcp_http: bool,
     mcp_host: str,
     mcp_port: int,
@@ -217,13 +204,56 @@ def main(
     exit_policy: str,
     task_id: str,
     scan_depth: Optional[str],
-    p6_pilot: bool,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C/C++ and Java projects.
     """
     setup_logging(verbose)
     logger = logging.getLogger("zscope.cli")
+
+    # Route restricted MCP before normal configuration preflight, logging
+    # recorders or any dashboard/index/model construction.
+    if mcp_profile != "default":
+        if not (mcp_stdio or mcp_http) or (mcp_stdio and mcp_http):
+            raise click.UsageError("--mcp-profile requires exactly one MCP transport")
+        if any(
+            (
+                dashboard,
+                build_index,
+                build_cpg,
+                plan_entries,
+                infer_user_config,
+                resume,
+                maintain,
+                discover_entries,
+                diff_base,
+                export_sarif,
+                task_id,
+                verbose,
+            )
+        ):
+            raise click.UsageError(
+                "Restricted MCP profiles cannot be combined with scan/build/output options"
+            )
+        config_path = str(config or Path("zscope.yaml"))
+        if mcp_stdio:
+            from ..mcp.server import run_stdio_server
+
+            run_stdio_server(config_path, scan_depth=scan_depth, profile=mcp_profile)
+        else:
+            from ..mcp.http_server import run_http_server
+
+            run_http_server(
+                config_path,
+                host=mcp_host,
+                port=mcp_port,
+                endpoint=mcp_endpoint,
+                auth_token_env=mcp_auth_token_env,
+                client_allowlist=mcp_client_allowlist,
+                scan_depth=scan_depth,
+                profile=mcp_profile,
+            )
+        return
 
     if dashboard:
         logger.info("Launching dashboard...")
@@ -282,13 +312,18 @@ def main(
     try:
         zscope_config = ConfigLoader.load(str(config), scan_depth=scan_depth)
         logger.info(f"Loaded configuration from: {config}")
-        if p6_pilot and zscope_config.scan.depth == "balanced":
-            ensure_scan_token_usage_ledger(zscope_config).enable_p6_balanced_admission()
         if task_id:
             click.echo(f"Task ID: {task_id}")
         if verbose:
             recorder = enable_conversation_recording(
-                zscope_config.project.project_root / ".zscope_conversations"
+                zscope_config.project.project_root / ".zscope_conversations",
+                metadata={
+                    "config_path": str(config),
+                    "config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+                    "zscope_version": __version__,
+                    "scan_depth": scan_depth,
+                    "mode": mode,
+                },
             )
             logger.info("LLM conversation recording enabled: %s", recorder.run_dir)
 
@@ -342,14 +377,11 @@ def main(
             sys.exit(0)
 
         if infer_user_config:
-            from ..config.user_config_workbook import UserConfigWorkbook
-            from ..framework.llm_client import LLMClient
-            from ..orchestration.user_config_inference import (
-                filter_user_config_rows_with_llm,
-                infer_user_config_rows,
-            )
+            from ..config.user_config_store import UserConfigStore
+            from ..config.function_entry import FunctionEntry
+            from ..core.analysis.analyzer import Analyzer
 
-            click.echo("Inferring user configuration candidates...")
+            click.echo("Building interface contracts with the shared incremental modeling stage...")
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
@@ -359,69 +391,59 @@ def main(
                 exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=True,
                 defer_svf=True,
-                svf_parallel_workers=(
-                    zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
-                ),
+                svf_parallel_workers=zscope_config.concurrency.svf_workers
+                or zscope_config.concurrency.index_workers,
             )
             workbook_path = _resolve_user_config_workbook_path(zscope_config)
-            generated = infer_user_config_rows(
-                code_index,
-                snapshot_dir=Path(zscope_config.analysis.snapshot_dir),
-            )
-            llm_workers = zscope_config.concurrency.llm_max_inflight
-            click.echo(
-                f"Screening user configuration candidates with LLM ({llm_workers} worker(s))..."
-            )
-            llm_cfg = zscope_config.llms.get("default") or next(iter(zscope_config.llms.values()))
-            token_usage_ledger = ensure_scan_token_usage_ledger(zscope_config)
-            llm_client = LLMClient(
-                api_key=llm_cfg.api_key,
-                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
-                models=llm_cfg.models,
-                response_model_map=getattr(llm_cfg, "response_model_map", {}),
-                timeout=llm_cfg.timeout,
-                max_retries=llm_cfg.max_retries,
-                retry_until_available=getattr(llm_cfg, "retry_until_available", False),
-                max_tokens=llm_cfg.max_tokens,
-                base_url_rate_limit_per_minute=getattr(
-                    llm_cfg, "base_url_rate_limit_per_minute", 0
-                ),
-                base_url_max_concurrent_requests=getattr(
-                    llm_cfg, "base_url_max_concurrent_requests", 0
-                ),
-                global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
-                supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
-                require_exact_response_model=getattr(
-                    llm_cfg, "require_exact_response_model", False
-                ),
-                token_usage_ledger=token_usage_ledger,
-                llm_ref="default",
+            helper = Analyzer(
+                zscope_config,
+                code_index=code_index,
+                user_config=UserConfigStore(workbook_path),
+                write_root_reports=False,
             )
             try:
-                generated, llm_stats = filter_user_config_rows_with_llm(
-                    generated,
-                    code_index,
-                    llm_client,
-                    max_workers=llm_workers,
+                entries = []
+                for name in code_index.list_functions(limit=2_147_483_647):
+                    infos = code_index.find_function_infos(name)
+                    for info in infos:
+                        entries.append(
+                            FunctionEntry(
+                                function_name=str(info.get("function_name") or name),
+                                file_path=str(info.get("file_path") or ""),
+                                signature=str(info.get("signature") or ""),
+                            )
+                        )
+                result = helper.prepare_semantics(entries)
+                from ..orchestration.user_config_inference import infer_user_config_rows
+
+                generated = infer_user_config_rows(
+                    code_index, Path(zscope_config.analysis.snapshot_dir)
                 )
+                ancillary = {
+                    sheet: rows
+                    for sheet, rows in generated.items()
+                    if sheet not in {"resource", "lock"}
+                }
+                workbook = UserConfigStore(workbook_path).workbook
+                merge_stats = workbook.merge_generated(ancillary)
+                _write_user_config_infer_report(
+                    workbook_path.with_suffix(".infer_report.md"),
+                    workbook.read_rows(),
+                    {},
+                    {},
+                    merge_stats,
+                    read_warnings=workbook.read_warnings,
+                )
+                if result is not None:
+                    click.echo(
+                        f"Modeling: {result.stats.modeled_functions} rebuilt, {result.stats.cache_hit_functions} reused, {result.stats.failed_functions} failed."
+                    )
+                    click.echo(f"Semantic contract version: {result.contract_version}")
+                    click.echo("Coverage: partial" if result.partial else "Coverage: complete")
+                click.echo(f"User config workbook: {workbook_path}")
             finally:
-                llm_client.close()
-            stats = UserConfigWorkbook(workbook_path).merge_generated(generated)
-            total_symbols = sum(len(items) for items in generated.values())
-            click.echo(f"User config workbook: {workbook_path}")
-            click.echo(
-                "LLM screening: "
-                f"{llm_stats['reviewed']} reviewed, "
-                f"{llm_stats['kept']} kept, {llm_stats['revised']} revised, "
-                f"{llm_stats['dropped']} dropped, {llm_stats['unreviewed']} unreviewed, "
-                f"{llm_stats['errors']} batch error(s)."
-            )
-            click.echo(
-                "Inference complete: "
-                f"{total_symbols} generated row(s), "
-                f"{stats['added']} added, {stats['refreshed']} refreshed, {stats['removed']} removed."
-            )
-            click.echo("Review the workbook, then run Z-SCOPE normally.")
+                helper.close()
+                code_index.close()
             sys.exit(0)
 
         if plan_entries:
@@ -504,9 +526,9 @@ def main(
 
         if mode == "ruledriven":
             if zscope_config.project.language != "java":
-                raise click.ClickException(
-                    "C/C++ --mode ruledriven was removed in Z-Scope 2.0 P1; "
-                    "use --mode default so every rule signal enters the Candidate Ledger"
+                logger.warning(
+                    "C/C++ --mode ruledriven is deprecated in Z-SCOPE 1.x and is removed in 2.0; "
+                    "ordinary C/C++ rules now enter the default candidate pipeline."
                 )
             logger.info("Rule-driven mode: running Joern rules + validation")
             from ..rules.analyzer import RuleDrivenAnalyzer
@@ -544,6 +566,7 @@ def main(
             logger.info("Alert verification mode: validating SARIF alerts")
             from ..alerts.sarif_adapter import SarifAdapter
             from ..alerts.verifier import AlertVerifier
+            from ..framework.llm_client import LLMClient
             from ..config.user_config_store import UserConfigStore
             from ..orchestration.scheduler import ScanScheduler
 
@@ -574,6 +597,34 @@ def main(
                 click.echo("No alerts to verify.")
                 sys.exit(0)
 
+            val_agent_cfg = next(
+                (a for a in zscope_config.project.agents if a.name == "validator_agent"), None
+            )
+            val_llm_ref = (
+                val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+            )
+            llm_cfg = zscope_config.llms.get(val_llm_ref, zscope_config.llms["default"])
+            token_usage_ledger = ensure_scan_token_usage_ledger(zscope_config)
+
+            llm_client = LLMClient(
+                api_key=llm_cfg.api_key,
+                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
+                models=llm_cfg.models,
+                timeout=llm_cfg.timeout,
+                max_retries=llm_cfg.max_retries,
+                retry_until_available=getattr(llm_cfg, "retry_until_available", False),
+                max_tokens=llm_cfg.max_tokens,
+                base_url_rate_limit_per_minute=getattr(
+                    llm_cfg, "base_url_rate_limit_per_minute", 0
+                ),
+                base_url_max_concurrent_requests=getattr(
+                    llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
+                global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
+                supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
+                token_usage_ledger=token_usage_ledger,
+                llm_ref=val_llm_ref,
+            )
             db_dir = (
                 Path(zscope_config.analysis.user_config_db)
                 if zscope_config.analysis.user_config_db
@@ -584,6 +635,7 @@ def main(
             verifier = AlertVerifier(
                 config=zscope_config,
                 code_index=code_index,
+                llm_client=llm_client,
                 user_config=ucs,
             )
             alert_workers = max(
@@ -629,9 +681,6 @@ def main(
             ]
             engine_status = "failed" if failed_results else "complete"
             llm_usage = scan_token_usage_snapshot(zscope_config)
-            trace_store = getattr(zscope_config, "decision_trace_store", None)
-            trace_snapshot = getattr(trace_store, "snapshot", None)
-            decision_trace_manifest = trace_snapshot() if callable(trace_snapshot) else {}
             alert_metadata = {
                 "workflow": "alert-verify",
                 "runtime_spec": dict(vars(zscope_config.runtime_provenance)),
@@ -654,7 +703,6 @@ def main(
                 state={
                     "any_failure": bool(failed_results),
                     "llm_usage": llm_usage,
-                    "decision_trace_manifest": decision_trace_manifest,
                     "engine_capabilities": {
                         "alert_verifier": {
                             "status": engine_status,
@@ -718,7 +766,57 @@ def main(
             exit_policy=exit_policy,
             task_id=task_id,
         )
-        session_result = session_runner.run()
+        # Stop-window budget, exactly one authority:
+        # - a CLI started by a job owner takes the job store's persisted
+        #   window for this attempt (a legitimate cleared window — e.g. after
+        #   a resume — means no budget; the config window is never re-applied
+        #   there);
+        # - a standalone CLI arms the once-resolved config boundary as a
+        #   monotonic cooperative deadline on the real runner's shared
+        #   cancellation token (v2 and window-less v3 arm nothing).
+        # An already-passed boundary refuses the scan instead of rolling to
+        # tomorrow; a partially present or unverifiable job binding is
+        # refused rather than guessed.
+        deadline_guard = None
+        try:
+            authority = session_stop_window_authority(str(config), scan_depth=scan_depth)
+        except InvalidJobBindingError as exc:
+            logger.error("Scan not started: %s", exc)
+            click.echo(f"Error: {exc}")
+            sys.exit(2)
+        if authority is not None:
+            if authority.stop_at_epoch is not None:
+                deadline_guard = arm_persisted_deadline(
+                    session_runner,
+                    stop_at_epoch=authority.stop_at_epoch,
+                    resolved_stop_time=authority.resolved_stop_time,
+                )
+                click.echo(
+                    "Stop window armed: "
+                    f"job {authority.job_id}/{authority.run_id} -> "
+                    f"{authority.resolved_stop_time or authority.stop_at_epoch} "
+                    f"({deadline_guard.remaining_seconds:.0f}s remaining)"
+                )
+            else:
+                click.echo(
+                    "Stop window: none; this job attempt carries no persisted "
+                    "window and the config window is not applied"
+                )
+        else:
+            stop_window = stop_window_from_config(zscope_config)
+            if stop_window is not None:
+                deadline_guard = arm_session_deadline(session_runner, stop_window)
+                click.echo(
+                    "Stop window armed: "
+                    f"{stop_window.stop_at} {stop_window.timezone} -> "
+                    f"{stop_window.resolved_stop_time.isoformat()} "
+                    f"({deadline_guard.remaining_seconds:.0f}s remaining)"
+                )
+        try:
+            session_result = session_runner.run()
+        finally:
+            if deadline_guard is not None:
+                deadline_guard.release()
         if export_sarif:
             from ..reporting.sarif_exporter import save_sarif_report
 
@@ -769,22 +867,12 @@ def main(
 
         sys.exit(session_result.exit_code)
 
-    except click.ClickException:
-        raise
-    except ProviderFailureError as exc:
-        exit_code = _provider_failure_exit_code(exc, p6_pilot=p6_pilot)
-        if exit_code != 2:
-            logger.error("P6 provider failure marker write failed")
-        logger.error("Analysis failed: provider request failed")
-        sys.exit(exit_code)
-    except P6BalancedTokenAdmissionError as exc:
-        # P6 admission failures expose only their frozen class.  In
-        # particular, never let the generic exception handler serialize an
-        # exception body or traceback into scanner logs.
-        if not p6_pilot:
-            raise
-        logger.error("Analysis failed: %s", exc.failure_class)
-        sys.exit(2)
+    except ExpiredStopWindowError as exc:
+        logger.error("Scan not started: %s", exc)
+        click.echo(f"Error: {exc}")
+        # 1 for a standalone config refusal; a job-bound attempt whose
+        # persisted window was closed fails honestly instead of completing.
+        sys.exit(exc.exit_code)
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
         sys.exit(2)
@@ -807,6 +895,86 @@ def _resolve_user_config_workbook_path(zscope_config) -> Path:
     if raw_path.exists() and raw_path.is_file():
         raise ValueError("analysis.user_config_db must point to an .xlsx workbook or a directory.")
     return raw_path / "user_config.xlsx"
+
+
+def _write_user_config_infer_report(
+    report_path: Path,
+    generated: dict,
+    llm_stats: dict,
+    ambiguous_stats: dict,
+    merge_stats: dict,
+    *,
+    read_warnings: Optional[list] = None,
+) -> Path:
+    """Write the human-readable inference report next to the workbook."""
+
+    lines = [
+        "# user_config 推理报告",
+        "",
+        "本报告由 `zscope --infer-user-config` 生成,只做分析不改代码;",
+        "扫描前请复核下列接口(尤其是低置信度与 needs_review 行)。",
+        "",
+    ]
+    for sheet, title in (("resource", "resource 表"), ("lock", "lock 表")):
+        rows = sorted(generated.get(sheet, []), key=lambda item: str(item.get("symbol_name") or ""))
+        lines.append(f"## {title}({len(rows)} 行)")
+        lines.append("")
+        lines.append("| symbol | kind | pair | confidence | source | description/notes |")
+        lines.append("|---|---|---|---|---|---|")
+        for row in rows:
+            description = " ".join(
+                part
+                for part in (str(row.get("description") or ""), str(row.get("notes") or ""))
+                if part
+            )
+            lines.append(
+                "| {symbol} | {kind} | {pair} | {conf} | {source} | {desc} |".format(
+                    symbol=str(row.get("symbol_name") or ""),
+                    kind=str(row.get("kind") or ""),
+                    pair=str(row.get("pair") or ""),
+                    conf=str(row.get("confidence") or ""),
+                    source=str(row.get("source") or ""),
+                    desc=description.replace("|", "\\|")[:200],
+                )
+            )
+        lines.append("")
+    needs_review = [
+        str(row.get("symbol_name") or "")
+        for sheet in ("resource", "lock")
+        for row in generated.get(sheet, [])
+        if "needs_review" in str(row.get("source") or "")
+    ]
+    lines.append("## 需要人工复核")
+    lines.append("")
+    if needs_review:
+        lines.extend(f"- {name}" for name in needs_review)
+    else:
+        lines.append("- 无")
+    lines.append("")
+    if read_warnings:
+        lines.append("## 工作簿告警(未知 kind)")
+        lines.append("")
+        lines.extend(f"- {warning}" for warning in read_warnings)
+        lines.append("")
+    lines.append("## 统计")
+    lines.append("")
+    lines.append(
+        f"- LLM 筛查: reviewed={llm_stats.get('reviewed', 0)}, kept={llm_stats.get('kept', 0)}, "
+        f"revised={llm_stats.get('revised', 0)}, dropped={llm_stats.get('dropped', 0)}, "
+        f"rechecked={llm_stats.get('recheck', 0)}, errors={llm_stats.get('errors', 0)}"
+    )
+    lines.append(
+        f"- 歧义分类: collected={ambiguous_stats.get('collected', 0)}, "
+        f"classified={ambiguous_stats.get('classified', 0)}, "
+        f"dropped={ambiguous_stats.get('dropped', 0)}, errors={ambiguous_stats.get('errors', 0)}"
+    )
+    lines.append(
+        f"- 回写: added={merge_stats.get('added', 0)}, refreshed={merge_stats.get('refreshed', 0)}, "
+        f"removed={merge_stats.get('removed', 0)}"
+    )
+    lines.append("")
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return report_path
 
 
 def _batch_interruption_lines(session_result: ScanSessionResult) -> list[str]:

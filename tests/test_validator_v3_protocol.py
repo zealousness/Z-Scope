@@ -2,20 +2,14 @@ import json
 
 import pytest
 
-from zscope.agents.proof_engine.agent import ProofEngineAgent
+from zscope.agents.validator_agent.agent import ValidatorAgent
 from zscope.common.validator_protocol import (
     DynamicReproductionRequest,
     VALIDATOR_RESULT_VERSION,
     ValidatorResultV3,
     parse_validator_result_v3,
-    validator_result_schema_v3,
-    validator_result_v3_failure_class,
 )
-from zscope.framework.llm_client import ProviderFailureError
-from zscope.framework.llm_usage import (
-    P6BalancedTokenAdmissionError,
-    ScanTokenUsageLedger,
-)
+from zscope.framework.base import BaseTool
 
 
 def _slice() -> dict:
@@ -26,8 +20,6 @@ def _slice() -> dict:
         "obligation": {
             "candidate_uid": "CAND_1",
             "validation_cluster_uid": "VAL_1",
-            "subject_uid": "wire_len",
-            "decision_region_uid": "REGION_1",
         },
         "evidence_ref_catalog": {
             "FACT_1": {"kind": "decision_fact", "summary": "entry reaches sink"}
@@ -42,7 +34,7 @@ def _result(**overrides) -> dict:
         "validation_cluster_uid": "VAL_1",
         "pass": "initial",
         "verdict": "verified",
-        "reasoning": "FACT_1 supports the requested evidence summary.",
+        "reasoning": "FACT_1 proves the concrete trigger path.",
         "positive_evidence": ["entry reaches sink"],
         "negative_evidence": [],
         "evidence_refs": ["FACT_1"],
@@ -65,18 +57,14 @@ class _DirectLLM:
     def chat_completion(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
         reply = self.replies.pop(0)
-        message = {
-            "role": "assistant",
-            "content": reply.get("content", ""),
-            "reasoning_content": reply.get("reasoning_content"),
-        }
-        if "tool_calls" in reply:
-            message["tool_calls"] = reply["tool_calls"]
         return {
             "choices": [
                 {
                     "finish_reason": reply.get("finish_reason", "stop"),
-                    "message": message,
+                    "message": {
+                        "role": "assistant",
+                        "content": reply.get("content", ""),
+                    },
                 }
             ],
             "model": "unit-model",
@@ -84,635 +72,338 @@ class _DirectLLM:
         }
 
 
-class _ToolDirectLLM(_DirectLLM):
-    supports_structured_output = False
+class _FailingStructuredLLM(_DirectLLM):
+    def __init__(self) -> None:
+        super().__init__([])
+
+    def chat_completion(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        raise RuntimeError("provider rejected the declared response format")
 
 
-def _final_call(payload: dict, *, call_id: str = "call_final") -> dict:
-    return {
-        "id": call_id,
-        "type": "function",
-        "function": {
-            "name": "emit_validator_result_v3",
-            "arguments": json.dumps(payload),
-        },
-    }
+class _ReasoningOnlyLLM(_DirectLLM):
+    def chat_completion(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": json.dumps(_result()),
+                    },
+                }
+            ],
+            "model": "unit-model",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+        }
 
 
-def _input(evidence_slice=None) -> dict:
-    return {
-        "finding_uid": "CAND_1",
-        "validation_cluster_uid": "VAL_1",
-        "validation_pass": "initial",
-        "evidence_slice": evidence_slice or _slice(),
-    }
+class _LengthThenFailingLLM(_DirectLLM):
+    """First call truncates at the provider limit; the retry call errors."""
 
+    def __init__(self) -> None:
+        super().__init__([])
 
-def _p6_ledger() -> ScanTokenUsageLedger:
-    ledger = ScanTokenUsageLedger(depth="balanced")
-    ledger.enable_p6_balanced_admission()
-    return ledger
-
-
-def test_validator_v3_provider_schema_encodes_missing_fact_coherence() -> None:
-    schema = validator_result_schema_v3()
-
-    assert schema["allOf"][0]["then"]["properties"] == {
-        "verdict": {"const": "uncertain"},
-        "stop_reason": {"const": "missing_fact"},
-    }
-    assert "missing_fact" not in schema["allOf"][1]["then"]["properties"]["stop_reason"]["enum"]
-
-
-def test_validator_v3_provider_schema_binds_runtime_identities_and_refs() -> None:
-    schema = validator_result_schema_v3(
-        candidate_uid="CAND_1",
-        validation_cluster_uid="VAL_1",
-        expected_pass="initial",
-        allowed_evidence_refs=["FACT_2", "FACT_1", "FACT_1"],
-    )
-
-    assert schema["properties"]["candidate_uid"]["const"] == "CAND_1"
-    assert schema["properties"]["validation_cluster_uid"]["const"] == "VAL_1"
-    assert schema["properties"]["pass"]["const"] == "initial"
-    assert schema["properties"]["evidence_refs"]["items"]["enum"] == [
-        "FACT_1",
-        "FACT_2",
-    ]
-    empty = validator_result_schema_v3(allowed_evidence_refs=[])
-    assert empty["properties"]["evidence_refs"]["maxItems"] == 0
-
-
-def test_validator_v3_fixed_failure_classifier_never_echoes_values() -> None:
-    canary = "SECRET_CANARY_MUST_NOT_LEAK"
-    failure = validator_result_v3_failure_class(
-        _result(candidate_uid=canary),
-        candidate_uid="CAND_1",
-        validation_cluster_uid="VAL_1",
-        expected_pass="initial",
-        allowed_evidence_refs=["FACT_1"],
-    )
-
-    assert failure == "candidate_binding_mismatch"
-    assert canary not in failure
-    assert (
-        validator_result_v3_failure_class(
-            _result(evidence_refs=[canary]),
-            candidate_uid="CAND_1",
-            validation_cluster_uid="VAL_1",
-            expected_pass="initial",
-            allowed_evidence_refs=["FACT_1"],
-        )
-        == "evidence_ref_binding_mismatch"
-    )
-
-
-def test_proof_engine_v3_uses_one_direct_strict_completion() -> None:
-    llm = _DirectLLM([{"content": json.dumps(_result())}])
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is True
-    assert response.data["verdict"] == "verified"
-    assert len(llm.calls) == 1
-    assert llm.calls[0][1]["max_tokens"] == 8192
-    assert llm.calls[0][1]["response_format"]["json_schema"]["strict"] is True
-    bound = llm.calls[0][1]["response_format"]["json_schema"]["schema"]["properties"]
-    assert bound["candidate_uid"]["const"] == "CAND_1"
-    assert bound["validation_cluster_uid"]["const"] == "VAL_1"
-    assert bound["pass"]["const"] == "initial"
-    assert bound["evidence_refs"]["items"]["enum"] == ["FACT_1"]
-    assert response.metadata["validator_api_call_count"] == 1
-    prompt = llm.calls[0][0][-1]["content"]
-    assert "missing_fact_request is an object" in prompt
-    assert "verdict must be uncertain" in prompt
-    assert "stop_reason must be missing_fact" in prompt
-
-
-def test_proof_engine_v3_accepts_exactly_one_forced_final_tool_initially() -> None:
-    llm = _ToolDirectLLM(
-        [
-            {
-                "finish_reason": "tool_calls",
-                "tool_calls": [_final_call(_result())],
+    def chat_completion(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        if len(self.calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"role": "assistant", "content": "{"},
+                    }
+                ],
+                "model": "unit-model",
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
             }
-        ]
+        raise RuntimeError("provider dropped the retry connection")
+
+
+class _ReadOnlyEvidenceTool(BaseTool):
+    def __init__(self) -> None:
+        super().__init__("read_validation_fact", "Read one immutable validation fact")
+
+    def execute(self, arguments):
+        query = str(arguments.get("query") or "")
+        if query.startswith("empty"):
+            return {"success": True, "data": {}}
+        return {
+            "success": True,
+            "data": {
+                "file_path": "src/demo.c",
+                "function": "sink",
+                "start_line": 10 if query == "path" else 20,
+                "statement": (
+                    "entry reaches sink" if query == "path" else "len may exceed capacity"
+                ),
+            },
+        }
+
+    def get_schema(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+
+
+class _InvestigationLLM:
+    models = ["unit-model"]
+
+    def __init__(self, *, no_gain=False) -> None:
+        self.no_gain = no_gain
+        self.calls = []
+        self.executor_results = []
+
+    def run_conversation_with_tools(self, **kwargs):
+        self.calls.append(kwargs)
+        executor = kwargs["tool_executor"]
+        if self.no_gain:
+            assert executor._zscope_start_iteration(1) is False
+            first = executor("read_validation_fact", {"query": "empty-one"})
+            duplicate = executor("read_validation_fact", {"query": "empty-one"})
+            same_round = executor("read_validation_fact", {"query": "empty-same-round"})
+            assert executor._zscope_start_iteration(2) is False
+            second = executor("read_validation_fact", {"query": "empty-two"})
+            assert executor._zscope_start_iteration(3) is True
+            stopped = executor("read_validation_fact", {"query": "after-stop"})
+            self.executor_results = [first, same_round, second, duplicate, stopped]
+            payload = _result(
+                verdict="uncertain",
+                reasoning="read-only providers added no new evidence",
+                evidence_refs=[],
+                stop_reason="investigation_exhausted",
+            )
+            payload["pass"] = "investigation_synthesis"
+            iterations = 4
+            tool_calls = 4
+        else:
+            assert executor._zscope_start_iteration(1) is False
+            path = executor("read_validation_fact", {"query": "path"})
+            assert executor._zscope_start_iteration(2) is False
+            bound = executor("read_validation_fact", {"query": "bound"})
+            assert executor._zscope_start_iteration(3) is False
+            fact = executor(
+                "record_validator_investigation_fact",
+                {
+                    "fact_kind": "value_range",
+                    "evidence_refs": [path["evidence_ref"], bound["evidence_ref"]],
+                    "summary": "the externally controlled length may exceed capacity",
+                },
+            )
+            assert executor._zscope_start_iteration(4) is False
+            self.executor_results = [path, bound, fact]
+            fact_uid = fact["fact"]["fact_uid"]
+            payload = _result(
+                evidence_refs=[fact_uid],
+                stop_reason="investigation_complete",
+            )
+            payload["pass"] = "investigation_synthesis"
+            iterations = 4
+            tool_calls = 3
+        message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "terminal",
+                    "type": "function",
+                    "function": {
+                        "name": "emit_validator_result_v3",
+                        "arguments": json.dumps(payload),
+                    },
+                }
+            ],
+        }
+        return {
+            "content": "",
+            "message": message,
+            "conversation": [message],
+            "iterations": iterations,
+            "tool_call_count": tool_calls,
+            "cumulative_prompt_tokens": 400,
+            "cumulative_completion_tokens": 100,
+            "cumulative_total_tokens": 500,
+        }
+
+
+def test_validator_v3_uses_one_direct_strict_completion() -> None:
+    llm = _DirectLLM([{"content": json.dumps(_result())}])
+    agent = ValidatorAgent(llm, [])
+
+    response = agent.run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "validation_pass": "initial",
+            "evidence_slice": _slice(),
+        }
     )
 
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is True
+    assert response.success
     assert response.data["verdict"] == "verified"
     assert len(llm.calls) == 1
-    assert llm.calls[0][1]["tools"][0]["function"]["name"] == ("emit_validator_result_v3")
-    assert llm.calls[0][1]["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "emit_validator_result_v3"},
-    }
+    assert "max_tokens" not in llm.calls[0][1]
+    assert llm.calls[0][1]["response_format"]["json_schema"]["strict"] is True
+    assert response.metadata["validator_api_call_count"] == 1
 
 
-def test_proof_engine_v3_forced_final_tool_rejects_prose_json_fallback() -> None:
-    llm = _ToolDirectLLM(
-        [
-            {"finish_reason": "stop", "content": json.dumps(_result())},
-            {"finish_reason": "stop", "content": json.dumps(_result())},
-        ]
-    )
+def test_validator_v3_does_not_add_tool_fallback_after_structured_call_failure() -> None:
+    llm = _FailingStructuredLLM()
 
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is True
-    assert response.data["verdict"] == "uncertain"
-    assert response.data["stop_reason"] == "malformed_output"
-    assert response.metadata["validator_repair_attempted"] == 1
-    assert response.metadata["validator_repair_accepted"] == 0
-    assert response.metadata["validator_contract_failure_class"] == "terminal_tool_invalid"
-
-
-def test_proof_engine_v3_invalid_final_payload_cannot_use_prose_json() -> None:
-    invalid_final = {
-        "id": "call_invalid",
-        "type": "function",
-        "function": {
-            "name": "emit_validator_result_v3",
-            "arguments": json.dumps({"schema_version": "wrong"}),
-        },
-    }
-    llm = _ToolDirectLLM(
-        [
-            {
-                "finish_reason": "tool_calls",
-                "content": json.dumps(_result()),
-                "tool_calls": [invalid_final],
-            },
-            {
-                "finish_reason": "tool_calls",
-                "content": json.dumps(_result()),
-                "tool_calls": [invalid_final],
-            },
-        ]
-    )
-
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is True
-    assert response.data["verdict"] == "uncertain"
-    assert response.metadata["validator_repair_accepted"] == 0
-    assert response.metadata["validator_contract_failure_class"] != "none"
-
-
-def test_proof_engine_v3_rejects_multiple_initial_finals_before_regeneration() -> None:
-    llm = _ToolDirectLLM(
-        [
-            {
-                "finish_reason": "tool_calls",
-                "content": json.dumps(_result()),
-                "tool_calls": [
-                    _final_call(_result(), call_id="call_final_1"),
-                    _final_call(_result(), call_id="call_final_2"),
-                ],
-            },
-            {
-                "finish_reason": "tool_calls",
-                "tool_calls": [_final_call(_result(), call_id="call_repaired")],
-            },
-        ]
-    )
-
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is True
-    assert response.data["verdict"] == "verified"
-    assert response.metadata["validator_repair_attempted"] == 1
-    assert response.metadata["validator_repair_accepted"] == 1
-    assert len(llm.calls) == 2
-    assert "class=terminal_tool_invalid" in llm.calls[1][0][-1]["content"]
-
-
-def test_proof_engine_v3_rejects_multiple_finals_from_regeneration() -> None:
-    llm = _ToolDirectLLM(
-        [
-            {"content": "not-json"},
-            {
-                "finish_reason": "tool_calls",
-                "content": json.dumps(_result()),
-                "tool_calls": [
-                    _final_call(_result(), call_id="call_repair_1"),
-                    _final_call(_result(), call_id="call_repair_2"),
-                ],
-            },
-        ]
-    )
-
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is True
-    assert response.data["verdict"] == "uncertain"
-    assert response.data["stop_reason"] == "malformed_output"
-    assert response.metadata["validator_repair_attempted"] == 1
-    assert response.metadata["validator_repair_accepted"] == 0
-    assert response.metadata["validator_contract_failure_class"] == ("terminal_tool_invalid")
-
-
-def test_proof_engine_v3_rejects_final_tool_mixed_with_an_action() -> None:
-    mixed = [
-        _final_call(_result()),
+    response = ValidatorAgent(llm, []).run(
         {
-            "id": "call_action",
-            "type": "function",
-            "function": {"name": "inspect_more", "arguments": "{}"},
-        },
-    ]
-    llm = _ToolDirectLLM(
-        [
-            {
-                "finish_reason": "tool_calls",
-                "content": json.dumps(_result()),
-                "tool_calls": mixed,
-            },
-            {
-                "finish_reason": "tool_calls",
-                "content": json.dumps(_result()),
-                "tool_calls": mixed,
-            },
-        ]
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "validation_pass": "initial",
+            "evidence_slice": _slice(),
+        }
     )
 
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is True
-    assert response.data["verdict"] == "uncertain"
-    assert response.metadata["validator_contract_failure_class"] == ("terminal_tool_invalid")
-
-
-def test_proof_engine_rejects_non_v3_and_generic_inputs_without_model_call() -> None:
-    llm = _DirectLLM([])
-    assert ProofEngineAgent(llm, []).run({"finding": {}}).success is False
-    legacy = _slice()
-    legacy["protocol_version"] = "zscope.validator-protocol.v2"
-    response = ProofEngineAgent(llm, []).run(_input(legacy))
-    assert response.success is False
-    assert response.error == "proof_engine_rejects_legacy_validator_protocol"
-    assert llm.calls == []
-
-
-def test_proof_engine_v3_failure_has_no_protocol_or_tool_fallback() -> None:
-    class FailingLLM(_DirectLLM):
-        def chat_completion(self, messages, **kwargs):
-            self.calls.append((messages, kwargs))
-            raise RuntimeError("provider rejected structured output")
-
-    llm = FailingLLM([])
-    response = ProofEngineAgent(llm, []).run(_input())
     assert response.success is False
     assert len(llm.calls) == 1
     assert "response_format" in llm.calls[0][1]
     assert "tools" not in llm.calls[0][1]
 
 
-def test_proof_engine_propagates_typed_systemic_provider_failure() -> None:
-    class FailingProvider(_DirectLLM):
-        def chat_completion(self, messages, **kwargs):
-            self.calls.append((messages, kwargs))
-            raise ProviderFailureError("provider_protocol_incompatible")
+def test_validator_v3_never_accepts_reasoning_metadata_as_terminal_output() -> None:
+    llm = _ReasoningOnlyLLM([])
 
-    llm = FailingProvider([])
-
-    with pytest.raises(ProviderFailureError) as raised:
-        ProofEngineAgent(llm, []).run(_input())
-
-    assert raised.value.failure_class == "provider_protocol_incompatible"
-    assert len(llm.calls) == 1
-
-
-def test_proof_engine_propagates_p6_token_admission_from_direct_completion() -> None:
-    class DeniedLLM(_DirectLLM):
-        def chat_completion(self, messages, **kwargs):
-            self.calls.append((messages, kwargs))
-            raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
-
-    llm = DeniedLLM([])
-
-    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
-        ProofEngineAgent(llm, []).run(_input())
-
-    assert raised.value.failure_class == "p6_token_hard_limit"
-    assert len(llm.calls) == 1
-
-
-def test_proof_engine_propagates_p6_token_admission_from_action_session() -> None:
-    class DeniedActionLLM:
-        models = ["unit-model"]
-
-        @staticmethod
-        def run_conversation_with_tools(**_kwargs):
-            raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
-
-    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
-        ProofEngineAgent(DeniedActionLLM(), []).investigate(
-            {**_input(), "validation_pass": "investigation_synthesis"},
-            evidence_actions=[{"action_id": "ACTION_1"}],
-            evidence_action_executor=lambda _action_id: {"status": "unknown"},
-        )
-
-    assert raised.value.failure_class == "p6_token_hard_limit"
-
-
-def test_proof_engine_does_not_convert_action_admission_to_unknown_evidence() -> None:
-    class ExecutesActionLLM:
-        models = ["unit-model"]
-
-        @staticmethod
-        def run_conversation_with_tools(**kwargs):
-            return kwargs["tool_executor"](
-                "execute_proof_evidence_action",
-                {"action_id": "ACTION_1"},
-            )
-
-    def deny(_action_id):
-        raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
-
-    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
-        ProofEngineAgent(ExecutesActionLLM(), []).investigate(
-            {**_input(), "validation_pass": "investigation_synthesis"},
-            evidence_actions=[{"action_id": "ACTION_1"}],
-            evidence_action_executor=deny,
-        )
-
-    assert raised.value.failure_class == "p6_token_hard_limit"
-
-
-def test_proof_engine_sanitizes_p6_direct_completion_failure(caplog) -> None:
-    canary = "PRIVATE_DIRECT_EXCEPTION_BODY_MUST_NOT_LEAK"
-
-    class FailingLLM(_DirectLLM):
-        def chat_completion(self, messages, **kwargs):
-            self.calls.append((messages, kwargs))
-            raise RuntimeError(canary)
-
-    llm = FailingLLM([])
-    llm.token_usage_ledger = _p6_ledger()
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is False
-    assert response.error == "class=internal_failure; count=1"
-    assert response.metadata["failure_class"] == "internal_failure"
-    assert response.metadata["failure_count"] == 1
-    assert canary not in caplog.text
-    assert "class=internal_failure; count=1" in caplog.text
-
-
-def test_proof_engine_sanitizes_p6_action_session_failure(caplog) -> None:
-    canary = "PRIVATE_SESSION_EXCEPTION_BODY_MUST_NOT_LEAK"
-
-    class FailingActionLLM:
-        models = ["unit-model"]
-        token_usage_ledger = _p6_ledger()
-
-        @staticmethod
-        def run_conversation_with_tools(**_kwargs):
-            raise RuntimeError(canary)
-
-    response = ProofEngineAgent(FailingActionLLM(), []).investigate(
-        {**_input(), "validation_pass": "investigation_synthesis"},
-        evidence_actions=[{"action_id": "ACTION_1"}],
-        evidence_action_executor=lambda _action_id: {"status": "unknown"},
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "validation_pass": "initial",
+            "evidence_slice": _slice(),
+        }
     )
 
-    assert response.success is False
-    assert response.error == "class=internal_failure; count=1"
-    assert response.metadata["failure_class"] == "internal_failure"
-    assert response.metadata["failure_count"] == 1
-    assert canary not in caplog.text
-    assert "class=internal_failure; count=1" in caplog.text
-
-
-def test_proof_engine_sanitizes_p6_evidence_action_failure() -> None:
-    canary = "PRIVATE_ACTION_EXCEPTION_BODY_MUST_NOT_LEAK"
-
-    class ExecutesFailingActionLLM:
-        models = ["unit-model"]
-        token_usage_ledger = _p6_ledger()
-
-        def __init__(self):
-            self.outcome = None
-
-        def run_conversation_with_tools(self, **kwargs):
-            self.outcome = kwargs["tool_executor"](
-                "execute_proof_evidence_action",
-                {"action_id": "ACTION_1"},
-            )
-            return {
-                "terminal_tool_payload": _result(
-                    **{
-                        "pass": "investigation_synthesis",
-                        "verdict": "uncertain",
-                        "evidence_refs": [],
-                        "stop_reason": "investigation_exhausted",
-                    }
-                ),
-                "terminal_tool_valid": True,
-                "conversation": [],
-                "iterations": 1,
-                "tool_call_count": 1,
-            }
-
-    def fail(_action_id):
-        raise RuntimeError(canary)
-
-    llm = ExecutesFailingActionLLM()
-    response = ProofEngineAgent(llm, []).investigate(
-        {**_input(), "validation_pass": "investigation_synthesis"},
-        evidence_actions=[{"action_id": "ACTION_1"}],
-        evidence_action_executor=fail,
-    )
-
-    assert response.success is True
-    assert llm.outcome["status"] == "unknown"
-    assert llm.outcome["reason_code"] == "evidence_action_executor_error"
-    assert llm.outcome["failure_class"] == "internal_failure"
-    assert llm.outcome["failure_count"] == 1
-    assert canary not in json.dumps(llm.outcome)
-    assert canary not in json.dumps(response.metadata)
-
-
-@pytest.mark.parametrize(
-    ("reply", "stop_reason"),
-    [
-        ({"content": "not-json"}, "malformed_output"),
-        ({"content": "{", "finish_reason": "length"}, "output_truncated"),
-        (
-            {
-                "content": "",
-                "reasoning_content": json.dumps(_result()),
-            },
-            "malformed_output",
-        ),
-    ],
-)
-def test_proof_engine_v3_malformed_output_has_one_bounded_regeneration(reply, stop_reason) -> None:
-    expected_calls = 1 if stop_reason == "output_truncated" else 2
-    llm = _DirectLLM([reply] * expected_calls)
-    response = ProofEngineAgent(llm, []).run(_input())
     assert response.success is True
     assert response.data["verdict"] == "uncertain"
-    assert response.data["stop_reason"] == stop_reason
-    assert len(llm.calls) == expected_calls
-    assert response.metadata["validator_repair_attempted"] == (expected_calls - 1)
-    assert response.metadata["validator_length_retry_count"] == 0
-    assert response.metadata["validator_contract_failure_count"] == 1
-    assert response.metadata["validator_contract_failure_class"] in {
-        "payload_not_object",
-        "structured_payload_missing",
-        "multiple_required_fields_missing",
-        "additional_field_present",
-        "multiple_required_fields_missing_with_additional",
-    }
+    assert response.data["stop_reason"] == "malformed_output"
+    assert len(llm.calls) == 1
+    assert response.metadata["validator_repair_attempted"] == 0
 
 
-def test_proof_engine_v3_accepts_one_answer_free_contract_regeneration() -> None:
+def test_validator_v3_malformed_output_stays_single_call_for_v3_escalation() -> None:
+    llm = _DirectLLM([{"content": "not-json"}])
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "evidence_slice": _slice(),
+        }
+    )
+
+    assert response.success
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["stop_reason"] == "malformed_output"
+    assert len(llm.calls) == 1
+    assert response.metadata["validator_repair_attempted"] == 0
+
+
+def test_validator_v3_length_retries_once_with_doubled_output_ceiling() -> None:
     llm = _DirectLLM(
         [
-            {"content": json.dumps({"error": "shape"})},
+            {"content": "{", "finish_reason": "length"},
             {"content": json.dumps(_result())},
         ]
     )
-
-    response = ProofEngineAgent(llm, []).run(_input())
-
-    assert response.success is True
-    assert response.data["verdict"] == "verified"
-    assert response.metadata["validator_repair_attempted"] == 1
-    assert response.metadata["validator_repair_accepted"] == 1
-    assert response.metadata["validator_api_call_count"] == 2
-    assert response.metadata["cumulative_prompt_tokens"] == 200
-    assert len(llm.calls) == 2
-    repair_prompt = llm.calls[1][0][-1]["content"]
-    assert "class=multiple_required_fields_missing_with_additional" in repair_prompt
-    assert "Do not repeat or discuss the prior response" in repair_prompt
-    assert "shape" not in repair_prompt
-
-
-def test_proof_engine_synthesis_does_not_count_input_facts_as_new_usage_facts() -> None:
-    result = _result(**{"pass": "investigation_synthesis"})
-    evidence_slice = _slice()
-    evidence_slice["validation_pass"] = "investigation_synthesis"
-    evidence_slice["evidence_delta"] = {
-        "facts": [{"fact_uid": f"FACT_{index}"} for index in range(6)]
-    }
-    llm = _DirectLLM([{"content": json.dumps(result)}])
-    payload = _input(evidence_slice)
-    payload["validation_pass"] = "investigation_synthesis"
-    response = ProofEngineAgent(llm, []).run(payload)
-    assert response.success is True
-    assert "new_fact_count=0" in llm.calls[0][1]["trace_label"]
-
-
-def test_proof_engine_action_session_exposes_only_action_id_and_stops_on_closure() -> None:
-    action_id = "ACTION_1"
-    fact = {"fact_uid": "FACT_PROVED", "fact_kind": "source_sink_reachability"}
-    calls = []
-
-    class ActionLLM:
-        models = ["unit-model"]
-
-        def run_conversation_with_tools(self, **kwargs):
-            exposed = {value["function"]["name"] for value in kwargs["tools_schema"]}
-            assert exposed == {"execute_proof_evidence_action", "emit_validator_result_v3"}
-            action_schema = next(
-                value["function"]["parameters"]
-                for value in kwargs["tools_schema"]
-                if value["function"]["name"] == "execute_proof_evidence_action"
-            )
-            assert set(action_schema["properties"]) == {"action_id"}
-            calls.append(
-                kwargs["tool_executor"]("execute_proof_evidence_action", {"action_id": action_id})
-            )
-            programmatic = kwargs["tool_executor"]._zscope_programmatic_terminal_payload()
-            assert programmatic["verdict"] == "verified"
-            return {
-                "terminal_tool_payload": programmatic,
-                "terminal_tool_valid": True,
-                "conversation": [],
-                "iterations": 1,
-                "tool_call_count": 1,
-            }
-
-    def execute(selected):
-        assert selected == action_id
-        return {
-            "status": "verified_true",
-            "reason_code": "checker_accepted",
-            "verified_fact": fact,
-            "terminal_authority": {"terminal": True, "disposition": "confirmed"},
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "evidence_slice": _slice(),
         }
-
-    response = ProofEngineAgent(ActionLLM(), []).investigate(
-        {**_input(), "validation_pass": "investigation_synthesis"},
-        evidence_actions=[{"action_id": action_id, "predicate": "system-bound"}],
-        evidence_action_executor=execute,
     )
-    assert response.success is True
+
+    assert response.success
     assert response.data["verdict"] == "verified"
-    assert response.data["evidence_refs"] == ["FACT_PROVED"]
-    assert response.metadata["new_fact_count"] == 1
-    assert len(calls) == 1
+    assert len(llm.calls) == 2
+    # The first call keeps pure config semantics (no explicit max_tokens);
+    # only the length retry carries the doubled output ceiling.
+    assert "max_tokens" not in llm.calls[0][1]
+    assert llm.calls[1][1]["max_tokens"] >= 8192
+    assert "length_retry=1" in llm.calls[1][1]["trace_label"]
+    assert response.metadata["validator_length_retry_count"] == 1
+    assert response.metadata["validator_api_call_count"] == 2
+    assert response.metadata["finish_reason"] == "stop"
 
 
-def test_proof_engine_action_session_rejects_missing_duplicate_and_free_parameters() -> None:
-    agent = ProofEngineAgent(object(), [])
-    missing = agent.investigate(
-        _input(), evidence_actions=[], evidence_action_executor=lambda _: {}
+def test_validator_v3_length_retry_failure_still_degrades_to_uncertain() -> None:
+    llm = _DirectLLM(
+        [
+            {"content": "{", "finish_reason": "length"},
+            {"content": "{", "finish_reason": "length"},
+        ]
     )
-    assert missing.success is False
-
-    class InvalidSelectionLLM:
-        models = ["unit-model"]
-
-        def __init__(self):
-            self.results = []
-
-        def run_conversation_with_tools(self, **kwargs):
-            execute = kwargs["tool_executor"]
-            self.results.extend(
-                [
-                    execute("execute_proof_evidence_action", {"action_id": "ACTION_1", "x": 1}),
-                    execute("execute_proof_evidence_action", {"action_id": "UNKNOWN"}),
-                    execute("execute_proof_evidence_action", {"action_id": "ACTION_1"}),
-                    execute("execute_proof_evidence_action", {"action_id": "ACTION_1"}),
-                ]
-            )
-            uncertain = _result(
-                **{
-                    "pass": "investigation_synthesis",
-                    "verdict": "uncertain",
-                    "evidence_refs": [],
-                    "stop_reason": "investigation_exhausted",
-                }
-            )
-            return {
-                "terminal_tool_payload": uncertain,
-                "terminal_tool_valid": True,
-                "conversation": [],
-                "iterations": 1,
-                "tool_call_count": 4,
-            }
-
-    llm = InvalidSelectionLLM()
-    response = ProofEngineAgent(llm, []).investigate(
-        {**_input(), "validation_pass": "investigation_synthesis"},
-        evidence_actions=[{"action_id": "ACTION_1"}],
-        evidence_action_executor=lambda _: {"status": "unknown"},
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "evidence_slice": _slice(),
+        }
     )
-    assert response.success is True
-    assert llm.results[0]["error"] == "evidence_action_id_only"
-    assert llm.results[1]["error"] == "unknown_evidence_action"
-    assert llm.results[2]["success"] is True
-    assert llm.results[3]["error"] == "duplicate_evidence_action"
+
+    assert response.success
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["stop_reason"] == "output_truncated"
+    assert len(llm.calls) == 2
+    assert "max_tokens" not in llm.calls[0][1]
+    assert response.metadata["validator_length_retry_count"] == 1
+
+
+def test_validator_v3_length_retry_exception_keeps_first_response() -> None:
+    # A retry that fails at the provider level must not lose the original
+    # truncated response; the run still degrades to uncertain/output_truncated.
+    llm = _LengthThenFailingLLM()
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "evidence_slice": _slice(),
+        }
+    )
+
+    assert response.success
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["stop_reason"] == "output_truncated"
+    assert len(llm.calls) == 2
+    assert response.metadata["validator_length_retry_count"] == 1
+
+
+def test_validator_v3_rejects_extra_fields_and_unknown_evidence_refs() -> None:
+    with_extra = _result(extra="not allowed")
+    unknown_ref = _result(evidence_refs=["FACT_UNKNOWN"])
+
+    assert parse_validator_result_v3(with_extra) is None
+    assert (
+        parse_validator_result_v3(
+            unknown_ref,
+            candidate_uid="CAND_1",
+            validation_cluster_uid="VAL_1",
+            expected_pass="initial",
+            allowed_evidence_refs=["FACT_1"],
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        # Scalar type coercion must be rejected...
         ("candidate_uid", 7),
         ("validation_cluster_uid", True),
         ("pass", ["initial"]),
@@ -720,22 +411,54 @@ def test_proof_engine_action_session_rejects_missing_duplicate_and_free_paramete
         ("reasoning", 123),
         ("stop_reason", False),
         ("blocking_negative_evidence", 1),
+        # ...and schema string lengths must be enforced.
+        ("reasoning", "r" * 4001),
+        ("positive_evidence", ["p" * 1001]),
+        ("negative_evidence", ["n" * 1001]),
+        ("evidence_refs", ["E" * 513]),
     ],
 )
-def test_validator_result_v3_rejects_scalar_type_coercion(field, value) -> None:
+def test_validator_v3_rejects_invalid_field_values(field, value) -> None:
     assert parse_validator_result_v3(_result(**{field: value})) is None
 
 
-def test_validator_result_v3_rejects_extra_fields_unknown_refs_and_oversize() -> None:
-    assert parse_validator_result_v3(_result(extra="not allowed")) is None
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fact_kind", 1),
+        ("subject_uid", "S" * 513),
+        ("function_uid", "F" * 513),
+        ("reason", "R" * 1001),
+    ],
+)
+def test_validator_v3_enforces_missing_fact_request_types_and_lengths(field, value) -> None:
+    request = {
+        "fact_kind": "value_range",
+        "subject_uid": "length",
+        "function_uid": "sink",
+        "reason": "need the exact range",
+    }
+    request[field] = value
+
     assert (
         parse_validator_result_v3(
-            _result(evidence_refs=["FACT_UNKNOWN"]),
-            allowed_evidence_refs=["FACT_1"],
+            _result(
+                verdict="uncertain",
+                missing_fact_request=request,
+                stop_reason="missing_fact",
+            )
         )
         is None
     )
-    assert parse_validator_result_v3(_result(reasoning="r" * 4001)) is None
+
+
+def test_validator_v3_missing_fact_stop_requires_request() -> None:
+    assert (
+        parse_validator_result_v3(
+            _result(verdict="uncertain", missing_fact_request=None, stop_reason="missing_fact")
+        )
+        is None
+    )
 
 
 def test_validator_v3_runtime_dataclass_self_validates() -> None:
@@ -755,6 +478,60 @@ def test_validator_v3_runtime_dataclass_self_validates() -> None:
         )
 
 
+def test_validator_v3_investigation_uses_one_50_turn_session_and_records_tool_facts() -> None:
+    llm = _InvestigationLLM()
+    evidence_slice = _slice()
+    evidence_slice["decision_facts"] = {"missing_fact_kinds": ["value_range"]}
+
+    response = ValidatorAgent(llm, [_ReadOnlyEvidenceTool()]).investigate(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "validation_pass": "investigation_synthesis",
+            "evidence_slice": evidence_slice,
+        },
+        max_iterations=50,
+    )
+
+    assert response.success is True
+    assert response.data["pass"] == "investigation_synthesis"
+    assert response.data["verdict"] == "verified"
+    assert len(llm.calls) == 1
+    assert llm.calls[0]["max_iterations"] == 50
+    assert llm.calls[0]["preserve_reasoning_metadata"] is True
+    assert len(response.metadata["validator_tool_fact_catalog"]) == 2
+    assert len(response.metadata["validator_investigation_facts"]) == 1
+    recorded = response.metadata["validator_investigation_facts"][0]
+    assert recorded["fact_kind"] == "value_range"
+    assert recorded["fact_uid"] in response.data["evidence_refs"]
+    assert set(recorded["evidence_refs"]) == set(response.metadata["validator_tool_fact_catalog"])
+    # Two repository reads plus a fact-recording call exceed the old two-tool limit.
+    assert response.metadata["tool_call_count"] == 3
+
+
+def test_validator_v3_investigation_stops_after_two_no_gain_rounds_and_rejects_duplicate() -> None:
+    llm = _InvestigationLLM(no_gain=True)
+
+    response = ValidatorAgent(llm, [_ReadOnlyEvidenceTool()]).investigate(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "validation_pass": "investigation_synthesis",
+            "evidence_slice": _slice(),
+        }
+    )
+
+    assert response.success is True
+    first, same_round, second, duplicate, stopped = llm.executor_results
+    assert first["validator_new_evidence"] is False
+    assert same_round["validator_new_evidence"] is False
+    assert second["validator_new_evidence"] is False
+    assert duplicate["error"] == "validator_v3_duplicate_tool_query"
+    assert stopped["error"] == "validator_v3_no_new_evidence_fact_stop; emit the final result"
+    assert response.metadata["validator_no_new_evidence_fact_stop"] is True
+    assert response.metadata["consecutive_no_new_evidence_fact_iterations"] == 2
+
+
 def test_dynamic_reproduction_v4_contract_is_reserved_but_not_dispatched() -> None:
     request = DynamicReproductionRequest(
         request_id="REPRO_1",
@@ -766,5 +543,6 @@ def test_dynamic_reproduction_v4_contract_is_reserved_but_not_dispatched() -> No
         timeout_seconds=30,
         memory_limit_mb=512,
     )
+
     assert request.to_dict()["decision_level"] == "V4"
     assert request.to_dict()["dispatch_status"] == "reserved_not_implemented"

@@ -224,6 +224,26 @@ class JavaJoernBackend(JoernBackend):
             return info
         return None
 
+    def list_type_infos(self) -> List[Dict[str, Any]]:
+        result = self._joern.query(
+            "cpg.typeDecl.isExternal(false)"
+            '.filter(t => !t.name.startsWith("<"))'
+            ".map(t => Map("
+            '"name" -> t.name, '
+            '"fullName" -> t.fullName, '
+            '"kind" -> "class_or_interface", '
+            '"filename" -> t.filename, '
+            '"lineNumber" -> t.lineNumber.getOrElse(-1), '
+            '"lineNumberEnd" -> t.lineNumberEnd.getOrElse(-1)'
+            ")).l.toJson"
+        )
+        if not isinstance(result, list):
+            return []
+        infos = [dict(item) for item in result]
+        for info in infos:
+            info["language"] = "java"
+        return infos
+
     def get_data_flow(
         self, source_func: str, source_param: str, sink_pattern: str
     ) -> List[Dict[str, Any]]:

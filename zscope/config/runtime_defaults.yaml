@@ -1,16 +1,17 @@
 runtime_spec_version: 1
 
 agents:
-  security_spec_miner:
+  semantic_modeler:
     enabled: true
     llm_role: modeling
-  hypothesis_hunter:
+  vulnerability_analyzer:
     enabled: true
     llm_role: analysis
-  history_maintenance_agent:
+    can_spawn_subagents: true
+  issue_reconciler_agent:
     enabled: true
     llm_role: modeling
-  proof_engine:
+  validator_agent:
     enabled: true
     llm_role: validation
 
@@ -20,15 +21,73 @@ analysis:
   max_tool_iterations: 50
   enable_snapshot_cache: true
   validation_cache_entries: 4096
+  # Experimental review ablations; formal release behavior stays unchanged.
+  validation_review_protocol: false
+  # null = depth-scoped: enabled for balanced scans (driver gate applies).
+  validation_checked_proofs: null
+  validation_positive_case: false
+  validation_related_findings: false
+  validation_review_checkpoint: false
+  enable_global_model: false
+  max_premodel_depth: 3
+  semantic_model_max_rounds: 3
+  max_premodel_callees: 20
   trivial_function_max_lines: 5
+  # Scan-time LLM classification of unknown lightweight wrapper callees
+  # (user-defined risk interfaces without name hints); roles feed rule-facing
+  # semantics and are stamped into the wrapper snapshot once per function.
+  llm_interface_inference: true
+  llm_interface_inference_budget: 50
+  # Optional LLM supplement for LLM-free deterministic validation decisions:
+  # the deterministic verdict stays authoritative, the model only adds a
+  # user-facing Chinese explanation (confirmed-by-proof findings, audit
+  # observations, evidence conflicts).
+  llm_decision_explanation: true
+  llm_decision_explanation_budget: 50
+  enable_subagent_workers: false
+  # Rollout starts in shadow mode; release policy controls promotion to active.
+  security_semantic_enrichment_mode: shadow
+  # Independent, bounded investigation; never changes one-shot discovery.
+  active_investigation_mode: "off"
+  active_investigation_max_rounds: 4
+  active_investigation_timeout_seconds: 120
+  active_investigation_max_scope_extensions: 1
+  semantic_snapshot_candidate_mode: "off"
+  semantic_model_demand_mode: "off"
+  # V01 controlled dynamic reproduction (ASAN/TSAN harness execution).  "off"
+  # keeps the shipped scan inert; "shadow" records provider metadata without
+  # granting confirmation authority; "on" lets a qualified witness reach the
+  # shared adjudication.  Never exposed through public project YAML.
+  dynamic_reproduction_mode: "off"
+  # max_replays authorizes the total number of plan executions for one
+  # verification: the primary execution plus its independent replays.
+  dynamic_reproduction_required_replays: 2
+  dynamic_reproduction_max_replays: 3
+  dynamic_reproduction_timeout_seconds: 30
+  # One shared wall-clock deadline for the whole verification (build plus every
+  # run); per-process timeouts are a weaker, separate bound.
+  dynamic_reproduction_deadline_seconds: 900
+  dynamic_reproduction_memory_limit_mb: 512
+  dynamic_reproduction_isolation: process
+  max_subagent_tickets: 4
+  subagent_max_turns: 20
   request_deadline_seconds: 120
-  validation_deadline_seconds: 240
+  validation_deadline_seconds: 600
+  subagent_ticket_timeout: 300
   entry_deadline_seconds: 1800
   scan_deadline_seconds: null
   budget_exhaustion_policy: observe
+  subagent_spawn_allowlist: [deep_worker]
+  subagent_skill_llm_refs: {}
+  subagent_skill_efforts: {}
   tool_audit_log: ""
 
-reporting: {}
+reporting:
+  semantic_dedup:
+    enabled: true
+    llm_enabled: false
+    llm_confidence_threshold: 0.85
+    max_cluster_size: 8
 
 paths:
   knowledge_db: .zscope_knowledge/code_knowledge.db

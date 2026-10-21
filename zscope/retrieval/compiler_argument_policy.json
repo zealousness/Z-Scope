@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "max_attempts": 2,
+  "remove_warning_options": ["-Werror"],
+  "warning_error_prefix": "-Werror=",
+  "warning_prefix": "-W",
+  "warning_replacements": {"-Werror-implicit-function-declaration": "-Wimplicit-function-declaration", "-pedantic-errors": "-pedantic", "--pedantic-errors": "-pedantic"},
+  "forwarded_warning_options": ["--fatal-warnings", "-fatal-warnings", "-fatal_warnings"],
+  "forwarded_options": ["-Xclang", "-Xpreprocessor", "-Xassembler", "-Xlinker"],
+  "forwarded_operand_options": {
+    "-Xassembler": ["--defsym", "-defsym", "--debug-prefix-map", "--listing-lhs-width", "--listing-rhs-width"],
+    "-Xlinker": ["-z", "-T", "--script", "--version-script", "--dynamic-list", "-Map", "--Map", "--defsym", "-rpath", "--rpath", "-rpath-link", "--rpath-link", "-e", "--entry", "-soname", "--soname", "--dynamic-linker", "-m", "--oformat", "--format", "-plugin-opt"]
+  },
+  "operand_options": [
+    "-I", "-F", "-D", "-U", "-o", "-x", "-std", "-target", "--target",
+    "-arch", "-isystem", "-iquote", "-idirafter", "-isysroot", "--sysroot",
+    "-include", "-imacros", "-include-pch", "-include-pth", "-ivfsoverlay",
+    "-iprefix", "-iwithprefix", "-iwithprefixbefore", "-iframework",
+    "-iframeworkwithsysroot", "-internal-isystem", "-internal-externc-isystem",
+    "-MF", "-MT", "-MQ", "-MJ", "-B", "-L", "-l", "-resource-dir",
+    "-gcc-toolchain", "--gcc-toolchain", "--gcc-install-dir", "--config",
+    "-working-directory", "-fmodule-map-file", "-fmodule-file", "-fmodules-cache-path",
+    "-mllvm", "-Xassembler", "-Xlinker", "-Xcuda-ptxas", "-Xcuda-fatbinary",
+    "-load", "-plugin", "-add-plugin", "-dependency-file", "-main-file-name",
+    "-triple", "-aux-triple", "-target-cpu", "-target-feature", "-tune-cpu",
+    "-serialize-diagnostic-file", "-fdebug-compilation-dir", "-fcoverage-compilation-dir"
+  ]
+}

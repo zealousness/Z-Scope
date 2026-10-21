@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from semantic_fixtures import configured_test_semantics
+from zscope.semantics.contracts import ApiContract
 
 import pytest
 
@@ -44,25 +46,8 @@ def _graph_view(
 
 
 class NullCodeIndex:
-    def get_function_impl(self, name: str, warn_missing: bool = False):
+    def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
         return None
-
-
-def test_workflow_metadata_exports_only_the_pre_score_audit_bucket() -> None:
-    actionable = {"candidate_uid": "CAND_REVIEW", "candidate_disposition": "needs_review"}
-    audit = {"candidate_uid": "CAND_AUDIT", "candidate_disposition": "shadow_observation"}
-
-    exported = Analyzer._audit_observation_metadata(
-        {
-            "observations": [actionable],
-            "audit_observations": [audit],
-        }
-    )
-
-    assert exported == {
-        "audit_observation_count": 1,
-        "audit_observations": [audit],
-    }
 
 
 def test_java_entry_lookup_keeps_the_qualified_method_identifier() -> None:
@@ -73,31 +58,6 @@ def test_java_entry_lookup_keeps_the_qualified_method_identifier() -> None:
     assert Analyzer._entry_lookup_query("load", "int load(int value)", "c_cpp") == (
         "int load(int value)"
     )
-
-
-def test_source_revision_falls_back_to_path_independent_source_manifest(
-    tmp_path, monkeypatch
-) -> None:
-    from zscope.core.analysis import analyzer as analyzer_module
-
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    for root in (first, second):
-        (root / "src").mkdir(parents=True)
-        (root / "src" / "neutral.c").write_text("int neutral(void) { return 0; }\n")
-        (root / "build").mkdir()
-        (root / "build" / "generated.c").write_text("ignored\n")
-    monkeypatch.setattr(Analyzer, "_git_commit_sha", staticmethod(lambda _root: ""))
-
-    first_revision = analyzer_module.analysis_source_revision(first)
-    second_revision = analyzer_module.analysis_source_revision(second)
-
-    assert first_revision == second_revision
-    assert len(first_revision) == 64
-    (second / "src" / "neutral.c").write_text("int neutral(void) { return 1; }\n")
-    assert analyzer_module.analysis_source_revision(second) != first_revision
-    (first / "build" / "generated.c").write_text("still ignored\n")
-    assert analyzer_module.analysis_source_revision(first) == first_revision
 
 
 def test_snapshot_semantic_text_does_not_reclassify_described_function_as_api() -> None:
@@ -136,7 +96,7 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
     reached = analyzer._record_llm_iteration_budget(
         state,
         response,
-        agent_name="active_discovery",
+        agent_name="vulnerability_analyzer",
         outcome="incomplete",
     )
 
@@ -145,7 +105,7 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
     assert state["budget_observations"] == [
         {
             "kind": "llm_iteration_budget",
-            "agent": "active_discovery",
+            "agent": "vulnerability_analyzer",
             "configured_iterations": 50,
             "observed_iterations": 50,
             "budget_reached": True,
@@ -153,6 +113,71 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
             "hard_failure": False,
         }
     ]
+
+
+def test_candidate_first_skips_entry_scoped_investigator_planning() -> None:
+    analyzer = object.__new__(Analyzer)
+    recorded = []
+    analyzer._record_engine_capability = lambda *args, **kwargs: recorded.append((args, kwargs))
+    state = {"notes": []}
+
+    analyzer._step_focused_subagent_planning(state)
+
+    assert "stable candidate-first" in state["notes"][0]
+    assert recorded == [
+        (
+            ("focused_investigators",),
+            {
+                "status": "complete",
+                "active": False,
+                "reason": "stable_candidate_first_lifecycle",
+            },
+        )
+    ]
+
+
+def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> None:
+    batch = SimpleNamespace(
+        local_candidates=[],
+        graph_candidates=[],
+        backend_candidates=[],
+        merged_candidates=[],
+        summary_increment=lambda: {},
+    )
+    analyzer = object.__new__(Analyzer)
+    analyzer.config = SimpleNamespace(
+        project=SimpleNamespace(
+            agents=[
+                SimpleNamespace(
+                    enabled=True,
+                    name="vulnerability_analyzer",
+                    task="Audit memory and concurrency defects",
+                    skills=[],
+                )
+            ]
+        ),
+        analysis=SimpleNamespace(semantic_snapshot_candidate_mode="off"),
+    )
+    analyzer.candidate_pipeline = SimpleNamespace(
+        collect_signal_candidates=lambda state: batch,
+        accumulate_summary=lambda state, candidate_batch: None,
+        persist=lambda candidate_batch: None,
+    )
+    observed_configs = []
+    analyzer._candidate_first_skill_selection = lambda cfg: (
+        observed_configs.append(cfg) or SkillSelection(skills=[], restricted=False)
+    )
+    analyzer._attach_agent_contract = lambda *args, **kwargs: None
+    analyzer._compact_candidate_signal_items = lambda *args, **kwargs: []
+    analyzer._register_candidate_issues = lambda *args, **kwargs: None
+    analyzer._deduplicate_against_history = lambda candidates, state: candidates
+    analyzer._record_engine_capability = lambda *args, **kwargs: None
+    state = {"agent_context": {}, "pending_new_issues": [], "notes": []}
+
+    analyzer._step_vulnerability_mining(state)
+
+    assert observed_configs == [analyzer.config.project.agents[0]]
+    assert state["pending_new_issues"] == []
 
 
 def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> None:
@@ -167,11 +192,16 @@ def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> No
     }
     analyzer.config = SimpleNamespace(project=SimpleNamespace(language="c_cpp"))
     analyzer.spec_registry = SimpleNamespace(
+        skills_for_agent=lambda name, extra: [
+            skills["bounds_and_integer"],
+            skills["resource_lifecycle"],
+            skills["shared_state_race"],
+        ],
         skills=skills,
         get_skill=skills.get,
     )
 
-    selection = analyzer._candidate_first_skill_selection([])
+    selection = analyzer._candidate_first_skill_selection(SimpleNamespace(skills=[]))
 
     assert selection.skills == [
         "bounds_and_integer",
@@ -208,7 +238,7 @@ def test_snapshot_contract_text_prefers_new_fields_and_keeps_legacy_fallback() -
 
 def test_facade_callee_candidates_recurse_into_internal_helpers() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "_outer": {
                     "file": "src/demo.c",
@@ -240,7 +270,7 @@ def test_facade_callee_candidates_recurse_into_internal_helpers() -> None:
 
 def test_facade_callee_candidates_expand_dispatcher_siblings_at_depth_cap() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "dispatch_msg": {
                     "file": "src/demo.c",
@@ -291,7 +321,7 @@ def test_facade_callee_candidates_expand_dispatcher_siblings_at_depth_cap() -> N
 
 def test_direct_callee_fact_limit_is_reported_as_deferred_work() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             return {
                 "first": {
                     "file": "src/demo.c",
@@ -355,7 +385,7 @@ def test_direct_callee_scan_budget_expands_to_complete_indexed_project() -> None
 
 def test_graph_impl_query_failure_is_exposed() -> None:
     class FailingIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             raise RuntimeError("index offline")
 
     generator = GraphCandidateGenerator(FailingIndex(), LocalPatternSemantics())
@@ -379,7 +409,29 @@ def test_graph_impl_query_failure_is_exposed() -> None:
 
 
 def test_graph_candidates_detect_free_wrapper_omitted_dynamic_payload() -> None:
-    semantics = LocalPatternSemantics()
+    semantics = configured_test_semantics()
+    for name, role, pair, carrier in (
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["_real_model_free_node", "SAFE_FREE"],
+            {"kind": "return"},
+        ),
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["SAFE_FREE"],
+            {"kind": "return", "member_path": "->payload"},
+        ),
+        ("_real_model_free_node", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+        ("service_release_by_role", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+    ):
+        semantics.contracts.add(
+            ApiContract.from_row(
+                {"symbol_name": name, "kind": role, "pair": pair, "contract": {"carrier": carrier}}
+            )
+        )
+        semantics.add_api(role, name, "user_config")
     semantics.add_api("deallocator", "SAFE_FREE", "user_config")
     generator = GraphCandidateGenerator(object(), semantics)
     creator = _graph_view(
@@ -418,7 +470,29 @@ def test_graph_candidates_detect_free_wrapper_omitted_dynamic_payload() -> None:
 def test_graph_candidates_detect_helper_alloc_wrapper_member_leak_without_primitive_pair_fp() -> (
     None
 ):
-    semantics = LocalPatternSemantics()
+    semantics = configured_test_semantics()
+    for name, role, pair, carrier in (
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["_real_model_free_node", "SAFE_FREE"],
+            {"kind": "return"},
+        ),
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["SAFE_FREE"],
+            {"kind": "return", "member_path": "->payload"},
+        ),
+        ("_real_model_free_node", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+        ("service_release_by_role", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+    ):
+        semantics.contracts.add(
+            ApiContract.from_row(
+                {"symbol_name": name, "kind": role, "pair": pair, "contract": {"carrier": carrier}}
+            )
+        )
+        semantics.add_api(role, name, "user_config")
     semantics.add_api("deallocator", "SAFE_FREE", "user_config")
     generator = GraphCandidateGenerator(NullCodeIndex(), semantics)
     unregister = _graph_view(
@@ -556,7 +630,7 @@ def test_graph_candidates_detect_self_referential_pipe_log_amplification() -> No
 
 def test_graph_candidates_expand_thin_runtime_fanout_at_depth_cap() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "api_schedule": {
                     "file": "src/lifecycle.c",
@@ -658,7 +732,30 @@ def test_graph_candidates_detect_protocol_contract_variants() -> None:
 
 
 def test_graph_candidates_detect_callback_self_destroy_and_role_contract() -> None:
-    generator = GraphCandidateGenerator(object(), LocalPatternSemantics())
+    semantics = configured_test_semantics()
+    for name, role, pair, carrier in (
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["_real_model_free_node", "SAFE_FREE"],
+            {"kind": "return"},
+        ),
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["SAFE_FREE"],
+            {"kind": "return", "member_path": "->payload"},
+        ),
+        ("_real_model_free_node", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+        ("service_release_by_role", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+    ):
+        semantics.contracts.add(
+            ApiContract.from_row(
+                {"symbol_name": name, "kind": role, "pair": pair, "contract": {"carrier": carrier}}
+            )
+        )
+        semantics.add_api(role, name, "user_config")
+    generator = GraphCandidateGenerator(object(), semantics)
     callback = _graph_view(
         generator,
         "_completion_callback",
@@ -775,6 +872,115 @@ def test_lifted_internal_sink_dedup_merges_entry_paths() -> None:
     ]
     assert deduped[0]["duplicate_sources"][0]["entry_function"] == "api_b"
     assert "api_b reaches shared_helper" in deduped[0]["positive_evidence"]
+
+
+def test_premodel_callee_retrieval_failure_is_non_fatal() -> None:
+    class FailingIndex:
+        def get_callees(self, name: str, limit: int = 30):
+            raise RuntimeError("bad parameter or other API misuse")
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FailingIndex()
+
+    assert analyzer._premodel_callees(
+        "entry",
+        object(),
+        max_depth=1,
+        max_callees=5,
+    ) == (0, 0, 0)
+
+
+def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None:
+    class FanoutIndex:
+        def __init__(self):
+            self.impl_context_flags: list[bool] = []
+            self.callee_calls: list[str] = []
+
+        def get_callees(self, name: str, limit: int = 30):
+            self.callee_calls.append(name)
+            graph = {
+                "entry": ["a0", "a1", "a2", "a3"],
+                "a0": ["b0", "b1", "b2"],
+                "a1": ["b3", "b4", "b5"],
+            }
+            return [{"name": child} for child in graph.get(name, [])]
+
+        def get_function_impl(
+            self,
+            name: str,
+            warn_missing: bool = False,
+            include_context: bool = True,
+            max_lines=None,
+        ):
+            del warn_missing
+            self.impl_context_flags.append(include_context)
+            simple_name = name.split("@", 1)[0]
+            return {
+                "func_name": simple_name,
+                "file": "src/demo.c",
+                "index_name": f"{simple_name}@src/demo.c:1-4",
+                "start_line": 1,
+                "end_line": 4,
+                "signature": f"int {simple_name}(void)",
+                "is_static": False,
+                "is_macro": False,
+                "code": f"1 | int {simple_name}(void) {{\n2 |     return 0;\n3 | }}\n",
+                "callees": [],
+            }
+
+        def find_function_infos(self, name: str, file_path: str = ""):
+            del file_path
+            simple_name = name.split("@", 1)[0]
+            return [
+                {
+                    "function_name": simple_name,
+                    "file_path": "src/demo.c",
+                    "index_name": f"{simple_name}@src/demo.c:1-4",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "signature": f"int {simple_name}(void)",
+                    "is_static": False,
+                    "callees": [],
+                    "referenced_globals": [],
+                    "referenced_macros": [],
+                    "referenced_types": [],
+                }
+            ]
+
+    class SnapshotStore:
+        def load_snapshot(self, func: str):
+            return {"func_name": func}
+
+        def needs_refresh(self, index_name, code, symbol_context):
+            del index_name, code, symbol_context
+            return False, None
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FanoutIndex()
+    analyzer.snapshot_store = SnapshotStore()
+    analyzer.config = SimpleNamespace(analysis=SimpleNamespace(max_function_lines=500))
+    analyzer._get_tools = lambda *args, **kwargs: []
+    analyzer._tool_policy_for_agent = lambda *args, **kwargs: None
+
+    modeled, skipped, tokens = analyzer._premodel_callees(
+        "entry",
+        object(),
+        max_depth=2,
+        max_callees=2,
+    )
+
+    assert (modeled, skipped, tokens) == (0, 4, 0)
+    assert analyzer.code_index.callee_calls == ["entry", "a0", "a1", "b0", "b1"]
+    assert analyzer.code_index.impl_context_flags == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+        True,
+    ]
 
 
 def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
@@ -946,7 +1152,7 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
     ]
 
 
-def test_checked_allocator_wrappers_use_lightweight_snapshots() -> None:
+def test_allocator_wrappers_require_modeling_without_name_shortcuts() -> None:
     code = """
 13 | void* _safe_malloc(size_t size) {
 14 |     void* ptr = malloc(size);
@@ -970,22 +1176,16 @@ def test_checked_allocator_wrappers_use_lightweight_snapshots() -> None:
     }
 
     assert not Analyzer._is_trivial_function(code, max_lines_threshold=10)
-    assert Analyzer._is_lightweight_snapshot_candidate("_safe_malloc", impl)
+    assert not Analyzer._is_lightweight_snapshot_candidate("_safe_malloc", impl)
 
     snapshot = Analyzer._build_lightweight_snapshot(
         "_safe_malloc",
         impl,
     )
 
-    assert snapshot["snapshot_kind"] == "lightweight"
-    assert snapshot["return_values"]["ownership"] == "caller_owned"
-    assert snapshot["return_values"]["caller_obligation"]
-    assert [effect["category"] for effect in snapshot["effects"]] == [
-        "memory",
-        "ownership",
-    ]
-    assert snapshot["error_handling"]["error_paths"][0]["return_value"] == "NULL"
-    assert snapshot["suspicious_points"] == []
+    assert snapshot["snapshot_kind"] == "syntactic"
+    assert snapshot["interface_contracts"] == []
+    assert snapshot["effects"] == []
     assert "semantic_fingerprint" not in snapshot
     assert "resources" not in snapshot
     assert "key_semantics" not in snapshot
@@ -1022,16 +1222,9 @@ def test_lightweight_snapshot_variants_use_unified_semantic_fields() -> None:
         assert tuple(snapshot) == DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS
         assert snapshot["parameters"] == []
         assert snapshot["return_values"]["return_type"] == "unknown"
-        if effect_category is None:
-            assert snapshot["effects"] == []
-        else:
-            assert snapshot["effects"][0]["category"] == effect_category
-        if name in {"LOCK", "UNLOCK"}:
-            assert snapshot["effects"][0]["details"]["operation_kind"] == operation
-        if name in {"RETURN_IF_ERR", "GOTO_IF_ERR"}:
-            assert snapshot["error_handling"]["error_paths"][0]["exit_action"] == operation
-        else:
-            assert snapshot["error_handling"] == {"error_paths": []}
+        assert snapshot["effects"] == []
+        assert snapshot["interface_contracts"] == []
+        assert snapshot["error_handling"] == {"error_paths": []}
 
 
 def test_deterministic_snapshot_preserves_context_truncation_and_isolation() -> None:
@@ -1392,7 +1585,7 @@ def test_validation_pack_marks_current_entry_as_reachable() -> None:
 
 def test_resolve_issue_locations_fills_observation_line_only_locations() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             assert name == "_lifecycle_recv_packet"
             return {
                 "file": "src/lifecycle.c",
@@ -1424,7 +1617,7 @@ def test_resolve_issue_locations_fills_observation_line_only_locations() -> None
 
 def test_resolve_issue_locations_recovers_observation_location_from_evidence_refs() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             raise AssertionError("location should be recovered before function fallback")
 
     analyzer = object.__new__(Analyzer)
@@ -1666,7 +1859,7 @@ def test_clang_knowledge_candidates_reuse_precomputed_reachable_set() -> None:
             return graph.get(name, [])
 
     class FakeDB:
-        def find_callers_without_callee(self, acquire: str, release: str, limit: int = 100):
+        def find_acquisition_calls(self, acquire: str, release: list[str], limit: int = 100):
             return [
                 {"function": "api_open", "file_path": "src/api.c", "line": 7},
                 {"function": "unreachable", "file_path": "src/other.c", "line": 9},
@@ -1791,6 +1984,7 @@ def test_paged_adapter_internal_type_error_is_not_misread_as_legacy_api() -> Non
 
 def test_clang_pair_row_normalizes_to_candidate() -> None:
     analyzer = object.__new__(Analyzer)
+    analyzer._semantic_overlay = {}
     row = {
         "function": "api_open",
         "file_path": "src/demo.c",

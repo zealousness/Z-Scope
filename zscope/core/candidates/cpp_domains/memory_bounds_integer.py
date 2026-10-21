@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from .source_events import ordered_lines
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .models import (
@@ -117,12 +118,11 @@ class RegexMemoryBoundsIntegerRules:
                         rule="arithmetic_size_before_sink",
                         line=line,
                         description=(
-                            f"`{assign.group('var')}` is computed from `{expr}` before it is "
-                            "used as a size/length argument; wraparound can shrink the allocation "
-                            "or copy bound."
+                            f"`{assign.group('var')}` 由 `{expr}` 计算得出，随后被用作大小/长度参数；"
+                            "回绕可能使分配或拷贝的边界变小。"
                         ),
-                        root_cause="Size arithmetic is performed before proving operands are bounded.",
-                        suggested_fix="Check operands before the arithmetic, or use a checked size helper.",
+                        root_cause="在证明操作数有界之前就进行了大小算术运算。",
+                        suggested_fix="在算术运算前检查操作数，或使用带检查的大小辅助函数。",
                         source=expr,
                         sink=f"{assign.group('var')} used by allocation/copy",
                         confidence=0.82,
@@ -148,9 +148,9 @@ class RegexMemoryBoundsIntegerRules:
                         defect_class="integer_overflow",
                         rule="inline_allocation_size_overflow",
                         line=line,
-                        description="Allocation size is computed inline with unchecked addition/multiplication.",
-                        root_cause="The allocation expression can wrap before the allocator sees it.",
-                        suggested_fix="Validate operands before the allocation expression or use checked arithmetic.",
+                        description="分配大小以内联的、未经检查的加法/乘法计算得出。",
+                        root_cause="分配表达式可能在任何分配器看到它之前就发生回绕。",
+                        suggested_fix="在分配表达式之前校验操作数，或使用带检查的算术运算。",
                         source=expr.strip(),
                         sink=clean.strip(),
                         confidence=0.84,
@@ -169,7 +169,7 @@ class RegexMemoryBoundsIntegerRules:
             identifiers = [
                 item
                 for item in self._IDENT_RE.findall(args)
-                if item not in {"calloc", "_safe_calloc", "sizeof", "NULL"}
+                if item not in {"calloc", "sizeof", "NULL"}
             ]
             nearby = "\n".join(item.text for item in lines[max(0, line.index - 4) : line.index + 1])
             if (
@@ -182,9 +182,9 @@ class RegexMemoryBoundsIntegerRules:
                     defect_class="integer_overflow",
                     rule="calloc_product_overflow",
                     line=line,
-                    description="calloc-like allocation multiplies two caller-sized operands without a visible precheck.",
-                    root_cause="The element count and size product may overflow before allocation.",
-                    suggested_fix="Check `count <= SIZE_MAX / elem_size` before calloc or rely on a proven checked wrapper.",
+                    description="类 calloc 的分配对两个由调用方决定大小的操作数相乘，且缺少可见的预先检查。",
+                    root_cause="元素个数与大小的乘积可能在分配前溢出。",
+                    suggested_fix="在调用 calloc 之前检查 `count <= SIZE_MAX / elem_size`，或依赖已被证明的带检查的封装。",
                     source=args.strip(),
                     sink=clean.strip(),
                     confidence=0.67,
@@ -193,8 +193,11 @@ class RegexMemoryBoundsIntegerRules:
                 )
 
     def _rule_double_and_invalid_free(self, lines: List[CodeLine], emit) -> None:
+        lines = ordered_lines(lines, CodeLine)
         last_free: Dict[str, CodeLine] = {}
         pointer_owners = self._pointer_owner_vars(lines)
+        signature = lines[0].text if lines else ""
+        pointer_owners.update(re.findall(r"\*\s*([A-Za-z_]\w*)\s*(?:,|\))", signature))
         for line in lines:
             free = self._match_call(line.text, self._deallocator_names, "arg")
             if not free:
@@ -215,9 +218,9 @@ class RegexMemoryBoundsIntegerRules:
                     defect_class="invalid_free",
                     rule="free_non_owner_pointer",
                     line=line,
-                    description=f"`{arg}` is freed even though it is not the base owner pointer.",
-                    root_cause="A deallocator receives an interior or stack-address expression.",
-                    suggested_fix="Free only the owning base pointer returned by the allocator.",
+                    description=f"`{arg}` 被释放，尽管它并不是基础的所有者指针。",
+                    root_cause="释放函数接收到了一个内部或栈地址表达式。",
+                    suggested_fix="只释放分配器返回的、拥有所有权的基础指针。",
                     source=arg,
                     sink=line.text.strip(),
                     confidence=0.84,
@@ -231,9 +234,9 @@ class RegexMemoryBoundsIntegerRules:
                     defect_class="double_free",
                     rule="same_expression_freed_twice",
                     line=line,
-                    description=f"`{arg}` is released twice on the same local path.",
-                    root_cause="No reassignment or nulling of the owner expression is visible between releases.",
-                    suggested_fix="Remove the duplicate release or clear ownership after the first release.",
+                    description=f"`{arg}` 在同一条本地路径上被释放两次。",
+                    root_cause="在两次释放之间没有看到对所有者表达式的重新赋值或置空。",
+                    suggested_fix="删除重复的释放，或在第一次释放后清除所有权。",
                     source=arg,
                     sink=line.text.strip(),
                     confidence=0.84,
@@ -259,9 +262,9 @@ class RegexMemoryBoundsIntegerRules:
                     defect_class="double_free",
                     rule="same_pointer_freed_twice",
                     line=line,
-                    description=f"`{var}` is released twice on the same local path.",
-                    root_cause="No reassignment or nulling of the owner is visible between releases.",
-                    suggested_fix="Remove the duplicate release or set ownership to NULL after the first release.",
+                    description=f"`{var}` 在同一条本地路径上被释放两次。",
+                    root_cause="在两次释放之间没有看到对所有者变量的重新赋值或置空。",
+                    suggested_fix="删除重复的释放，或在第一次释放后将所有权设置为 NULL。",
                     source=var,
                     sink=line.text.strip(),
                     confidence=0.88,
@@ -275,7 +278,9 @@ class RegexMemoryBoundsIntegerRules:
     def _rule_stack_escape(self, lines: List[CodeLine], emit) -> None:
         locals_seen = self._collect_local_vars(lines)
         for line in lines:
-            create = re.search(r"\bpthread_create\s*\((?P<args>[^;]+)\)", line.text)
+            create = re.search(
+                self._literal_api_pattern(r"\bpthread_create\s*\((?P<args>[^;]+)\)"), line.text
+            )
             if create:
                 for var, decl in locals_seen.items():
                     if f"&{var}" in create.group("args") and decl.index < line.index:
@@ -283,9 +288,9 @@ class RegexMemoryBoundsIntegerRules:
                             defect_class="stack_escape",
                             rule="stack_address_to_thread",
                             line=line,
-                            description=f"Address of stack local `{var}` is passed to a new thread.",
-                            root_cause="The thread may outlive the stack frame that owns the argument.",
-                            suggested_fix="Allocate a heap-owned argument or join before returning from the frame.",
+                            description=f"栈上局部变量 `{var}` 的地址被传入一个新线程。",
+                            root_cause="该线程可能比拥有该参数的栈帧存活得更久。",
+                            suggested_fix="分配一个堆上持有的参数，或在从该栈帧返回前进行 join。",
                             source=f"&{var}",
                             sink=line.text.strip(),
                             confidence=0.87,
@@ -304,9 +309,9 @@ class RegexMemoryBoundsIntegerRules:
                             defect_class="stack_escape",
                             rule="stack_address_to_retaining_api",
                             line=line,
-                            description=f"Address of stack local `{var}` is passed to retaining/asynchronous API `{retaining_call}`.",
-                            root_cause="The callee name indicates it may store, register, enqueue, or asynchronously use the borrowed address after this stack frame returns.",
-                            suggested_fix="Pass heap-owned storage, copy the value into callee-owned storage, or prove the API consumes the address synchronously as an out-parameter.",
+                            description=f"栈上局部变量 `{var}` 的地址被传入保留/异步 API `{retaining_call}`。",
+                            root_cause="被调用者的名称表明它可能在此栈帧返回后存储、注册、入队或异步使用该借用地址。",
+                            suggested_fix="传入堆上持有的存储、把值拷贝进被调用者持有的存储，或证明该 API 作为输出参数同步消费该地址。",
                             source=f"&{var}",
                             sink=line.text.strip(),
                             confidence=0.74,
@@ -326,9 +331,9 @@ class RegexMemoryBoundsIntegerRules:
                     defect_class="stack_escape",
                     rule="return_stack_address",
                     line=line,
-                    description=f"Function returns the address of stack local `{ret.group('var')}`.",
-                    root_cause="Returned pointer refers to storage destroyed when the function returns.",
-                    suggested_fix="Return owned heap storage or write into caller-provided storage.",
+                    description=f"函数返回了栈上局部变量 `{ret.group('var')}` 的地址。",
+                    root_cause="返回的指针指向在函数返回时即被销毁的存储。",
+                    suggested_fix="返回持有所有权的堆存储，或写入调用方提供的存储。",
                     source=f"&{ret.group('var')}",
                     sink=line.text.strip(),
                     confidence=0.9,
@@ -388,9 +393,17 @@ class RegexMemoryBoundsIntegerRules:
     def _rule_signed_unsigned(self, lines: List[CodeLine], emit) -> None:
         signed_reads: Dict[str, CodeLine] = {}
         casts: Dict[str, Tuple[CodeLine, str]] = {}
+        user_recv = self._names_pattern(getattr(self, "_user_recv_source_names", set()) or set())
+        user_io_len = self._names_pattern(
+            (getattr(self, "_user_send_sink_names", set()) or set())
+            | (getattr(self, "_user_recv_source_names", set()) or set())
+        )
         for line in lines:
             read = re.search(
-                r"\bint\s+(?P<var>[A-Za-z_]\w*)\s*=\s*(?:recv|read|_net_recv_data)\s*\(", line.text
+                self._semantic_api_pattern(
+                    rf"\bint\s+(?P<var>[A-Za-z_]\w*)\s*=\s*(?:recv|read|{user_recv})\s*\("
+                ),
+                line.text,
             )
             if read:
                 signed_reads[read.group("var")] = line
@@ -402,16 +415,18 @@ class RegexMemoryBoundsIntegerRules:
                 casts[cast.group("size")] = (line, cast.group("src"))
             for size_var, (cast_line, src_var) in list(casts.items()):
                 if re.search(
-                    rf"\b(?:memcpy|memmove|_net_send_data|_net_recv_data)\s*\([^;]*\b{re.escape(size_var)}\b",
+                    self._literal_api_pattern(
+                        rf"\b(?:memcpy|memmove|{user_io_len})\s*\([^;]*\b{re.escape(size_var)}\b"
+                    ),
                     line.text,
                 ):
                     emit(
                         defect_class="signed_unsigned",
                         rule="negative_length_cast_to_size_t",
                         line=cast_line,
-                        description=f"Signed length `{src_var}` is cast to size_t and later used as a copy/IO length.",
-                        root_cause="Negative error values can become very large unsigned sizes.",
-                        suggested_fix=f"Check `{src_var} >= 0` and upper bounds before casting to size_t.",
+                        description=f"有符号长度 `{src_var}` 被转换为 size_t 并随后用作拷贝/IO 长度。",
+                        root_cause="负的错误值可能变成非常大的无符号大小。",
+                        suggested_fix=f"在转换为 size_t 之前检查 `{src_var} >= 0` 以及上界。",
                         source=src_var,
                         sink=line.text.strip(),
                         confidence=0.86,
@@ -440,9 +455,9 @@ class RegexMemoryBoundsIntegerRules:
                     defect_class="off_by_one",
                     rule="sizeof_index_write",
                     line=line,
-                    description="Array write indexes `array[sizeof(array)]`, one element past the end.",
-                    root_cause="sizeof(array) is the byte count and is outside the zero-based index range.",
-                    suggested_fix="Use `sizeof(array) - 1` for the terminator or a length-aware helper.",
+                    description="数组写入使用了 `array[sizeof(array)]` 作为下标，越过数组末尾一个元素。",
+                    root_cause="sizeof(array) 是字节数，位于从零开始的下标范围之外。",
+                    suggested_fix="对终止符使用 `sizeof(array) - 1`，或使用感知长度的辅助函数。",
                     source=off.group("array"),
                     sink=line.text.strip(),
                     confidence=0.9,
@@ -463,9 +478,9 @@ class RegexMemoryBoundsIntegerRules:
                     defect_class="stack_overflow",
                     rule="unbounded_vla_or_stack_array",
                     line=line,
-                    description="Stack array size is derived from a runtime expression without a visible cap.",
-                    root_cause="Caller-controlled or data-dependent stack allocation can exhaust the stack.",
-                    suggested_fix="Cap the size before stack allocation or allocate bounded heap storage.",
+                    description="栈数组大小由运行时表达式得出，且缺少可见的上限。",
+                    root_cause="由调用方控制或依赖数据的栈分配可能耗尽栈空间。",
+                    suggested_fix="在栈分配之前限制大小，或分配有界的堆存储。",
                     source=vla.group("expr").strip(),
                     sink=line.text.strip(),
                     confidence=0.76,
@@ -484,9 +499,9 @@ class RegexMemoryBoundsIntegerRules:
                     defect_class="alignment",
                     rule="unaligned_integer_pointer_cast",
                     line=line,
-                    description="Potentially unaligned byte pointer is cast to an integer pointer and dereferenced.",
-                    root_cause="The cast requires alignment that the byte-offset expression does not guarantee.",
-                    suggested_fix="Use memcpy into an aligned local integer or byte-wise decoding.",
+                    description="可能未对齐的字节指针被转换为整数指针并被解引用。",
+                    root_cause="该转换所要求的对齐，字节偏移表达式并不能保证。",
+                    suggested_fix="使用 memcpy 拷贝到已对齐的局部整数，或按字节解码。",
                     source=line.text.strip(),
                     sink=line.text.strip(),
                     confidence=0.78,
@@ -505,9 +520,9 @@ class RegexMemoryBoundsIntegerRules:
                         defect_class="alignment",
                         rule="unaligned_integer_pointer_cast",
                         line=line,
-                        description="Potentially unaligned byte pointer is cast to an integer pointer and later dereferenced.",
-                        root_cause="The cast requires alignment that the byte-offset expression does not guarantee.",
-                        suggested_fix="Use memcpy into an aligned local integer or byte-wise decoding.",
+                        description="可能未对齐的字节指针被转换为整数指针并随后被解引用。",
+                        root_cause="该转换所要求的对齐，字节偏移表达式并不能保证。",
+                        suggested_fix="使用 memcpy 拷贝到已对齐的局部整数，或按字节解码。",
                         source=cast_line.text.strip(),
                         sink=line.text.strip(),
                         confidence=0.82,
@@ -525,12 +540,16 @@ class RegexMemoryBoundsIntegerRules:
             if decl and "=" not in line.text and "typedef" not in line.text:
                 struct_locals[decl.group("var")] = (line, 0, False)
             for var, (decl_line, field_writes, has_memset) in list(struct_locals.items()):
-                if re.search(rf"\bmemset\s*\(\s*&{re.escape(var)}\s*,", line.text):
+                if re.search(
+                    self._literal_api_pattern(rf"\bmemset\s*\(\s*&{re.escape(var)}\s*,"), line.text
+                ):
                     struct_locals[var] = (decl_line, field_writes, True)
                 elif re.search(rf"\b{re.escape(var)}\.[A-Za-z_]\w*\s*=", line.text):
                     struct_locals[var] = (decl_line, field_writes + 1, has_memset)
                 elif re.search(
-                    rf"\b(?:_net_send_data|send|write)\s*\([^;]*&{re.escape(var)}\s*,\s*sizeof\s*\(\s*{re.escape(var)}\s*\)",
+                    self._semantic_api_pattern(
+                        rf"\b(?:send|write|{self._names_pattern(getattr(self, '_user_send_sink_names', set()) or set())})\s*\([^;]*&{re.escape(var)}\s*,\s*sizeof\s*\(\s*{re.escape(var)}\s*\)"
+                    ),
                     line.text,
                 ):
                     if not has_memset and field_writes > 0:
@@ -538,9 +557,9 @@ class RegexMemoryBoundsIntegerRules:
                             defect_class="uninitialized_read",
                             rule="partial_struct_sent",
                             line=line,
-                            description=f"`{var}` is partially initialized and then sent/copied with sizeof.",
-                            root_cause="Padding or unassigned fields can leak stale stack bytes.",
-                            suggested_fix="Zero-initialize the struct before field assignments or serialize fields explicitly.",
+                            description=f"`{var}` 仅被部分初始化，随后使用 sizeof 进行发送/拷贝。",
+                            root_cause="填充字节或未赋值的字段可能泄漏陈旧的栈字节。",
+                            suggested_fix="在字段赋值之前将结构体零初始化，或显式序列化各字段。",
                             source=var,
                             sink=line.text.strip(),
                             confidence=0.82,
@@ -666,7 +685,7 @@ class GraphMemoryBoundsIntegerRules:
         issues: List[Dict[str, Any]],
     ) -> None:
         text = "\n".join(line.text for line in view.lines)
-        if "memset" in text:
+        if "memset" in text and self._semantic_call_allowed("memset", "copy"):
             return
         for line in view.lines:
             match = re.search(
@@ -700,9 +719,9 @@ class GraphMemoryBoundsIntegerRules:
                     rule="partial_stack_struct_copied_to_output",
                     view=view,
                     line=copy_line,
-                    description="A stack struct is copied to an output parameter after only a subset of fields are initialized.",
-                    root_cause="Uninitialized padding or fields can leak stale stack data or produce nondeterministic API results.",
-                    suggested_fix="Zero-initialize the temporary struct before filling fields or assign every field before copying it out.",
+                    description="一个栈结构体在仅初始化了部分字段后就被拷贝到输出参数。",
+                    root_cause="未初始化的填充字节或字段可能泄漏陈旧的栈数据，或产生不确定的 API 结果。",
+                    suggested_fix="在填充字段之前对临时结构体进行零初始化，或在拷贝出去之前为每个字段赋值。",
                     source=f"{match.group('type')} {var}",
                     sink=copy_line.text.strip(),
                     confidence=0.82,
@@ -721,6 +740,8 @@ class GraphMemoryBoundsIntegerRules:
         view: FunctionView,
         issues: List[Dict[str, Any]],
     ) -> None:
+        array_size_allowed = self._semantic_call_allowed("ARRAY_SIZE", "standard_operation")
+        array_size_name = "ARRAY_SIZE" if array_size_allowed else "(?!)"
         local_arrays: Dict[str, Tuple[str, GraphLine]] = {}
         for line in view.lines:
             match = re.search(
@@ -775,8 +796,8 @@ class GraphMemoryBoundsIntegerRules:
                 )
                 array_limit, array_line = local_arrays[array_name]
                 guard_text = "\n".join(item.text for item in view.lines[max(0, idx - 8) : idx + 1])
-                if "ARRAY_SIZE" in guard_text or re.search(
-                    rf"\b{re.escape(limit_name)}\s*<=\s*(?:{re.escape(array_limit)}|ARRAY_SIZE|sizeof)",
+                if (array_size_allowed and "ARRAY_SIZE" in guard_text) or re.search(
+                    rf"\b{re.escape(limit_name)}\s*<=\s*(?:{re.escape(array_limit)}|{array_size_name}|sizeof)",
                     guard_text,
                 ):
                     continue
@@ -786,9 +807,9 @@ class GraphMemoryBoundsIntegerRules:
                         rule="caller_limit_indexes_fixed_local_array",
                         view=view,
                         line=local_access,
-                        description="A caller-controlled limit indexes a fixed local array without proving it is within the local capacity.",
-                        root_cause="The loop bound comes from configuration or a function argument, while the temporary array has a smaller fixed capacity.",
-                        suggested_fix="Clamp the configured limit to the local array length before indexing.",
+                        description="由调用方控制的上限用于索引固定大小的局部数组，但没有证明它处于局部容量之内。",
+                        root_cause="循环上界来自配置或函数参数，而临时数组具有更小的固定容量。",
+                        suggested_fix="在索引之前将该配置上限钳制到局部数组长度。",
                         source=f"{idx_name} < {limit_name}",
                         sink=local_access.text.strip(),
                         confidence=0.84,
@@ -802,8 +823,8 @@ class GraphMemoryBoundsIntegerRules:
                 )
                 return
             guard_text = "\n".join(item.text for item in view.lines[max(0, idx - 5) : idx + 1])
-            if "ARRAY_SIZE" in guard_text or re.search(
-                rf"\b{re.escape(limit_name)}\s*<=\s*(?:ARRAY_SIZE|sizeof)", guard_text
+            if (array_size_allowed and "ARRAY_SIZE" in guard_text) or re.search(
+                rf"\b{re.escape(limit_name)}\s*<=\s*(?:{array_size_name}|sizeof)", guard_text
             ):
                 continue
             issues.append(
@@ -812,9 +833,9 @@ class GraphMemoryBoundsIntegerRules:
                     rule="caller_limit_indexes_fixed_member_array",
                     view=view,
                     line=access_line,
-                    description="A caller-controlled limit indexes a fixed member array without proving it is within the array size.",
-                    root_cause="The loop bound is a function argument or protocol limit, while the indexed member has its own fixed capacity.",
-                    suggested_fix="Clamp the loop bound to the destination array length before indexing.",
+                    description="由调用方控制的上限用于索引固定大小的成员数组，但没有证明它处于数组大小之内。",
+                    root_cause="循环上界是函数参数或协议上限，而被索引的成员有其自己的固定容量。",
+                    suggested_fix="在索引之前将循环上界钳制到目标数组长度。",
                     source=f"{idx_name} < {limit_name}",
                     sink=access_line.text.strip(),
                     confidence=0.8,
@@ -852,9 +873,9 @@ class GraphMemoryBoundsIntegerRules:
                 rule="cached_group_pointer_reused_across_partition_index",
                 view=view,
                 line=use_line,
-                description="A cached group pointer is reused while a per-iteration group index changes.",
-                root_cause="Traversal state is refreshed from one index dimension but used with another, so later iterations can read the wrong group.",
-                suggested_fix="Recompute the group pointer whenever the group index changes, or derive both group and member from the same canonical index.",
+                description="缓存的组指针被复用，而每次迭代的组下标却在变化。",
+                root_cause="遍历状态从一个下标维度刷新，却被用在另一个维度上，因此后续迭代可能读取错误的组。",
+                suggested_fix="每当组下标变化时重新计算组指针，或让组和成员都从同一个规范下标推导得出。",
                 source=stale_line.text.strip(),
                 sink=use_line.text.strip(),
                 confidence=0.78,
@@ -886,11 +907,15 @@ class GraphMemoryBoundsIntegerRules:
             guard_text = "\n".join(item.text for item in view.lines[: line.index + 1])
             if (
                 re.search(
-                    rf"\b{re.escape(idx_name)}\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)",
+                    self._literal_api_pattern(
+                        rf"\b{re.escape(idx_name)}\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)"
+                    ),
                     guard_text,
                 )
                 or re.search(
-                    rf"\b{re.escape(idx_name)}\s*>?=\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)",
+                    self._literal_api_pattern(
+                        rf"\b{re.escape(idx_name)}\s*>?=\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)"
+                    ),
                     guard_text,
                 )
                 or re.search(
@@ -906,9 +931,9 @@ class GraphMemoryBoundsIntegerRules:
                     rule="unchecked_param_indexes_fixed_global_array",
                     view=view,
                     line=line,
-                    description="A public or caller-supplied index directly indexes a fixed global array without a visible upper-bound check.",
-                    root_cause="The function trusts an index parameter before proving it is within the backing global array capacity.",
-                    suggested_fix="Reject or clamp the index against ARRAY_SIZE/the concrete maximum before indexing.",
+                    description="公开的或由调用方提供的下标直接索引固定大小的全局数组，且缺少可见的上界检查。",
+                    root_cause="该函数在证明下标参数处于其后备全局数组容量之内前就信任了它。",
+                    suggested_fix="在索引前依据 ARRAY_SIZE/具体最大值拒绝或钳制该下标。",
                     source=idx_name,
                     sink=line.text.strip(),
                     confidence=0.86,
@@ -962,7 +987,9 @@ class ClangMemoryBoundsIntegerRules:
         var = risky_use.group("var")
         assign_line = None
         for item in reversed(lines[max(0, line.index - 10) : line.index]):
-            if re.search(rf"\b{re.escape(var)}\s*=\s*strchr\s*\(", item.text):
+            if re.search(
+                self._literal_api_pattern(rf"\b{re.escape(var)}\s*=\s*strchr\s*\("), item.text
+            ):
                 assign_line = item
                 break
         if assign_line is None:
@@ -985,9 +1012,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="null_pointer_dereference",
             rule="clang_cfg_unchecked_strchr_result",
             line=line,
-            description=f"`{var}` from `strchr` is used without a visible NULL check.",
-            root_cause="When the delimiter is absent, `strchr` returns NULL and later pointer arithmetic or indexing dereferences that NULL-derived value.",
-            suggested_fix=f"Check `{var}` for NULL before pointer arithmetic, indexing, or dereference.",
+            description=f"来自 `strchr` 的 `{var}` 被使用，但缺少可见的空指针检查。",
+            root_cause="当分隔符不存在时，`strchr` 返回 NULL，后续的指针运算或下标索引会对这个由 NULL 派生的值进行解引用。",
+            suggested_fix=f"在进行指针运算、下标索引或解引用之前检查 `{var}` 是否为 NULL。",
             source=f"strchr result at line {assign_line.number}",
             sink=line.text,
             confidence=0.88,
@@ -1031,9 +1058,11 @@ class ClangMemoryBoundsIntegerRules:
         array_name = match.group("array")
         guard_window = "\n".join(item.text for item in lines[: line.index + 1])
         explicit_bound = re.search(
-            rf"\b{re.escape(idx_name)}\s*(?:<|<=|>=|>)\s*"
-            rf"(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|"
-            r"[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM|CORES|SIZE)[A-Z0-9_]*)",
+            self._literal_api_pattern(
+                rf"\b{re.escape(idx_name)}\s*(?:<|<=|>=|>)\s*"
+                rf"(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|"
+                r"[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM|CORES|SIZE)[A-Z0-9_]*)"
+            ),
             guard_window,
         )
         validator_guard = re.search(
@@ -1054,9 +1083,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="bounds",
             rule="clang_cfg_unchecked_param_indexes_fixed_global_array",
             line=line,
-            description="A caller-supplied index parameter directly indexes a fixed global array without a visible upper-bound check.",
-            root_cause="The function trusts an index parameter before proving it is within the backing global array capacity.",
-            suggested_fix="Reject or clamp the index against ARRAY_SIZE or the concrete global-array capacity before indexing.",
+            description="由调用方提供的下标参数直接索引固定大小的全局数组，且缺少可见的上界检查。",
+            root_cause="该函数在证明下标参数处于其后备全局数组容量之内前就信任了它。",
+            suggested_fix="在索引前依据 ARRAY_SIZE 或具体的全局数组容量拒绝或钳制该下标。",
             source=idx_name,
             sink=line.text,
             confidence=0.86,
@@ -1084,8 +1113,10 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         copy = re.search(
-            r"\bmemcpy\s*\(\s*&\s*(?P<count>[A-Za-z_]\w*)\s*,\s*"
-            r"(?P<src>[A-Za-z_]\w*)\s*\+\s*(?P<offset>\d+)\s*,\s*sizeof\s*\(\s*(?P=count)\s*\)\s*\)",
+            self._literal_api_pattern(
+                r"\bmemcpy\s*\(\s*&\s*(?P<count>[A-Za-z_]\w*)\s*,\s*"
+                r"(?P<src>[A-Za-z_]\w*)\s*\+\s*(?P<offset>\d+)\s*,\s*sizeof\s*\(\s*(?P=count)\s*\)\s*\)"
+            ),
             line.text,
             re.IGNORECASE,
         )
@@ -1147,9 +1178,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class=defect_class,
             rule=rule,
             line=sink_line or line,
-            description=f"Protocol field `{copy.group('count')}` is read from `{copy.group('src')} + {offset}` without a visible magic/signature guard.",
-            root_cause="The parser uses a dependent protocol field before proving the record layout with the expected magic value.",
-            suggested_fix="Decode and validate the magic/signature field before reading dependent count fields.",
+            description=f"协议字段 `{copy.group('count')}` 从 `{copy.group('src')} + {offset}` 读取，且缺少可见的 magic/签名防护。",
+            root_cause="解析器在使用依赖性的协议字段之前，没有用预期的 magic 值证明记录布局。",
+            suggested_fix="在读取依赖性的计数字段之前，先解码并校验 magic/签名字段。",
             source=line.text,
             sink=concrete_sink,
             confidence=0.82,
@@ -1207,11 +1238,10 @@ class ClangMemoryBoundsIntegerRules:
             rule="clang_cfg_fixed_byte_limit_before_spec_count_check",
             line=line,
             description=(
-                f"`{length_var}` is constrained by `{limit_match.group('limit')}` before "
-                f"`{count_var}` is checked against `{spec_match.group('spec')}`."
+                f"`{length_var}` 受 `{limit_match.group('limit')}` 约束，而 `{count_var}` 则是依据 `{spec_match.group('spec')}` 进行检查。"
             ),
-            root_cause="A fixed byte cache limit can reject or size the allocation differently from the stated element-count specification.",
-            suggested_fix="Validate element count against the specification before computing bytes, and derive byte limits from the same contract.",
+            root_cause="固定的字节缓存上限可能以不同于所声明的元素计数规格的方式拒绝或确定分配大小。",
+            suggested_fix="在计算字节数之前先依据规格校验元素计数，并从同一契约推导字节上限。",
             source=line.text,
             sink=limit_match.group("limit"),
             confidence=0.84,
@@ -1237,9 +1267,7 @@ class ClangMemoryBoundsIntegerRules:
             validation_required=not audit_only,
             finding_kind="audit_observation" if audit_only else "clang_ast_cfg_candidate",
             audit_observation_reason=(
-                "size/spec limit mismatch has no visible unsafe sink in the local CFG"
-                if audit_only
-                else ""
+                "大小/规格上限不匹配，且在本地 CFG 中没有可见的不安全汇点" if audit_only else ""
             ),
         )
 
@@ -1255,13 +1283,15 @@ class ClangMemoryBoundsIntegerRules:
         patterns = [
             (
                 re.search(
-                    r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
-                    r"(?P<api>[A-Za-z_]\w*(?:alloc|malloc|calloc|realloc)[A-Za-z_0-9]*)\s*\((?P<expr>[^;]*(?:\+|\*)[^;]*)\)",
+                    self._semantic_api_pattern(
+                        r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
+                        r"(?P<api>(?:malloc|calloc|realloc|strdup))\s*\((?P<expr>[^;]*(?:\+|\*)[^;]*)\)"
+                    ),
                     line.text,
                     re.IGNORECASE,
                 ),
                 "allocation_size_arithmetic_without_overflow_guard",
-                "Allocation size is computed with arithmetic without a visible overflow guard.",
+                "分配大小通过算术运算计算，但缺少可见的溢出防护。",
             ),
             (
                 re.search(
@@ -1271,7 +1301,7 @@ class ClangMemoryBoundsIntegerRules:
                     re.IGNORECASE,
                 ),
                 "size_addition_without_overflow_guard",
-                "Size expression uses addition without a visible overflow guard.",
+                "大小表达式使用了加法，但缺少可见的溢出防护。",
             ),
             (
                 re.search(
@@ -1279,7 +1309,7 @@ class ClangMemoryBoundsIntegerRules:
                     line.text,
                 ),
                 "narrowing_size_cast_without_range_guard",
-                "A size-like value is narrowed to uint32_t without a visible range guard.",
+                "一个类似大小的值被窄化转换为 uint32_t，但缺少可见的范围防护。",
             ),
         ]
         for match, rule, description in patterns:
@@ -1305,8 +1335,8 @@ class ClangMemoryBoundsIntegerRules:
                 rule=f"clang_cfg_{rule}",
                 line=line,
                 description=description,
-                root_cause="Integer arithmetic on a size or length value can wrap before allocation, copy, or serialization.",
-                suggested_fix="Check the arithmetic bound before evaluating the allocation/copy size or narrowing cast.",
+                root_cause="对大小或长度值进行的整数算术运算可能在分配、拷贝或序列化之前发生回绕。",
+                suggested_fix="在计算分配/拷贝大小或进行窄化转换之前检查算术边界。",
                 source=str(expr).strip(),
                 sink=line.text,
                 confidence=0.8,
@@ -1335,8 +1365,10 @@ class ClangMemoryBoundsIntegerRules:
         casts: Dict[str, Tuple[ClangCfgLine, str]],
     ) -> None:
         read = re.search(
-            r"\b(?:int|ssize_t)\s+(?P<var>[A-Za-z_]\w*)\s*=\s*"
-            r"(?:recv|read|recvfrom|_net_recv_data)\s*\(",
+            self._semantic_api_pattern(
+                rf"\b(?:int|ssize_t)\s+(?P<var>[A-Za-z_]\w*)\s*=\s*"
+                rf"(?:recv|read|recvfrom|{self._names_pattern(getattr(self, '_user_recv_source_names', set()) or set())})\s*\("
+            ),
             line.text,
         )
         if read:
@@ -1364,9 +1396,9 @@ class ClangMemoryBoundsIntegerRules:
                 defect_class="signed_unsigned",
                 rule="clang_cfg_negative_length_cast_to_size_t",
                 line=cast_line,
-                description=f"Signed IO length `{src_var}` is cast to `size_t` as `{size_var}` and reaches a copy length.",
-                root_cause="Negative error returns can become very large unsigned sizes after the cast.",
-                suggested_fix=f"Check `{src_var} >= 0` and the upper bound before casting to `size_t`.",
+                description=f"有符号 IO 长度 `{src_var}` 被转换为 `size_t` 作为 `{size_var}`，并到达拷贝长度。",
+                root_cause="负的错误返回值在该转换之后可能变成非常大的无符号大小。",
+                suggested_fix=f"在转换为 `size_t` 之前检查 `{src_var} >= 0` 以及上界。",
                 source=f"{src_var} at line {src_line.number}",
                 sink=line.text,
                 confidence=0.88,
@@ -1415,9 +1447,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="off_by_one",
             rule="clang_cfg_sizeof_index_write",
             line=line,
-            description=f"`{array}[sizeof({array})]` writes one element past the end of the array.",
-            root_cause="`sizeof(array)` is the byte count and is outside the zero-based index range.",
-            suggested_fix=f"Use `sizeof({array}) - 1` for the terminator or a length-aware helper.",
+            description=f"`{array}[sizeof({array})]` 会越过数组末尾写入一个元素。",
+            root_cause="`sizeof(array)` 是字节数，位于从零开始的下标范围之外。",
+            suggested_fix=f"对终止符使用 `sizeof({array}) - 1`，或使用感知长度的辅助函数。",
             source=array,
             sink=line.text,
             confidence=0.9,
@@ -1448,7 +1480,9 @@ class ClangMemoryBoundsIntegerRules:
         if field and field.group("var") in aggregate_field_writes:
             aggregate_field_writes[field.group("var")].add(field.group("field"))
         memset = re.search(
-            r"\bmemset\s*\(\s*&?\s*(?P<var>[A-Za-z_]\w*)\s*,\s*0\s*,\s*sizeof\s*\(\s*(?P=var)\s*\)\s*\)",
+            self._literal_api_pattern(
+                r"\bmemset\s*\(\s*&?\s*(?P<var>[A-Za-z_]\w*)\s*,\s*0\s*,\s*sizeof\s*\(\s*(?P=var)\s*\)\s*\)"
+            ),
             line.text,
         )
         if memset and memset.group("var") in aggregate_field_writes:
@@ -1485,9 +1519,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="stack_overflow",
             rule="clang_cfg_unbounded_vla_or_stack_array",
             line=line,
-            description=f"Stack array `{match.group('array')}` uses runtime size `{size}` without a visible cap.",
-            root_cause="Caller-controlled or data-dependent stack allocation can exhaust or overflow the stack.",
-            suggested_fix="Cap the size before stack allocation or allocate bounded heap storage.",
+            description=f"栈数组 `{match.group('array')}` 使用了运行时大小 `{size}`，但缺少可见的上限。",
+            root_cause="由调用方控制或依赖数据的栈分配可能耗尽栈空间或使栈溢出。",
+            suggested_fix="在栈分配之前限制大小，或分配有界的堆存储。",
             source=size,
             sink=line.text,
             confidence=0.86,
@@ -1511,7 +1545,9 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         copy_call = re.search(
-            r"\b(?P<api>memcpy|memmove)\s*\(\s*(?P<dst>[A-Za-z_]\w*)\s*,\s*[^,]+,\s*(?P<len>[^)]+)\)",
+            self._literal_api_pattern(
+                r"\b(?P<api>memcpy|memmove)\s*\(\s*(?P<dst>[A-Za-z_]\w*)\s*,\s*[^,]+,\s*(?P<len>[^)]+)\)"
+            ),
             line.text,
         )
         if not copy_call:
@@ -1523,10 +1559,12 @@ class ClangMemoryBoundsIntegerRules:
             return
         alloc_line, alloc_size = alloc_data
         alloc_base = self._allocation_base_from_size(lines, alloc_line, alloc_size)
-        copy_base = self._expression_origin_base(lines, line, copy_len)
-        if not alloc_base or not copy_base or alloc_base != copy_base:
-            if not self._looks_like_external_length_pair(lines, line, alloc_size, copy_len):
-                return
+        # A narrowing claim needs an actual conversion on the allocation
+        # operand. Words such as 'length' or 'packet' are not type evidence.
+        if not alloc_base:
+            return
+        if re.sub(r"\s+", "", copy_len) == re.sub(r"\s+", "", alloc_size):
+            return
         if self._copy_length_bounded_by_alloc(lines, line, copy_len, alloc_size):
             return
         self._emit(
@@ -1539,10 +1577,10 @@ class ClangMemoryBoundsIntegerRules:
             rule="clang_cfg_narrowed_allocation_original_length_copy",
             line=line,
             description=(
-                f"`{dst}` is allocated from narrowed size `{alloc_size}` but copied with original length `{copy_len}`."
+                f"`{dst}` 是从窄化后的大小 `{alloc_size}` 分配的，但拷贝时却使用了原始长度 `{copy_len}`。"
             ),
-            root_cause="A truncated allocation size can be smaller than the subsequent copy length.",
-            suggested_fix="Allocate from the same checked length used by the copy, or reject values that do not fit the allocation type.",
+            root_cause="被截断的分配大小可能小于后续的拷贝长度。",
+            suggested_fix="使用与拷贝相同的、经过检查的长度进行分配，或拒绝不适合分配类型的值。",
             source=alloc_line.text,
             sink=line.text,
             confidence=0.88,
@@ -1576,7 +1614,9 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         copy_call = re.search(
-            r"\b(?P<api>memcpy|memmove)\s*\(\s*[^,]+,\s*(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<len>[^)]+)\)",
+            self._literal_api_pattern(
+                r"\b(?P<api>memcpy|memmove)\s*\(\s*[^,]+,\s*(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<len>[^)]+)\)"
+            ),
             line.text,
         )
         if not copy_call:
@@ -1610,9 +1650,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="buffer_overread",
             rule="clang_cfg_offset_length_copy_without_source_bound",
             line=line,
-            description=f"`{src}` is derived from unchecked offset `{offset_expr}` and copied with `{copy_len}`.",
-            root_cause="The code validates neither the offset nor offset-plus-length against the backing input buffer.",
-            suggested_fix="Require `offset <= buffer_len` and `copy_len <= buffer_len - offset` before deriving the source pointer.",
+            description=f"`{src}` 由未经检查的偏移 `{offset_expr}` 派生，并以 `{copy_len}` 进行拷贝。",
+            root_cause="代码既没有针对后备输入缓冲区校验偏移，也没有校验偏移加长度。",
+            suggested_fix="在派生源指针之前，要求 `offset <= buffer_len` 且 `copy_len <= buffer_len - offset`。",
             source=source_line.text,
             sink=line.text,
             confidence=0.84,
@@ -1644,7 +1684,9 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         sink = re.search(
-            r"\b(?P<api>memcpy|memmove|memset|strncpy)\s*\(\s*(?P<args>.*)\)",
+            self._literal_api_pattern(
+                r"\b(?P<api>memcpy|memmove|memset|strncpy)\s*\(\s*(?P<args>.*)\)"
+            ),
             line.text,
         )
         if not sink:
@@ -1677,9 +1719,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class=defect,
             rule="clang_cfg_unchecked_pointer_backtrack",
             line=line,
-            description=f"`{pointer_arg}` is derived by subtracting an unchecked offset and then used by `{api}`.",
-            root_cause="A caller- or wire-controlled backtrack can move a pointer before the start of the buffer.",
-            suggested_fix="Validate the backtrack/offset against the available buffer length before deriving the pointer.",
+            description=f"`{pointer_arg}` 通过减去一个未经检查的偏移派生而来，随后被 `{api}` 使用。",
+            root_cause="由调用方或线上数据控制的回溯可能使指针移动到缓冲区起始位置之前。",
+            suggested_fix="在派生指针之前，依据可用的缓冲区长度校验回溯量/偏移。",
             source=source_line.text,
             sink=line.text,
             confidence=0.84,
@@ -1732,9 +1774,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="invalid_free",
             rule="clang_cfg_free_non_owner_pointer_expression",
             line=line,
-            description=f"`{api}` is called on non-owner pointer expression `{cleaned}`.",
-            root_cause="A deallocator receives an interior, stack, or adjusted pointer rather than the owning allocation base.",
-            suggested_fix="Free only the owning base pointer returned by the allocator.",
+            description=f"`{api}` 被调用并作用于非所有者的指针表达式 `{cleaned}`。",
+            root_cause="释放函数接收到的是内部、栈或经过调整的指针，而不是拥有所有权的分配基址。",
+            suggested_fix="只释放分配器返回的、拥有所有权的基础指针。",
             source=cleaned,
             sink=line.text,
             confidence=0.9,
@@ -1777,9 +1819,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="invalid_free",
             rule="clang_cfg_free_derived_pointer_alias",
             line=line,
-            description=f"`{api}` is called on `{var}`, which was derived from `{base}` by pointer arithmetic.",
-            root_cause="The deallocator receives an alias to an interior/adjusted address rather than the owning allocation base.",
-            suggested_fix=f"Keep `{base}` as the owner passed to `{api}` and use a separate non-owning cursor for offsets.",
+            description=f"`{api}` 被调用并作用于 `{var}`，而它是通过指针运算从 `{base}` 派生而来的。",
+            root_cause="释放函数接收到的是指向内部/调整后地址的别名，而不是拥有所有权的分配基址。",
+            suggested_fix=f"在把 `{base}` 作为所有者传给 `{api}` 的同时，另用一个非持有指针游标处理偏移。",
             source=source_line.text,
             sink=line.text,
             confidence=0.86,
@@ -1827,9 +1869,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="unchecked_allocation",
             rule="clang_cfg_allocation_result_used_without_null_check",
             line=line,
-            description=f"Allocation result `{var}` is used before a visible NULL check.",
-            root_cause="The allocation return value can be NULL and the local path dereferences or indexes it first.",
-            suggested_fix=f"Check `{var}` for NULL before any dereference, indexing, or write.",
+            description=f"分配结果 `{var}` 在可见的空指针检查之前就被使用了。",
+            root_cause="分配的返回值可能为 NULL，而本地路径却先对其解引用或索引。",
+            suggested_fix=f"在进行任何解引用、索引或写入之前，检查 `{var}` 是否为 NULL。",
             source=alloc_line.text,
             sink=line.text,
             confidence=0.76,
@@ -1884,9 +1926,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="out_of_bounds_write",
             rule="clang_cfg_unbounded_count_indexes_fixed_array",
             line=line,
-            description=f"Loop count `{count_expr}` indexes fixed array `{array}[{array_size}]` without a visible array-size guard.",
-            root_cause="An externally derived count can drive writes past the local fixed-size buffer.",
-            suggested_fix=f"Validate `{count_expr}` against `ARRAY_SIZE({array})` before the loop or clamp the loop bound.",
+            description=f"循环计数 `{count_expr}` 用于索引固定数组 `{array}[{array_size}]`，但缺少可见的数组大小防护。",
+            root_cause="由外部派生的计数可能驱动写入越过本地固定大小的缓冲区。",
+            suggested_fix=f"在循环之前依据 `ARRAY_SIZE({array})` 校验 `{count_expr}`，或钳制循环上界。",
             source=f"{array} declaration at line {decl_line.number}; loop at line {loop_line.number}",
             sink=line.text,
             confidence=0.82,
@@ -1920,8 +1962,10 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         trunc = re.search(
-            r"\bstrncpy\s*\(\s*(?P<dst>[A-Za-z_]\w*\s*->\s*(?:key|name|id)|[A-Za-z_]\w*\.(?:key|name|id))\s*,\s*"
-            r"(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<limit>\d+|[A-Z_][A-Z0-9_]*)\s*\)",
+            self._literal_api_pattern(
+                r"\bstrncpy\s*\(\s*(?P<dst>[A-Za-z_]\w*\s*->\s*(?:key|name|id)|[A-Za-z_]\w*\.(?:key|name|id))\s*,\s*"
+                r"(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<limit>\d+|[A-Z_][A-Z0-9_]*)\s*\)"
+            ),
             line.text,
         )
         if not trunc:
@@ -1934,7 +1978,9 @@ class ClangMemoryBoundsIntegerRules:
             item.text for item in lines[max(0, lookup_line.index - 4) : line.index + 1]
         )
         if re.search(
-            rf"\bstrlen\s*\(\s*{re.escape(src)}\s*\)\s*(?:<|<=)\s*{re.escape(trunc.group('limit'))}\b",
+            self._literal_api_pattern(
+                rf"\bstrlen\s*\(\s*{re.escape(src)}\s*\)\s*(?:<|<=)\s*{re.escape(trunc.group('limit'))}\b"
+            ),
             guard_window,
         ):
             return
@@ -1947,9 +1993,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="key_truncation",
             rule="clang_cfg_full_key_lookup_truncated_key_insert",
             line=line,
-            description=f"`{src}` is looked up at full length but stored through fixed-length `{trunc.group('dst')}`.",
-            root_cause="Lookup and insertion use different key equivalence domains, so long keys can collide or bypass an existing record.",
-            suggested_fix="Validate key length before lookup or use the same bounded key representation for lookup and insertion.",
+            description=f"`{src}` 以完整长度进行查找，却通过固定长度的 `{trunc.group('dst')}` 存储。",
+            root_cause="查找和插入使用了不同的键等价域，因此较长的键可能发生碰撞或绕过已存在的记录。",
+            suggested_fix="在查找之前校验键长度，或对查找和插入使用相同的有界键表示。",
             source=lookup_line.text,
             sink=line.text,
             confidence=0.84,
@@ -1984,7 +2030,7 @@ class ClangMemoryBoundsIntegerRules:
             r"\*\s*\([^;)]*\*\s*\)\s*(?:\([^)]*\)\s*)?(?P<src>[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*)",
             line.text,
         )
-        if direct and self._looks_wire_pointer_source(direct.group("src")):
+        if direct and self._looks_wire_pointer_source(line.text):
             source_line = line
             var = direct.group("src")
         else:
@@ -2004,15 +2050,15 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="untrusted_pointer",
             rule="clang_cfg_wire_integer_cast_to_pointer_deref",
             line=line,
-            description="A serialized/header integer is converted to a process pointer and dereferenced.",
-            root_cause="Wire data cannot be trusted as an in-process address; dereferencing it can access arbitrary memory.",
-            suggested_fix="Treat wire values as opaque offsets or handles and resolve them through a validated table.",
+            description="整数经过显式指针转换后被解引用，需要核验地址来源与有效范围。",
+            root_cause="整数转换不能单独证明地址有效；需要检查输入来源、对象身份及边界。",
+            suggested_fix="核验该值对应的对象或句柄及其存活范围，再允许解引用。",
             source=source_line.text,
             sink=line.text,
             confidence=0.88,
             impact_level="critical",
             positive=[
-                f"line {source_line.number}: wire/header-derived value is cast into pointer `{var}`",
+                f"line {source_line.number}: explicitly converted integer is cast into pointer `{var}`",
                 f"line {line.number}: the resulting pointer is dereferenced",
             ],
             negative=[],
@@ -2059,9 +2105,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="out_of_range_pointer_offset",
             rule="clang_cfg_unchecked_object_offset_deref",
             line=line,
-            description=f"Offset `{offset_expr}` is applied inside local object `{object_name}` and then dereferenced without a `sizeof` guard.",
-            root_cause="An external offset can form a pointer outside the local object before the later access.",
-            suggested_fix=f"Validate `{offset_expr} < sizeof({object_name})` and the requested access width before deriving the pointer.",
+            description=f"偏移 `{offset_expr}` 被应用于局部对象 `{object_name}` 内部，随后在没有 `sizeof` 防护的情况下被解引用。",
+            root_cause="外部偏移可能在后续访问之前形成指向局部对象之外的指针。",
+            suggested_fix=f"在派生指针之前校验 `{offset_expr} < sizeof({object_name})` 以及请求的访问宽度。",
             source=source_line.text,
             sink=line.text,
             confidence=0.84,
@@ -2126,9 +2172,9 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="uninitialized_pointer",
             rule="clang_cfg_pointer_may_be_uninitialized_before_use",
             line=line,
-            description=f"Pointer `{var}` may be read before being initialized on all local paths.",
-            root_cause="The local CFG view finds a pointer declaration without an initializer and no unconditional assignment before use.",
-            suggested_fix=f"Initialize `{var}` to NULL and gate every dereference on a successful assignment.",
+            description=f"指针 `{var}` 可能在所有本地路径上都未被初始化就被读取了。",
+            root_cause="本地 CFG 视图发现一个没有初始化器的指针声明，并且在被使用前不存在无条件赋值。",
+            suggested_fix=f"将 `{var}` 初始化为 NULL，并让每次解引用都依赖于一次成功的赋值。",
             source=decl_line.text,
             sink=line.text,
             confidence=0.78,
@@ -2160,9 +2206,7 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         for api, args in self._calls(line.text):
-            if api not in self._return_acquirers and not re.search(
-                r"(?:malloc|calloc|alloc|realloc)$", api, re.IGNORECASE
-            ):
+            if api not in self._return_acquirers:
                 continue
             count_expr = self._allocation_count_expression(api, args)
             if not count_expr:
@@ -2196,9 +2240,9 @@ class ClangMemoryBoundsIntegerRules:
                 defect_class="resource_allocation_without_limits",
                 rule="clang_cfg_external_size_allocation_without_limit",
                 line=line,
-                description=f"Heap allocation size `{resolved_count_expr}` is externally/data derived without a visible quota or protocol cap.",
-                root_cause="A caller- or wire-controlled size can allocate unbounded heap memory on this local path.",
-                suggested_fix="Enforce a protocol, per-client, or global maximum before allocating.",
+                description=f"堆分配大小 `{resolved_count_expr}` 由外部/数据派生，且缺少可见的配额或协议上限。",
+                root_cause="由调用方或线上数据控制的大小可能在此本地路径上分配不受限制的堆内存。",
+                suggested_fix="在分配之前强制执行协议、每客户端或全局的最大值。",
                 source=resolved_count_expr,
                 sink=line.text,
                 confidence=0.7,
@@ -2231,7 +2275,7 @@ class ClangMemoryBoundsIntegerRules:
         local_aggregates: Dict[str, Tuple[ClangCfgLine, str]],
     ) -> None:
         for api, args in self._calls(line.text):
-            if api != "pthread_create":
+            if api != "pthread_create" or not self._semantic_call_allowed(api, "thread_create"):
                 continue
             split = self._split_args(args)
             if len(split) < 4:
@@ -2254,9 +2298,9 @@ class ClangMemoryBoundsIntegerRules:
                 defect_class="stack_escape",
                 rule="clang_cfg_stack_address_passed_to_thread",
                 line=line,
-                description=f"Stack object `{var}` is passed to thread entry `{worker}`.",
-                root_cause="The spawned thread can outlive the caller's stack frame and dereference a dangling thread argument.",
-                suggested_fix="Allocate the thread argument with an ownership handoff or join before returning.",
+                description=f"栈对象 `{var}` 被传入线程入口 `{worker}`。",
+                root_cause="被创建的线程可能比调用方的栈帧存活得更久，并解引用一个悬空的线程参数。",
+                suggested_fix="以所有权移交的方式分配线程参数，或在返回前进行 join。",
                 source=f"{type_name} {var} at line {decl_line.number}",
                 sink=line.text,
                 confidence=0.9,
@@ -2312,9 +2356,9 @@ class ClangMemoryBoundsIntegerRules:
                     defect_class="uninitialized_read",
                     rule="clang_cfg_partial_aggregate_sent_with_sizeof",
                     line=line,
-                    description=f"Partially initialized local aggregate `{var}` is sent/copied with `sizeof({var})`.",
-                    root_cause="Padding or unassigned fields can leak stale stack bytes when the whole object is serialized.",
-                    suggested_fix="Zero-initialize the aggregate or serialize only initialized fields.",
+                    description=f"部分初始化的局部聚合 `{var}` 用 `sizeof({var})` 进行发送/拷贝。",
+                    root_cause="当整个对象被序列化时，填充字节或未赋值的字段可能泄漏陈旧的栈字节。",
+                    suggested_fix="对聚合进行零初始化，或仅序列化已初始化的字段。",
                     source=f"{type_name} {var} at line {decl_line.number}",
                     sink=line.text,
                     confidence=0.86,
@@ -2371,9 +2415,9 @@ class ClangMemoryBoundsIntegerRules:
                 defect_class="alignment",
                 rule="clang_cfg_unaligned_integer_pointer_cast",
                 line=cast_line,
-                description="Byte-buffer data is cast to an integer pointer at an unaligned offset and later dereferenced.",
-                root_cause="The cast requires alignment that `packet + 1` style byte offsets do not guarantee.",
-                suggested_fix="Use memcpy into an aligned integer object or decode bytes explicitly.",
+                description="字节缓冲区数据在未对齐的偏移处被转换为整数指针并随后被解引用。",
+                root_cause="该转换所要求的对齐，`packet + 1` 这样的字节偏移并不能保证。",
+                suggested_fix="使用 memcpy 拷贝到已对齐的整数对象，或显式按字节解码。",
                 source=cast_line.text,
                 sink=line.text,
                 confidence=0.84,
@@ -2421,7 +2465,7 @@ class ClangMemoryBoundsIntegerRules:
             if not re.search(rf"\b{re.escape(array_name)}\s*=", guarded_text):
                 continue
             if not re.search(
-                r"\b(?:calloc|malloc|realloc|_safe_calloc|_safe_malloc|_safe_realloc)\s*\(",
+                self._semantic_api_pattern(r"\b(?:calloc|malloc|realloc)\s*\("),
                 guarded_text,
             ):
                 continue
@@ -2499,8 +2543,10 @@ class ClangMemoryBoundsIntegerRules:
         later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 16])
         return bool(
             re.search(
-                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc|_safe_malloc|_safe_calloc)\s*"
-                rf"\([^;]*\b{re.escape(length_var)}\b",
+                self._literal_api_pattern(
+                    rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc)\s*"
+                    rf"\([^;]*\b{re.escape(length_var)}\b"
+                ),
                 later,
             )
         )
@@ -2530,16 +2576,14 @@ class ClangMemoryBoundsIntegerRules:
                 prev
                 and re.search(rf"\b{escaped}\s*=\s*$", prev.text)
                 and re.search(
-                    r"\b[A-Za-z_]\w*(?:alloc|calloc|malloc|realloc)[A-Za-z_0-9]*\s*\(",
+                    self._semantic_api_pattern(r"\b(?:malloc|calloc|realloc|strdup)\s*\("),
                     item.text,
                     re.IGNORECASE,
                 )
             ):
                 return item
             for api, _args in self._calls(item.text):
-                if api not in self._return_acquirers and not re.search(
-                    r"(?:malloc|calloc|alloc|realloc)$", api, re.IGNORECASE
-                ):
+                if api not in self._return_acquirers:
                     continue
                 if re.search(
                     rf"\b{escaped}\s*=\s*(?:\([^)]*\)\s*)?\b{re.escape(api)}\s*\(", item.text
@@ -2557,9 +2601,11 @@ class ClangMemoryBoundsIntegerRules:
     ) -> Optional[Tuple[ClangCfgLine, str]]:
         for item in reversed(lines[max(0, line.index - 32) : line.index]):
             match = re.search(
-                rf"\b(?:[A-Za-z_][\w\s\*]*\s+)?{re.escape(var)}\s*=\s*"
-                r"(?:\([^)]*\)\s*)?(?P<api>[A-Za-z_]\w*(?:alloc|malloc|calloc|realloc)[A-Za-z_0-9]*)"
-                r"\s*\((?P<args>[^;]*)\)",
+                self._semantic_api_pattern(
+                    rf"\b(?:[A-Za-z_][\w\s\*]*\s+)?{re.escape(var)}\s*=\s*"
+                    r"(?:\([^)]*\)\s*)?(?P<api>(?:malloc|calloc|realloc|strdup))"
+                    r"\s*\((?P<args>[^;]*)\)"
+                ),
                 item.text,
                 re.IGNORECASE,
             )
@@ -2586,9 +2632,12 @@ class ClangMemoryBoundsIntegerRules:
                     item.text,
                 )
                 if assign:
-                    base = self._narrowed_origin_base(
-                        assign.group("expr")
-                    ) or self._expr_base_token(assign.group("expr"))
+                    base = self._narrowed_origin_base(assign.group("expr"))
+                    if not base and re.search(
+                        rf"\b(?:u?int(?:8|16)_t|unsigned\s+(?:short|char)|short|char)\s+{re.escape(name)}\s*=",
+                        item.text,
+                    ):
+                        base = self._expr_base_token(assign.group("expr"))
                     if base:
                         return base
         return ""
@@ -2609,25 +2658,6 @@ class ClangMemoryBoundsIntegerRules:
                 if assign:
                     return self._expr_base_token(assign.group("rhs"))
         return base
-
-    def _looks_like_external_length_pair(
-        self,
-        lines: Sequence[ClangCfgLine],
-        line: ClangCfgLine,
-        alloc_size: str,
-        copy_len: str,
-    ) -> bool:
-        text = f"{alloc_size} {copy_len}"
-        for name in self._expr_identifiers(f"{alloc_size} {copy_len}"):
-            for item in reversed(lines[max(0, line.index - 24) : line.index]):
-                assign = re.search(rf"\b{re.escape(name)}\s*=\s*(?P<rhs>[^;]+);", item.text)
-                if assign:
-                    text += " " + assign.group("rhs")
-        return bool(
-            re.search(
-                r"(?:header|wire|packet|payload|fragment|copy|len|length|size|count)", text, re.I
-            )
-        )
 
     @staticmethod
     def _narrowed_origin_base(expr: str) -> str:
@@ -2691,8 +2721,14 @@ class ClangMemoryBoundsIntegerRules:
         alloc_token = re.escape(str(alloc_size).strip())
         return bool(
             re.search(rf"\b{copy_token}\b\s*(?:<=|<)\s*\b{alloc_token}\b", window)
-            or re.search(rf"\bmin\s*\(\s*{copy_token}\s*,\s*{alloc_token}\s*\)", window)
-            or re.search(rf"\bmin\s*\(\s*{alloc_token}\s*,\s*{copy_token}\s*\)", window)
+            or re.search(
+                self._literal_api_pattern(rf"\bmin\s*\(\s*{copy_token}\s*,\s*{alloc_token}\s*\)"),
+                window,
+            )
+            or re.search(
+                self._literal_api_pattern(rf"\bmin\s*\(\s*{alloc_token}\s*,\s*{copy_token}\s*\)"),
+                window,
+            )
         )
 
     def _find_pointer_backtrack_assignment(
@@ -2835,7 +2871,9 @@ class ClangMemoryBoundsIntegerRules:
         escaped = re.escape(array)
         for item in reversed(lines[max(0, line.index - 32) : line.index]):
             match = re.search(
-                rf"\b{escaped}\s*\[\s*(?P<size>[A-Za-z_]\w*|\d+)\s*\]\s*(?:=|;)", item.text
+                rf"(?:^|[;{{}}])\s*(?!(?:return|else)\b)"
+                rf"(?:[A-Za-z_]\w*\s+)+(?:\*\s*)?{escaped}\s*\[\s*(?P<size>[A-Za-z_]\w*|\d+)\s*\]\s*(?:=|;)",
+                item.text,
             )
             if match:
                 return item, match.group("size")
@@ -2888,9 +2926,15 @@ class ClangMemoryBoundsIntegerRules:
         if re.fullmatch(r"\d+", count_expr) and re.fullmatch(r"\d+", array_size):
             return int(count_expr) <= int(array_size)
         patterns = [
-            rf"\b{count}\b\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})",
-            rf"\bif\s*\([^)]*\b{count}\b\s*>\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})[^)]*\)\s*(?:return|goto|break)",
-            rf"\b{count}\b\s*=\s*(?:MIN|min)\s*\(\s*\b{count}\b\s*,\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|{size_escaped})",
+            self._literal_api_pattern(
+                rf"\b{count}\b\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})"
+            ),
+            self._literal_api_pattern(
+                rf"\bif\s*\([^)]*\b{count}\b\s*>\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})[^)]*\)\s*(?:return|goto|break)"
+            ),
+            self._literal_api_pattern(
+                rf"\b{count}\b\s*=\s*(?:MIN|min)\s*\(\s*\b{count}\b\s*,\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|{size_escaped})"
+            ),
         ]
         return any(re.search(pattern, window) for pattern in patterns)
 
@@ -2898,9 +2942,8 @@ class ClangMemoryBoundsIntegerRules:
     def _looks_wire_pointer_source(expr: str) -> bool:
         return bool(
             re.search(
-                r"\b(?:wire|header|hdr|packet|pkt|frame|request|req|msg|message|payload)\b",
+                r"\(\s*(?:uintptr_t|intptr_t|u?int(?:32|64)_t|size_t)\s*\)",
                 expr,
-                re.IGNORECASE,
             )
         )
 
@@ -2914,11 +2957,12 @@ class ClangMemoryBoundsIntegerRules:
         for item in reversed(lines[max(0, line.index - 16) : line.index]):
             if not re.search(rf"\b{escaped}\s*=", item.text):
                 continue
-            if not re.search(
-                r"\([^)]*\*\s*\)|uintptr_t|intptr_t|uint64_t|uint32_t|size_t", item.text
-            ):
+            statement = " ".join(row.text for row in lines[item.index : line.index]).split(";", 1)[
+                0
+            ]
+            if not re.search(r"\([^)]*\*\s*\)", statement):
                 continue
-            rhs = item.text.split("=", 1)[1]
+            rhs = statement.split("=", 1)[1]
             if self._looks_wire_pointer_source(rhs):
                 return item
         return None
@@ -2968,12 +3012,7 @@ class ClangMemoryBoundsIntegerRules:
         return False
 
     def _allocation_count_expression(self, api: str, args: str) -> str:
-        split = self._split_args(args)
-        if not split:
-            return ""
-        if api in {"calloc", "_safe_calloc"} and len(split) >= 2:
-            return f"{split[0]} * {split[1]}"
-        return str(split[0])
+        return str(self.semantics.contracts.allocation_extent(api, self._split_args(args)))
 
     @staticmethod
     def _looks_external_size_expr(expr: str) -> bool:
@@ -3058,8 +3097,10 @@ class ClangMemoryBoundsIntegerRules:
             if self._is_var_redefined(text, count_var):
                 return None
             if re.search(
-                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc|_safe_malloc|_safe_calloc)\s*"
-                rf"\([^;]*\b{escaped}\b",
+                self._literal_api_pattern(
+                    rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc)\s*"
+                    rf"\([^;]*\b{escaped}\b"
+                ),
                 text,
             ):
                 return item
@@ -3077,8 +3118,7 @@ class ClangMemoryBoundsIntegerRules:
                     return item
         return None
 
-    @staticmethod
-    def _has_overflow_guard(guard_window: str, expr: str) -> bool:
+    def _has_overflow_guard(self, guard_window: str, expr: str) -> bool:
         text = str(guard_window or "")
         identifiers = re.findall(r"\b[A-Za-z_]\w*\b", str(expr or ""))
         size_names = [
@@ -3087,7 +3127,17 @@ class ClangMemoryBoundsIntegerRules:
             if re.search(r"(?:len|length|size|count|num|total|max)", name, re.I)
         ]
         if re.search(
-            r"\b(?:SIZE_MAX|UINT32_MAX|UINT_MAX|INT_MAX|__builtin_(?:add|mul)_overflow)\b", text
+            (
+                r"\b(?:SIZE_MAX|UINT32_MAX|UINT_MAX|INT_MAX|__builtin_(?:add|mul)_overflow)\b"
+                if not self.restrict_to_semantics
+                else r"\b(?:SIZE_MAX|UINT32_MAX|UINT_MAX|INT_MAX)\b"
+            ),
+            text,
+        ):
+            return True
+        if self.restrict_to_semantics and re.search(
+            self._literal_api_pattern(r"\b(?:__builtin_add_overflow|__builtin_mul_overflow)\s*\("),
+            text,
         ):
             return True
         return any(

@@ -6,37 +6,42 @@ if TYPE_CHECKING:
     from ..retrieval.code_index import CodeIndex
 
 
-class QueryIndirectCalleesTool(BaseTool):
-    """Retrieve SVF-resolved indirect callees; this is not alias proof."""
+class QueryPointerAliasTool(BaseTool):
+    """Tool to retrieve SVF-resolved indirect callees."""
 
-    def __init__(self, code_index: "CodeIndex", *, compatibility_name: bool = False):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
-            name="query_pointer_alias" if compatibility_name else "query_indirect_callees",
-            description=(
-                "Compatibility alias for query_indirect_callees; returns only SVF-resolved "
-                "indirect call targets and never proves object identity or ownership."
-                if compatibility_name
-                else "Query SVF-resolved indirect call targets for a function."
-            ),
+            name="query_pointer_alias",
+            description="Query SVF Andersen-resolved indirect call targets for a function.",
         )
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         func_name = arguments.get("func_name", "")
         limit = arguments.get("limit", 30)
+        try:
+            parsed_limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            parsed_limit = 30
         backend = getattr(self.code_index, "backend", None)
         if backend and hasattr(backend, "get_indirect_callees"):
-            targets = backend.get_indirect_callees(func_name, limit=limit)
+            fetched = backend.get_indirect_callees(func_name, limit=parsed_limit + 1)
         else:
-            targets = []
-        return {
-            "success": True,
-            "data": {
-                "function": func_name,
-                "indirect_callees": targets,
-                "count": len(targets),
-            },
+            fetched = []
+        truncated = len(fetched) > parsed_limit
+        targets = fetched[:parsed_limit]
+        data = {
+            "function": func_name,
+            "indirect_callees": targets,
+            "count": len(targets),
+            "truncated": truncated,
         }
+        if truncated:
+            data["note"] = (
+                f"More than {parsed_limit} indirect call targets exist; re-run "
+                "with a larger limit for the complete target set."
+            )
+        return {"success": True, "data": data}
 
     def get_schema(self) -> Dict[str, Any]:
         return {
@@ -48,16 +53,13 @@ class QueryIndirectCalleesTool(BaseTool):
                     "type": "object",
                     "properties": {
                         "func_name": {"type": "string"},
-                        "limit": {"type": "integer", "default": 30},
+                        "limit": {
+                            "type": "integer",
+                            "default": 30,
+                            "description": "Max targets to return; truncated=true means more exist",
+                        },
                     },
                     "required": ["func_name"],
                 },
             },
         }
-
-
-class QueryPointerAliasTool(QueryIndirectCalleesTool):
-    """Deprecated compatibility name for :class:`QueryIndirectCalleesTool`."""
-
-    def __init__(self, code_index: "CodeIndex"):
-        super().__init__(code_index, compatibility_name=True)

@@ -1,28 +1,25 @@
 """Scan-wide, attribution-safe LLM usage telemetry.
 
-Ordinary product scans only measure usage and never admit or reject work from a
-scan-wide target.  A sealed P6 balanced pilot can explicitly enable the fixed
-admission contract below; that hidden control-plane mode is not user config and
-cannot change the behaviour of normal scans.
+The ledger is intentionally independent of any one Agent or LLM profile.  It
+accounts for every physical provider attempt, but it never admits, rejects, or
+truncates work based on a scan-wide token target.  Cost targets belong to the
+benchmark policy and are evaluated after a scan has completed.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import re
 import threading
 import time
 import uuid
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import Any, Dict, Iterator, Mapping, Optional, Union
 
-
-LEGACY_USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v1"
-PREVIOUS_USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v2"
-USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v3"
+USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v1"
 USAGE_ATTRIBUTION_SCHEMA_VERSION = "zscope.llm-usage-attribution.v1"
 TOKEN_USAGE_SCHEMA_VERSION = "zscope.scan-token-usage.v1"
 TOKEN_USAGE_STAGES = (
@@ -31,65 +28,32 @@ TOKEN_USAGE_STAGES = (
     "validation",
     "reserve",
 )
-P6_BALANCED_SOFT_TOKEN_WATERMARK = 10_500_000
-P6_BALANCED_MAX_TOKENS = 11_999_999
-# Provider prompt usage is reported only after a request has physically run.
-# Formal admission therefore keeps one complete prompt-accounting allowance
-# unspendable for each of the eight globally in-flight requests.  Successful
-# evidence is still checked against 11,999,999; this lower ceiling is the
-# pre-call safety boundary.
-P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM = 8 * 65_536
-P6_BALANCED_ADMISSION_MAX_TOKENS = (
-    P6_BALANCED_MAX_TOKENS - P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM
-)
-P6_BALANCED_LOW_VALUE_CALL_KINDS = frozenset(
+_VALIDATOR_V3_CALL_KINDS = frozenset(
     {
-        "p6_low_value_audit",
-        "p6_low_value_hunter",
+        "length_retry",
+        "json_repair",
+        "investigation_synthesis",
+        "targeted_investigation",
+        "v2b_adjudication",
     }
 )
-_VALIDATOR_V3_CALL_KINDS = frozenset(
-    {"length_retry", "json_repair", "investigation_synthesis", "targeted_investigation"}
-)
 
-_INHERITED_USAGE_ATTRIBUTION: ContextVar[Mapping[str, Any]] = ContextVar(
-    "zscope_inherited_llm_usage_attribution",
-    default={},
-)
-
-
-class P6BalancedTokenAdmissionError(RuntimeError):
-    """Fixed-class, body-free refusal issued before a P6 provider call."""
-
-    MESSAGE = "p6 balanced token admission denied"
-
-    def __init__(self, failure_class: str) -> None:
-        if failure_class not in {"p6_token_soft_watermark", "p6_token_hard_limit"}:
-            raise ValueError("unsupported P6 token admission failure class")
-        self.failure_class = failure_class
-        super().__init__(self.MESSAGE)
+# Escalation-rung observability (new_docs/balanced_confirmed_tp_plan.md Phase 5).
+# Derives the ladder rung that produced one LLM call from its validator
+# ``call_kind``.  Empty string means "not an escalation-tagged call"; consumers
+# treat first-pass validator traffic as the R1 baseline bucket.
+_ESCALATION_RUNG_BY_CALL_KIND = {
+    "initial": "R1_validator_v1",
+    "targeted_investigation": "R2_v3_reattempt",
+    "investigation_synthesis": "R2_v3_reattempt",
+    "v2b_adjudication": "R3_v2b_adjudication",
+}
 
 
-def current_llm_usage_attribution() -> Dict[str, Any]:
-    """Return the current synchronous/nested LLM attribution scope.
+def escalation_rung_for_call_kind(value: Any) -> str:
+    """Map one validator call kind to its escalation-ladder rung label."""
 
-    Context variables are thread/task local, so one Validator worker cannot
-    leak its cluster identity into another concurrent worker.  Explicit call
-    attribution remains authoritative over inherited values.
-    """
-
-    return dict(_INHERITED_USAGE_ATTRIBUTION.get() or {})
-
-
-@contextmanager
-def llm_usage_attribution_scope(**values: Any) -> Any:
-    inherited = current_llm_usage_attribution()
-    inherited.update({str(key): value for key, value in values.items() if value not in (None, "")})
-    token = _INHERITED_USAGE_ATTRIBUTION.set(inherited)
-    try:
-        yield
-    finally:
-        _INHERITED_USAGE_ATTRIBUTION.reset(token)
+    return _ESCALATION_RUNG_BY_CALL_KIND.get(_clean(value).lower(), "")
 
 
 def canonical_usage_stage(value: Any) -> str:
@@ -97,12 +61,12 @@ def canonical_usage_stage(value: Any) -> str:
     aliases = {
         "semantic": "semantic_modeling",
         "modeling": "semantic_modeling",
-        "security_spec_miner": "semantic_modeling",
+        "semantic_modeler": "semantic_modeling",
         "discovery": "active_discovery",
         "active_analysis": "active_discovery",
         "mining": "active_discovery",
         "investigation": "active_discovery",
-        "proof_engine": "validation",
+        "validator": "validation",
         "repair": "reserve",
         "v3": "reserve",
     }
@@ -208,14 +172,19 @@ class LLMUsageAttribution:
                 stage = "reserve"
             elif call_kind in _VALIDATOR_V3_CALL_KINDS:
                 stage = "reserve"
-            elif "proof_engine" in normalized_agent:
+            elif "validator" in normalized_agent:
                 stage = "validation"
             elif (
-                "security_spec_miner" in normalized_agent
-                or "history_maintenance_agent" in normalized_agent
+                "semantic" in normalized_agent
+                or "modeler" in normalized_agent
+                or "reconciler" in normalized_agent
             ):
                 stage = "semantic_modeling"
-            elif "hypothesis_hunter" in normalized_agent:
+            elif (
+                "active_discovery" in normalized_agent
+                or "worker" in normalized_agent
+                or "vulnerability" in normalized_agent
+            ):
                 stage = "active_discovery"
             else:
                 stage = _clean(data.get("call_kind") or "unattributed")
@@ -255,9 +224,6 @@ class TokenUsageReservation:
     attribution: LLMUsageAttribution
     budget_stage: str = "validation"
     model: str = ""
-    call_chain_id: str = ""
-    attempt_index: int = 1
-    logical_operation_id: str = ""
     local_scope: str = ""
     local_limit_tokens: int = 0
     created_monotonic: float = field(default_factory=time.monotonic)
@@ -272,9 +238,6 @@ class TokenUsageReservation:
             "attribution": self.attribution.to_dict(),
             "budget_stage": self.budget_stage,
             "model": _clean(self.model),
-            "call_chain_id": _clean(self.call_chain_id),
-            "attempt_index": self.attempt_index,
-            "logical_operation_id": _clean(self.logical_operation_id),
             "local_scope": self.local_scope,
             "local_limit_tokens": self.local_limit_tokens,
         }
@@ -304,22 +267,10 @@ class LLMUsageEvent:
     tool_call_count: int = 0
     new_fact_count: int = 0
     duration_ms: int = 0
-    # ``model`` remains the requested-model compatibility alias used by v1
-    # consumers.  v2 binds both sides of the physical provider exchange and
-    # deliberately leaves the response identity empty when the provider omits
-    # it; callers must never substitute the requested model.
-    requested_model: str = ""
-    provider_response_model: str = ""
-    # Answer-free transport lineage.  One logical ``chat_completion`` owns a
-    # stable chain ID; every physical attempt increments ``attempt_index``.
-    # Neither field contains prompts, responses, paths, or credentials.
-    call_chain_id: str = ""
-    attempt_index: int = 1
-    logical_operation_id: str = ""
+    escalation_rung: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         attribution = self.attribution.to_dict()
-        call_chain_id = self.call_chain_id or f"llm-call-chain-{self.sequence}"
         return {
             "schema_version": USAGE_EVENT_SCHEMA_VERSION,
             "sequence": self.sequence,
@@ -347,11 +298,6 @@ class LLMUsageEvent:
             "attribution": attribution,
             "budget_stage": self.budget_stage,
             "model": _clean(self.model),
-            "requested_model": _clean(self.requested_model or self.model),
-            "provider_response_model": _clean(self.provider_response_model),
-            "call_chain_id": _clean(call_chain_id),
-            "attempt_index": self.attempt_index,
-            "logical_operation_id": _clean(self.logical_operation_id),
             "reason": _clean(self.reason, limit=500),
             "finish_reason": _clean(self.finish_reason),
             # cached_prompt_tokens is a subset of prompt_tokens and
@@ -364,6 +310,8 @@ class LLMUsageEvent:
             "tool_call_count": self.tool_call_count,
             "new_fact_count": self.new_fact_count,
             "duration_ms": self.duration_ms,
+            "escalation_rung": self.escalation_rung
+            or escalation_rung_for_call_kind(self.attribution.call_kind),
         }
 
 
@@ -465,13 +413,41 @@ class LLMUsageEventAggregator:
         }
 
 
+_TASK_EVENTS: ContextVar[Optional[list[LLMUsageEvent]]] = ContextVar("llm_task_events", default=None)
+
+
+@contextmanager
+def collect_task_usage_events() -> Iterator[list[LLMUsageEvent]]:
+    """Observe the same immutable events already settled by the global ledger.
+
+    The owner captures its own physical attempts, including network failures.
+    Thread-local contexts isolate parallel tasks; a nested task owns its events.
+    This observer cannot alter provider admission, tokens or retry decisions.
+    """
+    events: list[LLMUsageEvent] = []
+    token = _TASK_EVENTS.set(events)
+    try:
+        yield events
+    finally:
+        _TASK_EVENTS.reset(token)
+
+
+def task_usage_counters(events: list[LLMUsageEvent]) -> Dict[str, int]:
+    return {
+        "provider_attempt_count": len(events),
+        "provider_success_count": sum(event.outcome == "success" for event in events),
+        "provider_accounted_tokens": sum(event.total_tokens for event in events),
+        "provider_reported_tokens": sum(event.total_tokens for event in events if event.provider_reported),
+        "provider_conservative_tokens": sum(event.total_tokens for event in events if event.conservative_charge),
+    }
+
+
 class ScanTokenUsageLedger:
     """Thread-safe usage ledger shared by a whole scan.
 
     ``reserve`` records the expected size of an in-flight provider attempt so
     unknown-usage failures can be charged conservatively.  It never reduces a
-    provider output allowance.  Refusal is possible only after the sealed P6
-    balanced control plane explicitly enables its fixed admission contract.
+    provider output allowance and never refuses an attempt.
     """
 
     def __init__(self, *, depth: str = "fast", event_sink_path: Optional[Path] = None) -> None:
@@ -481,7 +457,6 @@ class ScanTokenUsageLedger:
         self._reserved_tokens = 0
         self._sequence = 0
         self._reservation_sequence = 0
-        self._call_chain_sequence = 0
         self._reservations: Dict[str, TokenUsageReservation] = {}
         self._stage_consumed_tokens = {stage: 0 for stage in TOKEN_USAGE_STAGES}
         self._stage_reserved_tokens = {stage: 0 for stage in TOKEN_USAGE_STAGES}
@@ -489,43 +464,7 @@ class ScanTokenUsageLedger:
         self._event_sink_path = Path(event_sink_path) if event_sink_path else None
         self._persisted_event_count = 0
         self._event_sink_error = ""
-        self._event_sink_error_count = 0
         self._aggregator = LLMUsageEventAggregator()
-        self._rejected_before_model_count = 0
-        self._rejected_before_model_reasons: Dict[str, int] = {}
-        self._rejected_before_model_attempts: list[Dict[str, Any]] = []
-        self._p6_balanced_admission_enabled = False
-        self._p6_admission_request_count = 0
-        self._p6_admission_admitted_count = 0
-        self._p6_admission_denied_count = 0
-        self._p6_admission_denied_reasons: Dict[str, int] = {}
-        self._p6_budget_fail_closed = False
-        self._p6_budget_violation_count = 0
-        self._p6_budget_violation_reasons: Dict[str, int] = {}
-
-    def enable_p6_balanced_admission(self) -> None:
-        """Enable the immutable P6 balanced-only token admission contract."""
-
-        if self.depth != "balanced":
-            raise ValueError("P6 token admission is valid only for balanced scans")
-        with self._lock:
-            if self._reservations or self._events or self._consumed_tokens:
-                raise ValueError("P6 token admission must be enabled before the first call")
-            self._p6_balanced_admission_enabled = True
-
-    def _deny_p6_admission_locked(self, failure_class: str) -> None:
-        self._p6_admission_denied_count += 1
-        self._p6_admission_denied_reasons[failure_class] = (
-            self._p6_admission_denied_reasons.get(failure_class, 0) + 1
-        )
-        raise P6BalancedTokenAdmissionError(failure_class)
-
-    def new_call_chain_id(self) -> str:
-        """Allocate one content-free identity for a logical provider call."""
-
-        with self._lock:
-            self._call_chain_sequence += 1
-            return f"llm-call-chain-{self._call_chain_sequence}"
 
     def reserve(
         self,
@@ -534,51 +473,12 @@ class ScanTokenUsageLedger:
         *,
         attribution: Optional[LLMUsageAttribution] = None,
         model: str = "",
-        call_chain_id: str = "",
-        attempt_index: int = 1,
-        logical_operation_id: str = "",
     ) -> TokenUsageReservation:
         estimated = _token_count(estimated_prompt_tokens)
         requested_completion = _token_count(max_completion_tokens, minimum=1)
         normalized_attribution = attribution or LLMUsageAttribution()
-        normalized_chain_id = _clean(call_chain_id)
-        if (
-            normalized_chain_id
-            and re.fullmatch(r"llm-call-chain-[1-9][0-9]*", normalized_chain_id) is None
-        ):
-            raise ValueError("call chain identity is invalid")
-        if (
-            isinstance(attempt_index, bool)
-            or not isinstance(attempt_index, int)
-            or attempt_index < 1
-        ):
-            raise ValueError("attempt index must be a positive integer")
-        normalized_operation_id = _clean(logical_operation_id)
-        if (
-            normalized_operation_id
-            and re.fullmatch(r"[0-9a-f]{64}", normalized_operation_id) is None
-        ):
-            raise ValueError("logical operation identity is invalid")
         usage_stage = canonical_usage_stage(normalized_attribution.stage)
         with self._lock:
-            proposed = estimated + requested_completion
-            if self._p6_balanced_admission_enabled:
-                # Admission is an answer-free control-plane decision.  Count
-                # every request independently from physical/provider usage so
-                # a refusal never creates an LLM usage event or enters the
-                # provider-coverage denominator.
-                self._p6_admission_request_count += 1
-                if self._p6_budget_fail_closed:
-                    self._deny_p6_admission_locked("p6_token_hard_limit")
-                projected = self._consumed_tokens + self._reserved_tokens + proposed
-                if projected > P6_BALANCED_ADMISSION_MAX_TOKENS:
-                    self._deny_p6_admission_locked("p6_token_hard_limit")
-                if (
-                    projected > P6_BALANCED_SOFT_TOKEN_WATERMARK
-                    and normalized_attribution.call_kind in P6_BALANCED_LOW_VALUE_CALL_KINDS
-                ):
-                    self._deny_p6_admission_locked("p6_token_soft_watermark")
-                self._p6_admission_admitted_count += 1
             self._reservation_sequence += 1
             reservation = TokenUsageReservation(
                 reservation_id=f"llm-reservation-{self._reservation_sequence}",
@@ -589,9 +489,6 @@ class ScanTokenUsageLedger:
                 attribution=normalized_attribution,
                 budget_stage=usage_stage,
                 model=_clean(model),
-                call_chain_id=normalized_chain_id,
-                attempt_index=attempt_index,
-                logical_operation_id=normalized_operation_id,
             )
             self._reservations[reservation.reservation_id] = reservation
             self._reserved_tokens += reservation.reserved_total_tokens
@@ -617,7 +514,6 @@ class ScanTokenUsageLedger:
         tool_call_count: int = 0,
         new_fact_count: int = 0,
         duration_ms: int = 0,
-        provider_response_model: str = "",
     ) -> LLMUsageEvent:
         prompt = _token_count(prompt_tokens)
         completion = _token_count(completion_tokens)
@@ -631,27 +527,6 @@ class ScanTokenUsageLedger:
                 )
             self._reserved_tokens -= active.reserved_total_tokens
             self._stage_reserved_tokens[active.budget_stage] -= active.reserved_total_tokens
-            actual_exceeded_reservation = total > active.reserved_total_tokens
-            actual_exceeded_global_limit = (
-                self._p6_balanced_admission_enabled
-                and self._consumed_tokens + total > P6_BALANCED_MAX_TOKENS
-            )
-            budget_violation = bool(
-                self._p6_balanced_admission_enabled
-                and (actual_exceeded_reservation or actual_exceeded_global_limit)
-            )
-            violation_reasons: list[str] = []
-            if budget_violation:
-                if actual_exceeded_global_limit:
-                    violation_reasons.append("p6_actual_usage_exceeded_global_limit")
-                elif actual_exceeded_reservation:
-                    violation_reasons.append("p6_actual_usage_exceeded_reservation")
-                self._p6_budget_fail_closed = True
-                self._p6_budget_violation_count += 1
-                for failure_class in violation_reasons:
-                    self._p6_budget_violation_reasons[failure_class] = (
-                        self._p6_budget_violation_reasons.get(failure_class, 0) + 1
-                    )
             self._consumed_tokens += total
             self._stage_consumed_tokens[active.budget_stage] += total
             return self._new_event_locked(
@@ -663,20 +538,11 @@ class ScanTokenUsageLedger:
                 reserved_total_tokens=active.reserved_total_tokens,
                 provider_reported=bool(provider_reported),
                 conservative_charge=bool(conservative_charge),
-                budget_violation=budget_violation,
+                budget_violation=False,
                 attribution=active.attribution,
                 budget_stage=active.budget_stage,
                 model=active.model,
-                requested_model=active.model,
-                provider_response_model=_clean(provider_response_model),
-                call_chain_id=active.call_chain_id,
-                attempt_index=active.attempt_index,
-                logical_operation_id=active.logical_operation_id,
-                # An actual-usage overrun is a fixed answer-free failure
-                # class.  Preserve no caller/provider text on that formal
-                # failure path; the event itself remains the immutable cost
-                # record that makes the selected attempt fail closed.
-                reason=(violation_reasons[-1] if violation_reasons else reason),
+                reason=reason,
                 finish_reason=_clean(finish_reason),
                 cached_prompt_tokens=min(prompt, _token_count(cached_prompt_tokens)),
                 reasoning_tokens=min(completion, _token_count(reasoning_tokens)),
@@ -712,44 +578,6 @@ class ScanTokenUsageLedger:
             duration_ms=duration_ms,
         )
 
-    def reject_before_model(
-        self,
-        reservation: TokenUsageReservation,
-        *,
-        reason: str,
-    ) -> None:
-        """Release a request that the provider explicitly rejected pre-model.
-
-        A concrete HTTP rejection such as 400, 401, or 429 proves that the
-        request did not produce a model completion.  Retried requests retain
-        a fixed-class transport counter, while only the subsequent accepted
-        request becomes a physical model-usage event.  Ambiguous disconnects
-        and server failures must continue through :meth:`forfeit`.
-        """
-
-        fixed_reason = _clean(reason) or "provider_request_rejected"
-        with self._lock:
-            active = self._reservations.pop(reservation.reservation_id, None)
-            if active is None:
-                raise ValueError(
-                    f"unknown or already settled reservation {reservation.reservation_id}"
-                )
-            self._reserved_tokens -= active.reserved_total_tokens
-            self._stage_reserved_tokens[active.budget_stage] -= active.reserved_total_tokens
-            self._rejected_before_model_count += 1
-            self._rejected_before_model_reasons[fixed_reason] = (
-                self._rejected_before_model_reasons.get(fixed_reason, 0) + 1
-            )
-            self._rejected_before_model_attempts.append(
-                {
-                    "call_chain_id": active.call_chain_id,
-                    "attempt_index": active.attempt_index,
-                    "logical_operation_id": active.logical_operation_id,
-                    "call_kind": active.attribution.call_kind,
-                    "reason": fixed_reason,
-                }
-            )
-
     def snapshot(self, *, include_events: bool = False) -> Dict[str, Any]:
         with self._lock:
             return self._snapshot_locked(include_events=include_events)
@@ -762,88 +590,6 @@ class ScanTokenUsageLedger:
         return "".join(
             json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in rows
         )
-
-    def events_for_cluster(self, validation_cluster_uid: str) -> list[Dict[str, Any]]:
-        """Return audit-safe physical call events for one validation cluster."""
-
-        cluster_uid = _clean(validation_cluster_uid)
-        if not cluster_uid:
-            return []
-        with self._lock:
-            return [
-                event.to_dict()
-                for event in self._events
-                if event.attribution.validation_cluster_uid == cluster_uid
-            ]
-
-    def attribute_accepted_facts(
-        self,
-        *,
-        validation_cluster_uid: str,
-        new_fact_count: int,
-    ) -> bool:
-        """Attach accepted V3 facts to the physical call that finalized them.
-
-        Tool-produced facts are validated only after the terminal Validator
-        result is parsed.  At that point the last V3 call is the first call for
-        which ``new_fact_count`` is authoritative.  Updating under the ledger
-        lock keeps the raw JSONL sidecar and every aggregate dimension in
-        conservation without relying on a model self-report.
-        """
-
-        cluster_uid = _clean(validation_cluster_uid)
-        count = _token_count(new_fact_count)
-        if not cluster_uid or count <= 0:
-            return False
-        with self._lock:
-            target_index = -1
-            for index in range(len(self._events) - 1, -1, -1):
-                event = self._events[index]
-                if event.attribution.validation_cluster_uid != cluster_uid:
-                    continue
-                if event.attribution.call_kind not in {
-                    "targeted_investigation",
-                    "investigation_synthesis",
-                }:
-                    continue
-                target_index = index
-                break
-            if target_index < 0:
-                return False
-            current = self._events[target_index]
-            if current.new_fact_count == count:
-                return True
-            self._events[target_index] = replace(current, new_fact_count=count)
-            self._aggregator = LLMUsageEventAggregator()
-            for event in self._events:
-                self._aggregator.record(event)
-            if self._event_sink_path is not None:
-                try:
-                    self._event_sink_path.parent.mkdir(parents=True, exist_ok=True)
-                    temporary = self._event_sink_path.with_name(
-                        self._event_sink_path.name + ".rewrite.tmp"
-                    )
-                    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-                        for event in self._events:
-                            handle.write(
-                                json.dumps(
-                                    event.to_dict(),
-                                    ensure_ascii=False,
-                                    sort_keys=True,
-                                )
-                            )
-                            handle.write("\n")
-                    temporary.replace(self._event_sink_path)
-                    self._persisted_event_count = len(self._events)
-                except OSError:
-                    # The destination may contain private source paths or an
-                    # exception supplied by an instrumented filesystem.  The
-                    # formal telemetry artifact records only an answer-safe
-                    # failure class and count.
-                    self._event_sink_error = "llm_usage_event_sink_write_failed"
-                    self._event_sink_error_count += 1
-                    return False
-            return True
 
     def export_events_jsonl(
         self,
@@ -864,6 +610,9 @@ class ScanTokenUsageLedger:
         self._sequence += 1
         event = LLMUsageEvent(sequence=self._sequence, **values)
         self._events.append(event)
+        task_events = _TASK_EVENTS.get()
+        if task_events is not None:
+            task_events.append(event)
         self._aggregator.record(event)
         if self._event_sink_path is not None:
             try:
@@ -872,12 +621,11 @@ class ScanTokenUsageLedger:
                     handle.write(json.dumps(event.to_dict(), ensure_ascii=False, sort_keys=True))
                     handle.write("\n")
                 self._persisted_event_count += 1
-            except OSError:
+            except OSError as exc:
                 # Accounting remains available in memory, but a formal run can
                 # now fail closed on telemetry_complete instead of silently
                 # treating a missing call ledger as authoritative.
-                self._event_sink_error = "llm_usage_event_sink_write_failed"
-                self._event_sink_error_count += 1
+                self._event_sink_error = f"{type(exc).__name__}: {exc}"
         return event
 
     def _snapshot_locked(self, *, include_events: bool) -> Dict[str, Any]:
@@ -902,53 +650,9 @@ class ScanTokenUsageLedger:
             ),
             "event_persistence_enabled": self._event_sink_path is not None,
             "persisted_event_count": self._persisted_event_count,
-            "rejected_before_model_count": self._rejected_before_model_count,
-            "rejected_before_model_reasons": dict(
-                sorted(self._rejected_before_model_reasons.items())
-            ),
-            "rejected_before_model_attempts": [
-                dict(value) for value in self._rejected_before_model_attempts
-            ],
-            "p6_balanced_admission": {
-                "enabled": self._p6_balanced_admission_enabled,
-                "soft_token_watermark": (
-                    P6_BALANCED_SOFT_TOKEN_WATERMARK
-                    if self._p6_balanced_admission_enabled
-                    else None
-                ),
-                "maximum_tokens": (
-                    P6_BALANCED_MAX_TOKENS if self._p6_balanced_admission_enabled else None
-                ),
-                "admission_maximum_tokens": (
-                    P6_BALANCED_ADMISSION_MAX_TOKENS
-                    if self._p6_balanced_admission_enabled
-                    else None
-                ),
-                "prompt_accounting_headroom_tokens": (
-                    P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM
-                    if self._p6_balanced_admission_enabled
-                    else None
-                ),
-                "request_count": self._p6_admission_request_count,
-                "admitted_request_count": self._p6_admission_admitted_count,
-                "denied_request_count": self._p6_admission_denied_count,
-                "denied_reasons": dict(sorted(self._p6_admission_denied_reasons.items())),
-                "budget_fail_closed": self._p6_budget_fail_closed,
-                "budget_violation_count": self._p6_budget_violation_count,
-                "budget_violation_reasons": dict(sorted(self._p6_budget_violation_reasons.items())),
-                "budget_violation_conservation_passed": (
-                    self._p6_budget_violation_count
-                    == sum(self._p6_budget_violation_reasons.values())
-                ),
-                "request_conservation_passed": (
-                    self._p6_admission_request_count
-                    == self._p6_admission_admitted_count + self._p6_admission_denied_count
-                ),
-            },
             "telemetry_complete": not self._event_sink_error
             and (self._event_sink_path is None or self._persisted_event_count == len(self._events)),
             "telemetry_error": self._event_sink_error,
-            "telemetry_error_count": self._event_sink_error_count,
         }
         if include_events:
             result["events"] = [event.to_dict() for event in self._events]

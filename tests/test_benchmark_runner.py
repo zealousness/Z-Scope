@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import copy
 import json
-import subprocess
-from functools import lru_cache
 from pathlib import Path
 
 import pytest
 import yaml
 
-from scripts.p2_proof_corpus import build_case
 from zscope.benchmarking import runner as benchmark_runner
 from zscope.cli import benchmark as benchmark_cli
 from zscope.benchmarking.runner import (
@@ -24,34 +20,9 @@ from zscope.benchmarking.runner import (
     restore_scan_input,
     run_benchmark,
     score_artifact,
+    scan_input_manifest,
 )
 from zscope.framework.llm_usage import LLMUsageAttribution, LLMUsageEvent
-from zscope.core.validation.authority import TerminalAuthorityEvaluator
-from zscope.core.validation.proof_kernel import ProofKernelEngine
-from zscope.orchestration.decision_trace import DecisionTraceStore
-
-
-@lru_cache(maxsize=1)
-def _confirmed_v4_bundle() -> dict:
-    case = build_case("concurrency", 0)
-    evaluation = ProofKernelEngine().evaluate(
-        proof_ir=case["program_proof_ir"],
-        obligation=case["proof_obligation"],
-    )
-    carrier = {}
-    evaluation.apply_to_issue(carrier)
-    authority = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
-    carrier["proof_kernel_terminal_authority_decision"] = authority
-    carrier["terminal_authority_decision"] = authority
-    return carrier
-
-
-def _needs_review_v4_bundle() -> dict:
-    authority = TerminalAuthorityEvaluator().evaluate({}, operation="live").to_dict()
-    return {
-        "proof_kernel_terminal_authority_decision": authority,
-        "terminal_authority_decision": authority,
-    }
 
 
 def _usage_event(*, sequence: int = 1, reservation_id: str = "call-1") -> dict:
@@ -80,116 +51,6 @@ def _usage_event(*, sequence: int = 1, reservation_id: str = "call-1") -> dict:
         cached_prompt_tokens=2,
         reasoning_tokens=1,
     ).to_dict()
-
-
-def test_p6_retry_conservation_bounds_contract_regeneration_per_operation() -> None:
-    scan_usage = {
-        "p6_balanced_admission": {"enabled": True},
-        "rejected_before_model_count": 0,
-        "rejected_before_model_reasons": {},
-        "rejected_before_model_attempts": [],
-    }
-    report = {
-        owner: {"llm_usage": {"scan_token_usage": dict(scan_usage)}}
-        for owner in ("summary", "metadata", "run_manifest")
-    }
-    operation_id = "a" * 64
-
-    def regeneration(sequence: int) -> dict:
-        row = _usage_event(sequence=sequence, reservation_id=f"call-{sequence}")
-        row.update(
-            {
-                "call_chain_id": f"llm-call-chain-{sequence}",
-                "attempt_index": 1,
-                "logical_operation_id": operation_id,
-                "call_kind": "contract_regeneration",
-            }
-        )
-        row["attribution"]["call_kind"] = "contract_regeneration"
-        return row
-
-    one = benchmark_runner._p6_retry_conservation(report, usage_rows=[regeneration(1)])
-    assert one["passed"] is True
-    assert one["maximum_observed_contract_regenerations"] == 1
-
-    two = benchmark_runner._p6_retry_conservation(
-        report, usage_rows=[regeneration(1), regeneration(2)]
-    )
-    assert two["passed"] is False
-    assert two["maximum_observed_contract_regenerations"] == 2
-
-
-def _p6_usage_projection_report(snapshot: dict) -> dict:
-    return {
-        owner: {"llm_usage": {"scan_token_usage": copy.deepcopy(snapshot)}}
-        for owner in ("summary", "metadata", "run_manifest")
-    }
-
-
-@pytest.mark.parametrize("missing_owner", ("summary", "metadata", "run_manifest"))
-def test_p6_scan_usage_requires_every_canonical_projection(missing_owner: str) -> None:
-    snapshot = {
-        "active_reservation_count": 0,
-        "rejected_before_model_count": 0,
-        "rejected_before_model_attempts": [],
-        "p6_balanced_admission": {
-            "enabled": True,
-            "request_count": 1,
-            "admitted_request_count": 1,
-            "denied_request_count": 0,
-            "denied_reasons": {},
-            "request_conservation_passed": True,
-        },
-    }
-    report = _p6_usage_projection_report(snapshot)
-    del report[missing_owner]["llm_usage"]["scan_token_usage"]
-
-    with pytest.raises(BenchmarkError, match=f"{missing_owner} scan usage projection is missing"):
-        benchmark_runner._p6_scan_usage_projection(report)
-
-
-@pytest.mark.parametrize("divergence", ("soft_denial", "pre_model_rejection"))
-def test_p6_scan_usage_rejects_divergent_canonical_projections(divergence: str) -> None:
-    clean = {
-        "active_reservation_count": 0,
-        "rejected_before_model_count": 0,
-        "rejected_before_model_attempts": [],
-        "p6_balanced_admission": {
-            "enabled": True,
-            "request_count": 1,
-            "admitted_request_count": 1,
-            "denied_request_count": 0,
-            "denied_reasons": {},
-            "request_conservation_passed": True,
-        },
-    }
-    report = _p6_usage_projection_report(clean)
-    divergent = report["run_manifest"]["llm_usage"]["scan_token_usage"]
-    if divergence == "soft_denial":
-        divergent["p6_balanced_admission"].update(
-            {
-                "request_count": 2,
-                "denied_request_count": 1,
-                "denied_reasons": {"p6_token_soft_watermark": 1},
-            }
-        )
-    else:
-        divergent["p6_balanced_admission"].update({"request_count": 2, "admitted_request_count": 2})
-        divergent["rejected_before_model_count"] = 1
-        divergent["rejected_before_model_attempts"] = [
-            {
-                "call_chain_id": "llm-call-chain-2",
-                "attempt_index": 1,
-                "logical_operation_id": "a" * 64,
-                "call_kind": "initial_decision",
-                "reason": "provider_request_rejected",
-            }
-        ]
-
-    with pytest.raises(BenchmarkError, match="scan usage projections diverge"):
-        benchmark_runner._p6_admission_conservation(report, physical_call_count=1)
-    with pytest.raises(BenchmarkError, match="scan usage projections diverge"):
-        benchmark_runner._p6_retry_conservation(report, usage_rows=[_usage_event()])
 
 
 @pytest.mark.parametrize("language", ["c_cpp", "java"])
@@ -257,231 +118,6 @@ def test_java_scan_input_rejects_answer_metadata(tmp_path: Path) -> None:
         copy_scan_input(source, tmp_path / "scan", "java")
 
 
-def test_scan_input_rejects_source_symlinks(tmp_path: Path) -> None:
-    source = tmp_path / "fixture"
-    (source / "src").mkdir(parents=True)
-    outside = tmp_path / "outside.c"
-    outside.write_text("int secret(void) { return 1; }\n", encoding="utf-8")
-    try:
-        (source / "src" / "linked.c").symlink_to(outside)
-    except OSError:
-        pytest.skip("symlink creation is unavailable")
-    (source / "CMakeLists.txt").write_text("project(test C)\n", encoding="utf-8")
-
-    with pytest.raises(BenchmarkError, match="symbolic link"):
-        copy_scan_input(source, tmp_path / "scan", "c_cpp")
-
-
-def test_p6_runtime_source_snapshot_binds_python_and_non_python_assets(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "candidate" / "zscope"
-    source.mkdir(parents=True)
-    (source / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
-    (source / "runtime_defaults.yaml").write_text("version: 1\n", encoding="utf-8")
-    (source / "AGENT.md").write_text("frozen prompt\n", encoding="utf-8")
-    first = tmp_path / "sealed-first"
-    first_digest = benchmark_runner.prepare_p6_runtime_source(first, source_root=source)
-
-    (source / "runtime_defaults.yaml").write_text("version: 2\n", encoding="utf-8")
-    second = tmp_path / "sealed-second"
-    second_digest = benchmark_runner.prepare_p6_runtime_source(second, source_root=source)
-
-    assert first_digest != second_digest
-    assert (first / "AGENT.md").read_text(encoding="utf-8") == "frozen prompt\n"
-    assert not any(path.is_symlink() for path in first.rglob("*"))
-
-
-def test_p6_producer_source_sandbox_physically_excludes_answer_authority(
-    tmp_path: Path,
-) -> None:
-    package = tmp_path / "candidate/zscope"
-    (package / "cli").mkdir(parents=True)
-    (package / "benchmarking").mkdir()
-    (package / "product").mkdir()
-    (package / "__init__.py").write_text("\n", encoding="utf-8")
-    (package / "cli/cli.py").write_text("PRODUCT = True\n", encoding="utf-8")
-    (package / "cli/benchmark.py").write_text("SCORER = True\n", encoding="utf-8")
-    (package / "benchmarking/protocol.py").write_text("TRUTH = True\n", encoding="utf-8")
-    (package / "benchmarking/p6_review.py").write_text("DECISION = True\n", encoding="utf-8")
-    historical_qualification = (
-        package / "orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json"
-    )
-    historical_qualification.parent.mkdir(parents=True)
-    historical_qualification.write_text("{}\n", encoding="utf-8")
-    (package / "product/runtime.yaml").write_text("enabled: true\n", encoding="utf-8")
-    runtime = tmp_path / "producer/runtime-source/zscope"
-    benchmark_runner.prepare_p6_runtime_source(runtime, source_root=package)
-
-    fixture = tmp_path / "fixture"
-    (fixture / "src").mkdir(parents=True)
-    (fixture / "src/main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
-    (fixture / "CMakeLists.txt").write_text("project(p6 C)\n", encoding="utf-8")
-    (fixture / "benchmark").mkdir()
-    (fixture / "benchmark/ground_truth.json").write_text("{}\n", encoding="utf-8")
-    scan_input = tmp_path / "producer/scan-input"
-    copy_scan_input(fixture, scan_input, "c_cpp")
-
-    receipt = benchmark_runner.validate_p6_producer_source_sandbox(
-        runtime_source=runtime,
-        scan_input=scan_input,
-        language="c_cpp",
-        host_process_sandbox={
-            "schema_version": "zscope.p6-host-producer-sandbox.v1",
-            "candidate_commit": "1" * 40,
-            "candidate_git_tree": "2" * 40,
-            "file_count": 1,
-            "source_manifest_sha256": "3" * 64,
-            "receipt_sha256": "4" * 64,
-            "scorer_present": False,
-            "truth_present": False,
-            "expected_answer_present": False,
-            "review_decision_present": False,
-            "postscore_evidence_present": False,
-        },
-    )
-
-    assert (runtime / "cli/cli.py").is_file()
-    assert (runtime / "product/runtime.yaml").is_file()
-    assert not (runtime / "cli/benchmark.py").exists()
-    assert not (runtime / "benchmarking").exists()
-    assert not (
-        runtime / "orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json"
-    ).exists()
-    assert not (scan_input / "benchmark").exists()
-    assert receipt["scorer_present"] is False
-    assert receipt["truth_present"] is False
-    assert receipt["expected_present"] is False
-    assert receipt["review_decision_present"] is False
-    assert receipt["postscore_evidence_present"] is False
-
-
-def test_p6_producer_source_sandbox_rejects_late_scorer_injection(tmp_path: Path) -> None:
-    package = tmp_path / "candidate/zscope"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("\n", encoding="utf-8")
-    runtime = tmp_path / "producer/runtime-source/zscope"
-    benchmark_runner.prepare_p6_runtime_source(runtime, source_root=package)
-    (runtime / "benchmarking").mkdir()
-    (runtime / "benchmarking/protocol.py").write_text("\n", encoding="utf-8")
-    scan_input = tmp_path / "producer/scan-input"
-    scan_input.mkdir(parents=True)
-    (scan_input / "CMakeLists.txt").write_text("project(p6 C)\n", encoding="utf-8")
-
-    with pytest.raises(BenchmarkError, match="p6_producer_sandbox_invalid") as raised:
-        benchmark_runner.validate_p6_producer_source_sandbox(
-            runtime_source=runtime,
-            scan_input=scan_input,
-            language="c_cpp",
-            host_process_sandbox={},
-        )
-
-    assert raised.value.failure_class == "input_binding_failure"
-
-
-def test_p6_producer_source_sandbox_rejects_late_qualification_injection(
-    tmp_path: Path,
-) -> None:
-    package = tmp_path / "candidate/zscope"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("\n", encoding="utf-8")
-    runtime = tmp_path / "producer/runtime-source/zscope"
-    benchmark_runner.prepare_p6_runtime_source(runtime, source_root=package)
-    injected = (
-        runtime / "orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json"
-    )
-    injected.parent.mkdir(parents=True)
-    injected.write_text("{}\n", encoding="utf-8")
-    scan_input = tmp_path / "producer/scan-input"
-    scan_input.mkdir(parents=True)
-    (scan_input / "CMakeLists.txt").write_text("project(p6 C)\n", encoding="utf-8")
-
-    with pytest.raises(BenchmarkError, match="p6_producer_sandbox_invalid") as raised:
-        benchmark_runner.validate_p6_producer_source_sandbox(
-            runtime_source=runtime,
-            scan_input=scan_input,
-            language="c_cpp",
-            host_process_sandbox={},
-        )
-
-    assert raised.value.failure_class == "input_binding_failure"
-
-
-def test_p6_runtime_source_is_materialized_from_the_bound_git_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repository = tmp_path / "repository"
-    package = repository / "zscope"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
-    (package / "runtime_defaults.yaml").write_text("version: committed\n", encoding="utf-8")
-    for command in (
-        ("git", "init", "--quiet"),
-        ("git", "add", "zscope"),
-        (
-            "git",
-            "-c",
-            "user.name=P6 Test",
-            "-c",
-            "user.email=p6@example.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "candidate",
-        ),
-    ):
-        subprocess.run(command, cwd=repository, check=True)
-    revision = subprocess.check_output(
-        ("git", "rev-parse", "HEAD"), cwd=repository, text=True
-    ).strip()
-    (package / "runtime_defaults.yaml").write_text("version: dirty\n", encoding="utf-8")
-    monkeypatch.setattr(benchmark_runner, "repository_root", lambda: repository)
-
-    sealed = tmp_path / "sealed"
-    benchmark_runner.prepare_p6_runtime_source(sealed, git_revision=revision)
-
-    assert (sealed / "runtime_defaults.yaml").read_text(encoding="utf-8") == (
-        "version: committed\n"
-    )
-
-
-def test_p6_runtime_source_rejects_a_raw_tree_object(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repository = tmp_path / "repository"
-    package = repository / "zscope"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
-    for command in (
-        ("git", "init", "--quiet"),
-        ("git", "add", "zscope"),
-        (
-            "git",
-            "-c",
-            "user.name=P6 Test",
-            "-c",
-            "user.email=p6@example.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "candidate",
-        ),
-    ):
-        subprocess.run(command, cwd=repository, check=True)
-    tree = subprocess.check_output(
-        ("git", "rev-parse", "HEAD^{tree}"), cwd=repository, text=True
-    ).strip()
-    monkeypatch.setattr(benchmark_runner, "repository_root", lambda: repository)
-
-    with pytest.raises(BenchmarkError, match="p6_runtime_source_invalid") as raised:
-        benchmark_runner.prepare_p6_runtime_source(
-            tmp_path / "sealed",
-            git_revision=tree,
-        )
-
-    assert raised.value.failure_class == "input_binding_failure"
-
-
 def test_trial_is_exactly_one_and_formal_requires_five() -> None:
     with pytest.raises(BenchmarkError, match="exactly one"):
         run_benchmark("java", "trial", runs=2, dry_run=True)
@@ -509,86 +145,6 @@ def test_trial_aggregate_never_marks_nested_run_release_eligible() -> None:
     assert aggregate["runs"][0]["release_eligible"] is False
 
 
-def test_pilot_aggregate_binds_the_selected_candidate_revision(monkeypatch) -> None:
-    selected = "a" * 40
-    tree = "b" * 40
-    observed: list[str | None] = []
-    monkeypatch.setattr(
-        benchmark_runner,
-        "_git_identity",
-        lambda revision=None: (observed.append(revision) or selected, tree),
-    )
-    summary = {
-        "run": 1,
-        "completed": True,
-        "release_eligible": False,
-        "queue_empty": True,
-        "gate_failures": [],
-        "sealed_gate_failures": [],
-        "metrics": {"recall": 1.0},
-        "phase_seconds": {"total": 1.0},
-        "execution": {},
-    }
-
-    aggregate = _aggregate(
-        SPECS["c_cpp"],
-        [summary],
-        "pilot",
-        git_revision=selected,
-    )
-
-    assert observed == [selected]
-    assert aggregate["git_sha"] == selected
-    assert aggregate["git_tree"] == tree
-
-
-def test_pilot_aggregate_passes_reviewable_quality_without_claiming_release(
-    monkeypatch,
-) -> None:
-    selected = "a" * 40
-    monkeypatch.setattr(
-        benchmark_runner,
-        "_git_identity",
-        lambda revision=None: (str(revision or selected), "b" * 40),
-    )
-    summary = {
-        "run": 1,
-        "completed": True,
-        "release_eligible": False,
-        "queue_empty": True,
-        "gate_failures": [],
-        "sealed_gate_failures": [],
-        "metrics": {
-            "confirmed_tp": 0,
-            "confirmed_recall": 0.0,
-            "with_review_recall": 0.9,
-            "tokens": 3_000_000,
-            "provider_usage_coverage": 1.0,
-            "explicit_attribution_coverage": 1.0,
-            "token_conservation_passed": True,
-            "telemetry_complete_rate": 1.0,
-            "protocol_anomaly_count": 0,
-            "true_positive_truth_ids": [],
-        },
-        "phase_seconds": {"total": 1.0},
-        "execution": {},
-    }
-
-    aggregate = _aggregate(
-        SPECS["c_cpp"],
-        [summary],
-        "pilot",
-        scan_depth="balanced",
-        git_revision=selected,
-    )
-
-    assert aggregate["passed"] is True
-    assert aggregate["formal_benchmark"] is False
-    assert aggregate["release_eligible"] is False
-    assert aggregate["range_gate_failures"] == []
-    assert aggregate["range_gate_metrics"]["median_with_review_recall"] == 0.9
-
-
 def test_individual_run_release_eligibility_requires_formal_mode_and_gates() -> None:
     assert not _run_release_eligible("trial", {"queue_empty": True}, [])
     assert not _run_release_eligible("formal", {"queue_empty": False}, [])
@@ -596,36 +152,14 @@ def test_individual_run_release_eligibility_requires_formal_mode_and_gates() -> 
     assert _run_release_eligible("formal", {"queue_empty": True}, [])
 
 
-def test_cpp_benchmark_uses_eight_parallel_entry_and_validation_workers() -> None:
+def test_cpp_benchmark_concurrency_matches_released_capacity() -> None:
     config = yaml.safe_load(SPECS["c_cpp"].config_path.read_text(encoding="utf-8"))
 
-    assert config["concurrency"]["entry_workers"] == 8
+    # Current benchmark capacity keeps both LLM request caps aligned at 16
+    # while using 8 validator workers.
     assert config["concurrency"]["validator_workers"] == 8
-    assert config["concurrency"]["llm_max_inflight"] == 8
-    assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 8
-    assert config["concurrency"]["investigator_workers"] == 1
-    assert config["concurrency"]["evidence_completion_workers"] == 2
-    assert config["concurrency"]["index_workers"] == 4
-    assert config["concurrency"]["svf_workers"] == 2
-
-
-def test_public_p6_pilot_plan_is_answer_free_until_external_freeze(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for name in (
-        "Z_SCOPE_LLM_BASE_URL",
-        "Z_SCOPE_LLM_MODEL",
-        "Z_SCOPE_BENCHMARK_TRUTH",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-    plan = run_benchmark("c_cpp", "pilot", dry_run=True, scan_depth="balanced")
-
-    assert plan["answer_free_producer"] is True
-    assert plan["truth_stage"] == "post_freeze_score"
-    assert plan["stages"][-2:] == ["producer_metrics", "freeze_external"]
-    assert "score" not in plan["stages"]
-    assert "gate" not in plan["stages"]
+    assert config["concurrency"]["llm_max_inflight"] == 16
+    assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 16
 
 
 def test_wsl_cpp_work_root_rejects_windows_mount(monkeypatch, tmp_path: Path) -> None:
@@ -643,6 +177,7 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
     artifact.mkdir()
     monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
     observed = {}
+    rendered = {}
 
     def fake_run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
         observed["workspace"] = workspace
@@ -652,290 +187,87 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
         return {"run": run_number, "mode": mode}
 
     monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fake_run)
+    monkeypatch.setattr(
+        benchmark_runner,
+        "_render_trial_metrics",
+        lambda run_dir, *, language: rendered.update(run_dir=run_dir, language=language),
+    )
 
     result = benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="trial")
 
     assert result == {"run": 1, "mode": "trial"}
+    assert rendered == {"run_dir": artifact, "language": "c_cpp"}
     assert not observed["workspace"].exists()
 
 
-def test_p6_answer_free_trial_propagates_without_a_score_command(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    work_parent = tmp_path / "native-work"
-    artifact = tmp_path / "artifact"
-    artifact.mkdir()
-    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
-
-    def fake_run(
-        spec,
-        run_dir,
-        run_number,
-        *,
-        mode,
-        workspace,
-        scan_depth,
-        answer_free_producer,
-    ):
-        assert mode == "pilot"
-        assert answer_free_producer is True
-        return {
-            "answer_free_producer": True,
-            "execution": {"scan_argv": ["zscope", "--p6-pilot"]},
-        }
-
-    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fake_run)
-
-    summary = benchmark_runner._run_trial(
-        SPECS["c_cpp"],
-        artifact,
-        1,
-        mode="pilot",
-        answer_free_producer=True,
-    )
-
-    assert summary["answer_free_producer"] is True
-    assert "score_argv" not in summary["execution"]
-
-
-@pytest.mark.parametrize(
-    "relative",
-    (
-        "report.json",
-        "llm_usage_events.jsonl",
-        "decision_traces/VAL_1.json",
-        "scan-input/src/canary.c",
-    ),
-)
-def test_p6_cold_producer_scans_actual_key_bytes_in_every_archive_surface(
-    tmp_path: Path, relative: str
-) -> None:
-    secret = "actual-p6-scanner-key-that-must-never-land"
-    root = tmp_path / "producer-material"
-    target = root / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({"details": secret}), encoding="utf-8")
-
-    with pytest.raises(BenchmarkError) as raised:
-        benchmark_runner._p6_scan_cold_producer_material_for_secret(
-            (root,),
-            credential_environment={"Z_SCOPE_API_KEY": secret},
-        )
-
-    assert raised.value.failure_class == "artifact_integrity_failure"
-    assert secret not in str(raised.value)
-
-
-def test_p6_actual_key_detection_destroys_attempt_without_interrupted_archive(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    work_parent = tmp_path / "native-work"
-    attempt = tmp_path / "run-01"
-    attempt.mkdir()
-    (attempt / "report.json").write_text("contaminated", encoding="utf-8")
-    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
-
-    def fail_with_actual_key(*_args: object, **_kwargs: object) -> None:
-        raise benchmark_runner._P6ProtectedCanaryError()
-
-    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fail_with_actual_key)
-
-    with pytest.raises(BenchmarkError) as raised:
-        benchmark_runner._run_trial(
-            SPECS["c_cpp"],
-            attempt,
-            1,
-            mode="pilot",
-            credential_environment={"Z_SCOPE_API_KEY": "actual-key"},
-            answer_free_producer=True,
-        )
-
-    assert raised.value.failure_class == "artifact_integrity_failure"
-    assert not attempt.exists()
-
-
-def test_failed_trial_archives_partial_trace_before_workspace_cleanup(
+def test_experimental_review_workspace_keeps_bound_dependency_paths(
     monkeypatch, tmp_path: Path
 ) -> None:
-    work_parent = tmp_path / "native-work"
+    work_parent = tmp_path / "work"
+    work_parent.mkdir()
+    monkeypatch.setattr(benchmark_runner, "_benchmark_work_parent", lambda _: work_parent)
+
+    def run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
+        (workspace / ".review-checkpoints-retained.json").write_text("{}", encoding="utf-8")
+        return {"workspace": workspace}
+
+    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", run)
+    monkeypatch.setattr(benchmark_runner, "_render_trial_metrics", lambda *args, **kwargs: None)
+    result = benchmark_runner._run_trial(SPECS["c_cpp"], tmp_path / "artifact", 1, mode="trial")
+    assert result["workspace"].is_dir()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_explicit_workspace_retains_success_and_failure_without_mkdtemp(
+    monkeypatch, tmp_path, fail
+):
+    root = tmp_path / "persistent"
     artifact = tmp_path / "artifact"
     artifact.mkdir()
-    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
-    observed = {}
 
-    def fake_run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
-        observed["workspace"] = workspace
-        trace_root = workspace / "scan-input" / ".zscope_snapshots"
-        (trace_root / "decision_traces").mkdir(parents=True)
-        (trace_root / "decision_traces" / "VAL_1.json").write_text(
-            json.dumps({"validation_cluster_uid": "VAL_1"}),
-            encoding="utf-8",
-        )
-        (trace_root / "llm_usage_events_deadbeef.jsonl").write_text(
-            json.dumps(_usage_event()) + "\n",
-            encoding="utf-8",
-        )
-        raise BenchmarkError("scan interrupted")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("explicit workspaces must not use a temporary directory")
 
-    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fake_run)
+    def run(spec, run_dir, run_number, *, mode, workspace, scan_depth, retain_workspace):
+        assert retain_workspace is True
+        state = workspace / "scan-input" / ".zscope_snapshots"
+        state.mkdir(parents=True)
+        (state / "state.db").write_bytes(b"retained")
+        if fail:
+            raise RuntimeError("simulated interruption")
+        return {"workspace": str(workspace)}
 
-    with pytest.raises(BenchmarkError, match="scan interrupted"):
-        benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="trial")
-
-    assert not observed["workspace"].exists()
-    archive = json.loads((artifact / "interrupted-diagnostics.json").read_text(encoding="utf-8"))
-    assert archive["release_eligible"] is False
-    assert archive["answer_material_present"] is False
-    assert {item["path"] for item in archive["files"]} == {
-        "decision_traces/VAL_1.json",
-        "llm_usage_events_deadbeef.jsonl",
-    }
-    assert (artifact / "interrupted-diagnostics" / "decision_traces" / "VAL_1.json").is_file()
+    monkeypatch.setattr(benchmark_runner.tempfile, "mkdtemp", forbidden)
+    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", run)
+    monkeypatch.setattr(benchmark_runner, "_render_trial_metrics", lambda *args, **kwargs: None)
+    if fail:
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            benchmark_runner._run_trial(
+                SPECS["c_cpp"], artifact, 1, mode="trial", work_directory=root
+            )
+    else:
+        benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="trial", work_directory=root)
+    assert (root / "run-01/scan-input/.zscope_snapshots/state.db").read_bytes() == b"retained"
+    assert json.loads((artifact / "workspace.json").read_text())["temporary"] is False
+    with pytest.raises(FileExistsError):
+        benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="trial", work_directory=root)
 
 
-def test_failed_pilot_archives_only_answer_free_usage_aggregates(
-    monkeypatch, tmp_path: Path
-) -> None:
-    work_parent = tmp_path / "native-work"
-    artifact = tmp_path / "artifact"
-    artifact.mkdir()
-    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
-    canary = "P6_MODEL_OUTPUT_CANARY"
-
-    def fake_run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
-        trace_root = workspace / "cache" / "project" / ".zscope_snapshots"
-        (trace_root / "model_events").mkdir(parents=True)
-        (trace_root / "model_events" / "event.json").write_text(
-            json.dumps({"model_output": canary}), encoding="utf-8"
-        )
-        event = _usage_event()
-        event["provider_response_model"] = "glm-5.1"
-        (trace_root / "llm_usage_events_deadbeef.jsonl").write_text(
-            json.dumps(event) + "\n", encoding="utf-8"
-        )
-        raise BenchmarkError("scan interrupted")
-
-    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fake_run)
-
-    with pytest.raises(BenchmarkError, match="scan interrupted"):
-        benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="pilot")
-
-    payload_text = (artifact / "interrupted-diagnostics.json").read_text(encoding="utf-8")
-    payload = json.loads(payload_text)
-    assert payload["schema_version"] == "zscope.p6-interrupted-diagnostics.v1"
-    assert payload["event_count"] == 1
-    assert payload["provider_response_model_present_count"] == 1
-    assert payload["answer_material_present"] is False
-    assert canary not in payload_text
-    assert not (artifact / "interrupted-diagnostics").exists()
+def test_explicit_work_directory_must_be_new_absolute_and_native(monkeypatch, tmp_path):
+    with pytest.raises(BenchmarkError, match="absolute"):
+        run_benchmark("c_cpp", "trial", dry_run=True, work_directory=Path("relative"))
+    with pytest.raises(BenchmarkError, match="already exist"):
+        run_benchmark("c_cpp", "trial", dry_run=True, work_directory=tmp_path)
+    monkeypatch.setattr(benchmark_runner, "_is_wsl", lambda: True)
+    monkeypatch.setattr(benchmark_runner, "_is_windows_mount_in_wsl", lambda _: True)
+    with pytest.raises(BenchmarkError, match="WSL native"):
+        run_benchmark("c_cpp", "trial", dry_run=True, work_directory=tmp_path / "new")
 
 
-def test_provider_model_identity_metrics_never_fallback_to_requested_model() -> None:
-    exact = _usage_event(sequence=1, reservation_id="call-1")
-    exact["model"] = "deepseek-v4-flash"
-    exact["requested_model"] = "deepseek-v4-flash"
-    exact["provider_response_model"] = "deepseek-v4-flash-ga-260731"
-    missing = _usage_event(sequence=2, reservation_id="call-2")
-    missing["model"] = "deepseek-v4-flash"
-    missing["requested_model"] = "deepseek-v4-flash"
-    mismatch = _usage_event(sequence=3, reservation_id="call-3")
-    mismatch["model"] = "deepseek-v4-flash"
-    mismatch["requested_model"] = "deepseek-v4-flash"
-    mismatch["provider_response_model"] = "alias-model"
-
-    metrics = benchmark_runner._provider_model_identity_metrics(
-        [exact, missing, mismatch],
-        expected_model="deepseek-v4-flash",
-        expected_response_model="deepseek-v4-flash-ga-260731",
-    )
-
-    assert metrics == {
-        "provider_response_model_coverage": 0.666667,
-        "provider_response_model_missing_count": 1,
-        "provider_response_model_mismatch_count": 1,
-        "requested_model_mismatch_count": 0,
-        "provider_response_model_successful_call_count": 3,
-        "provider_response_model_counts": {"deepseek-v4-flash-ga-260731": 1},
-        "provider_response_model_counts_conserved": False,
-    }
-
-
-def test_p6_usage_conservation_recomputes_every_physical_dimension() -> None:
-    rows = [
-        {
-            "outcome": "success",
-            "requested_model": "deepseek-v4-flash",
-            "provider_response_model": "deepseek-v4-flash-ga-260731",
-            "total_tokens": 15,
-            "tool_call_count": 1,
-        },
-        {
-            "outcome": "success",
-            "requested_model": "deepseek-v4-flash",
-            "provider_response_model": "deepseek-v4-flash-ga-260731",
-            "total_tokens": 17,
-            "tool_call_count": 2,
-        },
-    ]
-    report = {
-        "issues": [{"validation_cluster_uid": "cluster-1", "finding_root_uid": "root-1"}],
-        "issues_with_needs_review": [],
-        "candidate_terminal_states": [
-            {
-                "validation_cluster_uid": "cluster-1",
-                "terminal_event_uid": "terminal-1",
-                "terminal_authority": "zscope.proof-checker",
-            },
-            {
-                "validation_cluster_uid": "cluster-2",
-                "terminal_event_uid": "terminal-2",
-                "terminal_authority": "zscope.proof-checker",
-            },
-        ],
-        "run_manifest": {"finding_root_count": 1},
-    }
-    score = {
-        "queue_empty": True,
-        "usage_accounting": {
-            "call_count": 2,
-            "provider_reported_call_count": 2,
-            "provider_usage_coverage": 1.0,
-            "totals": {
-                "total_tokens": 32,
-                "tool_call_count": 3,
-                "estimated_or_conservative_calls": 0,
-            },
-        },
-    }
-    identity = benchmark_runner._provider_model_identity_metrics(
-        rows,
-        expected_model="deepseek-v4-flash",
-        expected_response_model="deepseek-v4-flash-ga-260731",
-    )
-
-    result = benchmark_runner._p6_usage_conservation(
-        report=report,
-        score=score,
-        usage_rows=rows,
-        model_identity=identity,
-        decision_trace_artifact={"trace_count": 2, "complete": True},
-        expected_model="deepseek-v4-flash",
-        expected_response_model="deepseek-v4-flash-ga-260731",
-    )
-
-    assert all(row["conserved"] for row in result["dimensions"].values())
-    assert result["physical_call_count"] == result["provider_reported_call_count"] == 2
-
-    tampered = benchmark_runner._p6_usage_conservation(
-        report=report,
-        score=score,
-        usage_rows=rows,
-        model_identity=identity,
-        decision_trace_artifact={"trace_count": 1, "complete": True},
-        expected_model="deepseek-v4-flash",
-        expected_response_model="deepseek-v4-flash-ga-260731",
-    )
-    assert tampered["dimensions"]["trace"]["conserved"] is False
+def test_windows_forwarding_keeps_explicit_linux_workspace(monkeypatch):
+    monkeypatch.setattr(benchmark_cli.subprocess, "check_output", lambda *a, **kw: "/mnt/c/repo\n")
+    argv = benchmark_cli._wsl_argv(["run", "--work-directory", "/home/zeal/benchmark-runs/cold-01"])
+    assert "/home/zeal/benchmark-runs/cold-01" in argv[-1]
 
 
 def test_score_exposes_confirmed_and_with_review_views(monkeypatch, tmp_path: Path) -> None:
@@ -998,17 +330,6 @@ def test_score_exposes_confirmed_and_with_review_views(monkeypatch, tmp_path: Pa
     assert score["performance_telemetry"]["validator_api_call_count"] == 10
 
 
-def test_formal_gate_requires_current_truth_matcher_but_trial_remains_readable() -> None:
-    legacy = {"scoring_contract": {}}
-    current = {"scoring_contract": {"matcher_version": benchmark_runner.MATCHER_VERSION}}
-
-    assert benchmark_runner._truth_matcher_gate_failures("trial", legacy) == []
-    assert benchmark_runner._truth_matcher_gate_failures("formal", current) == []
-    failures = benchmark_runner._truth_matcher_gate_failures("formal", legacy)
-    assert len(failures) == 1
-    assert benchmark_runner.MATCHER_VERSION in failures[0]
-
-
 def test_dry_run_does_not_require_llm_or_create_output(monkeypatch, tmp_path: Path) -> None:
     for key in ("Z_SCOPE_LLM_BASE_URL", "Z_SCOPE_LLM_MODEL", "Z_SCOPE_API_KEY"):
         monkeypatch.delenv(key, raising=False)
@@ -1050,6 +371,86 @@ def test_restore_scan_input_removes_generated_state_and_preserves_manifest(tmp_p
     assert (destination / "src/main.c").is_file()
 
 
+def test_archive_scan_extras_copies_conversations_and_skips_sealed_build(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    run_dir = tmp_path / "run"
+    (scan_root / "src").mkdir(parents=True)
+    (scan_root / "src/main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
+    (scan_root / "CMakeLists.txt").write_text("project(test C)\n", encoding="utf-8")
+    (scan_root / "README.md").write_text("neutral\n", encoding="utf-8")
+    manifest = scan_input_manifest(scan_root)
+    conversation = scan_root / ".zscope_conversations" / "run-abc" / "session.jsonl"
+    conversation.parent.mkdir(parents=True)
+    conversation.write_text('{"event":"session_start"}\n', encoding="utf-8")
+    snapshot = scan_root / ".zscope_snapshots" / "state.json"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("{}", encoding="utf-8")
+    (scan_root / "build").mkdir()
+    (scan_root / "build/object.o").write_bytes(b"obj")
+    (scan_root / "zscope_batch_report.json").write_text("{}", encoding="utf-8")
+    oci_output = tmp_path / "oci-output"
+    oci_output.mkdir()
+    (oci_output / "container.log").write_text("ok\n", encoding="utf-8")
+    run_dir.mkdir()
+
+    extras = benchmark_runner._archive_scan_extras(
+        execution_root=scan_root,
+        run_dir=run_dir,
+        input_manifest=manifest,
+        extra_roots={"oci-output": oci_output},
+    )
+
+    archived = {row["path"] for row in extras["files"]}
+    assert extras["conversation_present"] is True
+    assert extras["file_count"] == 4
+    assert ".zscope_conversations/run-abc/session.jsonl" in archived
+    assert ".zscope_snapshots/state.json" in archived
+    assert "zscope_batch_report.json" in archived
+    assert "oci-output/container.log" in archived
+    assert "src/main.c" not in archived
+    assert "build/object.o" not in archived
+    copied = run_dir / "scan-extras/.zscope_conversations/run-abc/session.jsonl"
+    assert copied.read_text(encoding="utf-8") == '{"event":"session_start"}\n'
+    assert (run_dir / "scan-extras-manifest.json").is_file()
+
+
+def test_archive_scan_extras_allows_missing_conversations(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    run_dir = tmp_path / "run"
+    scan_root.mkdir()
+    (scan_root / "README.md").write_text("neutral\n", encoding="utf-8")
+    run_dir.mkdir()
+
+    extras = benchmark_runner._archive_scan_extras(
+        execution_root=scan_root,
+        run_dir=run_dir,
+        input_manifest=scan_input_manifest(scan_root),
+    )
+
+    assert extras["file_count"] == 0
+    assert extras["conversation_present"] is False
+    assert extras["files"] == []
+
+
+def test_archive_scan_extras_rejects_symlink(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    run_dir = tmp_path / "run"
+    scan_root.mkdir()
+    run_dir.mkdir()
+    target = tmp_path / "outside.jsonl"
+    target.write_text("secret\n", encoding="utf-8")
+    conversations = scan_root / ".zscope_conversations"
+    conversations.mkdir()
+    (conversations / "session.jsonl").symlink_to(target)
+
+    with pytest.raises(BenchmarkError, match="symbolic link"):
+        benchmark_runner._archive_scan_extras(
+            execution_root=scan_root,
+            run_dir=run_dir,
+            input_manifest={"files": []},
+        )
+
+
 def test_usage_event_sidecar_is_archived_from_scan_workspace(tmp_path: Path) -> None:
     scan_root = tmp_path / "scan"
     run_dir = tmp_path / "run"
@@ -1074,153 +475,6 @@ def test_usage_event_sidecar_is_archived_from_scan_workspace(tmp_path: Path) -> 
     assert report["metadata"]["llm_usage_events_artifact"] == artifact
 
 
-def test_decision_trace_sidecar_is_archived_and_rebound_for_offline_explain(
-    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    scan_root = tmp_path / "scan"
-    trace_root = scan_root / ".zscope_snapshots"
-    run_dir = tmp_path / "run"
-    trace_root.mkdir(parents=True)
-    run_dir.mkdir()
-    event = _usage_event()
-    usage_path = trace_root / "usage.jsonl"
-    usage_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
-
-    class UsageLedger:
-        def snapshot(self, include_events=False):
-            return {
-                "schema_version": "zscope.llm-usage-ledger.v1",
-                "usage_events_path": str(usage_path),
-                "events": [event] if include_events else [],
-                "usage_attribution": {"provider_usage_coverage": 1.0},
-            }
-
-    store = DecisionTraceStore(trace_root, scan_uid="SCAN_1", usage_ledger=UsageLedger())
-    evidence_ref = store.put_evidence(
-        kind="decision_slice",
-        payload={"fact": "verified"},
-        producer="test",
-    )
-    store.append_event(
-        "cluster-1",
-        stage="V1",
-        actor="validator_agent",
-        reason_code="V1_COMPLETED",
-        output_refs=(evidence_ref,),
-        call_ids=(event["call_id"],),
-        token_delta=event["total_tokens"],
-    )
-    issue = {
-        "candidate_uid": "candidate-1",
-        "validation_cluster_uid": "cluster-1",
-        "candidate_disposition": "confirmed",
-        "validation_status": "validated",
-        "proof_coverage": "complete",
-        "decision_proof": {"coverage": "complete", "polarity": "positive"},
-        **_confirmed_v4_bundle(),
-    }
-    monkeypatch.setattr(
-        "zscope.orchestration.decision_trace._has_exact_v4_producer_occurrence_binding",
-        lambda item: item.get("_test_exact_producer_occurrence_binding") is True,
-    )
-    issue["_test_exact_producer_occurrence_binding"] = True
-    store.record_terminal_transition(
-        issue,
-        level="V1",
-        authority=issue["terminal_authority_decision"],
-    )
-    store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
-    issue.pop("_test_exact_producer_occurrence_binding")
-    manifest = store.snapshot()
-    report = {
-        "issues": [issue],
-        "metadata": {"llm_budget": {"usage_events_path": str(usage_path)}},
-        "run_manifest": {"decision_trace": manifest},
-    }
-
-    usage_artifact = benchmark_runner._archive_usage_events(
-        report,
-        scan_root=scan_root,
-        run_dir=run_dir,
-    )
-    trace_artifact = benchmark_runner._archive_decision_trace_artifacts(
-        report,
-        scan_root=scan_root,
-        run_dir=run_dir,
-        usage_artifact=usage_artifact,
-    )
-    report_path = run_dir / "report.json"
-    report_path.write_text(json.dumps(report), encoding="utf-8")
-
-    assert trace_artifact is not None
-    assert trace_artifact["trace_count"] == 1
-    assert trace_artifact["evidence_object_count"] >= 1
-    assert report["run_manifest"]["decision_trace"]["manifest_path"] == (
-        "decision_trace_manifest.json"
-    )
-    archived_manifest = json.loads(
-        (run_dir / "decision_trace_manifest.json").read_text(encoding="utf-8")
-    )
-    assert archived_manifest["llm_usage_events"]["path"] == "llm_usage_events.jsonl"
-    assert archived_manifest["llm_usage_events"]["file_sha256"] == usage_artifact["sha256"]
-    assert (run_dir / issue["decision_trace_ref"]).is_file()
-    assert (run_dir / evidence_ref).is_file()
-
-    try:
-        from zscope.cli.explain import main as explain_main
-    except ModuleNotFoundError as exc:
-        if exc.name != "zscope.cli.explain":
-            raise
-        pytest.skip("offline explain is delivered by the separately published P0 product package")
-
-    assert (
-        explain_main(["--report", str(report_path), "--cluster", "cluster-1", "--format", "json"])
-        == 0
-    )
-    explanation = json.loads(capsys.readouterr().out)
-    assert explanation["terminal_disposition"] == "confirmed"
-
-
-def test_decision_trace_archive_rejects_tampered_content_object(tmp_path: Path) -> None:
-    scan_root = tmp_path / "scan"
-    trace_root = scan_root / ".zscope_snapshots"
-    run_dir = tmp_path / "run"
-    trace_root.mkdir(parents=True)
-    run_dir.mkdir()
-    store = DecisionTraceStore(trace_root)
-    reference = store.put_evidence(kind="fact", payload={"ok": True}, producer="test")
-    store.append_event(
-        "VAL_1",
-        stage="V1",
-        actor="validator_agent",
-        reason_code="V1_COMPLETED",
-        output_refs=(reference,),
-    )
-    issue = {
-        "candidate_uid": "CAND_1",
-        "validation_cluster_uid": "VAL_1",
-        "candidate_disposition": "needs_review",
-        **_needs_review_v4_bundle(),
-    }
-    store.finalize_issue(issue, view_memberships=("with_needs_review",))
-    manifest = store.snapshot()
-    evidence_path = trace_root / reference
-    evidence_path.write_text("{}\n", encoding="utf-8")
-    report = {
-        "issues_with_needs_review": [issue],
-        "candidate_terminal_states": [issue],
-        "run_manifest": {"decision_trace": manifest},
-    }
-
-    with pytest.raises(BenchmarkError, match="invalid evidence object"):
-        benchmark_runner._archive_decision_trace_artifacts(
-            report,
-            scan_root=scan_root,
-            run_dir=run_dir,
-            usage_artifact=None,
-        )
-
-
 def test_usage_event_sidecar_rejects_sparse_or_unknown_v1_fields(tmp_path: Path) -> None:
     path = tmp_path / "usage.jsonl"
     sparse = {
@@ -1239,22 +493,6 @@ def test_usage_event_sidecar_rejects_sparse_or_unknown_v1_fields(tmp_path: Path)
 
     with pytest.raises(BenchmarkError, match="unknown=future_extension"):
         benchmark_runner._read_usage_events_jsonl(path)
-
-
-def test_usage_event_sidecar_accepts_legacy_v1_without_response_identity(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "usage.jsonl"
-    event = _usage_event()
-    event["schema_version"] = "zscope.llm-usage-event.v1"
-    event.pop("requested_model")
-    event.pop("provider_response_model")
-    event.pop("call_chain_id")
-    event.pop("attempt_index")
-    event.pop("logical_operation_id")
-    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
-
-    assert benchmark_runner._read_usage_events_jsonl(path) == [event]
 
 
 @pytest.mark.parametrize(
@@ -1394,10 +632,6 @@ def test_current_java_entries_have_no_answer_fields() -> None:
 
 def test_cpp_run_restarts_inside_wsl_on_windows(monkeypatch) -> None:
     captured = {}
-    monkeypatch.setenv("Z_SCOPE_API_KEY", "secret")
-    monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "https://legacy.invalid/v1")
-    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "legacy-model")
-    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", r"C:\benchmark-work")
     monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
         benchmark_cli.subprocess,
@@ -1421,111 +655,3 @@ def test_cpp_run_restarts_inside_wsl_on_windows(monkeypatch) -> None:
     assert captured["argv"][:3] == ["wsl", "bash", "-lc"]
     assert "Z_SCOPE_BENCHMARK_IN_WSL" in captured["env"]["WSLENV"]
     assert "Z_SCOPE_BENCHMARK_WORK_ROOT/p" in captured["env"]["WSLENV"]
-    assert "Z_SCOPE_API_KEY" in captured["env"]["WSLENV"]
-    assert "Z_SCOPE_LLM_BASE_URL" not in captured["env"]["WSLENV"]
-    assert "Z_SCOPE_LLM_MODEL" not in captured["env"]["WSLENV"]
-
-
-def test_cpp_pilot_forwards_only_explicit_key_file_to_wsl(monkeypatch) -> None:
-    captured = {}
-    monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        benchmark_cli.subprocess,
-        "check_output",
-        lambda *args, **kwargs: "/mnt/c/work/Z-Scope\n",
-    )
-    monkeypatch.setenv("Z_SCOPE_API_KEY", "must-not-be-forwarded")
-    monkeypatch.setenv(
-        "Z_SCOPE_LLM_BASE_URL",
-        "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
-    )
-    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "deepseek-v4-flash")
-    monkeypatch.setenv("Z_SCOPE_P6_API_KEY_FILE", r"C:\private\zscope.local.env")
-    monkeypatch.setenv("Z_SCOPE_P6_CANDIDATE_COMMIT", "a" * 40)
-    monkeypatch.setenv("WSLENV", "Z_SCOPE_API_KEY:UNRELATED_SECRET/p")
-
-    def fake_run(argv, **kwargs):
-        captured["argv"] = argv
-        captured["env"] = kwargs["env"]
-        return type("Completed", (), {"returncode": 0})()
-
-    monkeypatch.setattr(benchmark_cli.subprocess, "run", fake_run)
-    with pytest.raises(SystemExit) as exit_info:
-        benchmark_cli.main(["run", "--language", "c_cpp", "--mode", "pilot"])
-
-    assert exit_info.value.code == 0
-    wslenv = captured["env"]["WSLENV"]
-    assert "Z_SCOPE_P6_API_KEY_FILE/p" in wslenv
-    assert "Z_SCOPE_P6_CANDIDATE_COMMIT" in wslenv
-    assert "Z_SCOPE_API_KEY" not in wslenv
-    assert "Z_SCOPE_LLM_BASE_URL" not in wslenv
-    assert "Z_SCOPE_LLM_MODEL" not in wslenv
-    assert "UNRELATED_SECRET" not in wslenv
-    assert "Z_SCOPE_API_KEY" not in captured["env"]
-    assert "Z_SCOPE_LLM_BASE_URL" not in captured["env"]
-    assert "Z_SCOPE_LLM_MODEL" not in captured["env"]
-
-
-def test_cpp_pilot_rejects_conflicting_identity_before_wsl_dispatch(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Windows")
-    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "legacy-model")
-    monkeypatch.setenv("Z_SCOPE_P6_API_KEY_FILE", r"C:\private\zscope.local.env")
-    called = False
-
-    def fake_run(*_args, **_kwargs):
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(benchmark_cli.subprocess, "run", fake_run)
-
-    with pytest.raises(SystemExit) as exit_info:
-        benchmark_cli.main(["run", "--language", "c_cpp", "--mode", "pilot"])
-
-    assert exit_info.value.code == 2
-    assert capsys.readouterr().err == (
-        "stage=provider; class=provider_identity_override_attempt:1; count=1\n"
-    )
-    assert called is False
-
-
-def test_pilot_cli_never_surfaces_untyped_failure_body(monkeypatch, capsys) -> None:
-    canary = "P6_UNTYPED_FAILURE_SECRET_CANARY"
-    monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Linux")
-    monkeypatch.delenv("Z_SCOPE_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("Z_SCOPE_LLM_MODEL", raising=False)
-    monkeypatch.setattr(
-        benchmark_cli,
-        "run_benchmark",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(BenchmarkError(canary)),
-    )
-
-    with pytest.raises(SystemExit) as exit_info:
-        benchmark_cli.main(["run", "--language", "c_cpp", "--mode", "pilot"])
-
-    assert exit_info.value.code == 2
-    error = capsys.readouterr().err
-    assert error == "stage=artifact_seal; class=internal_failure:1; count=1\n"
-    assert canary not in error
-
-
-def test_pilot_cli_preserves_a_typed_input_binding_failure(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Linux")
-    monkeypatch.delenv("Z_SCOPE_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("Z_SCOPE_LLM_MODEL", raising=False)
-    monkeypatch.setattr(
-        benchmark_cli,
-        "run_benchmark",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            BenchmarkError(
-                "private input detail",
-                failure_class="input_binding_failure",
-            )
-        ),
-    )
-
-    with pytest.raises(SystemExit) as exit_info:
-        benchmark_cli.main(["run", "--language", "c_cpp", "--mode", "pilot"])
-
-    assert exit_info.value.code == 2
-    error = capsys.readouterr().err
-    assert error == "stage=entry_input; class=input_binding_failure:1; count=1\n"

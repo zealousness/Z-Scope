@@ -6,24 +6,24 @@ from zscope.reporting.attribution import (
 
 def test_finding_attribution_serializes_discovery_and_decision_independently() -> None:
     attribution = FindingAttribution(
-        discovered_by=("hypothesis_hunter", "deterministic_rule"),
+        discovered_by=("llm_active_discovery", "deterministic_rule"),
         discovery_details=(
-            {"kind": "hypothesis_hunter", "source_id": "AU_1"},
+            {"kind": "llm_active_discovery", "source_id": "AU_1"},
             {"kind": "deterministic_rule", "source_id": "RULE_1"},
         ),
-        decided_by="proof_engine",
+        decided_by="validator_llm",
         decision_level="V2",
         decision_details={"validation_cluster_uid": "VAL_1"},
     )
 
     payload = serialize_finding_attribution(attribution)
 
-    assert payload["schema_version"] == "zscope.finding-attribution.v2"
+    assert payload["schema_version"] == "zscope.finding-attribution.v1"
     assert payload["discovered_by"] == [
         "deterministic_rule",
-        "hypothesis_hunter",
+        "llm_active_discovery",
     ]
-    assert payload["decided_by"] == "proof_engine"
+    assert payload["decided_by"] == "validator_llm"
     assert payload["decision_level"] == "V2"
     assert attribution.validation_errors() == []
 

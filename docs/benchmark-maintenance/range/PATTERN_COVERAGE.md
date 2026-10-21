@@ -3,8 +3,7 @@
 Source document: `docs/c_memory_concurrency_patterns.md`.
 
 This matrix records how the `test/range` benchmark maps the pattern catalog to
-realistic task-dispatcher code. Version 15 corrects two structured source anchors
-without changing the truth count. Version 14 adds a high-priority `ISSUE43-*`
+realistic task-dispatcher code. Version 14 adds a high-priority `ISSUE43-*`
 tier for stream-journal, zero-copy, resource-quota, pointer, and lock-cache
 runtime models. Version 11 adds a high-priority `ISSUE42-*` tier from GitHub
 issue #42 runtime, shared-memory, signal, timer, and callback models. Version 8

@@ -8,10 +8,12 @@ candidate is verified, rejected, or only an audit observation.
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
+from functools import lru_cache
 import re
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
-from ...semantics.models import LocalPatternSemantics, attr_for_category, classify_api_name
+from ...semantics.models import LocalPatternSemantics
 from .cpp_domains.models import CodeLine
 from .cpp_domains.resource_lifecycle import RegexResourceLifecycleRules
 from .cpp_domains.memory_bounds_integer import RegexMemoryBoundsIntegerRules
@@ -26,7 +28,7 @@ from .cpp_domains import (
 )
 
 if TYPE_CHECKING:
-    from ...orchestration.candidates import CandidateTicket
+    from ...orchestration.subagents import SubAgentTicket
 
 
 def default_local_semantics() -> LocalPatternSemantics:
@@ -35,6 +37,219 @@ def default_local_semantics() -> LocalPatternSemantics:
     from ...semantics.defaults import default_local_pattern_semantics
 
     return default_local_pattern_semantics()
+
+
+# This policy narrows an already verified instance materialization. It is not
+# a factory receipt and does not verify native origins, scope or currentness.
+INSTANCE_CONSUMER_POLICY = "zscope.instance-builtin-consumers.v1"
+
+
+def _restricted_semantics(semantics: Optional[LocalPatternSemantics]) -> LocalPatternSemantics:
+    """Own a filtered copy; never fill missing instance roles from defaults."""
+    from ...semantics.models import CATEGORY_BY_ATTR
+
+    if semantics is None:
+        raise ValueError("restrict_to_semantics requires explicit instance semantics")
+    result = deepcopy(semantics)
+    registry = result.contracts
+    eligible = [
+        contract
+        for contract in registry.contracts
+        if contract.effects_trusted and contract in registry.find(contract.symbol.name)
+    ]
+    registry.contracts = eligible
+    for attr, role in CATEGORY_BY_ATTR.items():
+        bucket = getattr(result, attr)
+        for name in list(bucket):
+            if not any(c.role == role for c in registry.find(name)):
+                del bucket[name]
+    names = {contract.symbol.name for contract in eligible}
+    registry.pairs = [
+        pair for pair in registry.pairs if pair.acquire.name in names and pair.release.name in names
+    ]
+    return result
+
+
+def _semantic_call_allowed(
+    semantics: LocalPatternSemantics, restricted: bool, name: str, *roles: str
+) -> bool:
+    """Restriction only: missing or shadowed contracts never authorize a call."""
+    return not restricted or any(
+        contract.effects_trusted and (not roles or contract.role in roles)
+        for contract in semantics.contracts.find(name)
+    )
+
+
+@lru_cache(maxsize=1)
+def _builtin_pattern_roles() -> Dict[str, frozenset[str]]:
+    """Spelling identifies a slot to restrict, never an allowed operation."""
+    from ...semantics.defaults import default_checker_api_names
+
+    roles: Dict[str, set[str]] = {}
+    for contract in default_local_semantics().contracts.contracts:
+        roles.setdefault(contract.symbol.name, set()).add(contract.role)
+    for checker, role in {
+        "extended_allocators": "allocator",
+        "string_copy_sinks": "copy",
+        "extended_lock_apis": "lock",
+        "extended_unlock_apis": "unlock",
+        "graph_release_apis": "deallocator",
+        "extended_send_sinks": "send_sink",
+        "extended_recv_sources": "recv_source",
+        "extended_format_sinks": "format_sink",
+        "extended_io_acquirers": "io_acquire",
+        "extended_io_releasers": "io_release",
+        "extended_callback_registrars": "callback_register",
+    }.items():
+        for name in default_checker_api_names(checker):
+            roles.setdefault(name, set()).add(role)
+    # Historical lexical alternatives without a packaged contract must also
+    # fail closed. These entries confer no role on the instance registry.
+    for name, role in {
+        "kfree": "deallocator",
+        "kmalloc": "allocator",
+        "kzalloc": "allocator",
+        "refcount_dec_and_test": "standard_operation",
+        "atomic_dec_and_test": "standard_operation",
+    }.items():
+        roles.setdefault(name, set()).add(role)
+    for name in (
+        "strncmp",
+        "memcmp",
+        "fstat",
+        "sleep",
+        "usleep",
+        "nanosleep",
+        "poll",
+        "select",
+        "va_start",
+        "__builtin_add_overflow",
+        "__builtin_mul_overflow",
+        "__builtin_ctz",
+        "__builtin_ctzll",
+        "__sync_bool_compare_and_swap",
+        "__atomic_fetch_add",
+        "__atomic_fetch_sub",
+        "be16toh",
+        "be32toh",
+        "be64toh",
+        "bswap",
+        "__builtin_bswap",
+        "__builtin_bswap16",
+        "__builtin_bswap32",
+        "__builtin_bswap64",
+        "min",
+        "MIN",
+        "ARRAY_SIZE",
+        "FAILED",
+        "IS_ERR",
+        "SUCCEEDED",
+        "OK",
+        "access",
+        "stat",
+        "lstat",
+        "faccessat",
+        "fstatat",
+        "ftok",
+        "getenv",
+        "system",
+        "strlen",
+        "strchr",
+        "strcmp",
+        "chmod",
+        "fchmod",
+        "fcntl",
+        "ioctl",
+        "__atomic_store_n",
+        "eventfd_write",
+        "notify",
+        "trigger",
+        "wakeup",
+        "file_exists",
+    ):
+        roles.setdefault(name, set()).add("standard_operation")
+    for name, role in {
+        "memset": "copy",
+        "strlcpy": "copy",
+        "snprintf": "format_sink",
+        "mmap": "io_acquire",
+        "shm_open": "io_acquire",
+        "accept4": "io_acquire",
+        "munmap": "io_release",
+        "UnmapViewOfFile": "io_release",
+        "pthread_create": "thread_create",
+        "pthread_cond_signal": "condition_signal",
+        "pthread_cond_broadcast": "condition_signal",
+        "pthread_cond_init": "condition_init",
+        "pthread_rwlock_init": "lock_init",
+    }.items():
+        roles.setdefault(name, set()).add(role)
+    return {name: frozenset(values) for name, values in roles.items()}
+
+
+def _consumer_api_pattern(
+    pattern: str, semantics: LocalPatternSemantics, restricted: bool, *, expand_slots: bool = True
+) -> str:
+    from ...semantics.contracts import expand_api_pattern, return_acquisition_names
+
+    if not restricted:
+        return expand_api_pattern(pattern, semantics) if expand_slots else pattern
+    if r"\s*\(" not in pattern:
+        return pattern
+    slots = {
+        "malloc": ("allocators", "allocator"),
+        "calloc": ("calloc_allocators", "calloc"),
+        "realloc": ("reallocators", "reallocator"),
+        "free": ("deallocators", "deallocator"),
+        "recv": ("recv_sources", "recv_source"),
+        "send": ("send_sinks", "send_sink"),
+        "pthread_mutex_lock": ("lock_apis", "lock"),
+        "pthread_mutex_unlock": ("unlock_apis", "unlock"),
+    }
+    roots = _builtin_pattern_roles()
+    denied = semantics.contracts.shadowed_symbols
+
+    def replace(match: re.Match[str]) -> str:
+        name = match[0]
+        if expand_slots and name in slots:
+            attr, role = slots[name]
+            names = {
+                candidate
+                for candidate in getattr(semantics, attr)
+                if _semantic_call_allowed(semantics, True, candidate, role)
+            }
+            if role in {"allocator", "calloc", "reallocator"}:
+                names = return_acquisition_names(semantics, names, role)
+            return (
+                "(?-i:" + "|".join(re.escape(n) for n in sorted(names)) + ")" if names else "(?!)"
+            )
+        if name in roots:
+            return (
+                "(?-i:" + re.escape(name) + ")"
+                if _semantic_call_allowed(semantics, True, name, *roots[name])
+                else "(?!)"
+            )
+        return "(?!)" if name in denied else name
+
+    # Normalize the historical grouped spellings before checking each exact root.
+    pattern = pattern.replace(
+        "pthread_cond_(?:timed)?wait", "(?:pthread_cond_wait|pthread_cond_timedwait)"
+    )
+    pattern = pattern.replace(
+        "pthread_(?:mutex|cond|rwlock)_init",
+        "(?:pthread_mutex_init|pthread_cond_init|pthread_rwlock_init)",
+    )
+    pattern = pattern.replace("mem(?:cpy|move)", "(?:memcpy|memmove)")
+    pattern = pattern.replace("__builtin_ctz(?:ll)?", "(?:__builtin_ctz|__builtin_ctzll)")
+    pattern = pattern.replace("v(?:f)?printf", "(?:vprintf|vfprintf)")
+    names = set(roots) | set(denied)
+    return re.sub(
+        r"(?:(?<=\\b)|(?<![A-Za-z0-9_]))(?:"
+        + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+        + r")(?![A-Za-z0-9_])",
+        replace,
+        pattern,
+    )
 
 
 class RegexCandidateGenerator(
@@ -67,22 +282,50 @@ class RegexCandidateGenerator(
         self,
         semantics: Optional[LocalPatternSemantics] = None,
         rule_policy: Optional[Any] = None,
+        program_facts_provider: Optional[Any] = None,
+        *,
+        restrict_to_semantics: bool = False,
     ):
-        self.semantics = default_local_semantics()
-        if semantics is not None:
+        self.restrict_to_semantics = restrict_to_semantics
+        self.semantics = (
+            _restricted_semantics(semantics) if restrict_to_semantics else default_local_semantics()
+        )
+        if semantics is not None and not restrict_to_semantics:
             self.semantics.merge(semantics)
         self.rule_policy = rule_policy
+        self.program_facts_provider = program_facts_provider
+        self.program_facts: Dict[str, Any] = {}
         self._compile_patterns()
 
     def _compile_patterns(self) -> None:
-        self._allocator_names = set(self.semantics.allocators)
-        self._calloc_names = set(self.semantics.calloc_allocators)
-        self._reallocator_names = set(self.semantics.reallocators)
+        from ...semantics.contracts import return_acquisition_names
+
+        self._allocator_names = return_acquisition_names(
+            self.semantics, self.semantics.allocators, "allocator"
+        )
+        self._calloc_names = return_acquisition_names(
+            self.semantics, self.semantics.calloc_allocators, "calloc"
+        )
+        self._reallocator_names = return_acquisition_names(
+            self.semantics, self.semantics.reallocators, "reallocator"
+        )
         self._deallocator_names = set(self.semantics.deallocators)
         self._copy_sink_names = set(self.semantics.copy_sinks)
         self._lock_names = set(self.semantics.lock_apis)
         self._unlock_names = set(self.semantics.unlock_apis)
         self._size_type_names = self._DEFAULT_SIZE_TYPES | set(self.semantics.type_aliases)
+        self._io_acquire_names = return_acquisition_names(
+            self.semantics, self.semantics.io_acquirers, "io_acquire"
+        )
+        self._io_release_names = set(self.semantics.io_releasers)
+        self._send_sink_names = set(self.semantics.send_sinks)
+        self._recv_source_names = set(self.semantics.recv_sources)
+        self._format_sink_names = set(self.semantics.format_sinks)
+        self._callback_registrar_names = set(self.semantics.callback_registrars)
+        self._user_io_acquire_names = self.semantics.names_from_nondefault_sources("io_acquirers")
+        self._user_io_release_names = self.semantics.names_from_nondefault_sources("io_releasers")
+        self._user_send_sink_names = self.semantics.names_from_nondefault_sources("send_sinks")
+        self._user_recv_source_names = self.semantics.names_from_nondefault_sources("recv_sources")
 
         self._alloc_re = self._call_re(self._allocator_names)
         self._calloc_re = self._call_re(self._calloc_names)
@@ -96,13 +339,46 @@ class RegexCandidateGenerator(
         )
         self._copy_sink_re = self._call_re(self._copy_sink_names)
         self._lock_re = self._call_re(
-            self._lock_names, extra_patterns=[r"pthread_rwlock_[rw]dlock"]
+            self._lock_names,
+            extra_patterns=(
+                [] if self.restrict_to_semantics else [r"pthread_rwlock_(?:rdlock|wrlock)"]
+            ),
         )
         self._unlock_re = self._call_re(self._unlock_names)
         self._size_type_pattern = self._type_pattern(self._size_type_names)
         self._integer_pointer_type_pattern = self._type_pattern(
             name for name in self._size_type_names if name != "char" and name != "unsigned char"
         )
+
+    def _semantic_api_pattern(self, pattern: str) -> str:
+        return _consumer_api_pattern(pattern, self.semantics, self.restrict_to_semantics)
+
+    def _literal_api_pattern(self, pattern: str) -> str:
+        return _consumer_api_pattern(
+            pattern, self.semantics, self.restrict_to_semantics, expand_slots=False
+        )
+
+    def _semantic_call_allowed(self, name: str, *roles: str) -> bool:
+        return _semantic_call_allowed(self.semantics, self.restrict_to_semantics, name, *roles)
+
+    def _bound_api_calls(self, text: str, roles: set[str]) -> List[Tuple[str, str]]:
+        names = {c.symbol.name for c in self.semantics.contracts.contracts if c.role in roles}
+        events: List[Tuple[str, str]] = []
+        for call in re.finditer(
+            rf"\b(?P<api>{self._names_pattern(names)})\s*\((?P<args>[^()]*)\)", text
+        ):
+            prefix = text[: call.start()]
+            assignment = re.search(
+                r"(?P<lhs>[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)?)\s*=\s*(?:\([^)]*\)\s*)?$", prefix
+            )
+            returned = assignment["lhs"] if assignment else ""
+            for role in roles:
+                obj = self.semantics.contracts.resolve_object(
+                    call["api"], role, call["args"].split(","), returned
+                )
+                if obj:
+                    events.append((call["api"], obj))
+        return events
 
     _RESOURCE_BY_CLASS = {
         "integer_overflow": "memory",
@@ -169,19 +445,34 @@ class RegexCandidateGenerator(
         *,
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
-        self._augment_name_heuristics_from_code(str(code or ""))
+        self.program_facts = (
+            self.program_facts_provider(func_name, file_path) if self.program_facts_provider else {}
+        )
+        semantic_context = {
+            "func_name": func_name,
+            "file_path": file_path,
+            "code": code,
+            "program_facts": self.program_facts,
+        }
+        self.last_semantic_events = self.semantics.contracts.trace_calls(semantic_context)
         lines = self._parse_lines(code)
         if not lines:
             return []
         allowed = set(allowed_skills) if allowed_skills is not None else None
         issues: List[Dict[str, Any]] = []
         emit = self._make_emit(issues, func_name, file_path, lines, allowed)
-        run_detector_plan(
-            "regex",
-            "function",
-            RegexRuleContext(generator=self, lines=lines, emit=emit),
-        )
+        from ...semantics.call_context import bind_call_context
 
+        with bind_call_context(semantic_context, self.semantics.contracts):
+            run_detector_plan(
+                "regex",
+                "function",
+                RegexRuleContext(generator=self, lines=lines, emit=emit),
+            )
+
+        from ...semantics.build_scope import bind_candidate_build_scope
+
+        bind_candidate_build_scope(issues, semantic_context)
         deduped: Dict[str, Dict[str, Any]] = {}
         for issue in issues:
             key = str(issue.get("dedup_key") or issue["id"])
@@ -195,7 +486,7 @@ class RegexCandidateGenerator(
         file_path: str,
         *,
         allowed_skills: Optional[Iterable[str]] = None,
-    ) -> List["CandidateTicket"]:
+    ) -> List["SubAgentTicket"]:
         return [
             self.issue_to_ticket(issue)
             for issue in self.generate_issues(
@@ -206,8 +497,8 @@ class RegexCandidateGenerator(
             )
         ]
 
-    def issue_to_ticket(self, issue: Dict[str, Any]) -> "CandidateTicket":
-        from ...orchestration.candidates import CandidateTicket
+    def issue_to_ticket(self, issue: Dict[str, Any]) -> "SubAgentTicket":
+        from ...orchestration.subagents import SubAgentTicket
 
         defect_class = str(issue.get("defect_class") or issue.get("subcategory") or "unknown")
         rule_id = str(issue.get("rule_id") or issue.get("rule") or "")
@@ -223,7 +514,7 @@ class RegexCandidateGenerator(
         evidence.setdefault("positive_evidence", issue.get("positive_evidence") or [])
         evidence.setdefault("negative_evidence", issue.get("negative_evidence") or [])
         line = self._line_from_location(str(issue.get("location") or ""))
-        return CandidateTicket(
+        return SubAgentTicket(
             id=str(issue.get("candidate_id") or issue.get("id")),
             skill=skill,
             task=(
@@ -265,7 +556,6 @@ class RegexCandidateGenerator(
             suggested_fix: str,
             sink: str,
             source: str = "",
-            thread_object: str = "",
             confidence: float = 0.78,
             impact_level: str = "medium",
             positive: Optional[List[str]] = None,
@@ -354,45 +644,39 @@ class RegexCandidateGenerator(
                 cwe=cwe,
             )
 
-            issue = {
-                "id": candidate_id,
-                "candidate_id": candidate_id,
-                "function": func_name,
-                "location": f"{file_path}:{line.number}",
-                "category": defect_class,
-                "subcategory": defect_class,
-                "defect_class": defect_class,
-                "finding_kind": "regex_candidate",
-                "rule": rule,
-                "rule_id": descriptor.rule_id if descriptor is not None else rule,
-                "cwe": cwe,
-                "skill": skill,
-                "description": description,
-                "root_cause": root_cause,
-                "suggested_fix": suggested_fix,
-                "confidence": confidence,
-                "rule_confidence": confidence,
-                "impact_level": impact_level,
-                "reasoning": reasoning,
-                "code_snippet": self._context(
-                    lines, line.index + context_start, line.index + context_end
-                ),
-                "source": source,
-                "sink": sink,
-                "dedup_key": dedup_key,
-                "positive_evidence": pos,
-                "negative_evidence": neg,
-                "evidence_pack": pack,
-                "evidence_refs": [],
-            }
-            if thread_object:
-                # Concurrency obligations are object-centric.  Preserve the
-                # exact detector-owned object identity instead of forcing the
-                # candidate envelope to derive one from display source text,
-                # file and line metadata.
-                issue["thread_object"] = thread_object
-                pack["thread_object"] = thread_object
-            issues.append(issue)
+            issues.append(
+                {
+                    "id": candidate_id,
+                    "candidate_id": candidate_id,
+                    "function": func_name,
+                    "location": f"{file_path}:{line.number}",
+                    "category": defect_class,
+                    "subcategory": defect_class,
+                    "defect_class": defect_class,
+                    "finding_kind": "regex_candidate",
+                    "rule": rule,
+                    "rule_id": descriptor.rule_id if descriptor is not None else rule,
+                    "cwe": cwe,
+                    "skill": skill,
+                    "description": description,
+                    "root_cause": root_cause,
+                    "suggested_fix": suggested_fix,
+                    "confidence": confidence,
+                    "rule_confidence": confidence,
+                    "impact_level": impact_level,
+                    "reasoning": reasoning,
+                    "code_snippet": self._context(
+                        lines, line.index + context_start, line.index + context_end
+                    ),
+                    "source": source,
+                    "sink": sink,
+                    "dedup_key": dedup_key,
+                    "positive_evidence": pos,
+                    "negative_evidence": neg,
+                    "evidence_pack": pack,
+                    "evidence_refs": [],
+                }
+            )
 
         return emit
 
@@ -488,6 +772,12 @@ class RegexCandidateGenerator(
             ("copy", self.semantics.copy_sinks),
             ("lock", self.semantics.lock_apis),
             ("unlock", self.semantics.unlock_apis),
+            ("io_acquire", self.semantics.io_acquirers),
+            ("io_release", self.semantics.io_releasers),
+            ("send_sink", self.semantics.send_sinks),
+            ("recv_source", self.semantics.recv_sources),
+            ("format_sink", self.semantics.format_sinks),
+            ("callback_register", self.semantics.callback_registrars),
         ]
         for category, mapping in categories:
             for name, sources in mapping.items():
@@ -496,27 +786,6 @@ class RegexCandidateGenerator(
                         f"`{name}` classified as {category} API via {', '.join(sources)}"
                     )
         return evidence
-
-    def _augment_name_heuristics_from_code(self, code: str) -> None:
-        changed = False
-        for name in sorted(set(re.findall(r"\b([A-Za-z_]\w*)\s*\(", code))):
-            category = self._classify_api_name(name)
-            if not category:
-                continue
-            before = set(getattr(self.semantics, self._attr_for_category(category)))
-            self.semantics.add_api(category, name, "name_heuristic")
-            after = set(getattr(self.semantics, self._attr_for_category(category)))
-            changed = changed or before != after
-        if changed:
-            self._compile_patterns()
-
-    @staticmethod
-    def _classify_api_name(name: str) -> str:
-        return classify_api_name(name)
-
-    @staticmethod
-    def _attr_for_category(category: str) -> str:
-        return attr_for_category(category)
 
     def _parse_lines(self, code: str) -> List[CodeLine]:
         parsed: List[CodeLine] = []

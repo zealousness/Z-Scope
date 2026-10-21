@@ -1,23 +1,18 @@
-"""Construction helpers for the built-in analysis tools."""
+"""Construction helpers for the six evidence-oriented analysis tools."""
 
-from pathlib import Path
-from typing import Dict, Optional, TYPE_CHECKING
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 from ..framework.base import BaseTool
-from .call_graph import GetCallGraphTool
-from .callers import GetCallersTool
-from .code_retrieval import GetFunctionImplTool
-from .data_flow import GetDataFlowTool
-from .deep_call_context import GetDeepCallContextTool
-from .file_snippet import GetFileSnippetTool
-from .function_info import GetFunctionInfoTool
-from .function_pointers import FindFunctionPointersTool
-from .list_functions import ListFunctionsTool
-from .pointer_alias import QueryPointerAliasTool
-from .snapshot_tool import GetFunctionSnapshotTool
-from .security_semantics import GetSecuritySemanticsTool
-from .taint_reachability import VerifyTaintReachabilityTool
-from .type_info import GetTypeInfoTool
+from .code_graph_query import QueryCodeGraphTool
+from .data_flow_trace import TraceDataFlowTool
+from .read_code import ReadCodeTool
+from .search_code import SearchCodeTool
+from .semantic_context import SemanticContextTool
+from .static_findings import QueryStaticFindingsTool
+from .symbols import SymbolCatalog
+from .source_access import ProjectSourceAccess
 
 if TYPE_CHECKING:
     from ..config.user_config_store import UserConfigStore
@@ -25,42 +20,46 @@ if TYPE_CHECKING:
     from ..snapshots.store import SnapshotStore
 
 
+SnapshotResolver = Callable[[str, Optional[str]], Dict[str, Any]]
+
+
 def build_tool_registry(
     code_index: "CodeIndex",
     snapshot_store: "SnapshotStore",
     user_config: Optional["UserConfigStore"] = None,
     *,
+    snapshot_resolver: Optional[SnapshotResolver] = None,
+    candidate_ledger: Any = None,
     include_advanced: bool = True,
+    access_profile: str = "default",
 ) -> Dict[str, BaseTool]:
-    """Build the ordered registry of built-in tools for one analysis context."""
-    tools = [
-        GetFunctionImplTool(code_index, user_config),
-        GetFunctionInfoTool(code_index, user_config),
-        GetFunctionSnapshotTool(
-            snapshot_store,
-            code_index=code_index,
-            user_config=user_config,
-        ),
-        GetSecuritySemanticsTool(
-            Path(getattr(snapshot_store, "snapshot_dir", ".zscope_snapshots")) / "security_map.db"
-        ),
-        ListFunctionsTool(code_index),
-        GetFileSnippetTool(code_index),
-        GetCallersTool(code_index),
-        GetTypeInfoTool(code_index),
-    ]
-    if include_advanced:
-        tools.extend(
-            [
-                GetCallGraphTool(code_index),
-                GetDataFlowTool(code_index),
-                FindFunctionPointersTool(code_index),
-                QueryPointerAliasTool(code_index),
-                VerifyTaintReachabilityTool(code_index),
-                GetDeepCallContextTool(code_index),
-            ]
-        )
+    """Build the atomic six-tool public registry for one analysis context.
 
+    ``include_advanced`` remains accepted for Python caller compatibility. Backend
+    differences are now expressed by result coverage, never by changing vocabulary.
+    """
+    del include_advanced
+    if access_profile not in {"default", "read_only", "candidate_blind"}:
+        raise ValueError("Unknown tool access profile")
+    catalog = SymbolCatalog(code_index, user_config)
+    source_access = ProjectSourceAccess.for_index(code_index)
+    if access_profile != "default" and source_access is not None:
+        catalog.permitted_source = source_access.allowed
+    tools = [
+        SearchCodeTool(catalog, source_access),
+        ReadCodeTool(code_index, catalog, source_access),
+        SemanticContextTool(
+            snapshot_store,
+            code_index,
+            catalog,
+            resolver=snapshot_resolver,
+            cache_only=access_profile != "default",
+            candidate_blind=access_profile == "candidate_blind",
+        ),
+        QueryCodeGraphTool(code_index, catalog),
+        TraceDataFlowTool(code_index, catalog),
+        QueryStaticFindingsTool(code_index, catalog, candidate_ledger),
+    ]
     registry: Dict[str, BaseTool] = {}
     for tool in tools:
         if tool.name in registry:

@@ -159,7 +159,7 @@ int Main(int argc, char **argv) {
     assert "input:argv" in candidate.reasons
 
 
-def test_pthread_create_discovers_thread_entry_not_creator():
+def test_pthread_create_discovers_worker_and_uncovered_creator():
     discovery = EntryDiscovery(
         FakeCodeIndex(
             {
@@ -180,13 +180,14 @@ static void* WorkerMain(void* arg) {
 
     result = discovery.discover()
 
-    assert [candidate.function_name for candidate in result.candidates] == ["WorkerMain"]
+    assert [candidate.function_name for candidate in result.candidates] == ["WorkerMain", "StartWorkers"]
     candidate = result.candidates[0]
     assert candidate.exposure == "thread"
     assert "thread_entry:pthread_create" in candidate.reasons
+    assert "thread_creator:pthread_create" in result.candidates[1].reasons
 
 
-def test_vos_task_create_discovers_third_argument_thread_entry():
+def test_vos_spelling_without_implementation_does_not_imply_thread_entry():
     discovery = EntryDiscovery(
         FakeCodeIndex(
             {
@@ -206,13 +207,10 @@ static void VosWorkerMain(void) {
 
     result = discovery.discover()
 
-    assert [candidate.function_name for candidate in result.candidates] == ["VosWorkerMain"]
-    candidate = result.candidates[0]
-    assert candidate.exposure == "thread"
-    assert "thread_entry:VOS_TaskCreate" in candidate.reasons
+    assert result.candidates == []
 
 
-def test_osal_task_create_discovers_second_argument_thread_entry():
+def test_osal_spelling_without_implementation_does_not_imply_thread_entry():
     discovery = EntryDiscovery(
         FakeCodeIndex(
             {
@@ -231,10 +229,7 @@ static void OsalWorkerMain(void *arg) {
 
     result = discovery.discover()
 
-    assert [candidate.function_name for candidate in result.candidates] == ["OsalWorkerMain"]
-    candidate = result.candidates[0]
-    assert candidate.exposure == "thread"
-    assert "thread_entry:OSAL_TaskCreate" in candidate.reasons
+    assert result.candidates == []
 
 
 def test_function_impl_cache_reuses_header_body_and_thread_target_lookups():
@@ -268,7 +263,7 @@ static void* WorkerMain(void* arg) {
     assert impl_names.count("StartWorkers") == 1
     assert impl_names == ["WorkerMain", "StartWorkers"]
 
-    assert len(result.candidates) == 1
+    assert len(result.candidates) == 2
     candidate = result.candidates[0]
     assert candidate.function_name == "WorkerMain"
     assert candidate.exposure == "api+thread+communication"

@@ -5,9 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import tempfile
+import uuid
 import re
 import sqlite3
 import threading
+import weakref
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
@@ -21,6 +25,20 @@ from .policy import (
 logger = logging.getLogger(__name__)
 
 _SQLITE_PRAGMA_LOCK = threading.Lock()
+_INITIALIZATION_LOCKS: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
+_INITIALIZATION_GUARD = threading.Lock()
+
+
+def _initialization_lock(path: Path) -> Any:
+    key = os.path.normcase(str(path.resolve()))
+    with _INITIALIZATION_GUARD:
+        lock = _INITIALIZATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _INITIALIZATION_LOCKS[key] = lock
+        return lock
+
+
 # Keep the readable component short enough for legacy Windows MAX_PATH once
 # snapshot directories and the atomic-write ".tmp" suffix are included.
 _INDEX_FILENAME_PREFIX_LIMIT = 96
@@ -394,6 +412,7 @@ class SnapshotStore:
         self._cache_bytes = 0
         self._cache: "OrderedDict[tuple[str, str, str], bytes]" = OrderedDict()
         self._cache_lock = threading.RLock()
+        self._observed = threading.local()
         self._init_db()
 
     @classmethod
@@ -442,6 +461,9 @@ class SnapshotStore:
 
     def _invalidate_snapshot_cache(self, index_name: str) -> None:
         self._invalidate_cache_key(("snapshot", self.effective_rules_sha256, index_name))
+        generation = self.observed_generation(index_name)
+        if generation:
+            self._invalidate_cache_key(("snapshot", self.effective_rules_sha256, generation))
 
     def _cached_final_report(self, index_name: str) -> Optional[Dict[str, Any]]:
         return self._cached_json_value(("report", self.effective_rules_sha256, index_name))
@@ -561,6 +583,13 @@ class SnapshotStore:
         )
 
     def _init_db(self) -> None:
+        # Multiple Analyzers can open the same store before modeling joins its
+        # shared Future. Serialize schema inspection and every migration commit,
+        # while allowing unrelated snapshot directories to initialize in parallel.
+        with _initialization_lock(self.db_path):
+            self._init_db_locked()
+
+    def _init_db_locked(self) -> None:
         conn = self._connect()
         try:
             with _SQLITE_PRAGMA_LOCK:
@@ -910,7 +939,9 @@ class SnapshotStore:
                 if final_report_file:
                     old_final_path = self.snapshot_dir / final_report_file
                     if old_final_path.exists():
-                        report = json.loads(old_final_path.read_text(encoding="utf-8"))
+                        from ..reporting.json_io import read_report
+
+                        report = read_report(old_final_path)
                         new_final_file = self._final_report_filename(index_name)
                         new_final_path = self.snapshot_dir / new_final_file
                         self._write_json_atomic(new_final_path, report)
@@ -987,10 +1018,49 @@ class SnapshotStore:
 
     @staticmethod
     def _write_json_atomic(path: Path, payload: Any) -> None:
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        with open(temp_path, "w", encoding="utf-8") as file_obj:
-            json.dump(payload, file_obj, indent=2, ensure_ascii=False)
-        temp_path.replace(path)
+        # Each writer owns its temporary file, even across processes.
+        fd, name = tempfile.mkstemp(prefix=".snapshot-", suffix=".tmp", dir=path.parent)
+        temp_path = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file_obj:
+                json.dump(payload, file_obj, indent=2, ensure_ascii=False)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            temp_path.replace(path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def _observe_generation(self, index_name: str, generation: str) -> None:
+        if not hasattr(self._observed, "versions"):
+            self._observed.versions = {}
+        self._observed.versions[index_name] = generation
+
+    def observed_generation(self, index_name: str) -> Optional[str]:
+        """Version actually read/written by this thread, never a fresh DB lookup."""
+        return getattr(self._observed, "versions", {}).get(index_name)
+
+    def _retire_files(self, filenames: list[str]) -> None:
+        # Version names are never reused. A reader racing retirement retries its
+        # committed pointer. Legacy shared filenames must retain all owners.
+        conn = self._connect()
+        try:
+            for name in set(filenames):
+                if not name or Path(name).name != name:
+                    continue
+                referenced = conn.execute(
+                    "SELECT 1 FROM snapshots WHERE snapshot_file=? OR final_report_file=?",
+                    (name, name),
+                ).fetchone()
+                if not referenced:
+                    try:
+                        path = self.snapshot_dir / name
+                        path.unlink(missing_ok=True)
+                        if name.endswith("_final.json"):
+                            path.with_suffix(".timings.json").unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("[snapshot-store] retirement deferred file=%s", name)
+        finally:
+            conn.close()
 
     def save_snapshot(
         self,
@@ -998,7 +1068,7 @@ class SnapshotStore:
         snapshot: Dict[str, Any],
         code: str,
         dependency_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> str:
         payload_index = str(snapshot.get("index_name") or "").strip()
         index_name = str(index_name or "").strip()
         if not index_name or payload_index != index_name:
@@ -1041,8 +1111,10 @@ class SnapshotStore:
             )
             raise ValueError("snapshot referenced_types field is incomplete")
 
+        snapshot_file = f"{self._encoded_index_name(index_name)}.{uuid.uuid4().hex}.json"
+        previous_files: list[str] = []
+        committed = False
         try:
-            snapshot_file = self._snapshot_filename(index_name)
             snapshot_path = self.snapshot_dir / snapshot_file
             self._write_json_atomic(snapshot_path, snapshot)
             code_hash = compute_code_hash(code)
@@ -1059,6 +1131,12 @@ class SnapshotStore:
 
             conn = self._connect()
             try:
+                conn.execute("BEGIN IMMEDIATE")
+                previous = conn.execute(
+                    "SELECT snapshot_file, final_report_file FROM snapshots WHERE index_name=?",
+                    (index_name,),
+                ).fetchone()
+                previous_files = [str(value) for value in previous or () if value]
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO snapshots (
@@ -1084,9 +1162,12 @@ class SnapshotStore:
                     ),
                 )
                 conn.commit()
+                committed = True
             finally:
                 conn.close()
         except Exception:
+            if not committed:
+                (self.snapshot_dir / snapshot_file).unlink(missing_ok=True)
             logger.exception(
                 "[snapshot-store] save failed index_name=%s reason=snapshot_save_failed",
                 index_name,
@@ -1094,52 +1175,81 @@ class SnapshotStore:
             raise
         self._invalidate_snapshot_cache(index_name)
         self._invalidate_final_report_cache(index_name)
-        self._cache_snapshot(index_name, snapshot)
+        self._observe_generation(index_name, snapshot_file)
+        self._cache_snapshot(snapshot_file, snapshot)
+        self._retire_files(previous_files)
         logger.info(
             "[snapshot-store] saved index_name=%s snapshot_file=%s",
             index_name,
             snapshot_file,
         )
 
-    def save_final_report(self, index_name: str, final_report: Dict[str, Any]) -> None:
+        return snapshot_file
+
+    def save_final_report(
+        self,
+        index_name: str,
+        final_report: Dict[str, Any],
+        *,
+        expected_generation: Optional[str] = None,
+    ) -> bool:
         index_name = str(index_name or "").strip()
+        expected = expected_generation or self.observed_generation(index_name)
+        if not expected:
+            logger.warning(
+                "[snapshot-store] report has no observed snapshot index_name=%s", index_name
+            )
+            return False
+        final_file = f"{self._encoded_index_name(index_name)}.{uuid.uuid4().hex}_final.json"
+        final_path = self.snapshot_dir / final_file
+        timing_path = final_path.with_suffix(".timings.json")
+        committed = False
+        old_file = ""
         try:
+            from ..reporting.json_io import write_report_atomic
+
+            write_report_atomic(final_path, final_report)
             conn = self._connect()
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
-                    "SELECT snapshot_file FROM snapshots WHERE index_name = ?",
+                    "SELECT snapshot_file, final_report_file FROM snapshots WHERE index_name=?",
                     (index_name,),
                 ).fetchone()
-                if not row:
-                    logger.warning(
-                        "[snapshot-store] final report has no snapshot index_name=%s "
-                        "reason=final_report_snapshot_missing",
-                        index_name,
+                if not row or row[0] != expected:
+                    conflict_dir = self.snapshot_dir / "conflicts"
+                    conflict_dir.mkdir(exist_ok=True)
+                    conflict_file = conflict_dir / final_file
+                    final_path.replace(conflict_file)
+                    # A rejected report keeps its payload for diagnosis, but
+                    # its write timing is not a separately consumable report
+                    # and would make conflict enumeration ambiguous.
+                    timing_path.unlink(missing_ok=True)
+                    final_report.setdefault("metadata", {})["snapshot_conflict_report"] = str(
+                        conflict_file
                     )
-                    return
-                final_file = self._final_report_filename(index_name)
-                self._write_json_atomic(self.snapshot_dir / final_file, final_report)
+                    logger.warning(
+                        "[snapshot-store] report version conflict index_name=%s retained=%s",
+                        index_name,
+                        conflict_file,
+                    )
+                    return False
+                old_file = str(row[1] or "")
                 conn.execute(
-                    "UPDATE snapshots SET final_report_file = ? WHERE index_name = ?",
-                    (final_file, index_name),
+                    "UPDATE snapshots SET final_report_file=? WHERE index_name=? AND snapshot_file=?",
+                    (final_file, index_name, expected),
                 )
                 conn.commit()
+                committed = True
             finally:
                 conn.close()
-        except Exception:
-            logger.exception(
-                "[snapshot-store] final report save failed index_name=%s "
-                "reason=final_report_save_failed",
-                index_name,
-            )
-            raise
-        self._invalidate_final_report_cache(index_name)
-        self._cache_final_report(index_name, final_report)
-        logger.info(
-            "[snapshot-store] saved final report index_name=%s final_report_file=%s",
-            index_name,
-            final_file,
-        )
+        finally:
+            if not committed:
+                final_path.unlink(missing_ok=True)
+                timing_path.unlink(missing_ok=True)
+        self._cache_final_report(final_file, final_report)
+        self._retire_files([old_file])
+        return True
 
     def save_validation_result(
         self,
@@ -1238,128 +1348,82 @@ class SnapshotStore:
             return None
         return value if isinstance(value, dict) else None
 
-    def load_snapshot(self, index_name: str) -> Optional[Dict[str, Any]]:
+    def _load_committed(self, index_name: str, *, report: bool) -> Optional[Dict[str, Any]]:
         index_name = str(index_name or "").strip()
-        cached = self._cached_snapshot(index_name)
-        if cached is not None:
-            return cached
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT snapshot_file FROM snapshots WHERE index_name = ?",
-                (index_name,),
-            ).fetchone()
-        finally:
-            conn.close()
-        if not row:
-            logger.debug("[snapshot-store] snapshot miss index_name=%s", index_name)
-            return None
-        snapshot_path = self.snapshot_dir / str(row[0])
-        if not snapshot_path.exists():
-            logger.warning(
-                "[snapshot-store] snapshot file missing index_name=%s snapshot_file=%s "
-                "reason=snapshot_file_missing",
-                index_name,
-                row[0],
+        for _attempt in range(4):
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT snapshot_file, final_report_file FROM snapshots WHERE index_name=?",
+                    (index_name,),
+                ).fetchone()
+                if not row or (report and not row[1]):
+                    return None
+                if (
+                    report
+                    and conn.execute(
+                        "SELECT COUNT(*) FROM snapshots WHERE final_report_file=?", (row[1],)
+                    ).fetchone()[0]
+                    != 1
+                ):
+                    logger.error(
+                        "[snapshot-store] ambiguous final report reference index_name=%s",
+                        index_name,
+                    )
+                    return None
+            finally:
+                conn.close()
+            from ..reporting.json_io import read_report
+
+            filename = str(row[1] if report else row[0])
+            cached = (
+                self._cached_final_report(filename) if report else self._cached_snapshot(filename)
             )
-            return None
-        try:
-            snapshot = cast(
-                Dict[str, Any],
-                json.loads(snapshot_path.read_text(encoding="utf-8")),
-            )
-        except Exception:
-            logger.exception(
-                "[snapshot-store] snapshot read failed index_name=%s snapshot_file=%s "
-                "reason=snapshot_read_failed",
-                index_name,
-                row[0],
-            )
-            return None
-        if str(snapshot.get("index_name") or "") != index_name:
-            logger.error(
-                "[snapshot-store] persisted index mismatch requested=%s payload=%s "
-                "reason=persisted_snapshot_index_mismatch",
-                index_name,
-                snapshot.get("index_name"),
-            )
-            return None
-        _ensure_snapshot_symbol_context(snapshot)
-        self._cache_snapshot(index_name, snapshot)
-        return snapshot
+            try:
+                if report:
+                    owner = json.loads(
+                        (self.snapshot_dir / str(row[0])).read_text(encoding="utf-8")
+                    )
+                    if owner.get("index_name") != index_name:
+                        return None
+                value = cached if cached is not None else read_report(self.snapshot_dir / filename)
+            except FileNotFoundError:
+                continue  # A concurrent commit may already have retired this version.
+            except (OSError, ValueError):
+                logger.exception("[snapshot-store] invalid committed file=%s", filename)
+                return None
+            if not isinstance(value, dict):
+                return None
+            if not report:
+                if value.get("index_name") != index_name:
+                    return None
+                _ensure_snapshot_symbol_context(value)
+                self._cache_snapshot(filename, value)
+            else:
+                self._cache_final_report(filename, value)
+            self._observe_generation(index_name, str(row[0]))
+            return value
+        logger.warning("[snapshot-store] read contention/missing file index_name=%s", index_name)
+        return None
+
+    def load_snapshot(self, index_name: str) -> Optional[Dict[str, Any]]:
+        return self._load_committed(index_name, report=False)
+
+    def load_snapshot_versioned(
+        self, index_name: str
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        value = self.load_snapshot(index_name)
+        return value, self.observed_generation(index_name) if value is not None else None
 
     def load_final_report(self, index_name: str) -> Optional[Dict[str, Any]]:
-        index_name = str(index_name or "").strip()
-        cached = self._cached_final_report(index_name)
-        if cached is not None:
-            return cached
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT snapshot_file, final_report_file " "FROM snapshots WHERE index_name = ?",
-                (index_name,),
-            ).fetchone()
-            reference_count = (
-                conn.execute(
-                    "SELECT COUNT(*) FROM snapshots WHERE final_report_file = ?",
-                    (str(row[1]),),
-                ).fetchone()[0]
-                if row and row[1]
-                else 0
-            )
-        finally:
-            conn.close()
-        if not row or not row[1]:
-            logger.debug("[snapshot-store] final report miss index_name=%s", index_name)
-            return None
-        if int(reference_count) != 1:
-            logger.error(
-                "[snapshot-store] ambiguous final report reference index_name=%s "
-                "final_report_file=%s references=%s "
-                "reason=final_report_filename_collision",
-                index_name,
-                row[1],
-                reference_count,
-            )
-            return None
-        if self.load_snapshot(index_name) is None:
-            logger.error(
-                "[snapshot-store] final report owner snapshot is invalid index_name=%s "
-                "reason=final_report_snapshot_identity_invalid",
-                index_name,
-            )
-            return None
-        final_path = self.snapshot_dir / str(row[1])
-        if not final_path.exists():
-            logger.warning(
-                "[snapshot-store] final report file missing index_name=%s final_report_file=%s "
-                "reason=final_report_file_missing",
-                index_name,
-                row[1],
-            )
-            return None
-        try:
-            report = cast(
-                Dict[str, Any],
-                json.loads(final_path.read_text(encoding="utf-8")),
-            )
-        except Exception:
-            logger.exception(
-                "[snapshot-store] final report read failed index_name=%s final_report_file=%s "
-                "reason=final_report_read_failed",
-                index_name,
-                row[1],
-            )
-            return None
-        self._cache_final_report(index_name, report)
-        return report
+        return self._load_committed(index_name, report=True)
 
     def get_fingerprints(self, index_name: str) -> Optional[Dict[str, str]]:
         conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT code_hash, semantic_hash, symbol_context_hash, callee_summary_hash, "
-                "type_context_hash, effective_rules_sha256 "
+                "type_context_hash, effective_rules_sha256, snapshot_file "
                 "FROM snapshots WHERE index_name = ?",
                 (index_name,),
             ).fetchone()
@@ -1374,6 +1438,7 @@ class SnapshotStore:
             "callee_summary_hash": str(row[3]),
             "type_context_hash": str(row[4]),
             "effective_rules_sha256": str(row[5] or ""),
+            "snapshot_generation": str(row[6]),
         }
 
     def reconcile_project_callee_summaries(
@@ -1404,6 +1469,9 @@ class SnapshotStore:
             fingerprints = self.get_fingerprints(index_name)
             if snapshot is None or fingerprints is None:
                 return "missing"
+            expected = self.observed_generation(index_name)
+            if fingerprints["snapshot_generation"] != expected:
+                return "llm_refresh_required"
             if (
                 compute_symbol_context_hash(current_symbol_context)
                 != fingerprints["symbol_context_hash"]
@@ -1421,12 +1489,14 @@ class SnapshotStore:
                 if desired_hash != fingerprints["callee_summary_hash"]:
                     conn = self._connect()
                     try:
-                        conn.execute(
+                        updated = conn.execute(
                             "UPDATE snapshots SET callee_summary_hash = ?, "
-                            "timestamp = CURRENT_TIMESTAMP WHERE index_name = ?",
-                            (desired_hash, index_name),
+                            "timestamp = CURRENT_TIMESTAMP WHERE index_name = ? AND snapshot_file = ?",
+                            (desired_hash, index_name, expected),
                         )
                         conn.commit()
+                        if updated.rowcount != 1:
+                            return "llm_refresh_required"
                     finally:
                         conn.close()
                 success = True
@@ -1434,21 +1504,36 @@ class SnapshotStore:
 
             refreshed = _clone_snapshot(snapshot)
             refreshed["project_callees"] = desired
-            snapshot_file = self._snapshot_filename(index_name)
-            self._write_json_atomic(self.snapshot_dir / snapshot_file, refreshed)
-            conn = self._connect()
+            snapshot_file = f"{self._encoded_index_name(index_name)}.{uuid.uuid4().hex}.json"
+            committed = False
+            previous_files: list[str] = []
             try:
-                conn.execute(
-                    "UPDATE snapshots SET callee_summary_hash = ?, "
-                    "timestamp = CURRENT_TIMESTAMP, snapshot_file = ? "
-                    "WHERE index_name = ?",
-                    (desired_hash, snapshot_file, index_name),
-                )
-                conn.commit()
+                self._write_json_atomic(self.snapshot_dir / snapshot_file, refreshed)
+                conn = self._connect()
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    row = conn.execute(
+                        "SELECT snapshot_file,final_report_file FROM snapshots WHERE index_name=?",
+                        (index_name,),
+                    ).fetchone()
+                    if not row or row[0] != expected:
+                        return "llm_refresh_required"
+                    previous_files = [str(value) for value in row if value]
+                    conn.execute(
+                        "UPDATE snapshots SET callee_summary_hash=?, timestamp=CURRENT_TIMESTAMP, "
+                        "snapshot_file=?, final_report_file=NULL WHERE index_name=? AND snapshot_file=?",
+                        (desired_hash, snapshot_file, index_name, expected),
+                    )
+                    conn.commit()
+                    committed = True
+                finally:
+                    conn.close()
             finally:
-                conn.close()
-            self._invalidate_snapshot_cache(index_name)
-            self._cache_snapshot(index_name, refreshed)
+                if not committed:
+                    (self.snapshot_dir / snapshot_file).unlink(missing_ok=True)
+            self._observe_generation(index_name, snapshot_file)
+            self._cache_snapshot(snapshot_file, refreshed)
+            self._retire_files(previous_files)
             logger.info(
                 "[snapshot-reconcile] refreshed index_name=%s project_callees=%d",
                 index_name,
@@ -1524,6 +1609,8 @@ class SnapshotStore:
         fingerprints = self.get_fingerprints(index_name)
         if not fingerprints:
             return True, "no_snapshot"
+        if fingerprints["snapshot_generation"] != self.observed_generation(index_name):
+            return True, "snapshot_version_changed"
         if self.effective_rules_sha256:
             persisted_rules = fingerprints.get("effective_rules_sha256", "")
             if not persisted_rules:
@@ -1573,6 +1660,7 @@ class SnapshotStore:
         files_to_delete: list[str] = []
         conn = self._connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT snapshot_file, final_report_file FROM snapshots WHERE index_name = ?",
                 (index_name,),
@@ -1621,6 +1709,8 @@ class SnapshotStore:
                 )
                 continue
             candidate.unlink(missing_ok=True)
+            if filename.endswith("_final.json"):
+                candidate.with_suffix(".timings.json").unlink(missing_ok=True)
         self._invalidate_snapshot_cache(index_name)
         self._invalidate_final_report_cache(index_name)
         self.lock_manager.invalidate(index_name)

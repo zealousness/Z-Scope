@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.review-memory-schema-registry.v1",
+  "schema_version": "zscope.review-memory-schema-registry.v1",
+  "schemas": {
+    "zscope.review-record.v1": "review-record.schema.json",
+    "zscope.false-positive-pattern-proposal.v1": "false-positive-pattern-proposal.schema.json",
+    "zscope.review-pattern-match.v1": "review-pattern-match.schema.json",
+    "zscope.review-memory-operation.v1": "review-memory-operation.schema.json"
+    ,"zscope.review-memory-extraction-input.v1": "review-memory-extraction-input.schema.json"
+  }
+}

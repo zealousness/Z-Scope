@@ -110,8 +110,7 @@ class HistoryReconciler:
             "advisory_only": True,
         }
         updated["validation_reasoning"] = (
-            "Historical reconciliation suggested that the issue may be fixed, "
-            "but no deterministic refutation was produced."
+            "历史问题复核建议该问题可能已修复，但没有产生确定性的反驳证据；请人工复核。"
         )
         return ReconciledHistoricalIssue(
             keep=True,

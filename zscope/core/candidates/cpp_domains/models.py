@@ -19,6 +19,11 @@ class CodeLine:
     raw: str
     text: str
     index: int
+    column: int = 1
+    offset: int = 0
+    ordinal: int = 0
+    ordered: bool = True
+    offset_basis: str = "function_utf8"
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,11 @@ class ClangCfgLine:
     text: str
     index: int
     block_id: int
+    column: int = 1
+    offset: int = 0
+    ordinal: int = 0
+    ordered: bool = True
+    offset_basis: str = "function_utf8"
 
 
 @dataclass(frozen=True)
@@ -40,6 +50,9 @@ class ResourceState:
     null_guarded: bool = False
     status_guarded: bool = False
     transferred: bool = False
+    object_identity: str = ""
+    resource_domain: str = ""
+    resource_family: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +60,7 @@ class LockState:
     lock_id: str
     api: str
     line: ClangCfgLine
+    definite: bool = True
 
 
 @dataclass(frozen=True)
@@ -55,6 +69,11 @@ class GraphLine:
     text: str
     raw: str
     index: int
+    column: int = 1
+    offset: int = 0
+    ordinal: int = 0
+    ordered: bool = True
+    offset_basis: str = "function_utf8"
 
 
 @dataclass(frozen=True)

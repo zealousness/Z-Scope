@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 JsonRpcPayload = Union[Dict[str, Any], List[Dict[str, Any]]]
 
-PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSION = "2025-06-18"
 EXPERIMENTAL_HEADER_VALUE = "streamable-http"
 
 
@@ -244,6 +244,7 @@ def run_http_server(
     auth_token_env: str = "",
     client_allowlist: Optional[Sequence[str]] = None,
     scan_depth: Optional[str] = None,
+    profile: str = "default",
 ) -> None:
     auth_token = os.environ.get(auth_token_env, "") if auth_token_env else ""
     errors = validate_remote_mcp_server_options(
@@ -257,8 +258,9 @@ def run_http_server(
     config = ConfigLoader.load(
         config_path,
         scan_depth=scan_depth,
+        read_only=profile != "default",
     )
-    provider = ZScopeMcpProvider(config, config_path=Path(config_path))
+    provider = ZScopeMcpProvider(config, config_path=Path(config_path), profile=profile)
     server = create_http_server(
         host,
         port,

@@ -398,7 +398,8 @@ def validate_validator_arm_catalog(catalog: Mapping[str, Any]) -> None:
             or policy.get("fact_recheck_enabled") is not False
             or policy.get("investigation_enabled") is not False
             or limits.get("max_calls_per_group") != 1
-            or limits.get("expected_group_tokens") != LEGACY_UPPER_BOUND_EXPECTED_TOTAL_TOKENS
+            or limits.get("expected_group_tokens")
+            != LEGACY_UPPER_BOUND_EXPECTED_TOTAL_TOKENS
         ):
             raise ValidatorReplayError(
                 "Arm E must delegate one complete legacy session to one executor invocation"
@@ -484,6 +485,9 @@ def _group_to_validator_input(
         validation_pass=validation_pass,
         evidence_delta=evidence_delta,
     )
+    review_memory = group.get("review_memory")
+    if isinstance(review_memory, Mapping):
+        evidence_slice["review_memory"] = copy.deepcopy(dict(review_memory))
     return {
         "finding_uid": group["candidate_uid"],
         "candidate_uid": group["candidate_uid"],
@@ -1222,7 +1226,10 @@ def run_validator_replay(
             evidence_delta: Optional[Mapping[str, Any]] = None,
         ) -> Optional[Dict[str, Any]]:
             result = run_call(call_kind, validation_pass, evidence_delta)
-            if result is not None or int(policy["max_mechanical_repair_calls"]) <= 0:
+            if (
+                result is not None
+                or int(policy["max_mechanical_repair_calls"]) <= 0
+            ):
                 return result
             repair_hash = calls[-1]["raw_result_sha256"] if calls else ""
             return run_call(
@@ -1560,7 +1567,9 @@ def validate_validator_replay_run(result: Mapping[str, Any]) -> None:
     if result.get("usage") != _sum_usage(group_usage_rows):
         raise ValidatorReplayError("validator replay run usage does not conserve")
     total_tokens = int(_sum_usage(group_usage_rows)["total_tokens"])
-    expected_cost_status = bool(not expected_total_tokens or total_tokens <= expected_total_tokens)
+    expected_cost_status = bool(
+        not expected_total_tokens or total_tokens <= expected_total_tokens
+    )
     if result.get("cost_expectation_met") is not expected_cost_status:
         raise ValidatorReplayError("validator replay cost expectation status disagrees")
     expected_complete = all(group.get("execution_status") == "complete" for group in groups)

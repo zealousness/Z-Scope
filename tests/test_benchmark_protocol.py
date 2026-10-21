@@ -35,7 +35,7 @@ from zscope.benchmarking.protocol import (
     score_report,
     score_report_views,
     select_validator_arm,
-    _select_max_weight_pairs,
+    _select_multi_tp_pairs,
 )
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
 from zscope.benchmarking.isolation import ISOLATION_SCHEMA_VERSION
@@ -151,17 +151,27 @@ def test_score_report_views_includes_with_needs_review_metrics() -> None:
     assert views["default"]["matched_pairs"][0]["truth_id"] == "BUG-1"
 
 
-def test_max_weight_pair_selection_keeps_cardinality_for_large_reports() -> None:
-    pair = {
-        "truth_index": 99,
-        "truth_id": "BUG-100",
-        "issue_index": 19_999,
-        "score": 1,
-    }
+def test_multi_tp_pair_selection_selects_each_truths_best_pair() -> None:
+    # One issue can satisfy multiple truths; the truth side stays unique and
+    # ties break deterministically on the lower issue index.
+    strong = {"truth_index": 99, "truth_id": "BUG-100", "issue_index": 19_999, "score": 230}
+    weak = {"truth_index": 99, "truth_id": "BUG-100", "issue_index": 7, "score": 100}
 
-    selected = _select_max_weight_pairs([pair], truth_count=100, issue_count=20_000)
+    selected = _select_multi_tp_pairs([weak, strong], truth_count=100, issue_count=20_000)
 
-    assert selected == [pair]
+    assert selected == [strong]
+    both = _select_multi_tp_pairs(
+        [
+            strong,
+            {"truth_index": 0, "truth_id": "BUG-1", "issue_index": 19_999, "score": 5},
+        ],
+        truth_count=100,
+        issue_count=20_000,
+    )
+    assert both == [
+        {"truth_index": 0, "truth_id": "BUG-1", "issue_index": 19_999, "score": 5},
+        strong,
+    ]
 
 
 def test_call_path_function_cannot_supply_a_missing_secondary_location() -> None:

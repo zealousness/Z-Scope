@@ -65,7 +65,7 @@ def _rule_validation_analyzer(
     tmp_path: Path,
     validator: Any,
     *,
-    depth: str = "balanced",
+    depth: str = "fast",
 ) -> RuleDrivenAnalyzer:
     analyzer = RuleDrivenAnalyzer.__new__(RuleDrivenAnalyzer)
     analyzer.config = SimpleNamespace(
@@ -74,7 +74,7 @@ def _rule_validation_analyzer(
             entry_function="",
             agents=[
                 SimpleNamespace(
-                    name="proof_engine",
+                    name="validator_agent",
                     enabled=True,
                     llm_ref="default",
                 )
@@ -99,7 +99,7 @@ def _rule_validation_analyzer(
     analyzer.user_config = _RuleValidationMemory()
     analyzer.validation_pipeline = ValidationPipeline(analyzer.user_config)
     analyzer.llm_clients = {"default": object()}
-    analyzer._proof_engine_agent_factory = lambda *_args, **_kwargs: validator
+    analyzer._validator_agent_factory = lambda *_args, **_kwargs: validator
     analyzer._get_tools = lambda _agent=None: []
     analyzer._tool_policy_for_agent = lambda _agent=None: None
     analyzer._attach_agent_contract = lambda _context, _agent: None
@@ -235,7 +235,7 @@ def test_config_loader_reports_disabled_rule_unavailable_for_backend(
         )
     )
 
-    assert config.effective_rules.disabled_ids == {"clang_cfg_use_after_release"}
+    assert "clang_cfg_use_after_release" in config.effective_rules.disabled_ids
     assert config.rule_validation_warnings
     assert "not applicable to backend 'regex'" in config.rule_validation_warnings[0]
     assert "clang_structure" in config.rule_validation_warnings[0]
@@ -340,7 +340,9 @@ def test_analyzer_enriches_deterministic_candidate_but_never_disables_backend_si
     assert deterministic[0]["rule"] == "unchecked_strchr_result"
     assert deterministic[0]["rule_engine"] == "cpp_regex"
     assert deterministic[0]["skill"] == "null_and_failure"
-    assert deterministic[0]["evidence_pack"]["rule_revision"] == 1
+    descriptor = catalog.get("unchecked_strchr_result")
+    assert descriptor is not None
+    assert deterministic[0]["evidence_pack"]["rule_revision"] == descriptor.revision
 
     signal = analyzer._annotate_candidate_issues(
         [
@@ -370,6 +372,7 @@ def test_effective_rule_hash_changes_config_and_validator_cache_identity(
     runner.llm_clients = {}
     runner.code_index = SimpleNamespace(backend=None, backend_name="regex")
     runner.tool_policy_for_agent = lambda _name: None
+    runner._instance_scope = None  # Match the unscoped constructor binding.
 
     config_hash_before = analyzer._config_hash()
     validator_hash_before = runner._build_validation_environment_fingerprint()
@@ -379,14 +382,14 @@ def test_effective_rule_hash_changes_config_and_validator_cache_identity(
     assert runner._build_validation_environment_fingerprint() != validator_hash_before
 
 
-def test_proof_engine_stage_profile_overrides_agent_llm_ref(tmp_path: Path) -> None:
+def test_validator_stage_profile_overrides_legacy_agent_llm_ref(tmp_path: Path) -> None:
     config = ConfigLoader.load(str(_write_config(tmp_path)))
     config.llms["validation-stage"] = config.llms["default"]
     config.scan.llm_profiles.validation = "validation-stage"
-    proof_engine_cfg = next(
-        agent for agent in config.project.agents if agent.name == "proof_engine"
+    validator_cfg = next(
+        agent for agent in config.project.agents if agent.name == "validator_agent"
     )
-    proof_engine_cfg.llm_ref = "default"
+    validator_cfg.llm_ref = "default"
 
     selected: list[Any] = []
     runner = ValidationRunner.__new__(ValidationRunner)
@@ -397,9 +400,9 @@ def test_proof_engine_stage_profile_overrides_agent_llm_ref(tmp_path: Path) -> N
     }
     runner.get_tools = lambda _name: []
     runner.tool_policy_for_agent = lambda _name: None
-    runner.proof_engine_agent_factory = lambda client, _tools, **_kwargs: selected.append(client)
+    runner.validator_agent_factory = lambda client, _tools, **_kwargs: selected.append(client)
 
-    runner._build_proof_engine_agent()
+    runner._build_validator_agent()
 
     assert selected == [runner.llm_clients["validation-stage"]]
 
@@ -513,7 +516,7 @@ def test_rule_driven_report_keeps_catalog_provenance_and_backend_signal_boundary
     )
 
 
-def test_rule_driven_legacy_model_rejection_cannot_close_candidate(tmp_path: Path) -> None:
+def test_rule_driven_validator_rejection_is_explicit_needs_review(tmp_path: Path) -> None:
     class RejectingValidator:
         def run(self, input_data: dict[str, Any]) -> AgentResponse:
             return AgentResponse(
@@ -542,11 +545,12 @@ def test_rule_driven_legacy_model_rejection_cannot_close_candidate(tmp_path: Pat
 
     assert len(issues) == 1
     issue = issues[0]
+    assert issue["model_verdict"] == "rejected"
     assert issue["candidate_disposition"] == "needs_review"
     assert issue["validation_status"] == "needs_review"
     assert issue["attribution"]["discovered_by"] == ["backend_signal"]
-    assert issue["attribution"]["decided_by"] == "proof_engine"
-    assert issue["attribution"]["decision_level"] == "V0"
+    assert issue["attribution"]["decided_by"] == "unresolved"
+    assert issue["attribution"]["decision_level"] == "V1"
 
 
 def test_rule_driven_deduplicates_equivalent_cross_rule_backend_signals(
@@ -645,19 +649,10 @@ def test_rule_driven_deduplicates_equivalent_cross_rule_backend_signals(
     }
 
 
-def test_rule_driven_legacy_deterministic_proof_cannot_close_candidate(
-    tmp_path: Path,
-) -> None:
+def test_rule_driven_uses_shared_v0_without_calling_validator(tmp_path: Path) -> None:
     class UnexpectedValidator:
-        def run(self, input_data: dict[str, Any]) -> AgentResponse:
-            return AgentResponse(
-                success=True,
-                data=_rule_validator_result(
-                    input_data,
-                    verdict="uncertain",
-                    validation_pass="initial",
-                ),
-            )
+        def run(self, _input_data: dict[str, Any]) -> AgentResponse:
+            raise AssertionError("V0 proof must avoid the Validator")
 
     analyzer = _rule_validation_analyzer(tmp_path, UnexpectedValidator())
     issues = analyzer._validate_matches(
@@ -685,16 +680,15 @@ def test_rule_driven_legacy_deterministic_proof_cannot_close_candidate(
         ],
     )
 
-    assert issues[0]["candidate_disposition"] == "needs_review"
-    assert issues[0]["validator_invocation_count"] == 1
+    assert issues[0]["candidate_disposition"] == "confirmed"
+    assert issues[0]["validator_invocation_count"] == 0
     assert issues[0]["attribution"]["discovered_by"] == ["backend_signal"]
-    assert issues[0]["attribution"]["decided_by"] == "proof_engine"
+    assert issues[0]["attribution"]["decided_by"] == "deterministic_proof"
     assert issues[0]["attribution"]["decision_level"] == "V0"
+    assert analyzer._last_validation_state["validator_avoided_count"] == 1
 
 
-def test_rule_driven_does_not_promote_uncertified_fact_or_enter_investigation(
-    tmp_path: Path,
-) -> None:
+def test_rule_driven_uses_fact_resolution_v2_and_eligible_v3(tmp_path: Path) -> None:
     class LayeredValidator:
         def __init__(self) -> None:
             self.passes: list[str] = []
@@ -766,12 +760,11 @@ def test_rule_driven_does_not_promote_uncertified_fact_or_enter_investigation(
         ],
     )
 
-    assert validator.passes == ["initial"]
-    assert validator.investigations == 0
+    assert validator.passes == ["initial", "evidence_recheck"]
+    assert validator.investigations == 1
     issue = issues[0]
-    assert issue["candidate_disposition"] == "needs_review"
-    assert issue["validator_fact_resolution"]["status"] == ("no_new_parameterized_request")
-    assert issue["validator_result_pass"] == "initial"
-    assert issue["validator_invocation_count"] == 1
+    assert issue["validator_fact_resolution"]["status"] == "completed_partial"
+    assert issue["validator_result_pass"] == "investigation_synthesis"
+    assert issue["validator_invocation_count"] == 3
     assert issue["attribution"]["discovered_by"] == ["backend_signal"]
-    assert issue["attribution"]["decision_level"] == "V0"
+    assert issue["attribution"]["decision_level"] == "V3"

@@ -2,7 +2,8 @@
 
 The security map is intentionally separate from the historical per-function
 semantic snapshot.  It contains only program/user facts that can be rebuilt
-without an LLM, plus bounded audit units planned from those facts.  LLM
+without an LLM, plus explicitly unverified published contracts and bounded audit
+units planned from those observations. LLM
 discovery reports are persisted alongside the map but never mutate a claim
 into a confirmed finding.
 """
@@ -21,11 +22,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..config.function_entry import FunctionEntry
+from .contracts import CallSemanticMatch, code_tokens
+from .models import LocalPatternSemantics
 
 
-SECURITY_MAP_SCHEMA_VERSION = "zscope.security_semantic_map.v1"
+SECURITY_MAP_SCHEMA_VERSION = "zscope.security_semantic_map.v2"
 SEMANTIC_CLAIM_SCHEMA_VERSION = "zscope.semantic_claim.v1"
-AUDIT_UNIT_SCHEMA_VERSION = "zscope.audit_unit.v1"
+AUDIT_UNIT_SCHEMA_VERSION = "zscope.audit_unit.v2"
+FINE_COVERAGE_FAMILIES = frozenset({"resource_lifecycle", "callback_concurrency"})
 DISCOVERY_REPORT_SCHEMA_VERSION = "zscope.discovery_report.v1"
 SEMANTIC_CLAIM_DELTA_SCHEMA_VERSION = "zscope.semantic_claim_delta.v1"
 
@@ -85,6 +89,7 @@ _EVENT_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
         "callback_or_lock_event",
         re.compile(
             r"\b(pthread_create|pthread_mutex_(?:lock|unlock)|pthread_rwlock_|"
+            r"pthread_cond_(?:wait|signal|broadcast)|sem_(?:wait|post|trywait)|"
             r"std::thread|Thread\s*\(|Executor|CompletableFuture|register_callback|"
             r"callback|schedule|timer|atomic_)\b",
             re.IGNORECASE,
@@ -132,6 +137,34 @@ _INDIRECT_CALL_RE = re.compile(
     r"(?:\(\s*\*\s*[A-Za-z_]\w*\s*\)|[A-Za-z_]\w*\s*->\s*[A-Za-z_]\w*)\s*\("
 )
 _LINE_PREFIX_RE = re.compile(r"^\s*(\d+)\s*\|\s?(.*)$")
+
+_CONTRACT_EVENT_KINDS = {
+    "allocator": ("resource_lifecycle", "resource_transition"),
+    "calloc": ("resource_lifecycle", "resource_transition"),
+    "reallocator": ("resource_lifecycle", "resource_transition"),
+    "deallocator": ("resource_lifecycle", "resource_transition"),
+    "io_acquire": ("resource_lifecycle", "resource_transition"),
+    "io_release": ("resource_lifecycle", "resource_transition"),
+    "ownership_transfer": ("resource_lifecycle", "ownership_transfer"),
+    "reference_retention": ("resource_lifecycle", "resource_transition"),
+    "lock": ("callback_concurrency", "lock_order"),
+    "unlock": ("callback_concurrency", "lock_order"),
+    "callback_register": ("callback_concurrency", "callback_lifetime"),
+    "lock_init": ("callback_concurrency", "state_transition"),
+    "lock_destroy": ("callback_concurrency", "state_transition"),
+    "lock_state": ("callback_concurrency", "state_transition"),
+    "lock_wait": ("callback_concurrency", "state_transition"),
+    "condition_init": ("callback_concurrency", "state_transition"),
+    "condition_destroy": ("callback_concurrency", "state_transition"),
+    "condition_signal": ("callback_concurrency", "state_transition"),
+    "thread_create": ("callback_concurrency", "callback_lifetime"),
+    "thread_release": ("callback_concurrency", "callback_lifetime"),
+    "standard_operation": ("resource_lifecycle", "resource_transition"),
+    "copy": ("memory_bounds", "bounds_contract"),
+    "recv_source": ("input_boundary", "input_origin"),
+    "send_sink": ("sensitive_sink", "sensitive_sink"),
+    "format_sink": ("sensitive_sink", "sensitive_sink"),
+}
 
 
 def _utc_now() -> str:
@@ -291,6 +324,82 @@ class SemanticClaim:
 
 
 @dataclass(frozen=True)
+class CoverageKey:
+    """Program observation identity, never a claim that an obligation is proved."""
+
+    family: str
+    function_uid: str
+    object_ref: Optional[str]
+    operation_site: str
+    build_context: Optional[str]
+    scope_discriminator: str
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(v, str) and v for v in (self.family, self.function_uid, self.operation_site)
+        ):
+            raise ValueError("CoverageKey requires family, function and operation site")
+        for value in (self.object_ref, self.build_context):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValueError("CoverageKey optional identities must be nonempty or null")
+        if self.build_context is not None and not re.fullmatch(r"[0-9a-f]{64}", self.build_context):
+            raise ValueError("CoverageKey build_context must be a verified context digest or null")
+        if not isinstance(self.scope_discriminator, str) or (
+            self.build_context is None and not self.scope_discriminator
+        ):
+            raise ValueError("CoverageKey unknown build requires stable scope discriminator")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    def identity(self) -> str:
+        value = self.to_dict()
+        if self.build_context is not None:
+            value["scope_discriminator"] = ""
+        return "COVER_" + _digest(value, length=64)
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "CoverageKey":
+        fields = tuple(cls.__dataclass_fields__)
+        return cls(**_strict_mapping(raw, required=fields, allowed=fields, label="CoverageKey"))
+
+
+@dataclass(frozen=True)
+class AuditOccurrence:
+    entry_identity: str
+    entry_path: Tuple[str, ...]
+    event_refs: Tuple[str, ...]
+    reachability: str = "call_path"
+
+    def __post_init__(self) -> None:
+        if (
+            not self.entry_identity
+            or not self.entry_path
+            or self.reachability not in {"call_path", "callback_registration", "legacy_unknown"}
+        ):
+            raise ValueError("invalid AuditOccurrence")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "entry_identity": self.entry_identity,
+            "entry_path": list(self.entry_path),
+            "event_refs": list(self.event_refs),
+            "reachability": self.reachability,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "AuditOccurrence":
+        fields = ("entry_identity", "entry_path", "event_refs", "reachability")
+        data = _strict_mapping(raw, required=fields, allowed=fields, label="AuditOccurrence")
+        return cls(
+            str(data["entry_identity"]),
+            _string_list(data["entry_path"], "AuditOccurrence.entry_path", nonempty=True),
+            _string_list(data["event_refs"], "AuditOccurrence.event_refs"),
+            str(data["reachability"]),
+        )
+
+
+@dataclass(frozen=True)
 class SecurityEvent:
     event_id: str
     family: str
@@ -300,6 +409,17 @@ class SecurityEvent:
     line: int
     expression: str
     evidence_ref: str
+    object_ref: Optional[str] = None
+    operation_site: str = ""
+    build_context: Optional[str] = None
+    callback_target: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.build_context is not None and (
+            not isinstance(self.build_context, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", self.build_context)
+        ):
+            raise ValueError("SecurityEvent build_context must be a context digest or null")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -311,6 +431,10 @@ class SecurityEvent:
             "line": self.line,
             "expression": self.expression,
             "evidence_ref": self.evidence_ref,
+            "object_ref": self.object_ref,
+            "operation_site": self.operation_site,
+            "build_context": self.build_context,
+            "callback_target": self.callback_target,
         }
 
     @classmethod
@@ -325,7 +449,13 @@ class SecurityEvent:
             "expression",
             "evidence_ref",
         )
-        data = _strict_mapping(raw, required=fields, allowed=fields, label="SecurityEvent")
+        extras = ("object_ref", "operation_site", "build_context", "callback_target")
+        data = _strict_mapping(
+            raw, required=fields, allowed=(*fields, *extras), label="SecurityEvent"
+        )
+        for name in ("object_ref", "build_context", "callback_target"):
+            if data.get(name) is not None and (not isinstance(data[name], str) or not data[name]):
+                raise ValueError(f"SecurityEvent.{name} must be nonempty or null")
         result = cls(
             event_id=str(data["event_id"]),
             family=str(data["family"]),
@@ -335,6 +465,10 @@ class SecurityEvent:
             line=int(data["line"]),
             expression=str(data["expression"]),
             evidence_ref=str(data["evidence_ref"]),
+            object_ref=data.get("object_ref"),
+            operation_site=str(data.get("operation_site") or ""),
+            build_context=data.get("build_context"),
+            callback_target=data.get("callback_target"),
         )
         if not all(
             (result.event_id, result.family, result.kind, result.function_uid, result.evidence_ref)
@@ -395,6 +529,7 @@ class FunctionSecurityRecord:
     events: Tuple[SecurityEvent, ...]
     backend_coverage: Dict[str, Any]
     diff_focus: Dict[str, Any] = field(default_factory=dict)
+    entry_occurrences: Tuple[AuditOccurrence, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -413,6 +548,7 @@ class FunctionSecurityRecord:
             "events": [item.to_dict() for item in self.events],
             "backend_coverage": dict(self.backend_coverage),
             "diff_focus": dict(self.diff_focus),
+            "entry_occurrences": [item.to_dict() for item in self.entry_occurrences],
         }
 
     @classmethod
@@ -434,7 +570,14 @@ class FunctionSecurityRecord:
             "backend_coverage",
             "diff_focus",
         )
-        data = _strict_mapping(raw, required=fields, allowed=fields, label="FunctionSecurityRecord")
+        data = _strict_mapping(
+            raw,
+            required=fields,
+            allowed=(*fields, "entry_occurrences"),
+            label="FunctionSecurityRecord",
+        )
+        if not isinstance(data.get("entry_occurrences", []), list):
+            raise ValueError("FunctionSecurityRecord.entry_occurrences must be an array")
         if not isinstance(data["entry_paths"], list) or any(
             not isinstance(path, list) for path in data["entry_paths"]
         ):
@@ -466,7 +609,36 @@ class FunctionSecurityRecord:
                 data["backend_coverage"], "FunctionSecurityRecord.backend_coverage"
             ),
             diff_focus=_json_object(data["diff_focus"], "FunctionSecurityRecord.diff_focus"),
+            entry_occurrences=tuple(
+                AuditOccurrence.from_dict(item) for item in data.get("entry_occurrences", [])
+            ),
         )
+
+
+def event_coverage_key(
+    semantic_map: "SecuritySemanticMap", record: FunctionSecurityRecord, event: SecurityEvent
+) -> CoverageKey:
+    return CoverageKey(
+        event.family,
+        record.function_uid,
+        event.object_ref,
+        event.operation_site or f"{event.file}:{event.line}:{event.event_id}",
+        event.build_context,
+        _digest(
+            (
+                semantic_map.project_id,
+                semantic_map.revision,
+                record.function_uid,
+                record.index_name,
+                record.file_path,
+                record.start_line,
+                record.end_line,
+                record.signature,
+                record.code_hash,
+            ),
+            length=64,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -485,6 +657,9 @@ class AuditUnit:
     backend_coverage: Dict[str, Any]
     candidate_desert: bool
     schema_version: str = AUDIT_UNIT_SCHEMA_VERSION
+    coverage_keys: Tuple[CoverageKey, ...] = ()
+    occurrences: Tuple[AuditOccurrence, ...] = ()
+    migration_status: str = "current"
 
     def __post_init__(self) -> None:
         if self.schema_version != AUDIT_UNIT_SCHEMA_VERSION:
@@ -495,6 +670,8 @@ class AuditUnit:
             raise ValueError("AuditUnit identity and members must not be empty")
         if not 0 <= int(self.risk_score) <= 100:
             raise ValueError("AuditUnit risk_score must be between 0 and 100")
+        if self.migration_status not in {"current", "legacy_unverifiable"}:
+            raise ValueError("invalid AuditUnit migration_status")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -512,6 +689,9 @@ class AuditUnit:
             "skill_families": list(self.skill_families),
             "backend_coverage": dict(self.backend_coverage),
             "candidate_desert": bool(self.candidate_desert),
+            "coverage_keys": [item.to_dict() for item in self.coverage_keys],
+            "occurrences": [item.to_dict() for item in self.occurrences],
+            "migration_status": self.migration_status,
         }
 
     @classmethod
@@ -532,11 +712,43 @@ class AuditUnit:
             "backend_coverage",
             "candidate_desert",
         )
-        data = _strict_mapping(raw, required=fields, allowed=fields, label="AuditUnit")
+        legacy = raw.get("schema_version") == "zscope.audit_unit.v1"
+        extra = ("coverage_keys", "occurrences", "migration_status")
+        data = _strict_mapping(
+            raw,
+            required=fields if legacy else (*fields, *extra),
+            allowed=fields if legacy else (*fields, *extra),
+            label="AuditUnit",
+        )
+        if legacy:
+            old_fingerprint = str(data["fingerprint"])
+            data["fingerprint"] = _digest(
+                (AUDIT_UNIT_SCHEMA_VERSION, "legacy_unverifiable", old_fingerprint), length=64
+            )
+            data["unit_id"] = f"AUDIT_{data['fingerprint'][:20]}"
+            data["schema_version"] = AUDIT_UNIT_SCHEMA_VERSION
+            data["coverage_keys"] = [
+                CoverageKey(
+                    "unknown", str(uid), None, f"legacy:{old_fingerprint}", None, old_fingerprint
+                ).to_dict()
+                for uid in data["member_functions"]
+            ]
+            data["occurrences"] = [
+                AuditOccurrence(
+                    str(entry), (str(entry),), tuple(data["event_refs"]), "legacy_unknown"
+                ).to_dict()
+                for entry in data["root_entries"]
+            ]
+            data["migration_status"] = "legacy_unverifiable"
+        if any(not isinstance(data[name], list) for name in ("coverage_keys", "occurrences")):
+            raise ValueError("AuditUnit coverage keys and occurrences must be arrays")
         if not isinstance(data["candidate_desert"], bool):
             raise ValueError("AuditUnit.candidate_desert must be boolean")
         return cls(
             schema_version=str(data["schema_version"]),
+            coverage_keys=tuple(CoverageKey.from_dict(item) for item in data["coverage_keys"]),
+            occurrences=tuple(AuditOccurrence.from_dict(item) for item in data["occurrences"]),
+            migration_status=str(data["migration_status"]),
             unit_id=str(data["unit_id"]),
             unit_kind=str(data["unit_kind"]),
             fingerprint=str(data["fingerprint"]),
@@ -576,6 +788,7 @@ class DiscoveryHypothesis:
     description: str
     reasoning: str
     root_cause: str
+    cwes: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -596,6 +809,9 @@ class DiscoveryHypothesis:
         resource = str(self.resource or "").strip()
         if not resource and not (source and sink):
             raise ValueError("DiscoveryHypothesis requires source and sink or a resource")
+        for label in self.cwes:
+            if not re.fullmatch(r"CWE-[1-9][0-9]*", str(label)):
+                raise ValueError(f"unsupported DiscoveryHypothesis cwe label: {label!r}")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -616,6 +832,7 @@ class DiscoveryHypothesis:
             "description": self.description,
             "reasoning": self.reasoning,
             "root_cause": self.root_cause,
+            "cwes": list(self.cwes),
         }
 
     @classmethod
@@ -639,7 +856,9 @@ class DiscoveryHypothesis:
             "reasoning",
             "root_cause",
         )
-        data = _strict_mapping(raw, required=fields, allowed=fields, label="DiscoveryHypothesis")
+        data = _strict_mapping(
+            raw, required=fields, allowed=fields + ("cwes",), label="DiscoveryHypothesis"
+        )
         if not isinstance(data["entry_paths"], list) or any(
             not isinstance(path, list) for path in data["entry_paths"]
         ):
@@ -675,6 +894,7 @@ class DiscoveryHypothesis:
             description=str(data["description"]),
             reasoning=str(data["reasoning"]),
             root_cause=str(data["root_cause"]),
+            cwes=tuple(_string_list(data.get("cwes") or [], "DiscoveryHypothesis.cwes")),
         )
 
 
@@ -833,6 +1053,15 @@ class SecuritySemanticMap:
                 raise ValueError(f"SecuritySemanticMap has duplicate {label}")
 
     @property
+    def migration_status(self) -> str:
+        return (
+            "legacy_unverifiable"
+            if self.fingerprints.get("coverage_schema") == "legacy_unverifiable"
+            or self.coverage.get("migration_status") == "legacy_unverifiable"
+            else "current"
+        )
+
+    @property
     def map_fingerprint(self) -> str:
         return _digest(
             {
@@ -912,6 +1141,51 @@ class SecuritySemanticMap:
         for key in ("functions", "claims", "unknowns", "audit_units"):
             if not isinstance(data[key], list):
                 raise ValueError(f"SecuritySemanticMap.{key} must be an array")
+        legacy = data["schema_version"] == "zscope.security_semantic_map.v1"
+        for unit in data["audit_units"]:
+            expected = "zscope.audit_unit.v1" if legacy else AUDIT_UNIT_SCHEMA_VERSION
+            if not isinstance(unit, Mapping) or unit.get("schema_version") != expected:
+                raise ValueError("SecuritySemanticMap mixed audit unit schema versions")
+        for record in data["functions"]:
+            if not isinstance(record, Mapping):
+                raise ValueError("SecuritySemanticMap function must be an object")
+            if legacy and "entry_occurrences" in record:
+                raise ValueError("legacy map contains v2 occurrence metadata")
+            if not legacy and "entry_occurrences" not in record:
+                raise ValueError("v2 map missing occurrence metadata")
+            if not isinstance(record.get("events"), list):
+                raise ValueError("SecuritySemanticMap events must be an array")
+            for event in record["events"]:
+                if not isinstance(event, Mapping):
+                    raise ValueError("SecuritySemanticMap event must be an object")
+                extra = {"object_ref", "operation_site", "build_context", "callback_target"}
+                if legacy and any(name in event for name in extra):
+                    raise ValueError("legacy map contains v2 event metadata")
+                if not legacy and not extra <= set(event):
+                    raise ValueError("v2 map missing event metadata")
+        if legacy:
+            # Validate the old byte-independent identity before migration.
+            original = {
+                key: data[key]
+                for key in (
+                    "schema_version",
+                    "project_id",
+                    "revision",
+                    "profile",
+                    "functions",
+                    "claims",
+                    "unknowns",
+                    "fingerprints",
+                )
+            }
+            if str(data["map_fingerprint"]) != _digest(original, length=64):
+                raise ValueError("SecuritySemanticMap map_fingerprint mismatch")
+            data["schema_version"] = SECURITY_MAP_SCHEMA_VERSION
+            data["coverage"] = {**data["coverage"], "migration_status": "legacy_unverifiable"}
+            data["fingerprints"] = {
+                **data["fingerprints"],
+                "coverage_schema": "legacy_unverifiable",
+            }
         result = cls(
             schema_version=str(data["schema_version"]),
             project_id=str(data["project_id"]),
@@ -925,8 +1199,13 @@ class SecuritySemanticMap:
             coverage=_json_object(data["coverage"], "SecuritySemanticMap.coverage"),
             fingerprints=_json_object(data["fingerprints"], "SecuritySemanticMap.fingerprints"),
         )
-        if str(data["map_fingerprint"]) != result.map_fingerprint:
+        if not legacy and str(data["map_fingerprint"]) != result.map_fingerprint:
             raise ValueError("SecuritySemanticMap map_fingerprint mismatch")
+        if (
+            result.fingerprints.get("coverage_schema") == "legacy_unverifiable"
+            and result.coverage.get("migration_status") != "legacy_unverifiable"
+        ):
+            raise ValueError("SecuritySemanticMap legacy migration marker mismatch")
         return result
 
 
@@ -971,6 +1250,38 @@ SEMANTIC_CLAIM_JSON_SCHEMA: Dict[str, Any] = {
     },
 }
 
+COVERAGE_KEY_JSON_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "family",
+        "function_uid",
+        "object_ref",
+        "operation_site",
+        "build_context",
+        "scope_discriminator",
+    ],
+    "properties": {
+        "family": {"type": "string", "minLength": 1},
+        "function_uid": {"type": "string", "minLength": 1},
+        "object_ref": {"type": ["string", "null"], "minLength": 1},
+        "operation_site": {"type": "string", "minLength": 1},
+        "build_context": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "scope_discriminator": {"type": "string"},
+    },
+}
+AUDIT_OCCURRENCE_JSON_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["entry_identity", "entry_path", "event_refs", "reachability"],
+    "properties": {
+        "entry_identity": {"type": "string", "minLength": 1},
+        "entry_path": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "event_refs": {"type": "array", "items": {"type": "string"}},
+        "reachability": {"enum": ["call_path", "callback_registration", "legacy_unknown"]},
+    },
+}
+
 AUDIT_UNIT_JSON_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -989,6 +1300,9 @@ AUDIT_UNIT_JSON_SCHEMA: Dict[str, Any] = {
         "skill_families",
         "backend_coverage",
         "candidate_desert",
+        "coverage_keys",
+        "occurrences",
+        "migration_status",
     ],
     "properties": {
         "schema_version": {"const": AUDIT_UNIT_SCHEMA_VERSION},
@@ -1005,6 +1319,9 @@ AUDIT_UNIT_JSON_SCHEMA: Dict[str, Any] = {
         "skill_families": {"type": "array", "minItems": 1, "items": {"type": "string"}},
         "backend_coverage": {"type": "object"},
         "candidate_desert": {"type": "boolean"},
+        "coverage_keys": {"type": "array", "items": COVERAGE_KEY_JSON_SCHEMA},
+        "occurrences": {"type": "array", "items": AUDIT_OCCURRENCE_JSON_SCHEMA},
+        "migration_status": {"enum": ["current", "legacy_unverifiable"]},
     },
 }
 
@@ -1068,6 +1385,10 @@ DISCOVERY_HYPOTHESIS_JSON_SCHEMA: Dict[str, Any] = {
         "description": {"type": "string"},
         "reasoning": {"type": "string"},
         "root_cause": {"type": "string"},
+        "cwes": {
+            "type": "array",
+            "items": {"type": "string", "pattern": r"^CWE-[1-9][0-9]*$"},
+        },
     },
 }
 
@@ -1410,13 +1731,19 @@ class ZeroLLMSecurityMapBuilder:
         self.project_root = Path(project_root).resolve() if project_root else None
         self.max_functions = max(1, int(max_functions))
         self.callee_limit = max(1, int(callee_limit))
+        semantics = LocalPatternSemantics()
+        semantics.merge_overlay(self.semantic_overlay)
+        self._contracts = semantics.contracts
+        self._contract_names = {c.symbol.name for c in self._contracts.contracts}
+        self._contract_event_values: Dict[str, CallSemanticMatch] = {}
 
     def build(self, entries: Sequence[FunctionEntry]) -> SecuritySemanticMap:
         mutable: Dict[str, Dict[str, Any]] = {}
         claims: Dict[str, SemanticClaim] = {}
         unknowns: Dict[str, SemanticUnknown] = {}
-        pending: List[Tuple[str, str, str, Tuple[str, ...], Dict[str, Any]]] = []
-        for entry in entries:
+        pending: List[Tuple[str, str, str, Tuple[str, ...], Dict[str, Any], str]] = []
+        entry_exposures = {entry.identity_key(self.project_root): entry.exposure for entry in entries}
+        for entry in sorted(entries, key=lambda item: item.identity_key(self.project_root)):
             identity = entry.identity_key(self.project_root)
             pending.append(
                 (
@@ -1425,19 +1752,16 @@ class ZeroLLMSecurityMapBuilder:
                     identity,
                     (entry.function_name,),
                     dict(entry.diff_focus or {}),
+                    "call_path",
                 )
             )
-        seen_routes: set[Tuple[str, str, str]] = set()
+        seen_routes: set[Tuple[str, str, str, str]] = set()
         truncated = False
 
         while pending:
-            if len(mutable) >= self.max_functions:
-                truncated = True
-                break
-            query, file_hint, entry_identity, path, diff_focus = pending.pop(0)
-            route_key = (entry_identity, query, file_hint)
-            if route_key in seen_routes:
-                continue
+            query, file_hint, entry_identity, path, diff_focus, reachability = pending.pop(0)
+            route_key = (entry_identity, query, file_hint, reachability)
+            expand_route = route_key not in seen_routes
             seen_routes.add(route_key)
             impl = self._get_impl(query, file_hint)
             if not impl:
@@ -1466,9 +1790,26 @@ class ZeroLLMSecurityMapBuilder:
                 or impl.get("qualified_name")
                 or f"{function_name}@{file_path}:{start_line}-{end_line}"
             )
-            function_uid = f"FUNC_{_digest({'project': self.project_id, 'index': index_name})}"
             code = str(impl.get("code") or "")
-            events = self._events(function_uid, function_name, file_path, start_line, code)
+            program_facts = self._program_facts(function_name, file_path, code)
+            scope = str(program_facts.get("build_context_id") or "")
+            function_identity = {"project": self.project_id, "index": index_name}
+            if scope:
+                function_identity["build_context_id"] = scope
+            function_uid = f"FUNC_{_digest(function_identity)}"
+            if function_uid not in mutable and len(mutable) >= self.max_functions:
+                truncated = True
+                unknown = self._unknown(
+                    subject_uid=function_uid,
+                    kind="function_budget_deferred",
+                    reason="Function traversal budget exhausted",
+                    evidence_refs=(f"entry:{entry_identity}",),
+                )
+                unknowns.setdefault(unknown.unknown_id, unknown)
+                continue
+            events = self._events(
+                function_uid, function_name, file_path, start_line, code, program_facts
+            )
             callees = self._get_callees(index_name, function_name)
             callee_names = tuple(
                 self._callee_name(item) for item in callees if self._callee_name(item)
@@ -1486,19 +1827,31 @@ class ZeroLLMSecurityMapBuilder:
                     "code_hash": hashlib.sha256(code.encode("utf-8")).hexdigest(),
                     "entry_identities": set(),
                     "entry_paths": set(),
+                    "entry_occurrences": set(),
                     "callees": set(callee_names),
                     "unresolved_callees": set(),
                     "events": {event.event_id: event for event in events},
-                    "backend_coverage": self._backend_coverage(
-                        impl,
-                        callees,
-                        file_path=file_path,
-                    ),
+                    "backend_coverage": {
+                        **self._backend_coverage(impl, callees, file_path=file_path),
+                        "build_context_id": scope,
+                        "program_facts_complete": bool(program_facts.get("complete")),
+                        "program_facts_status": str(
+                            program_facts.get("reason") or ("current" if scope else "unknown")
+                        ),
+                    },
                     "diff_focus": dict(diff_focus),
                 }
                 mutable[function_uid] = existing
             existing["entry_identities"].add(entry_identity)
             existing["entry_paths"].add(tuple(path))
+            existing["entry_occurrences"].add(
+                AuditOccurrence(
+                    entry_identity,
+                    tuple(path),
+                    tuple(sorted(event.event_id for event in events)),
+                    reachability,
+                )
+            )
             existing["callees"].update(callee_names)
             if diff_focus and not existing["diff_focus"]:
                 existing["diff_focus"] = dict(diff_focus)
@@ -1512,6 +1865,7 @@ class ZeroLLMSecurityMapBuilder:
                     line=start_line,
                     entry_identity=entry_identity,
                     impl=impl,
+                    entry_exposure=entry_exposures.get(entry_identity),
                 )
             self._event_claims(claims, events)
             self._framework_claims(claims, function_uid, function_name, impl)
@@ -1525,7 +1879,48 @@ class ZeroLLMSecurityMapBuilder:
                 )
                 unknowns.setdefault(unknown.unknown_id, unknown)
 
+            for event in events:
+                if event.family in FINE_COVERAGE_FAMILIES and event.object_ref is None:
+                    unknown = self._unknown(
+                        subject_uid=function_uid,
+                        kind="object_alias_unknown",
+                        reason="Operation site has no unambiguous lexical object binding",
+                        evidence_refs=(event.evidence_ref,),
+                    )
+                    unknowns.setdefault(unknown.unknown_id, unknown)
+                if event.callback_target:
+                    unknown = self._unknown(
+                        subject_uid=function_uid,
+                        kind="callback_dispatch_unproven",
+                        reason="Registration supplies a reachability hint, not proof of invocation",
+                        evidence_refs=(event.evidence_ref,),
+                    )
+                    unknowns.setdefault(unknown.unknown_id, unknown)
+                    if expand_route and event.callback_target not in path:
+                        pending.append(
+                            (
+                                event.callback_target,
+                                file_path,
+                                entry_identity,
+                                (*path, event.callback_target),
+                                diff_focus,
+                                "callback_registration",
+                            )
+                        )
+
+            if len(callees) >= self.callee_limit:
+                truncated = True
+                unknown = self._unknown(
+                    subject_uid=function_uid,
+                    kind="callee_budget_partial",
+                    reason="Callee page reaches configured limit; remaining targets unknown",
+                    evidence_refs=(f"source:{file_path}:{start_line}",),
+                )
+                unknowns.setdefault(unknown.unknown_id, unknown)
+
             for callee in callees:
+                if not expand_route:
+                    break
                 name = self._callee_name(callee)
                 if not name or name in path:
                     continue
@@ -1534,7 +1929,9 @@ class ZeroLLMSecurityMapBuilder:
                     if isinstance(callee, Mapping)
                     else ""
                 )
-                pending.append((name, callee_file, entry_identity, (*path, name), diff_focus))
+                pending.append(
+                    (name, callee_file, entry_identity, (*path, name), diff_focus, reachability)
+                )
 
         records = tuple(
             FunctionSecurityRecord(
@@ -1553,6 +1950,17 @@ class ZeroLLMSecurityMapBuilder:
                 events=tuple(sorted(item["events"].values(), key=lambda event: event.event_id)),
                 backend_coverage=dict(item["backend_coverage"]),
                 diff_focus=dict(item["diff_focus"]),
+                entry_occurrences=tuple(
+                    sorted(
+                        item["entry_occurrences"],
+                        key=lambda value: (
+                            value.entry_identity,
+                            value.entry_path,
+                            value.reachability,
+                            value.event_refs,
+                        ),
+                    )
+                ),
             )
             for item in sorted(mutable.values(), key=lambda row: str(row["function_uid"]))
         )
@@ -1577,8 +1985,9 @@ class ZeroLLMSecurityMapBuilder:
             },
             fingerprints={
                 "backend": backend_name,
-                "builder": "zero_llm_security_map_v1",
+                "builder": "zero_llm_security_map_v5",
                 "semantic_overlay": _digest(self.semantic_overlay, length=64),
+                "contract_version": self._contracts.version,
             },
         )
 
@@ -1798,6 +2207,26 @@ class ZeroLLMSecurityMapBuilder:
             return int(match.group(1)), match.group(2)
         return max(1, start_line + offset), raw
 
+    def _program_facts(self, function_name: str, file_path: str, code: str) -> Dict[str, Any]:
+        from ..common.cancellation import CancellationError
+        from .build_scope import source_scope_problem
+
+        getter = getattr(self.code_index, "get_function_program_facts", None)
+        if not callable(getter):
+            return {}
+        try:
+            facts = getter(function_name, file_path)
+        except CancellationError:
+            raise
+        except Exception as exc:
+            return {"reason": "program_facts_unavailable:" + type(exc).__name__}
+        if not isinstance(facts, dict):
+            return {"reason": "invalid_program_facts"}
+        problem = source_scope_problem({"code": code, "program_facts": facts})
+        if problem or not facts.get("complete"):
+            return {"reason": problem or "incomplete_program_facts"}
+        return facts
+
     def _events(
         self,
         function_uid: str,
@@ -1805,29 +2234,252 @@ class ZeroLLMSecurityMapBuilder:
         file_path: str,
         start_line: int,
         code: str,
+        program_facts: Mapping[str, Any],
     ) -> Tuple[SecurityEvent, ...]:
         result: Dict[str, SecurityEvent] = {}
-        for offset, raw_line in enumerate(code.splitlines()):
-            line, expression = self._source_line(raw_line, offset, start_line)
-            for family, kind, pattern in _EVENT_PATTERNS:
-                if not pattern.search(expression):
-                    continue
-                evidence_ref = f"source:{file_path}:{line}"
-                event_id = f"EVT_{_digest((function_uid, family, kind, line, expression.strip()))}"
-                result.setdefault(
-                    event_id,
-                    SecurityEvent(
-                        event_id=event_id,
-                        family=family,
-                        kind=kind,
-                        function_uid=function_uid,
-                        file=file_path,
-                        line=line,
-                        expression=expression.strip()[:400],
-                        evidence_ref=evidence_ref,
-                    ),
-                )
+        # Program-facts expressions (macro-expanded by the batch indexer) are
+        # scanned alongside the raw source so wrapper macros such as LOCK()
+        # still yield events; each fact line carries its true line number.
+        scanned: List[str] = list(code.splitlines())
+        for body in program_facts.get("functions") or []:
+            for ev in body.get("events") or []:
+                loc = ev.get("location") or {}
+                ln = int(loc.get("line") or ev.get("line") or 0)
+                expr = str(ev.get("expression") or "").strip()
+                if ln and expr:
+                    scanned.append(f"{ln} | {expr}")
+        from .call_context import bind_call_context
+
+        with bind_call_context(
+            {
+                "func_name": function_name,
+                "file_path": file_path,
+                "code": code,
+                "program_facts": program_facts,
+            },
+            self._contracts,
+        ):
+            for offset, raw_line in enumerate(scanned):
+                line, expression = self._source_line(raw_line, offset, start_line)
+                operations = list(self._contract_calls(expression))
+                lexical = self._lexical_coverage_sites(expression)
+                operation_families = {
+                    _CONTRACT_EVENT_KINDS[operation.role][0] for _, operation in operations
+                }
+                for family, kind, pattern in _EVENT_PATTERNS:
+                    if not pattern.search(expression):
+                        continue
+                    if family in FINE_COVERAGE_FAMILIES and family in operation_families:
+                        continue
+                    sites = [item for item in lexical if item[1] == family]
+                    if sites:
+                        for ordinal, _, obj in sites:
+                            evidence_ref = f"source:{file_path}:{line}"
+                            event_id = f"EVT_{_digest((function_uid, family, line, ordinal, expression.strip()))}"
+                            result.setdefault(
+                                event_id,
+                                SecurityEvent(
+                                    event_id,
+                                    family,
+                                    kind,
+                                    function_uid,
+                                    file_path,
+                                    line,
+                                    expression.strip()[:400],
+                                    evidence_ref,
+                                    obj,
+                                    f"{file_path}:{line}:token-{ordinal}",
+                                    None,
+                                    (
+                                        self._callback_target(expression, ordinal)
+                                        if family == "callback_concurrency"
+                                        else None
+                                    ),
+                                ),
+                            )
+                        continue
+                    evidence_ref = f"source:{file_path}:{line}"
+                    event_id = (
+                        f"EVT_{_digest((function_uid, family, kind, line, expression.strip()))}"
+                    )
+                    result.setdefault(
+                        event_id,
+                        SecurityEvent(
+                            event_id=event_id,
+                            family=family,
+                            kind=kind,
+                            function_uid=function_uid,
+                            file=file_path,
+                            line=line,
+                            expression=expression.strip()[:400],
+                            evidence_ref=evidence_ref,
+                            operation_site=f"{file_path}:{line}:{family}",
+                            callback_target=(
+                                self._callback_target(expression)
+                                if family == "callback_concurrency"
+                                else None
+                            ),
+                        ),
+                    )
+                for ordinal, operation in operations:
+                    family, kind = _CONTRACT_EVENT_KINDS[operation.role]
+                    evidence_ref = f"source:{file_path}:{line}"
+                    event_id = f"EVT_{_digest((function_uid, line, expression.strip(), ordinal, operation.to_dict()))}"
+                    self._contract_event_values[event_id] = operation
+                    result.setdefault(
+                        event_id,
+                        SecurityEvent(
+                            event_id=event_id,
+                            family=family,
+                            kind=kind,
+                            function_uid=function_uid,
+                            file=file_path,
+                            line=line,
+                            expression=expression.strip()[:400],
+                            evidence_ref=evidence_ref,
+                            object_ref=next(
+                                (
+                                    obj
+                                    for pos, fam, obj in lexical
+                                    if pos == ordinal and fam == family
+                                ),
+                                self._coverage_object(operation),
+                            ),
+                            operation_site=f"{file_path}:{line}:token-{ordinal}",
+                            callback_target=(
+                                self._callback_target(expression, ordinal)
+                                if family == "callback_concurrency"
+                                else None
+                            ),
+                        ),
+                    )
         return tuple(result.values())
+
+    @staticmethod
+    def _lexical_coverage_sites(expression: str) -> List[Tuple[int, str, Optional[str]]]:
+        """Bind explicit standard call syntax without asserting its effects."""
+        from .contract_compiler import closing, split_tokens
+
+        allocators = {"malloc", "calloc", "realloc", "strdup", "open", "fopen", "socket", "mmap"}
+        releasers = {"free", "close", "fclose", "munmap"}
+        callback_calls = {
+            "register_callback",
+            "pthread_create",
+            "pthread_mutex_lock",
+            "pthread_mutex_unlock",
+        }
+        tokens = code_tokens(expression)
+        result = []
+        for position, name in enumerate(tokens):
+            if name not in allocators | releasers | callback_calls or tokens[
+                position + 1 : position + 2
+            ] != ["("]:
+                continue
+            end = closing(tokens, position + 1)
+            if end >= len(tokens) or tokens[end] != ")" or tokens[end + 1 : end + 2] == ["{"]:
+                continue
+            args = ["".join(item) for item in split_tokens(tokens[position + 2 : end])]
+            obj = ""
+            if name in allocators and position >= 2 and tokens[position - 1] == "=":
+                prefix = tokens[: position - 1]
+                for separator in (";", "{", "}"):
+                    if separator in prefix:
+                        prefix = prefix[len(prefix) - prefix[::-1].index(separator) :]
+                if (
+                    prefix
+                    and prefix[0] != "*"
+                    and all(re.fullmatch(r"[A-Za-z_]\w*|\*", part) for part in prefix)
+                ):
+                    obj = prefix[-1]
+            elif name in releasers | callback_calls and args:
+                obj = args[0].removeprefix("&")
+            # Member access/array expressions can alias: first release uses
+            # operation-site identity, never a guessed object equivalence.
+            if not re.fullmatch(r"[A-Za-z_]\w*", obj):
+                obj = ""
+            result.append(
+                (
+                    position,
+                    "callback_concurrency" if name in callback_calls else "resource_lifecycle",
+                    obj or None,
+                )
+            )
+        return result
+
+    @staticmethod
+    def _coverage_object(operation: CallSemanticMatch) -> Optional[str]:
+        # A lexical variable/member is a scheduling hint, not alias proof.
+        # Complex dereferences/calls and untrusted contract bindings stay at site granularity.
+        if not operation.effects_trusted:
+            return None
+        value = operation.object.removeprefix("&")
+        if not re.fullmatch(r"[A-Za-z_]\w*(?:(?:\.|->)[A-Za-z_]\w*)*", value):
+            return None
+        if operation.resource_domain:
+            if not re.fullmatch(r"[A-Za-z_]\w*", operation.resource_domain):
+                return None
+            value = operation.resource_domain + "::" + value
+        return value
+
+    def _callback_target(self, expression: str, ordinal: Optional[int] = None) -> Optional[str]:
+        from .contract_compiler import closing, split_tokens
+
+        tokens = code_tokens(expression)
+        arguments: Optional[List[str]]
+        for name, position in (("pthread_create", 2), ("register_callback", 0)):
+            if ordinal is not None:
+                if tokens[ordinal] != name:
+                    continue
+                end = closing(tokens, ordinal + 1)
+                arguments = ["".join(item) for item in split_tokens(tokens[ordinal + 2 : end])]
+            else:
+                arguments = self._contracts.call_arguments(name, expression)
+            if arguments is not None and len(arguments) > position:
+                target = arguments[position].strip().removeprefix("&")
+                if re.fullmatch(r"[A-Za-z_]\w*", target):
+                    return target
+        return None
+
+    def _contract_calls(self, expression: str) -> Iterable[Tuple[int, CallSemanticMatch]]:
+        """Resolve all explicit calls; prose and summary names cannot assign a role.
+
+        These observations do not prove reachability. The map supplies evidence
+        to discovery; path-sensitive lifecycle reasoning stays in the engines.
+        """
+        from .contract_compiler import closing, split_tokens
+
+        tokens = code_tokens(expression)
+        for offset, name in enumerate(tokens):
+            if name not in self._contract_names:
+                continue
+            if offset and tokens[offset - 1] in {".", "->", "::"}:
+                continue
+            arguments: List[str] = []
+            if tokens[offset + 1 : offset + 2] == ["("]:
+                end = closing(tokens, offset + 1)
+                if tokens[end] != ")":
+                    continue
+                # A source declaration is not an invocation.
+                if tokens[end + 1 : end + 2] == ["{"]:
+                    continue
+                arguments = ["".join(p) for p in split_tokens(tokens[offset + 2 : end]) if p]
+            elif not any(c.symbol.symbol_type == "macro" for c in self._contracts.find(name)):
+                continue
+            returned = ""
+            if offset >= 2 and tokens[offset - 1] == "=":
+                prefix = tokens[: offset - 1]
+                for separator in (";", "{", "}"):
+                    if separator in prefix:
+                        prefix = prefix[len(prefix) - prefix[::-1].index(separator) :]
+                if (
+                    prefix
+                    and prefix[0] != "*"
+                    and all(re.fullmatch(r"[A-Za-z_]\w*|\*", t) for t in prefix)
+                    and re.fullmatch(r"[A-Za-z_]\w*", prefix[-1])
+                ):
+                    returned = prefix[-1]
+            for operation in self._contracts.match_call(name, "", arguments, returned):
+                yield offset, operation
 
     def _entry_claims(
         self,
@@ -1839,10 +2491,13 @@ class ZeroLLMSecurityMapBuilder:
         line: int,
         entry_identity: str,
         impl: Mapping[str, Any],
+        entry_exposure: Optional[str] = None,
     ) -> None:
         framework = impl.get("framework_semantics") or impl.get("framework_runtime_ir") or {}
+        explicit_exposure = set(str(entry_exposure or "").lower().split("+"))
         has_external = bool(
-            impl.get("entry_exposure")
+            explicit_exposure & {"api", "communication", "other_user_input"}
+            or impl.get("entry_exposure")
             or impl.get("exposure")
             or (isinstance(framework, Mapping) and framework.get("has_external_input"))
         )
@@ -1876,8 +2531,9 @@ class ZeroLLMSecurityMapBuilder:
                 ),
             )
 
-    @staticmethod
-    def _event_claims(claims: Dict[str, SemanticClaim], events: Sequence[SecurityEvent]) -> None:
+    def _event_claims(
+        self, claims: Dict[str, SemanticClaim], events: Sequence[SecurityEvent]
+    ) -> None:
         claim_kind_by_family = {
             "resource_lifecycle": "resource_transition",
             "memory_bounds": "bounds_contract",
@@ -1889,7 +2545,22 @@ class ZeroLLMSecurityMapBuilder:
         }
         for event in events:
             kind = claim_kind_by_family[event.family]
-            value = {"event_kind": event.kind, "expression": event.expression}
+            value: Dict[str, Any] = {"event_kind": event.kind, "expression": event.expression}
+            origin, confidence, status = "program", 0.9, "known"
+            operation = self._contract_event_values.get(event.event_id)
+            if operation is not None:
+                kind = _CONTRACT_EVENT_KINDS[operation.role][1]
+                value["call_semantics"] = operation.to_dict()
+                value["observation"] = "call_site; reachability requires separate evidence"
+                origin = self._contract_origin(operation.source, operation.effects_trusted)
+                status = (
+                    "known"
+                    if operation.effects_trusted
+                    and operation.applicability != "unknown"
+                    and operation.object
+                    else "unknown"
+                )
+                confidence = 0.9 if status == "known" else 0.5
             claim_id = f"CLAIM_{_digest((event.function_uid, kind, value, event.evidence_ref))}"
             claims.setdefault(
                 claim_id,
@@ -1905,9 +2576,9 @@ class ZeroLLMSecurityMapBuilder:
                         },
                     ),
                     evidence_refs=(event.evidence_ref,),
-                    origin="program",
-                    confidence=0.9,
-                    status="known",
+                    origin=origin,
+                    confidence=confidence,
+                    status=status,
                 ),
             )
 
@@ -1953,12 +2624,49 @@ class ZeroLLMSecurityMapBuilder:
         claims: Dict[str, SemanticClaim],
         functions: Sequence[FunctionSecurityRecord],
     ) -> None:
-        by_name = {item.function_name: item for item in functions}
+        for contract in self._contracts.contracts:
+            records = [
+                record
+                for record in functions
+                if record.function_name == contract.symbol.name
+                and (not contract.symbol.file_path or contract.symbol.file_path == record.file_path)
+                and (not contract.symbol.signature or contract.symbol.signature == record.signature)
+                and (not contract.symbol.build_context_id or contract.symbol.build_context_id == record.backend_coverage.get("build_context_id"))
+            ]
+            if len(records) != 1:
+                continue
+            record = records[0]
+            kind = _CONTRACT_EVENT_KINDS[contract.role][1]
+            value = {
+                "api_contract": contract.to_dict(),
+                "contract_version": self._contracts.version,
+            }
+            evidence_ref = f"contract:{self._contracts.version}:{contract.symbol.key}"
+            claim_id = f"CLAIM_{_digest((record.function_uid, kind, value, evidence_ref))}"
+            claims.setdefault(
+                claim_id,
+                SemanticClaim(
+                    claim_id=claim_id,
+                    subject_uid=record.function_uid,
+                    kind=kind,
+                    value=value,
+                    locations=(),
+                    evidence_refs=(evidence_ref,),
+                    origin=self._contract_origin(contract.source, contract.effects_trusted),
+                    confidence=contract.confidence,
+                    status="known" if contract.effects_trusted else "unknown",
+                ),
+            )
+        by_name: Dict[str, List[FunctionSecurityRecord]] = {}
+        for record in functions:
+            by_name.setdefault(record.function_name, []).append(record)
         for collection, claim_kind in (
             ("resource_models", "resource_transition"),
             ("lock_models", "lock_order"),
             ("function_intent_models", "trust_boundary"),
         ):
+            if collection != "function_intent_models" and "api_contracts" in self.semantic_overlay:
+                continue
             rows = self.semantic_overlay.get(collection) or []
             if not isinstance(rows, list):
                 continue
@@ -1966,10 +2674,12 @@ class ZeroLLMSecurityMapBuilder:
                 if not isinstance(raw, Mapping):
                     continue
                 name = str(raw.get("name") or raw.get("func_name") or "")
-                record = by_name.get(name)
-                if record is None:
+                records = by_name.get(name, [])
+                if len(records) != 1:
                     continue
+                record = records[0]
                 value = dict(raw)
+                inferred = str(raw.get("source") or "").startswith("inferred")
                 evidence_ref = f"overlay:{collection}:{index}:{name}"
                 claim_id = (
                     f"CLAIM_{_digest((record.function_uid, claim_kind, value, evidence_ref))}"
@@ -1983,11 +2693,17 @@ class ZeroLLMSecurityMapBuilder:
                         value=value,
                         locations=(),
                         evidence_refs=(evidence_ref,),
-                        origin="user",
-                        confidence=1.0,
-                        status="known",
+                        origin="llm" if inferred else "user",
+                        confidence=0.5 if inferred else 1.0,
+                        status="unknown" if inferred else "known",
                     ),
                 )
+
+    @staticmethod
+    def _contract_origin(source: str, trusted: bool) -> str:
+        if source.startswith("inferred"):
+            return "program" if trusted else "llm"
+        return "program" if source == "builtin_defaults" else "user"
 
     @staticmethod
     def _unknown(

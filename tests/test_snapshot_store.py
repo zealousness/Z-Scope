@@ -133,6 +133,7 @@ def test_snapshot_save_refreshes_cache_and_fingerprints(tmp_path) -> None:
         "callee_summary_hash": compute_callee_summary_hash(_snapshot(summary="second")),
         "type_context_hash": compute_type_context_hash(_snapshot(summary="second")),
         "effective_rules_sha256": "",
+        "snapshot_generation": store.observed_generation(index_name),
     }
     assert store.needs_refresh(index_name, second_code, _snapshot()) == (False, None)
 
@@ -279,7 +280,7 @@ def test_old_snapshot_without_referenced_types_requires_shape_rebuild(tmp_path) 
     code = "int handle_request(void) { return 0; }"
     current = _snapshot()
     store.save_snapshot(index_name, current, code)
-    snapshot_path = store.snapshot_dir / store._snapshot_filename(index_name)
+    snapshot_path = store.snapshot_dir / str(store.observed_generation(index_name))
     persisted = json.loads(snapshot_path.read_text(encoding="utf-8"))
     persisted.pop("referenced_types")
     snapshot_path.write_text(json.dumps(persisted), encoding="utf-8")
@@ -648,7 +649,7 @@ def test_snapshot_filename_and_sqlite_primary_key_derive_from_index_name(tmp_pat
     store = SnapshotStore(snapshot_dir)
     store.save_snapshot(index_name, snapshot, "int Widget::run<int>() { return 0; }")
 
-    expected_file = store._snapshot_filename(index_name)
+    expected_file = str(store.observed_generation(index_name))
     assert (snapshot_dir / expected_file).exists()
     with sqlite3.connect(snapshot_dir / "snapshots.db") as conn:
         columns = {row[1]: row for row in conn.execute("PRAGMA table_info(snapshots)")}

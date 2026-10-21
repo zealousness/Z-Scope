@@ -1,0 +1,74 @@
+name: Formal Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        type: choice
+        options: [cpp, java]
+        required: true
+      git_sha:
+        description: Protected commit SHA to evaluate
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, linux, x64, zscope-benchmark]
+    environment: formal-benchmark
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.git_sha }}
+      - name: Resolve canonical benchmark SHA
+        id: benchmark-source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Verify immutable scanner image provenance
+        env:
+          SCANNER_IMAGE: ${{ vars.Z_SCOPE_BENCHMARK_OCI_IMAGE }}
+          EXPECTED_REVISION: ${{ steps.benchmark-source.outputs.sha }}
+        run: |
+          [[ "$SCANNER_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || {
+            echo "scanner image must be digest-pinned" >&2
+            exit 1
+          }
+          test "$(podman image inspect "$SCANNER_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$EXPECTED_REVISION"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install the source-controlled benchmark frontend
+        run: |
+          python3 -m pip install --require-hashes -r requirements/constraints/py313.txt
+          python3 -m pip install --require-hashes -r requirements/constraints/benchmark-py313-linux-x86_64.txt
+          python3 -m pip install --no-deps -e '.[benchmark]'
+          python3 scripts/check_benchmark_hygiene.py
+      - name: Run five isolated cold starts
+        env:
+          Z_SCOPE_API_KEY: ${{ secrets.Z_SCOPE_BENCHMARK_API_KEY }}
+          Z_SCOPE_LLM_BASE_URL: ${{ vars.Z_SCOPE_BENCHMARK_LLM_BASE_URL }}
+          Z_SCOPE_LLM_MODEL: ${{ vars.Z_SCOPE_BENCHMARK_LLM_MODEL }}
+          Z_SCOPE_BENCHMARK_OCI_RUNTIME: podman
+          # Protected environment variables must use an immutable
+          # repository@sha256:<64-hex> scanner image and a pre-attested
+          # rootless internal network with exactly one endpoint proxy.
+          Z_SCOPE_BENCHMARK_OCI_IMAGE: ${{ vars.Z_SCOPE_BENCHMARK_OCI_IMAGE }}
+          Z_SCOPE_BENCHMARK_OCI_NETWORK: ${{ vars.Z_SCOPE_BENCHMARK_OCI_NETWORK }}
+          Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER: ${{ vars.Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER }}
+        run: |
+          language='${{ inputs.language }}'
+          if [ "$language" = cpp ]; then language=c_cpp; fi
+          zscope-benchmark run \
+            --language "$language" \
+            --mode formal \
+            --runs 5 \
+            --output benchmark-artifacts
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: formal-${{ inputs.language }}-${{ steps.benchmark-source.outputs.sha }}
+          path: benchmark-artifacts/
+          if-no-files-found: error
+          retention-days: 90

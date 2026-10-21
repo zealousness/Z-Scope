@@ -160,9 +160,9 @@ def clang_matcher_fact_to_candidate(
         "candidate_source": "clang_ast_matcher",
         "evidence_checker": "clang_ast_matcher_checker",
         "rule": rule,
-        "description": f"Clang AST matcher fact `{rule}` identified `{callee}` in `{func_name}`.",
-        "root_cause": "Clang AST tooling produced a syntactic matcher fact requiring semantic validation.",
-        "suggested_fix": "Validate the fact against concrete data/control flow before changing code.",
+        "description": f"Clang AST 匹配器事实 `{rule}` 在 `{func_name}` 中识别出 `{callee}`。",
+        "root_cause": "Clang AST 工具生成了一个待语义验证的语法层匹配器事实。",
+        "suggested_fix": "在修改代码之前，请结合具体的数据流/控制流验证该事实。",
         "confidence": 0.64 if defect_class != "memory_leak" else 0.58,
         "rule_confidence": 0.64 if defect_class != "memory_leak" else 0.58,
         "impact_level": (
@@ -170,7 +170,7 @@ def clang_matcher_fact_to_candidate(
             if defect_class in {"command_injection", "double_free", "use_after_free"}
             else "medium"
         ),
-        "reasoning": "Clang AST matcher fact normalized into an evidence-only candidate for Validator review.",
+        "reasoning": "Clang AST 匹配器事实已归一化为仅含证据的候选对象，供 Validator 复核。",
         "source": callee,
         "sink": callee,
         "dedup_key": "|".join(
@@ -202,6 +202,19 @@ def compact_clang_tooling_evidence(tooling_evidence: Dict[str, Any]) -> Dict[str
             "line": target.get("line"),
             "type": target.get("type"),
             "matcher_facts": target.get("matcher_facts", [])[:16],
+            # Which call produced which value: a member store such as
+            # ``zone->addr = _safe_malloc(16)`` only means something to the
+            # validator when the target keeps its full access path.
+            "call_assignments": [
+                {
+                    "target": call.get("target"),
+                    "callee": call.get("callee"),
+                    "line": call.get("line"),
+                    "result_type": call.get("result_type"),
+                }
+                for call in (target.get("call_assignments") or [])[:8]
+                if isinstance(call, dict)
+            ],
         },
         "cfg_summary": {
             "parse_ok": cfg_summary.get("parse_ok"),

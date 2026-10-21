@@ -5,7 +5,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from zscope.config.function_entry import FunctionEntry
+from zscope.orchestration.global_modeler import GlobalModeler
 from zscope.retrieval import svf_analyzer as svf_module
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def deterministic_memory_budget(monkeypatch):
+    monkeypatch.setattr(
+        "zscope.retrieval.indexing_runtime.resource_limits",
+        lambda: {"cpu_count": 16, "task_memory_budget_bytes": 128 * 1024**3},
+    )
+
+
 from zscope.retrieval.knowledge_db import KnowledgeDB
 from zscope.retrieval.svf_analyzer import SvfAnalyzer
 from zscope.retrieval.svf_parser import CallGraphParser, SvfOutputMapper
@@ -13,6 +25,7 @@ from zscope.retrieval.svf_runner import SvfResult
 
 
 def _write_compile_commands(tmp_path: Path) -> tuple[Path, Path]:
+    (tmp_path / "all.bc").write_bytes(b"fixture-bitcode")
     source_root = tmp_path / "project"
     source_root.mkdir()
     source_file = source_root / "main.c"
@@ -504,12 +517,12 @@ def test_partial_bitcode_build_retries_failed_tus_next_run(
 
     analyzer = SvfAnalyzer(db=db, timeout=42)
 
-    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert analyzer.run(source_root, tmp_path, compile_commands) is False
     assert db.get_svf_hash() == ""
-    assert db.get_metadata("svf_artifact_hash")
+    assert not db.get_metadata("svf_artifact_hash")
 
-    assert analyzer.run(source_root, tmp_path, compile_commands) is True
-    assert calls == ["build", "runner", "build"]
+    assert analyzer.run(source_root, tmp_path, compile_commands) is False
+    assert calls == ["build", "build"]
     assert db.get_svf_hash() == ""
     db.close()
 
@@ -561,7 +574,7 @@ def test_split_svf_runs_wpa_groups_in_parallel_and_saber_once(
         "saber:default": tmp_path / "saber_default.bc",
     }
     for path in paths.values():
-        path.write_text("bitcode\n", encoding="utf-8")
+        path.write_text("bitcode:" + path.name + "\n", encoding="utf-8")
     calls = {
         "ander": [],
         "saber": [],
@@ -636,7 +649,7 @@ def test_explicit_svf_groups_still_enable_entry_clustering(
         "saber:alpha": tmp_path / "saber_alpha.bc",
     }
     for path in paths.values():
-        path.write_text("bitcode\n", encoding="utf-8")
+        path.write_text("bitcode:" + path.name + "\n", encoding="utf-8")
     seen: dict[str, object] = {}
 
     class FakeBitcodeBuilder:
@@ -698,7 +711,7 @@ def test_wpa_group_timeout_does_not_block_successful_groups_or_full_saber(
         "saber:default": tmp_path / "saber_default.bc",
     }
     for path in paths.values():
-        path.write_text("bitcode\n", encoding="utf-8")
+        path.write_text("bitcode:" + path.name + "\n", encoding="utf-8")
     calls = {"saber": 0}
 
     class FakeBitcodeBuilder:
@@ -831,7 +844,7 @@ def test_wpa_valid_marker_skips_and_missing_marker_reimports_without_runner(
     db.insert_function("td_init", "src/td.c", 1, 10)
     db.commit()
     bc_path = tmp_path / "default.bc"
-    bc_path.write_text("bitcode\n", encoding="utf-8")
+    bc_path.write_text("bitcode:" + bc_path.name + "\n", encoding="utf-8")
     calls = []
 
     class Runner:
@@ -860,10 +873,128 @@ def test_wpa_valid_marker_skips_and_missing_marker_reimports_without_runner(
     db.close()
 
 
+def test_tu_purge_advances_generation_and_replays_dot_for_global_modeler(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_compile_commands(tmp_path)
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    tu_id = db.register_tu("src/main.c", 1.0)
+    functions = [
+        ("td_init", "src/main.c", 1, 10),
+        ("_packet_receiver_thread", "src/main.c", 20, 30),
+        ("_net_accept_connection", "src/main.c", 40, 50),
+    ]
+    for name, file_path, start, end in functions:
+        db.insert_function(name, file_path, start, end, tu_id=tu_id)
+    db.insert_call_edge(
+        "_packet_receiver_thread",
+        "src/main.c",
+        "_net_accept_connection",
+        "src/main.c",
+        25,
+    )
+    db.commit()
+    bc_path = tmp_path / "default.bc"
+    bc_path.write_text("bitcode:" + bc_path.name + "\n", encoding="utf-8")
+    calls = {"build": 0, "ander": 0}
+
+    class Builder:
+        def __init__(self, *args, **kwargs):
+            self.failed_tus = []
+            self.reused_linked_groups = set()
+
+        def build(self, **kwargs):
+            calls["build"] += 1
+            return {"default": bc_path}
+
+    class Runner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_ander(self, _bc_path, output_dir):
+            calls["ander"] += 1
+            dot = _write_callgraph(
+                output_dir / "callgraph_final.dot",
+                [("td_init", "_packet_receiver_thread")],
+            )
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
+
+        def run_saber(self, _bc_path, _output_dir):
+            raise AssertionError("unexpected Saber run")
+
+    monkeypatch.setattr(svf_module, "BitcodeBuilder", Builder)
+    monkeypatch.setattr(svf_module, "SvfRunner", Runner)
+    analyzer = SvfAnalyzer(db=db)
+
+    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert calls == {"build": 1, "ander": 1}
+    assert db.get_svf_db_generation() == 0
+
+    db.purge_tu_data(tu_id)
+    assert db.get_svf_db_generation() == 1
+    for name, file_path, start, end in functions:
+        db.insert_function(name, file_path, start, end, tu_id=tu_id)
+    db.insert_call_edge(
+        "_packet_receiver_thread",
+        "src/main.c",
+        "_net_accept_connection",
+        "src/main.c",
+        25,
+    )
+    db.commit()
+
+    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert calls == {"build": 2, "ander": 1}
+    marker = json.loads(db.get_metadata("svf_db_import:ander:default"))
+    assert marker["db_generation"] == 1
+
+    class DBCodeIndex:
+        def get_function_impl(self, name, **kwargs):
+            info = db.get_function(name)
+            if not info:
+                return None
+            return {
+                "func_name": name,
+                "file": info["file_path"],
+                "index_name": f"{name}@{info['file_path']}:{info['start_line']}-{info['end_line']}",
+                "start_line": info["start_line"],
+                "end_line": info["end_line"],
+            }
+
+        def get_callees(self, name, limit=30):
+            direct = db.get_callees(name, limit=limit)
+            indirect = db.get_indirect_callees(name, limit=limit)
+            return direct + indirect
+
+    config = SimpleNamespace(
+        analysis=SimpleNamespace(
+            max_premodel_depth=-1,
+            max_premodel_callees=30,
+            max_function_lines=500,
+        ),
+        concurrency=SimpleNamespace(entry_workers=1),
+    )
+    modeler = GlobalModeler(
+        config,
+        DBCodeIndex(),
+        None,
+        None,
+        semantic_agent_factory=lambda: None,
+    )
+    graph = modeler._collect_graph([FunctionEntry("td_init")])
+    assert {key.name for key in graph.impls} == {
+        "td_init",
+        "_packet_receiver_thread",
+        "_net_accept_connection",
+    }
+    db.close()
+
+
 def test_zero_edge_marker_is_a_valid_cache_hit(tmp_path: Path) -> None:
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     bc_path = tmp_path / "empty.bc"
-    bc_path.write_text("bitcode\n", encoding="utf-8")
+    bc_path.write_text("bitcode:" + bc_path.name + "\n", encoding="utf-8")
     calls = []
 
     class Runner:
@@ -885,7 +1016,7 @@ def test_zero_edge_marker_is_a_valid_cache_hit(tmp_path: Path) -> None:
 def test_wpa_artifact_hash_mismatch_reruns_tool(tmp_path: Path) -> None:
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     bc_path = tmp_path / "default.bc"
-    bc_path.write_text("bitcode\n", encoding="utf-8")
+    bc_path.write_text("bitcode:" + bc_path.name + "\n", encoding="utf-8")
     calls = []
 
     class Runner:
@@ -900,7 +1031,7 @@ def test_wpa_artifact_hash_mismatch_reruns_tool(tmp_path: Path) -> None:
     analyzer = SvfAnalyzer(db=db)
     paths = {"default": bc_path}
     assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
-    artifact = tmp_path / ".zscope_svf" / "callgraph_final.dot"
+    artifact = tmp_path / analyzer._load_tool_status("ander", "default")["artifact_path"]
     artifact.write_text("corrupted\n", encoding="utf-8")
     assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
     assert calls == ["ander", "ander"]
@@ -915,7 +1046,7 @@ def test_source_cache_hit_does_not_skip_missing_replay_artifact(
     source_root, compile_commands = _write_compile_commands(tmp_path)
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     bc_path = tmp_path / "default.bc"
-    bc_path.write_text("bitcode\n", encoding="utf-8")
+    bc_path.write_text("bitcode:" + bc_path.name + "\n", encoding="utf-8")
     calls = {"build": 0, "ander": 0}
 
     class Builder:
@@ -945,7 +1076,7 @@ def test_source_cache_hit_does_not_skip_missing_replay_artifact(
     assert analyzer.run(source_root, tmp_path, compile_commands) is True
     assert calls == {"build": 1, "ander": 1}
 
-    (tmp_path / ".zscope_svf" / "callgraph_final.dot").unlink()
+    (tmp_path / analyzer._load_tool_status("ander", "default")["artifact_path"]).unlink()
     assert analyzer.run(source_root, tmp_path, compile_commands) is True
     assert calls == {"build": 2, "ander": 2}
     db.close()
@@ -954,7 +1085,7 @@ def test_source_cache_hit_does_not_skip_missing_replay_artifact(
 def test_saber_persists_and_replays_stable_json(tmp_path: Path) -> None:
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     bc_path = tmp_path / "saber.bc"
-    bc_path.write_text("bitcode\n", encoding="utf-8")
+    bc_path.write_text("bitcode:" + bc_path.name + "\n", encoding="utf-8")
     calls = []
 
     class Runner:
@@ -969,7 +1100,7 @@ def test_saber_persists_and_replays_stable_json(tmp_path: Path) -> None:
     analyzer = SvfAnalyzer(db=db)
     paths = {"saber:default": bc_path}
     assert analyzer._run_saber_groups(Runner(), paths, tmp_path) is False
-    artifact = tmp_path / ".zscope_svf_saber_default" / "saber_results.json"
+    artifact = tmp_path / analyzer._load_tool_status("saber", "saber:default")["artifact_path"]
     first_bytes = artifact.read_bytes()
     db.purge_svf_data("saber:default")
     assert analyzer._run_saber_groups(Runner(), paths, tmp_path) is False
@@ -1021,7 +1152,7 @@ def test_multi_group_recovery_only_reimports_stale_group(tmp_path: Path) -> None
         "beta": tmp_path / "beta.bc",
     }
     for path in paths.values():
-        path.write_text("bitcode\n", encoding="utf-8")
+        path.write_text("bitcode:" + path.name + "\n", encoding="utf-8")
     calls = []
 
     class Runner:

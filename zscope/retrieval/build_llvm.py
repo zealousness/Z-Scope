@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
@@ -31,6 +32,16 @@ from .bitcode_scope import (
     ExclusivePoolClassifier,
     LlvmNmSymbolReader,
 )
+from .indexing_identity import (
+    atomic_json,
+    dependencies_current,
+    executable_identity,
+    command_identity,
+    digest_json,
+    InputValidator,
+)
+from .indexing_runtime import admitted_workers, run_process, observed
+from .llvm_toolchain import matching_clang
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +55,8 @@ class BitcodeBuilder:
         "__VOSFILENAME__",
     }
     _DEFAULT_EXCLUSIVE_POOL = "default"
-    _MANIFEST_VERSION = 1
-    _LINK_MANIFEST_VERSION = 1
+    _MANIFEST_VERSION = 3
+    _LINK_MANIFEST_VERSION = 2
 
     def __init__(
         self,
@@ -65,7 +76,10 @@ class BitcodeBuilder:
         if output_dir is None and str(self.source_root).startswith("/mnt/"):
             import tempfile
 
-            default_out = Path(tempfile.mkdtemp(prefix="zscope_bc_"))
+            context = hashlib.sha256(str(self.source_root).encode()).hexdigest()[:24]
+            default_out = Path(tempfile.gettempdir()) / (
+                "zscope_bc_" + str(getattr(os, "getuid", lambda: 0)()) + "_" + context
+            )
             logger.info("WSL detected: using native temp dir for bitcode: %s", default_out)
         self.output_dir = Path(output_dir or default_out).resolve()
         self.gclang = gclang_path
@@ -82,6 +96,41 @@ class BitcodeBuilder:
         self._state_lock = threading.Lock()
         self.reused_linked_groups: set[str] = set()
         self.failed_tus: List[Dict[str, str]] = []
+        self.compile_memory_mb = max(256, int(os.environ.get("Z_SCOPE_BITCODE_MEMORY_MB", "4096")))
+        self._compilers: Dict[bool, Optional[str]] = {}
+        self._tools_identity: Optional[Dict[str, Any]] = None
+        self._group_inputs: Dict[str, List[Path]] = {}
+        self._linked_inputs_by_path: Dict[str, List[Path]] = {}
+        self.failed_links: List[str] = []
+        self.cancel = threading.Event()
+        self._compile_preparation: Any = None
+        self._input_validator = InputValidator([self.output_dir])
+
+    def _matching_compiler(self, cxx: bool) -> Optional[str]:
+        with self._state_lock:
+            if cxx not in self._compilers:
+                compiler = matching_clang(self.llvm_link, cxx=cxx, environment=self._env)
+                self._compilers[cxx] = compiler
+                if compiler:
+                    self._env["LLVM_CXX_NAME" if cxx else "LLVM_CC_NAME"] = compiler
+            return self._compilers[cxx]
+
+    def _tool_identity(self) -> Dict[str, Any]:
+        self._matching_compiler(False)
+        self._matching_compiler(True)
+        with self._state_lock:
+            if self._tools_identity is None:
+                self._tools_identity = {
+                    name: executable_identity(path)
+                    for name, path in {
+                        "clang": self._compilers.get(False) or "clang-unavailable",
+                        "clang++": self._compilers.get(True) or "clang++-unavailable",
+                        "gclang": self.gclang,
+                        "get-bc": self.get_bc,
+                        "llvm-link": self.llvm_link,
+                    }.items()
+                }
+            return self._tools_identity
 
     @staticmethod
     def _make_gllvm_env() -> dict:
@@ -96,16 +145,9 @@ class BitcodeBuilder:
         # gllvm 需要 LLVM_COMPILER 指明编译器家族
         if "LLVM_COMPILER" not in env:
             env["LLVM_COMPILER"] = "clang"
-        # 自动检测带版本号的 clang（如 clang-18）
-        if "LLVM_CC_NAME" not in env:
-            for v in range(20, 14, -1):
-                if shutil.which(f"clang-{v}"):
-                    env["LLVM_CC_NAME"] = f"clang-{v}"
-                    env["LLVM_CXX_NAME"] = f"clang++-{v}"
-                    logger.info("Auto-detected clang: clang-%d", v)
-                    break
         return env
 
+    @observed("bitcode-build-link")
     def build(
         self,
         groups: Optional[Dict[str, List[str]]] = None,
@@ -127,14 +169,31 @@ class BitcodeBuilder:
         """
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._manifest = self._load_manifest()
+        self._recover_tu_checkpoints()
         self._manifest_dirty = False
         self._bc_to_src.clear()
         self._bc_compile_index.clear()
         self.reused_linked_groups.clear()
         self.failed_tus.clear()
+        self._compilers.clear()
+        self._tools_identity = None
+        self._env = self._make_gllvm_env()
+        self.cancel.clear()
+        self._input_validator = InputValidator([self.output_dir])
+        self.failed_links.clear()
+        self._group_inputs.clear()
+        self._linked_inputs_by_path.clear()
+        started = time.monotonic()
         build_saber_groups = saber_groups or saber_full_group
 
         commands = self._load_compile_commands()
+        all_commands = commands
+        commands = list(
+            {
+                digest_json(command_identity(row, self.compile_commands_path.parent)): row
+                for row in commands
+            }.values()
+        )
         if not commands:
             logger.error("No compile commands loaded")
             return {}
@@ -142,33 +201,94 @@ class BitcodeBuilder:
         if only_sources is not None:
             commands = self._filter_commands_for_scope_plan(commands, only_sources)
             if not commands:
-                logger.warning(
-                    "Scope plan matched no compile commands; falling back to full build"
-                )
+                logger.warning("Scope plan matched no compile commands; falling back to full build")
                 commands = self._load_compile_commands()
 
         logger.info("Building bitcode for %d translation units", len(commands))
+        selected = {
+            digest_json(command_identity(row, self.compile_commands_path.parent))
+            for row in commands
+        }
+        self._manifest["attempts"] = {
+            digest_json(command_identity(row, self.compile_commands_path.parent)): {
+                "source": command_identity(row, self.compile_commands_path.parent)["source"],
+                "status": (
+                    "planned"
+                    if digest_json(command_identity(row, self.compile_commands_path.parent))
+                    in selected
+                    else "not_selected"
+                ),
+                "reason": (
+                    ""
+                    if digest_json(command_identity(row, self.compile_commands_path.parent))
+                    in selected
+                    else "existing_scope_selection"
+                ),
+            }
+            for row in all_commands
+        }
+        self._manifest["analysis_tasks"] = []
+        self._manifest_dirty = True
+        self._save_manifest()
 
         # 逐 TU 编译
         workers = self._build_worker_count(len(commands))
         logger.info("Building bitcode with %d gclang worker(s)", workers)
-        if workers <= 1:
+        if not workers:
+            for cmd in commands:
+                self._record_tu_failure(cmd.get("file", ""), "insufficient_compile_memory")
+            for context in selected:
+                self._manifest["attempts"][context].update(
+                    status="not_executed", reason="insufficient_compile_memory"
+                )
+            self._manifest["analysis_tasks"] = []
+            self._manifest_dirty = True
+            self._save_manifest()
+            return {}
+        if workers == 1:
             for idx, cmd in enumerate(commands):
                 self._compile_tu(cmd, idx)
+                self._checkpoint_context(cmd)
         else:
             with ThreadPoolExecutor(
                 max_workers=workers, thread_name_prefix="zscope-gclang"
             ) as executor:
-                futures = [
-                    executor.submit(self._compile_tu, cmd, idx) for idx, cmd in enumerate(commands)
-                ]
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        logger.warning("Bitcode worker failed: %s", exc)
+                futures = {
+                    executor.submit(self._compile_tu, cmd, idx): cmd
+                    for idx, cmd in enumerate(commands)
+                }
+                try:
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception as exc:
+                            logger.warning("Bitcode worker failed: %s", exc)
+                            command = futures[future]
+                            context = digest_json(
+                                command_identity(command, self.compile_commands_path.parent)
+                            )
+                            with self._state_lock:
+                                self._manifest["attempts"][context].update(
+                                    status="failed", reason="worker_exception:" + str(exc)
+                                )
+                                self._manifest_dirty = True
+                            self._record_tu_failure(
+                                command.get("file", ""), "worker_exception:" + str(exc)
+                            )
+                        self._checkpoint_context(futures[future])
 
+                except BaseException:
+                    self.cancel.set()
+                    for future in futures:
+                        future.cancel()
+                    raise
+
+        if self._compile_preparation is not None:
+            self._compile_preparation.validate()
         if not self._bc_to_src:
+            self._manifest["analysis_tasks"] = []
+            self._manifest_dirty = True
+            self._save_manifest()
             logger.error("No .bc files produced")
             return {}
 
@@ -366,7 +486,55 @@ class BitcodeBuilder:
                 if selected_plan:
                     self._write_scope_plan(selected_plan)
 
+        completed_inputs = {
+            str(path.resolve()): self._linked_inputs_by_path.get(str(path.resolve()), [])
+            for path in results.values()
+        }
+        task_identities = {
+            name: self.group_tu_identities(name, completed_inputs[str(path.resolve())])
+            for name, path in results.items()
+        }
+        self._manifest["analysis_tasks"] = [
+            {
+                "group": name,
+                "tool": "saber" if name.startswith("saber:") else "wpa",
+                "bitcode": str(path),
+                "inputs": [str(p) for p in completed_inputs[str(path.resolve())]],
+                "input_tus": [
+                    str(self._bc_to_src[p.resolve()])
+                    for p in completed_inputs[str(path.resolve())]
+                    if p.resolve() in self._bc_to_src
+                ],
+                "input_command_ids": list(task_identities[name]["command_ids"]),
+                "variant_sources": dict(task_identities[name]["variant_sources"]),
+                "scope": scope_config.mode if scope_config else "full",
+                "bitcode_hash": self._file_hash(path),
+            }
+            for name, path in results.items()
+        ]
+        self._manifest["wall_seconds"] = time.monotonic() - started
+        validator = InputValidator([self.output_dir])
+        for path in self._bc_to_src:
+            entry = self._bitcode_entry(path)
+            if entry.get("dependencies_complete") and (
+                not validator.dependencies(entry.get("dependencies"))
+                or not validator.searches(entry.get("search_directories"))
+            ):
+                self._record_tu_failure(
+                    str(self._bc_to_src[path]), "dependency_changed_before_analysis"
+                )
+                for attempt in self._manifest["attempts"].values():
+                    if attempt.get("bitcode") == str(path):
+                        attempt.update(status="failed", reason="dependency_changed_before_analysis")
+        self._manifest["failed_links"] = self.failed_links
+        self._manifest_dirty = True
         self._save_manifest()
+        from .indexing_inventory import inventory
+
+        atomic_json(
+            self.output_dir / "indexing_inventory.json",
+            inventory(self.compile_commands_path, self.output_dir, self._manifest),
+        )
         return results
 
     def _filter_commands_for_scope_plan(
@@ -435,7 +603,8 @@ class BitcodeBuilder:
                 resolved = self._resolve_source_file(src_file, directory)
             except (OSError, ValueError):
                 continue
-            prospective_bc = self.output_dir / f"tu_{idx}_{Path(src_file).stem}.o.bc"
+            context = digest_json(command_identity(cmd, self.compile_commands_path.parent))
+            prospective_bc = self.output_dir / f"tu_{context[:24]}_{Path(src_file).stem}.o.bc"
             bc_to_src[prospective_bc] = resolved
             all_sources.add(resolved)
         if not bc_to_src:
@@ -458,9 +627,7 @@ class BitcodeBuilder:
                     entries=entry_functions,
                 )
                 selected_bcs: List[Path] = [
-                    Path(bc).resolve()
-                    for cluster in clusters
-                    for bc in cluster.selected_bcs
+                    Path(bc).resolve() for cluster in clusters for bc in cluster.selected_bcs
                 ]
             else:
                 selected, _plan = selector.select(
@@ -1148,23 +1315,87 @@ class BitcodeBuilder:
             "version": self._MANIFEST_VERSION,
             "bitcode": bitcode,
             "linked": linked,
+            "attempts": data.get("attempts", {}),
+            "analysis_tasks": data.get("analysis_tasks", []),
+            "linked_artifacts": data.get("linked_artifacts", {}),
         }
 
     def _save_manifest(self) -> None:
         if not self._manifest_dirty:
             return
         try:
-            self._manifest_path.write_text(
-                json.dumps(self._manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            with self._state_lock:
+                atomic_json(self._manifest_path, self._manifest)
         except OSError as exc:
             logger.debug("Failed to write bitcode manifest %s: %s", self._manifest_path, exc)
+
+    @staticmethod
+    def _checkpoint_stub(entry: Dict[str, Any], path: Path, digest: str) -> Dict[str, Any]:
+        return {
+            **{
+                key: entry.get(key)
+                for key in ("fingerprint", "bitcode_hash", "source", "dependencies_complete")
+            },
+            "checkpoint": str(path),
+            "checkpoint_hash": digest,
+        }
+
+    def _recover_tu_checkpoints(self) -> None:
+        # Each finished TU is independently recoverable even if the aggregate
+        # manifest was not rewritten before interruption. Load one at a time.
+        for path in (self.output_dir / "tu-checkpoints").glob("*.json"):
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if value.get("schema") != self._MANIFEST_VERSION:
+                    continue
+                entry = value["entry"]
+                self._manifest.setdefault("bitcode", {})[value["bitcode"]] = self._checkpoint_stub(
+                    entry, path, self._file_hash(path)
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+
+    def _checkpoint_context(self, command: Dict[str, Any]) -> None:
+        context = digest_json(command_identity(command, self.compile_commands_path.parent))
+        with self._state_lock:
+            attempt = dict(self._manifest.get("attempts", {}).get(context, {}))
+            bitcode = attempt.get("bitcode")
+            entry = dict(self._manifest.get("bitcode", {}).get(bitcode, {}))
+        if not bitcode or not entry or entry.get("checkpoint"):
+            return
+        path = self.output_dir / "tu-checkpoints" / (context + ".json")
+        atomic_json(
+            path,
+            {
+                "schema": self._MANIFEST_VERSION,
+                "entry": entry,
+                "bitcode": bitcode,
+                "attempt": attempt,
+            },
+        )
+        with self._state_lock:
+            self._manifest["bitcode"][bitcode] = self._checkpoint_stub(
+                entry, path, self._file_hash(path)
+            )
+
+    def _bitcode_entry(self, path: Path) -> Dict[str, Any]:
+        with self._state_lock:
+            entry = dict(self._manifest.get("bitcode", {}).get(str(path.resolve()), {}))
+        checkpoint = entry.get("checkpoint")
+        if not checkpoint:
+            return entry
+        try:
+            if self._file_hash(Path(checkpoint)) != entry.get("checkpoint_hash"):
+                return {}
+            value = json.loads(Path(checkpoint).read_text(encoding="utf-8"))
+            return dict(value["entry"]) if value.get("schema") == self._MANIFEST_VERSION else {}
+        except (OSError, ValueError, TypeError, KeyError):
+            return {}
 
     def _linked_group_fingerprint(self, bc_files: Sequence[Path]) -> str:
         payload = {
             "version": self._LINK_MANIFEST_VERSION,
-            "llvm_link": self.llvm_link,
+            "llvm_link": executable_identity(self.llvm_link),
             "inputs": [
                 {
                     "path": str(Path(path).resolve()),
@@ -1185,7 +1416,10 @@ class BitcodeBuilder:
     ) -> bool:
         resolved_merged = merged_path.resolve()
         with self._state_lock:
-            entry = dict(self._manifest.get("linked", {}).get(group_name, {}))
+            entry = dict(
+                self._manifest.get("linked_artifacts", {}).get(fingerprint)
+                or self._manifest.get("linked", {}).get(group_name, {})
+            )
         if (
             entry.get("fingerprint") == fingerprint
             and resolved_merged.exists()
@@ -1195,24 +1429,50 @@ class BitcodeBuilder:
             logger.info("Reusing unchanged merged bitcode %s", resolved_merged)
             return True
 
-        current_bcs = {str(Path(path).resolve()) for path in bc_files}
-        previous_bcs = previous_selected_bcs or set()
-        if not previous_bcs or previous_bcs != current_bcs or not resolved_merged.exists():
-            return False
-        try:
-            merged_mtime = resolved_merged.stat().st_mtime
-            newest_input_mtime = max(Path(path).resolve().stat().st_mtime for path in bc_files)
-        except OSError:
-            return False
-        if merged_mtime < newest_input_mtime:
-            return False
-        self._record_linked_bitcode_manifest(resolved_merged, group_name, fingerprint)
-        self.reused_linked_groups.add(group_name)
-        logger.info(
-            "Reusing existing merged bitcode %s from unchanged scope plan",
-            resolved_merged,
-        )
-        return True
+        return False
+
+    def group_tu_identities(
+        self,
+        group_name: str,
+        inputs: Optional[Sequence[Path]] = None,
+    ) -> Dict[str, Any]:
+        """Per-TU compile-command identities of one linked group.
+
+        ``command_id`` is ``digest_json(command_identity(...))`` — the same key
+        the batch indexer stores as ``BuildContext.command_id`` — so a signal
+        consumer can resolve a location to real compilation instances instead of
+        guessing from the file name. A source that appears under more than one
+        command id inside the group is reported in ``variant_sources``; callers
+        must treat those as ambiguous rather than pick one.
+        """
+
+        rows: List[Dict[str, Any]] = []
+        for bc in inputs if inputs is not None else self._group_inputs.get(group_name, []):
+            path = Path(bc)
+            entry = self._bitcode_entry(path)
+            command = entry.get("command")
+            source = self._bc_to_src.get(path.resolve())
+            if not isinstance(command, dict) or source is None:
+                continue
+            rows.append(
+                {
+                    "source": self._format_path(source),
+                    "command_id": digest_json(command),
+                    "dependencies_complete": bool(entry.get("dependencies_complete")),
+                }
+            )
+        return {
+            "tus": rows,
+            "command_ids": sorted({row["command_id"] for row in rows}),
+            "variant_sources": self._variant_sources(rows),
+        }
+
+    @staticmethod
+    def _variant_sources(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for row in rows:
+            counts[str(row["source"])] = counts.get(str(row["source"]), 0) + 1
+        return {source: count for source, count in counts.items() if count > 1}
 
     def _record_linked_bitcode_manifest(
         self,
@@ -1221,13 +1481,22 @@ class BitcodeBuilder:
         fingerprint: str,
     ) -> None:
         resolved_merged = merged_path.resolve()
+        # ``group_tu_identities`` reads the per-TU manifest entry, and that read
+        # takes ``_state_lock`` itself; computing it inside this block would
+        # self-deadlock a non-reentrant lock.
+        identities = self.group_tu_identities(group_name)
         with self._state_lock:
             linked = self._manifest.setdefault("linked", {})
             linked[group_name] = {
                 "fingerprint": fingerprint,
                 "bitcode_hash": self._file_hash(resolved_merged),
                 "path": str(resolved_merged),
+                "inputs": [str(p) for p in self._group_inputs.get(group_name, [])],
+                "command_ids": list(identities["command_ids"]),
             }
+            self._manifest.setdefault("linked_artifacts", {})[fingerprint] = dict(
+                linked[group_name]
+            )
             self._manifest_dirty = True
 
     def _load_previous_scope_plan_bcs(self, group_name: str, base_dir: Path) -> set[str]:
@@ -1254,6 +1523,16 @@ class BitcodeBuilder:
 
     def _load_compile_commands(self) -> List[dict]:
         """加载并过滤 compile_commands.json。"""
+        if self._compile_preparation is None and self.compile_commands_path.is_file():
+            from .compile_commands_prepare import prepare_compile_commands
+            from .compile_preflight import discover_tools
+
+            self._compile_preparation = prepare_compile_commands(
+                self.compile_commands_path,
+                discover_tools(llvm_link=self.llvm_link, gclang=self.gclang),
+            )
+        elif self._compile_preparation is not None:
+            self._compile_preparation.validate()
         try:
             with open(self.compile_commands_path, "r", encoding="utf-8") as f:
                 commands = json.load(f)
@@ -1271,92 +1550,9 @@ class BitcodeBuilder:
         return filtered
 
     def _compile_tu(self, cmd: dict, idx: int) -> None:
-        """用 gclang 编译单个 TU，提取 .bc。"""
-        src_file = cmd.get("file", "")
-        directory = cmd.get("directory", str(self.source_root))
-        arguments = cmd.get("arguments", [])
-        command_str = cmd.get("command", "")
+        from .bitcode_compile import compile_tu
 
-        if arguments:
-            args = list(arguments)
-        elif command_str:
-            args = self._split_command(command_str)
-        else:
-            self._record_tu_failure(src_file, "missing_compile_command")
-            return
-
-        # 替换编译器为 gclang，注入调试标志
-        if args:
-            args[0] = self.gclang
-        args = self._inject_flags(args)
-        args = self._sanitize_args(args, src_file)
-        resolved_src = self._resolve_source_file(src_file, directory)
-        command_fingerprint = self._tu_fingerprint(
-            src_file=src_file,
-            resolved_src=resolved_src,
-            directory=directory,
-            args=args,
-        )
-
-        # 输出 .o 到 output_dir
-        obj_name = f"tu_{idx}_{Path(src_file).stem}.o"
-        obj_path = self.output_dir / obj_name
-        args = self._replace_output(args, str(obj_path))
-        bc_path = Path(str(obj_path) + ".bc")
-
-        if self._reuse_bitcode_if_current(bc_path, resolved_src, command_fingerprint, idx):
-            return
-
-        try:
-            logger.info("gclang cmd: %s (cwd=%s)", " ".join(args), directory)
-            proc = subprocess.run(
-                args,
-                cwd=directory,
-                env=self._env,
-                timeout=self.timeout,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            if proc.stderr:
-                logger.debug("gclang stderr: %s", proc.stderr[:300])
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            stderr = getattr(e, "stderr", "") or ""
-            logger.warning("Compile failed for %s: %s stderr=%s", src_file, e, stderr[:300])
-            self._record_tu_failure(src_file, "compile_failed")
-            return
-
-        if not obj_path.exists():
-            logger.warning("gclang succeeded but %s not found", obj_path)
-            self._record_tu_failure(src_file, "object_missing")
-            return
-        logger.info("Compiled %s -> %s (%d bytes)", src_file, obj_path, obj_path.stat().st_size)
-
-        # get-bc 提取 .bc（get-bc 在原文件名后追加 .bc）
-        try:
-            proc2 = subprocess.run(
-                [self.get_bc, str(obj_path)],
-                cwd=str(self.output_dir),
-                env=self._env,
-                timeout=60,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            if bc_path.exists():
-                resolved_bc = bc_path.resolve()
-                with self._state_lock:
-                    self._bc_to_src[resolved_bc] = resolved_src
-                    self._bc_compile_index[resolved_bc] = idx
-                self._record_bitcode_manifest(resolved_bc, resolved_src, command_fingerprint)
-                logger.info("Extracted %s (%d bytes)", bc_path, bc_path.stat().st_size)
-            else:
-                logger.warning("get-bc succeeded but %s not found", bc_path)
-                self._record_tu_failure(src_file, "bitcode_missing")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            stderr = getattr(e, "stderr", "") or ""
-            logger.warning("get-bc failed for %s: %s stderr=%s", obj_path, e, stderr[:300])
-            self._record_tu_failure(src_file, "get_bc_failed")
+        compile_tu(self, cmd, idx)
 
     def _record_tu_failure(self, src_file: str, reason: str) -> None:
         with self._state_lock:
@@ -1375,10 +1571,12 @@ class BitcodeBuilder:
         idx: int,
     ) -> bool:
         resolved_bc = bc_path.resolve()
-        with self._state_lock:
-            entry = dict(self._manifest.get("bitcode", {}).get(str(resolved_bc), {}))
+        entry = self._bitcode_entry(resolved_bc)
         if (
             entry.get("fingerprint") != fingerprint
+            or not entry.get("dependencies_complete")
+            or not self._input_validator.dependencies(entry.get("dependencies"))
+            or not self._input_validator.searches(entry.get("search_directories"))
             or not resolved_bc.exists()
             or entry.get("bitcode_hash") != self._file_hash(resolved_bc)
         ):
@@ -1389,7 +1587,9 @@ class BitcodeBuilder:
         logger.info("Reusing unchanged bitcode %s", resolved_bc)
         return True
 
-    def _record_bitcode_manifest(self, bc_path: Path, src_path: Path, fingerprint: str) -> None:
+    def _record_bitcode_manifest(
+        self, bc_path: Path, src_path: Path, fingerprint: str, **extra: Any
+    ) -> None:
         bitcode_hash = self._file_hash(bc_path)
         with self._state_lock:
             bitcode = self._manifest.setdefault("bitcode", {})
@@ -1397,6 +1597,7 @@ class BitcodeBuilder:
                 "fingerprint": fingerprint,
                 "bitcode_hash": bitcode_hash,
                 "source": str(src_path),
+                **extra,
             }
             self._manifest_dirty = True
 
@@ -1423,8 +1624,11 @@ class BitcodeBuilder:
     def _build_worker_count(command_count: int) -> int:
         if command_count <= 0:
             return 1
-        cpu_count = os.cpu_count() or 4
-        return max(1, min(command_count, cpu_count, 8))
+        return admitted_workers(
+            int(os.environ.get("Z_SCOPE_BITCODE_WORKERS", "4")),
+            command_count,
+            max(256, int(os.environ.get("Z_SCOPE_BITCODE_MEMORY_MB", "4096"))),
+        )
 
     def _link_all(
         self,
@@ -1433,59 +1637,61 @@ class BitcodeBuilder:
         *,
         previous_selected_bcs: Optional[set[str]] = None,
     ) -> Optional[Path]:
-        """llvm-link 合并所有给定的 .bc 为单一文件（支持分批以避免参数过长）。"""
-        merged_path = self.output_dir / f"merged_{group_name}.bc"
+        self._group_inputs[group_name] = list(bc_files)
         if not bc_files:
+            self.failed_links.append(group_name)
             return None
-        link_fingerprint = self._linked_group_fingerprint(bc_files)
-        if self._reuse_linked_bitcode_if_current(
-            merged_path,
-            group_name,
-            link_fingerprint,
-            bc_files,
-            previous_selected_bcs,
-        ):
-            return merged_path
-        # 尝试一次性链接
-        try:
-            cmd = [self.llvm_link, "-o", str(merged_path)] + [str(p) for p in bc_files]
-            logger.info(
-                "Running llvm-link for group '%s' with %d .bc file(s)",
-                group_name,
-                len(bc_files),
-            )
-            proc = subprocess.run(
-                cmd,
+        fingerprint = self._linked_group_fingerprint(bc_files)
+        merged = self.output_dir / f"merged_{group_name}_{fingerprint[:16]}.bc"
+        self._linked_inputs_by_path[str(merged.resolve())] = list(bc_files)
+        if self._reuse_linked_bitcode_if_current(merged, group_name, fingerprint, bc_files):
+            return merged
+        # Never overwrite the published artifact until the complete link succeeds.
+        temporary = merged.with_suffix(".partial.bc")
+        temporary.unlink(missing_ok=True)
+        metrics = []
+
+        def link(inputs: Sequence[Path], output: Path) -> None:
+            process = run_process(
+                [self.llvm_link, "-o", str(output)] + [str(p) for p in inputs],
+                cwd=self.output_dir,
+                env=self._env,
+                output_prefix=output.with_suffix(".link"),
                 timeout=self.timeout,
-                capture_output=True,
-                text=True,
-                check=True,
+                memory_limit_mb=self.compile_memory_mb,
+                label="llvm-link:" + group_name,
+                cancel=self.cancel,
             )
-            logger.info("Merged %d .bc files → %s", len(bc_files), merged_path)
-            self._record_linked_bitcode_manifest(merged_path, group_name, link_fingerprint)
-            return merged_path
-        except subprocess.CalledProcessError as e:
-            # 命令太长或链接冲突
-            stderr = e.stderr or ""
-            if (
-                "Argument list too long" in str(e)
-                or "Argument list too long" in stderr
-                or e.returncode == 7
-            ):  # 7 on windows
-                logger.warning("llvm-link args too long, falling back to chunked linking...")
-                return self._link_in_chunks(
-                    bc_files,
-                    merged_path,
-                    group_name,
-                    link_fingerprint,
+            metrics.append(process.metrics)
+            if process.returncode or not output.is_file():
+                raise RuntimeError(
+                    process.stderr[-2000:] or "llvm-link did not produce an artifact"
                 )
 
-            # 其他链接错误（可能存在多重定义或 IR 版本不兼容）
-            logger.error("llvm-link failed (exit code %d).", e.returncode)
-            logger.error("llvm-link stderr (first 1000 chars):\n%s", stderr[:1000])
-            return None
-        except Exception as e:
-            logger.error("llvm-link unexpected error: %s", e)
+        try:
+            # Chunking changes only command transport; preserve input order and
+            # never split the analysis group into separate solver invocations.
+            argument_bytes = sum(len(str(p).encode()) + 1 for p in bc_files)
+            if argument_bytes > 100000:
+                chunks = []
+                for start in range(0, len(bc_files), 200):
+                    chunk = merged.with_name(merged.stem + f".chunk{start}.bc")
+                    chunk.unlink(missing_ok=True)
+                    link(bc_files[start : start + 200], chunk)
+                    chunks.append(chunk)
+                link(chunks, temporary)
+            else:
+                link(bc_files, temporary)
+            if fingerprint != self._linked_group_fingerprint(bc_files):
+                raise RuntimeError("link input changed while llvm-link was running")
+            temporary.replace(merged)
+            self._record_linked_bitcode_manifest(merged, group_name, fingerprint)
+            self._manifest["linked"][group_name]["metrics"] = metrics
+            self._save_manifest()
+            return merged
+        except (OSError, RuntimeError) as exc:
+            self.failed_links.append(group_name)
+            logger.error("llvm-link failed for %s: %s", group_name, exc)
             return None
 
     def _link_in_chunks(
@@ -1495,36 +1701,7 @@ class BitcodeBuilder:
         group_name: str,
         link_fingerprint: Optional[str] = None,
     ) -> Optional[Path]:
-        """分批合并 bitcode 文件。"""
-        chunk_size = 500
-        intermediate_bcs = []
-        for i in range(0, len(bc_files), chunk_size):
-            chunk = bc_files[i : i + chunk_size]
-            chunk_output = self.output_dir / f"chunk_{group_name}_{i//chunk_size}.bc"
-            cmd = [self.llvm_link, "-o", str(chunk_output)] + [str(p) for p in chunk]
-            try:
-                subprocess.run(
-                    cmd, timeout=self.timeout, capture_output=True, text=True, check=True
-                )
-                intermediate_bcs.append(chunk_output)
-            except subprocess.CalledProcessError as e:
-                logger.error("Chunk linking failed: %s\n%s", e, (e.stderr or "")[:1000])
-                return None
-
-        # 链接所有 chunk
-        try:
-            cmd = [self.llvm_link, "-o", str(final_output)] + [str(p) for p in intermediate_bcs]
-            subprocess.run(cmd, timeout=self.timeout, capture_output=True, text=True, check=True)
-            logger.info("Successfully merged via chunks → %s", final_output)
-            self._record_linked_bitcode_manifest(
-                final_output,
-                group_name,
-                link_fingerprint or self._linked_group_fingerprint(bc_files),
-            )
-            return final_output
-        except subprocess.CalledProcessError as e:
-            logger.error("Final chunk linking failed: %s\n%s", e, (e.stderr or "")[:1000])
-            return None
+        return self._link_all(bc_files, group_name)
 
     @staticmethod
     def _inject_flags(args: List[str]) -> List[str]:

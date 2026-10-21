@@ -21,7 +21,8 @@ FalsePositiveClassifier = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
 def load_json(path: Path) -> Dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+    return read_report(path)
 
 
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -96,13 +97,7 @@ def main() -> None:
                 "false_positives_raw",
                 "false_positives_effective",
                 "duplicate_of_matched_count",
-                "same_product_root_count",
-                "truth_covered_additional_count",
-                "cross_anchor_overlap_count",
-                "weak_legacy_overlap_count",
                 "false_negatives",
-                "actionable_precision",
-                "root_cause_precision",
                 "precision",
                 "false_discovery_rate",
                 "recall",

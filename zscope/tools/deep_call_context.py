@@ -9,32 +9,76 @@ if TYPE_CHECKING:
 class GetDeepCallContextTool(BaseTool):
     """Tool returning a compact aggregate of calls, indirect calls, and taint hints."""
 
+    CALLERS_LIMIT = 20
+    CALLEES_LIMIT = 30
+    INDIRECT_LIMIT = 20
+    TAINT_LIMIT = 20
+
     def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_deep_call_context",
-            description="Get callers, callees, indirect callees, taint hints, and method info in one call.",
+            description=(
+                "Get callers, callees, indirect callees, taint hints, and method info "
+                "in one call. Each section is capped at a fixed row limit; when a "
+                "section is cut short the result sets truncated=true and lists the "
+                "affected truncated_sections."
+            ),
         )
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         func_name = arguments.get("func_name", "")
         backend = getattr(self.code_index, "backend", None)
-        callers = self.code_index.get_callers(func_name, limit=20)
-        callees = self.code_index.get_callees(func_name, limit=30)
-        indirect = backend.get_indirect_callees(func_name, limit=20) if backend and hasattr(backend, "get_indirect_callees") else []
-        taint = backend.get_taint_bugs(func_name, limit=20) if backend and hasattr(backend, "get_taint_bugs") else []
-        method = backend.get_method(func_name) if backend and hasattr(backend, "get_method") else None
-        return {
-            "success": True,
-            "data": {
-                "function": func_name,
-                "method_info": method,
-                "callers": callers,
-                "callees": callees,
-                "indirect_callees": indirect,
-                "taint_bugs": taint,
-            },
+        # Fetch one extra row per section so hitting the cap is detectable and
+        # reported instead of silently dropping rows beyond the cap.
+        probe = 1
+        raw_callers = self.code_index.get_callers(func_name, limit=self.CALLERS_LIMIT + probe)
+        raw_callees = self.code_index.get_callees(func_name, limit=self.CALLEES_LIMIT + probe)
+        raw_indirect = (
+            backend.get_indirect_callees(func_name, limit=self.INDIRECT_LIMIT + probe)
+            if backend and hasattr(backend, "get_indirect_callees")
+            else []
+        )
+        raw_taint = (
+            backend.get_taint_bugs(func_name, limit=self.TAINT_LIMIT + probe)
+            if backend and hasattr(backend, "get_taint_bugs")
+            else []
+        )
+        method = (
+            backend.get_method(func_name) if backend and hasattr(backend, "get_method") else None
+        )
+        sections = {
+            "callers": raw_callers[: self.CALLERS_LIMIT],
+            "callees": raw_callees[: self.CALLEES_LIMIT],
+            "indirect_callees": raw_indirect[: self.INDIRECT_LIMIT],
+            "taint_bugs": raw_taint[: self.TAINT_LIMIT],
         }
+        data: Dict[str, Any] = {
+            "function": func_name,
+            "method_info": method,
+            **sections,
+        }
+        truncated_sections = sorted(
+            section
+            for section, rows in (
+                ("callers", raw_callers),
+                ("callees", raw_callees),
+                ("indirect_callees", raw_indirect),
+                ("taint_bugs", raw_taint),
+            )
+            if len(rows) > len(sections[section])
+        )
+        if truncated_sections:
+            data["truncated"] = True
+            data["truncated_sections"] = truncated_sections
+            data["note"] = (
+                "These sections were cut at their row limits: "
+                + ", ".join(truncated_sections)
+                + ". The neighborhood is incomplete; use the dedicated "
+                "per-section tools (get_callers, query_pointer_alias, "
+                "verify_taint_reachability) with a larger limit for the rest."
+            )
+        return {"success": True, "data": data}
 
     def get_schema(self) -> Dict[str, Any]:
         return {

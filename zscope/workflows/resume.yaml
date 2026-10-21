@@ -5,17 +5,23 @@ steps:
   - id: discover_entries
     scope: session
     handler: discover_entries
+    required: false
     action: classify API, communication, thread, and other user-input entries when requested
-  - id: plan_resume
+  - id: wiki_compile
+    scope: session
+    handler: wiki_compile
+    action: compile and pin project Wiki before resumed entry analysis and validation
+  - id: load_snapshot_state
     scope: session
     handler: plan_resume_entries
     action: skip entries with successful final reports and no pending validations
-  - id: run_pending_entries
+  - id: analyze_remaining
     scope: entry
     stop_policy: stop_if_handler_returns_true
-    agent: security_spec_miner
+    agent: semantic_modeler
     action: reuse snapshots where valid and analyze remaining entries through the default workflow
-  - id: merge_reused_reports
+  - id: merge_skipped_reports
     scope: batch
     handler: merge_skipped_reports
+    required: false
     action: load skipped final reports from snapshot.db and merge with current results

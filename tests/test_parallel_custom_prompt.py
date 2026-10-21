@@ -22,9 +22,61 @@ def _config_with_task(task: str) -> ZScopeConfig:
         project=ProjectConfig(
             project_root=Path("."),
             source_root=Path("."),
-            agents=[AgentConfig(name="active_discovery", task=task)],
+            agents=[AgentConfig(name="vulnerability_analyzer", task=task)],
         ),
     )
+
+
+def test_custom_prompt_does_not_replace_empty_vulnerability_task() -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.base_config = _config_with_task("")
+
+    config = analyzer._create_config_for_entry(
+        FunctionEntry("entry", custom_prompt="Focus on caller-controlled input")
+    )
+    agent_cfg = config.project.agents[0]
+
+    assert agent_cfg.task == ""
+    assert agent_cfg.entry_custom_prompt == "Focus on caller-controlled input"
+
+
+def test_custom_prompt_does_not_append_to_vulnerability_task() -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.base_config = _config_with_task("general security audit")
+
+    config = analyzer._create_config_for_entry(
+        FunctionEntry("entry", custom_prompt="Focus on async handoff")
+    )
+    agent_cfg = config.project.agents[0]
+
+    assert agent_cfg.task == "general security audit"
+    assert agent_cfg.entry_custom_prompt == "Focus on async handoff"
+
+
+def test_entry_config_copy_isolates_project_and_agent_state() -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.base_config = _config_with_task("general security audit")
+
+    first = analyzer._create_config_for_entry(
+        FunctionEntry("first", custom_prompt="Focus first", file_path="src/a.c")
+    )
+    second = analyzer._create_config_for_entry(
+        FunctionEntry("second", custom_prompt="Focus second", file_path="src/b.c")
+    )
+
+    assert first is not analyzer.base_config
+    assert first.project is not analyzer.base_config.project
+    assert first.project.agents is not analyzer.base_config.project.agents
+    assert first.project.agents[0] is not analyzer.base_config.project.agents[0]
+    assert first.project.entry_function == "first"
+    assert second.project.entry_function == "second"
+    assert first.project.agents[0].entry_custom_prompt == "Focus first"
+    assert second.project.agents[0].entry_custom_prompt == "Focus second"
+
+    first.project.agents[0].entry_custom_prompt = "mutated"
+
+    assert analyzer.base_config.project.agents[0].entry_custom_prompt is None
+    assert second.project.agents[0].entry_custom_prompt == "Focus second"
 
 
 def test_parallel_scheduler_prioritizes_heavy_input_entries() -> None:

@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
 
+from ..common.issue_identity import issue_build_context_id
+
 from ..config.config import ConfigLoader, yaml
+from ..config.editor import (
+    read_structured_document,
+    save_document_data,
+    save_document_text,
+    validate_document_file,
+)
 from ..config.user_config_workbook import SHEET_HEADERS
 from ..framework.llm_usage import scan_token_usage_snapshot
 from ..orchestration.rollout import rollout_runtime_policy
@@ -21,17 +28,18 @@ from ..reporting.views import (
     group_by_severity,
     report_view_summary,
 )
+from ..reporting.issue_markdown import issue_identity
+from ..reporting.acceptance import acceptance_coverage, acceptance_for_issue, report_context_for
 from ..rules.query import query_effective_rules, validate_rule_filters
-from ..semantics.security_specs.archive import (
-    archive_from_json_bytes,
-    archive_from_xlsx,
-    archive_to_json_bytes,
-    archive_to_xlsx,
-    build_archive,
+from ..wiki.control import wiki_query, wiki_status
+from ..review_memory.identity import (
+    candidate_projection,
+    project_id,
+    review_subject_id,
+    stable_id,
+    utc_now,
 )
-from ..semantics.security_specs.compiler import SecuritySpecCompiler
-from ..semantics.security_specs.lifecycle import REVIEWER_IDENTITY_MODE, SECURITY_SPEC_MODE
-from ..semantics.security_specs.store import SecuritySpecStore
+from ..review_memory.store import ReviewMemoryStore
 
 
 ALLOWED_VALIDATION_STATUSES = {
@@ -53,6 +61,9 @@ DASHBOARD_TEXT_LIMITS = {
     "reasoning": 10000,
     "reasoning_process": 10000,
     "validation_reasoning": 10000,
+    "llm_explanation": 4000,
+    "promotion_review_reason": 2000,
+    "user_rebuttal": 10000,
     "description": 5000,
     "root_cause": 5000,
     "suggested_fix": 5000,
@@ -77,6 +88,9 @@ DASHBOARD_ISSUE_FIELDS = (
     "code_snippet",
     "validation_status",
     "validation_reasoning",
+    "llm_explanation",
+    "promotion_review_reason",
+    "user_rebuttal",
     "confidence",
     "impact_level",
     "dedup_key",
@@ -153,141 +167,6 @@ def empty_report() -> Dict[str, Any]:
     }
 
 
-class SecuritySpecReviewService:
-    """Read-only P3 Security Spec review and strict dry-run import service."""
-
-    def __init__(self, root: Optional[Path] = None) -> None:
-        self.root = Path(root) if root else None
-        self.store = SecuritySpecStore(self.root) if self.root else None
-
-    def _archive(self) -> Dict[str, Any]:
-        if self.store is None:
-            return build_archive(specs=[])
-        return build_archive(
-            specs=self.store.list_specs(latest_only=False),
-            reviews=self.store.list_review_events(),
-            qualifications=self.store.list_artifacts("qualification"),
-        )
-
-    def list_payload(self, query: str = "") -> Dict[str, Any]:
-        parsed = parse_qs(query)
-        requested_status = str((parsed.get("status") or [""])[0])
-        specs = self.store.list_specs(status=requested_status) if self.store else []
-        return {
-            "schema_version": "zscope.security-spec-review-center.v2",
-            "security_spec_mode": SECURITY_SPEC_MODE,
-            "reviewer_identity_mode": REVIEWER_IDENTITY_MODE,
-            "read_only": True,
-            "specs": specs,
-            "summary": {
-                "spec_count": len(specs),
-                "by_status": {
-                    status: sum(1 for value in specs if value.get("status") == status)
-                    for status in sorted({str(value.get("status")) for value in specs})
-                },
-            },
-        }
-
-    def detail_payload(self, spec_uid: str) -> tuple[int, Dict[str, Any]]:
-        spec = self.store.get_spec(spec_uid) if self.store else None
-        if spec is None:
-            return 404, {"success": False, "error": "security_spec_not_found"}
-        qualifications = self.store.list_artifacts("qualification") if self.store else []
-        qualification_hashes = [str(value["content_sha256"]) for value in qualifications]
-        compilation = SecuritySpecCompiler().compile(
-            [spec],
-            qualification_hashes=qualification_hashes,
-            resolvable_evidence_refs=spec["evidence_refs"],
-            current_dependency_hashes=spec["dependency_hashes"],
-        )
-        events = [
-            value
-            for value in (self.store.list_review_events() if self.store else [])
-            if value.get("spec_uid") == spec_uid
-        ]
-        return 200, {
-            "schema_version": "zscope.security-spec-detail.v2",
-            "read_only": True,
-            "spec": spec,
-            "review_events": events,
-            "compilation_preview": compilation,
-            "impact_preview": list(spec.get("impact_preview") or []),
-        }
-
-    def export_bytes(self, export_format: str) -> tuple[bytes, str, str]:
-        archive = self._archive()
-        if export_format == "json":
-            return archive_to_json_bytes(archive), "application/json", "security-specs.json"
-        if export_format != "xlsx":
-            raise ValueError("security_spec_export_format_must_be_json_or_xlsx")
-        with tempfile.TemporaryDirectory(prefix="zscope-security-spec-export-") as temporary:
-            path = Path(temporary) / "security-specs.xlsx"
-            archive_to_xlsx(path, archive)
-            return (
-                path.read_bytes(),
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "security-specs.xlsx",
-            )
-
-    def dry_run_import(self, data: bytes, import_format: str) -> Dict[str, Any]:
-        current_archive = self._archive()
-        current = current_archive["store_revision"]
-        if import_format == "json":
-            archive = archive_from_json_bytes(data, expected_store_revision=current)
-        elif import_format == "xlsx":
-            with tempfile.TemporaryDirectory(prefix="zscope-security-spec-import-") as temporary:
-                path = Path(temporary) / "security-specs.xlsx"
-                path.write_bytes(data)
-                archive = archive_from_xlsx(path, expected_store_revision=current)
-        else:
-            raise ValueError("security_spec_import_format_must_be_json_or_xlsx")
-        current_specs = {
-            (str(value["spec_uid"]), int(value["revision"])): str(value["content_sha256"])
-            for value in current_archive["specs"]
-        }
-        proposed_specs = {
-            (str(value["spec_uid"]), int(value["revision"])): str(value["content_sha256"])
-            for value in archive["specs"]
-        }
-        added = sorted(
-            f"{uid}@{revision}" for uid, revision in proposed_specs.keys() - current_specs.keys()
-        )
-        removed = sorted(
-            f"{uid}@{revision}" for uid, revision in current_specs.keys() - proposed_specs.keys()
-        )
-        changed = sorted(
-            f"{uid}@{revision}"
-            for uid, revision in proposed_specs.keys() & current_specs.keys()
-            if proposed_specs[(uid, revision)] != current_specs[(uid, revision)]
-        )
-        return {
-            "success": True,
-            "dry_run": True,
-            "applied": False,
-            "read_only": True,
-            "store_revision": current,
-            "bundle_sha256": archive["bundle_sha256"],
-            "summary": {
-                "spec_count": len(archive["specs"]),
-                "review_count": len(archive["reviews"]),
-                "qualification_count": len(archive["qualifications"]),
-            },
-            "impact_preview": {
-                "added_spec_revisions": added,
-                "removed_spec_revisions": removed,
-                "changed_spec_revisions": changed,
-            },
-        }
-
-    @staticmethod
-    def write_rejected_payload() -> tuple[int, Dict[str, Any]]:
-        return 403, {
-            "success": False,
-            "error": "reviewer_identity_unavailable",
-            "read_only": True,
-        }
-
-
 class ConfigService:
     """Read and write the structured dashboard config document."""
 
@@ -317,29 +196,24 @@ class ConfigService:
         return data if isinstance(data, dict) else {}
 
     def save_document(self, data: Dict[str, Any]) -> None:
-        if yaml is None:
-            raise RuntimeError("PyYAML is required for structured config editing")
-        header = (
-            "# Z-SCOPE 配置文件\n"
-            "# 本文件由 Web UI 结构化配置编辑器生成。\n"
-            "# 字段说明请参考仓库根目录 zscope.c_cpp.yaml 或 zscope.java.yaml 中的注释。\n\n"
-        )
-        text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-        self._validate_and_replace(header + text)
+        save_document_data(self.path, data)
 
     def structured_payload(self) -> Dict[str, Any]:
+        # Validate the formal document without forcing multi-target execution.
+        if self.path.exists() and self.path.read_text(encoding="utf-8").strip():
+            validate_document_file(self.path)
+        payload = read_structured_document(self.path)
+        document = payload["config"]
+        multi_target = (
+            document.get("config_version") == 3
+            and len((document.get("project") or {}).get("targets") or []) != 1
+        )
         effective = None
-        if self.path.exists():
+        if document and not multi_target:
             overrides: Dict[str, Any] = {}
             if self.scan_depth is not None:
                 overrides["scan_depth"] = self.scan_depth
             effective = ConfigLoader.load(str(self.path), **overrides)
-        document = self.load_document()
-        payload: Dict[str, Any] = {
-            "config": document,
-            "config_version": document.get("config_version"),
-            "language": (document.get("project") or {}).get("language"),
-        }
         if effective is not None:
             payload["effective_scan"] = {
                 "depth": effective.scan.depth,
@@ -355,22 +229,23 @@ class ConfigService:
             return {"content": ""}
         return {"content": path.read_text(encoding="utf-8")}
 
+    def prepare_project(self) -> Dict[str, Any]:
+        if self.scan_depth is None:
+            from ..config.v3_preparation import prepare_saved_config
+
+            return prepare_saved_config(str(self.path))
+        from ..config.preparation import prepare_project
+
+        overrides = {"scan_depth": self.scan_depth} if self.scan_depth is not None else {}
+        config = ConfigLoader.load(str(self.path), read_only=True, **overrides)
+        return prepare_project(config, self.path)
+
     def write_text(self, content: str) -> Dict[str, Any]:
         self._validate_and_replace(content)
         return {"success": True, "path": str(self.path)}
 
     def _validate_and_replace(self, content: str) -> None:
-        path = self.path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-        try:
-            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-                handle.write(content)
-            ConfigLoader.load(str(temporary))
-            os.replace(temporary, path)
-        finally:
-            if temporary.exists():
-                temporary.unlink()
+        save_document_text(self.path, content)
 
 
 class RuleService:
@@ -405,6 +280,72 @@ class RuleService:
             skill=filters["skill"],
             status=filters["status"],
             query=filters["q"],
+        )
+
+
+class WikiControlService:
+    """Expose only read-only Wiki status and bounded candidate-context query."""
+
+    def __init__(self, config_path: Optional[Path] = None, *, default_name: str = "zscope.yaml"):
+        self.config_path = Path(config_path).resolve() if config_path else None
+        self.default_name = default_name
+
+    @property
+    def path(self) -> Path:
+        return self.config_path or Path(self.default_name)
+
+    def _config(self) -> Any:
+        return ConfigLoader.load(str(self.path))
+
+    def status_payload(self) -> Dict[str, Any]:
+        config = self._config()
+        wiki = config.project.wiki
+        return wiki_status(config.project.project_root, state_dir=wiki.state_dir)
+
+    def query_payload(self, query: str) -> Dict[str, Any]:
+        params = parse_qs(query, keep_blank_values=True, max_num_fields=64)
+        unknown = sorted(set(params) - {"subject", "fact_kind", "candidate_file", "max_tokens"})
+        if unknown:
+            raise ValueError(f"unsupported Wiki query fields: {unknown}")
+        subjects = [str(item).strip() for item in params.get("subject", ()) if str(item).strip()]
+        if not subjects or len(subjects) > 32 or any(len(item) > 300 for item in subjects):
+            raise ValueError("subject must be provided 1-32 times and be at most 300 characters")
+        fact_kind = str((params.get("fact_kind") or ["unknown"])[0] or "unknown").strip()
+        if len(fact_kind) > 80:
+            raise ValueError("fact_kind must be at most 80 characters")
+        candidate_file = (
+            str((params.get("candidate_file") or [""])[0] or "").replace("\\", "/").strip()
+        )
+        if candidate_file.startswith("/") or ".." in Path(candidate_file).parts:
+            raise ValueError("candidate_file must be project-root relative")
+
+        config = self._config()
+        wiki = config.project.wiki
+        raw_values = params.get("max_tokens")
+        raw_limit: Optional[str] = raw_values[0] if raw_values else None
+        try:
+            max_tokens = None if raw_limit is None else int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_tokens must be an integer") from exc
+        if max_tokens is not None and max_tokens < 256:
+            raise ValueError("max_tokens must be at least 256")
+        root = config.project.project_root
+        return wiki_query(
+            root,
+            subjects=subjects,
+            fact_kind=fact_kind,
+            candidate_file=candidate_file,
+            max_tokens=max_tokens,
+            project_id=str(config.project.project_id or root.name),
+            state_dir=wiki.state_dir,
+            overrides={
+                "exclude": list(wiki.document_exclude),
+                "explanatory": list(wiki.explanatory_overrides),
+                "generated": list(wiki.generated_overrides),
+            },
+            max_file_bytes=wiki.max_file_bytes,
+            max_files=wiki.max_files,
+            max_total_bytes=wiki.max_total_bytes,
         )
 
 
@@ -762,9 +703,20 @@ class ReportFeedbackService:
         snapshot_store: Any = None,
         *,
         report_filename: str = "zscope_batch_report.json",
+        project_config: Any = None,
     ):
         self.user_config_store = user_config_store
         self.snapshot_store = snapshot_store
+        self.project_config = project_config
+        self.review_memory_store = None
+        review_config = getattr(project_config, "review_memory", None)
+        if review_config is not None and getattr(review_config, "mode", "off") != "off":
+            try:
+                self.review_memory_store = ReviewMemoryStore(
+                    project_config.project_root, review_config.state_dir
+                )
+            except Exception:
+                self.review_memory_store = None
         self.report_filename = report_filename
         self._report_cache_key: Optional[tuple[str, int, int]] = None
         self._report_cache: Optional[Dict[str, Any]] = None
@@ -777,23 +729,27 @@ class ReportFeedbackService:
         cache_key = (str(report_path.resolve()), stat.st_mtime_ns, stat.st_size)
         if self._report_cache_key == cache_key and self._report_cache is not None:
             return self._report_cache
-        raw_content = report_path.read_text(encoding="utf-8", errors="ignore")
-        sanitized = strip_json_code_fence(raw_content)
-        if not sanitized:
-            return empty_report()
         try:
-            raw_report = json.loads(sanitized)
+            from ..reporting.json_io import read_report
+
+            raw_report = read_report(report_path)
         except json.JSONDecodeError as exc:
-            print(f"Warning: failed to parse report JSON: {exc}")
-            return empty_report()
+            try:
+                raw_report = json.loads(
+                    strip_json_code_fence(report_path.read_text(encoding="utf-8"))
+                )
+            except json.JSONDecodeError:
+                print(f"Warning: failed to parse report JSON: {exc}")
+                return empty_report()
         report = raw_report if isinstance(raw_report, dict) else empty_report()
         self._report_cache_key = cache_key
         self._report_cache = report
         return report
 
     def save_report(self, report: Dict[str, Any]) -> None:
-        with Path(self.report_filename).open("w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
+        from ..reporting.json_io import write_report_atomic
+
+        write_report_atomic(Path(self.report_filename), report)
         self._report_cache_key = None
         self._report_cache = None
 
@@ -825,6 +781,8 @@ class ReportFeedbackService:
             "needs_review_governance": report.get("needs_review_governance"),
             "metadata": {
                 "report_view_summary": metadata.get("report_view_summary"),
+                "entry_instances": metadata.get("entry_instances"),
+                "job": metadata.get("job"),
             },
         }
 
@@ -839,10 +797,36 @@ class ReportFeedbackService:
             "true",
             "yes",
         }
+        return self.project_report(report, self.report_filename, view=view, full_report=full_report)
+
+    @classmethod
+    def project_report(
+        cls,
+        report: Dict[str, Any],
+        report_filename: str,
+        *,
+        view: str = "with_needs_review",
+        full_report: bool = False,
+    ) -> Dict[str, Any]:
+        """Project an already bound report without consulting the live file."""
+        from .review_reports import report_identity
+
         findings = findings_for_view(report, view)
+        context = report_context_for(report)
+        acceptances = [acceptance_for_issue(original, context) for original in findings]
+        projected = findings if full_report else cls._compact_findings(findings)
+        report_id = report_identity(report, report_filename)
+        projected = [
+            dict(
+                item, issue_id=issue_identity(original), report_id=report_id, acceptance=acceptance
+            )
+            for original, item, acceptance in zip(findings, projected, acceptances)
+        ]
         return {
-            "report": report if full_report else self._lightweight_report(report),
-            "findings": findings if full_report else self._compact_findings(findings),
+            "report": report if full_report else cls._lightweight_report(report),
+            "findings": projected,
+            "report_id": report_id,
+            "coverage": acceptance_coverage(report),
             "view": view,
             "views": report_view_summary(report),
         }
@@ -953,11 +937,14 @@ class ReportFeedbackService:
             "db_path": str(getattr(store, "db_path", "")),
             "baseline_upserts": 0,
             "suppression_upserts": 0,
+            "review_memory_records": 0,
+            "review_memory_errors": [],
+            "review_memory_items": [],
         }
         for issue in updates:
             if not isinstance(issue, dict):
                 continue
-            status, reasoning = normalize_validation(issue)
+            status, reasoning, rebuttal = normalize_validation(issue)
             dedup_key = feedback_dedup_key(issue)
             if dedup_key:
                 baseline_status = {
@@ -969,22 +956,95 @@ class ReportFeedbackService:
                 if baseline_status:
                     store.upsert_finding_baseline(dedup_key, baseline_status, issue)
                     result["baseline_upserts"] += 1
-            if status == "rejected":
+            if status == "rejected" and not issue_build_context_id(issue):
                 store.add_false_positive_suppression(
                     func_name=str(issue.get("function") or ""),
                     location=str(issue.get("location") or ""),
                     category=feedback_category(issue),
-                    reason=str(reasoning or "user rejected finding"),
+                    reason=str(rebuttal or reasoning or "user rejected finding"),
                     scope="finding",
                     rule=str(issue.get("rule") or issue.get("candidate_source") or ""),
                     note=str(issue.get("description") or ""),
                 )
                 result["suppression_upserts"] += 1
+            if status == "rejected":
+                if self.review_memory_store is not None:
+                    try:
+                        finding = dict(issue)
+                        review_id = stable_id(
+                            "review",
+                            {
+                                "project_id": project_id(self.project_config),
+                                "issue_id": finding.get("issue_id") or finding.get("id"),
+                                "dedup_key": dedup_key,
+                                "rebuttal": rebuttal or "",
+                            },
+                        )
+                        record = {
+                            "schema_version": "zscope.review-record.v1",
+                            "review_id": review_id,
+                            "review_subject_id": review_subject_id(
+                                {"project_id": project_id(self.project_config), "finding": finding}
+                            ),
+                            "project_id": project_id(self.project_config),
+                            "repository_identity": {},
+                            "finding": finding,
+                            "candidate_snapshot": dict(finding),
+                            "candidate_projection": candidate_projection(finding),
+                            "user_rebuttal": str(rebuttal or ""),
+                            "source_context": {
+                                "source_context_fingerprint": finding.get(
+                                    "source_context_fingerprint", ""
+                                ),
+                                "file": finding.get("file", finding.get("source", "")),
+                                "function": finding.get("function", ""),
+                                "snippet": finding.get("code_snippet", ""),
+                            },
+                            "evidence_refs": list(finding.get("evidence_refs") or []),
+                            "status": "pending_extraction" if rebuttal else "insufficient",
+                            "created_at": utc_now(),
+                        }
+                        self.review_memory_store.save_record(record)
+                        result["review_memory_records"] += 1
+                        review_config = getattr(self.project_config, "review_memory", None)
+                        if (
+                            review_config is not None
+                            and review_config.mode in {"extract", "active"}
+                            and review_config.extraction == "auto_extract"
+                            and rebuttal
+                        ):
+                            job = self.review_memory_store.create_extraction_job([review_id])
+                        else:
+                            job = None
+                        result["review_memory_items"].append(
+                            {
+                                "review_id": review_id,
+                                "extraction_status": record["status"],
+                                **(
+                                    {"extraction_status": "queued", "job_id": job["job_id"]}
+                                    if job
+                                    else {}
+                                ),
+                            }
+                        )
+                    except Exception as exc:
+                        result["review_memory_errors"].append(str(exc))
+            elif status == "validated" and self.review_memory_store is not None:
+                try:
+                    self.review_memory_store.supersede_for_finding(issue, reason="validated")
+                except Exception as exc:
+                    # Validation feedback is already persisted above; memory
+                    # reconciliation must not roll back the user action.
+                    result["review_memory_errors"].append(str(exc))
         return result
 
-    def apply_validation_updates(self, report: Dict[str, Any], updates: list[Any]) -> None:
+    def apply_validation_updates(
+        self, report: Dict[str, Any], updates: list[Any], *, strict_identity: bool = False
+    ) -> None:
         update_map = {
-            issue_key(issue): normalize_validation(issue)
+            (issue_identity(issue) if strict_identity else issue_key(issue)): normalize_validation(
+                issue
+            )
             for issue in updates
             if isinstance(issue, dict)
         }
@@ -992,11 +1052,13 @@ class ReportFeedbackService:
         def update_issue(issue: Dict[str, Any]) -> None:
             if not isinstance(issue, dict):
                 return
-            key = issue_key(issue)
+            key = issue_identity(issue) if strict_identity else issue_key(issue)
             if key in update_map:
-                status, reasoning = update_map[key]
+                status, reasoning, rebuttal = update_map[key]
                 issue["validation_status"] = status
-                issue["validation_reasoning"] = reasoning
+                if not strict_identity:
+                    issue["validation_reasoning"] = reasoning
+                issue["user_rebuttal"] = rebuttal
 
         for issue in report.get("issues", []):
             update_issue(issue)
@@ -1005,6 +1067,10 @@ class ReportFeedbackService:
                 update_issue(issue)
         for issue in report.get("findings", []):
             update_issue(issue)
+        for nested in [*report.get("results", {}).values(), *report.get("function_results", [])]:
+            if isinstance(nested, dict):
+                for issue in nested.get("issues", []):
+                    update_issue(issue)
         metadata = report.get("metadata")
         if isinstance(metadata, dict):
             for issue in metadata.get("audit_observations", []):
@@ -1038,7 +1104,9 @@ class ReportFeedbackService:
                 )
             report.setdefault("metadata", {})["report_view_summary"] = report_view_summary(report)
 
-    def apply_validation_to_snapshots(self, updates: list[Any]) -> Dict[str, Any]:
+    def apply_validation_to_snapshots(
+        self, updates: list[Any], *, strict_identity: bool = False
+    ) -> Dict[str, Any]:
         snapshot_store = self.snapshot_store
         if not snapshot_store:
             return {
@@ -1049,7 +1117,9 @@ class ReportFeedbackService:
             }
 
         key_updates = {
-            issue_key(issue): normalize_validation(issue)
+            (issue_identity(issue) if strict_identity else issue_key(issue)): normalize_validation(
+                issue
+            )
             for issue in updates
             if isinstance(issue, dict)
         }
@@ -1063,18 +1133,20 @@ class ReportFeedbackService:
             if not isinstance(target, dict):
                 return False
             update = None
-            key = issue_key(target)
+            key = issue_identity(target) if strict_identity else issue_key(target)
             if key in key_updates:
                 update = key_updates[key]
-            else:
+            elif not strict_identity:
                 dedup_key = target.get("dedup_key")
                 if dedup_key and str(dedup_key) in dedup_updates:
                     update = dedup_updates[str(dedup_key)]
             if not update:
                 return False
-            status, reasoning = update
+            status, reasoning, rebuttal = update
             target["validation_status"] = status
-            target["validation_reasoning"] = reasoning
+            if not strict_identity:
+                target["validation_reasoning"] = reasoning
+            target["user_rebuttal"] = rebuttal
             if status == "rejected":
                 target["rejection_source"] = "user"
             return True
@@ -1089,6 +1161,13 @@ class ReportFeedbackService:
 
         def apply_to_report(report: Dict[str, Any]) -> int:
             changed = apply_to_issue_list(report.get("issues"))
+            changed += apply_to_issue_list(report.get("findings"))
+            for nested in [
+                *report.get("results", {}).values(),
+                *report.get("function_results", []),
+            ]:
+                if isinstance(nested, dict):
+                    changed += apply_to_issue_list(nested.get("issues"))
             for bucket in report.get("issues_by_severity", {}).values():
                 changed += apply_to_issue_list(bucket)
             report_views = report.get("report_views")
@@ -1114,7 +1193,9 @@ class ReportFeedbackService:
         for final_path in Path(snapshot_dir).glob("*_final.json"):
             result["final_reports_scanned"] += 1
             try:
-                report = json.loads(final_path.read_text(encoding="utf-8"))
+                from ..reporting.json_io import read_report
+
+                report = read_report(final_path)
             except (OSError, json.JSONDecodeError):
                 continue
             changed_count = apply_to_report(report)
@@ -1135,9 +1216,35 @@ class ReportFeedbackService:
         save_scope: str = "full",
     ) -> Dict[str, Any]:
         report = self.load_report()
-        self.apply_validation_updates(report, updates)
+        # New dashboard clients send a server-issued identity. Never persist compacted
+        # display fields (especially Validator text) back over the complete finding.
+        identified = any(isinstance(item, dict) and item.get("issue_id") for item in updates)
+        strict_identity = identified or save_scope == "offline_import"
+        if identified:
+            authoritative = {
+                issue_identity(item): item
+                for view in (DEFAULT_REPORT_VIEW, WITH_NEEDS_REVIEW_REPORT_VIEW)
+                for item in findings_for_view(report, view)
+            }
+            resolved = []
+            for item in updates:
+                if not isinstance(item, dict) or not item.get("issue_id"):
+                    resolved.append(item)
+                    continue
+                current = authoritative.get(item["issue_id"])
+                if current is None:
+                    raise ValueError("issue 不存在，请刷新报告")
+                merged = dict(current)
+                for field in ("validation_status", "user_rebuttal"):
+                    if field in item:
+                        merged[field] = item[field]
+                resolved.append(merged)
+            updates = resolved
+        self.apply_validation_updates(report, updates, strict_identity=strict_identity)
         if persist_snapshots:
-            snapshot_result = self.apply_validation_to_snapshots(updates)
+            snapshot_result = self.apply_validation_to_snapshots(
+                updates, strict_identity=strict_identity
+            )
         else:
             snapshot_result = {
                 "snapshot_available": bool(self.snapshot_store),
@@ -1150,6 +1257,15 @@ class ReportFeedbackService:
             }
         feedback_result = self.persist_validation_feedback(updates)
         self.save_report(report)
+        review_items = feedback_result.get("review_memory_items", [])
+        review_memory_result = {
+            "recorded": bool(feedback_result.get("review_memory_records")),
+            "records": feedback_result.get("review_memory_records", 0),
+            "items": review_items,
+            "errors": feedback_result.get("review_memory_errors", []),
+        }
+        if len(review_items) == 1:
+            review_memory_result.update(review_items[0])
         return {
             "success": True,
             "save_scope": save_scope,
@@ -1158,6 +1274,7 @@ class ReportFeedbackService:
             "state_db_persisted": bool(feedback_result.get("db_available")),
             "feedback_persistence": feedback_result,
             "snapshot_persistence": snapshot_result,
+            "review_memory": review_memory_result,
         }
 
 
@@ -1202,12 +1319,14 @@ def issue_key_part(value: Any) -> Any:
         return str(value)
 
 
-def normalize_validation(issue: Dict[str, Any]) -> tuple[str, Any]:
+def normalize_validation(issue: Dict[str, Any]) -> tuple[str, Any, Any]:
     status = issue.get("validation_status")
     if status not in ALLOWED_VALIDATION_STATUSES:
         status = "pending"
     reasoning = issue.get("validation_reasoning")
-    return status, reasoning
+    # 用户反驳/复核说明独立于 validator 说明持久化，不覆盖 validation_reasoning。
+    rebuttal = issue.get("user_rebuttal")
+    return status, reasoning, rebuttal
 
 
 def feedback_category(issue: Dict[str, Any]) -> str:

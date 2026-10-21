@@ -1,27 +1,16 @@
-import pytest
-from types import SimpleNamespace
-
-import zscope.reporting.schema as report_schema_module
+from zscope.common.validator_protocol import VALIDATION_POLICY_VERSION
 from zscope.orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     annotate_issue_identity,
 )
 from zscope.reporting.schema import (
     apply_report_schema_v2,
-    build_run_manifest,
     coalesce_terminal_candidates,
     completeness_status,
     exit_code_for_report,
-    needs_review_count,
     report_invariant_status,
     report_is_reusable,
     report_reuse_blockers,
-    REPORT_REUSE_EPOCH,
-    RUN_MANIFEST_SCHEMA_VERSION,
-)
-from zscope.orchestration.runtime_authority import (
-    RUNTIME_CACHE_EPOCH,
-    build_runtime_authority_manifest,
 )
 
 
@@ -49,36 +38,6 @@ def test_enabled_discovery_without_llm_is_partial_and_exit_two() -> None:
     assert exit_code_for_report(report, policy="legacy") == 2
 
 
-def test_new_run_manifest_projects_exact_current_successor_binding(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    binding = {
-        "successor_implementation_root_sha256": "1" * 64,
-        "successor_qualification_sha256": "2" * 64,
-        "successor_review_status": "in_progress",
-        "successor_review_status_content_sha256": "3" * 64,
-        "successor_review_set_sha256": "",
-    }
-    monkeypatch.setattr(
-        report_schema_module,
-        "current_successor_runtime_binding",
-        lambda: dict(binding),
-    )
-
-    manifest = build_run_manifest(
-        {"run_id": "RUN"},
-        entry_function="entry",
-        finding="clean",
-        completeness="complete",
-        issue_count=0,
-        needs_review_count=0,
-    )
-
-    assert manifest["schema_version"] == RUN_MANIFEST_SCHEMA_VERSION
-    assert manifest["report_reuse_epoch"] == REPORT_REUSE_EPOCH
-    assert {key: manifest[key] for key in binding} == binding
-
-
 def test_fast_disabled_discovery_does_not_mark_report_partial() -> None:
     assert (
         completeness_status(
@@ -91,36 +50,6 @@ def test_fast_disabled_discovery_does_not_mark_report_partial() -> None:
         )
         == "complete"
     )
-
-
-def test_run_manifest_preserves_finding_root_v2_projection_summary() -> None:
-    report = {"issues": []}
-    projection = {
-        "schema_version": "zscope.finding-root.v2",
-        "input_outcome_count": 10,
-        "finding_root_count": 8,
-        "finding_root_alias_count": 2,
-        "counts_by_merge_contract": {"same_candidate_uid": 2},
-        "unprojectable_count": 0,
-        "unprojectable_by_reason": {},
-    }
-
-    apply_report_schema_v2(
-        report,
-        state={
-            "finding_root_count": 8,
-            "finding_root_alias_count": 2,
-            "finding_root_projection_summary": projection,
-        },
-        issues=[],
-        observations=[],
-        metadata={"run_id": "RUN"},
-        entry_function="entry",
-    )
-
-    assert report["run_manifest"]["finding_root_count"] == 8
-    assert report["run_manifest"]["finding_root_alias_count"] == 2
-    assert report["run_manifest"]["finding_root_projection"] == projection
 
 
 def test_report_invariant_rejects_open_evidence_completion() -> None:
@@ -143,235 +72,10 @@ def test_report_invariant_rejects_open_evidence_completion() -> None:
         [review],
         [confirmed, review],
         canonical_projection=True,
-        default_items=[confirmed],
-        with_needs_review_items=[confirmed, review],
     )
 
     assert status["valid"] is False
     assert status["open_evidence_completion_count"] == 1
-
-
-def test_report_invariant_accounts_all_terminal_dispositions_and_views() -> None:
-    confirmed = {
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": "VAL_confirmed",
-        "status": "confirmed",
-        "obligation_uid": "OBL_confirmed",
-    }
-    review = {
-        "candidate_disposition": "needs_review",
-        "validation_cluster_uid": "VAL_review",
-        "status": "needs_review",
-        "obligation_uid": "OBL_review",
-    }
-    rejected = {
-        "candidate_disposition": "rejected_with_proof",
-        "validation_cluster_uid": "VAL_rejected",
-        "status": "rejected_with_proof",
-        "obligation_uid": "OBL_rejected",
-    }
-    alias = {
-        "candidate_disposition": "deduplicated_alias",
-        "validation_cluster_uid": "VAL_alias",
-        "status": "deduplicated_alias",
-        "obligation_uid": "OBL_alias",
-    }
-    audit = {
-        "candidate_disposition": "shadow_observation",
-        "validation_cluster_uid": "VAL_audit",
-        "status": "shadow_observation",
-        "validation_status": "needs_review",
-        "obligation_uid": "OBL_audit",
-    }
-    operational = {
-        "candidate_disposition": "engine_failed",
-        "record_role": "operational_obligation",
-        "status": "engine_failed",
-        "operational_uid": "OP_engine",
-    }
-
-    status = report_invariant_status(
-        [confirmed],
-        [review],
-        [confirmed, review, rejected, alias, audit, operational],
-        canonical_projection=True,
-        default_items=[confirmed],
-        with_needs_review_items=[confirmed, review],
-    )
-
-    assert status["valid"] is True
-    assert status["terminal_outcome_count"] == 6
-    assert status["terminal_outcome_conservation_passed"] is True
-    assert status["terminal_disposition_counts"] == {
-        "confirmed": 1,
-        "deduplicated_alias": 1,
-        "engine_failed": 1,
-        "needs_review": 1,
-        "rejected_with_proof": 1,
-        "shadow_observation": 1,
-    }
-    assert status["deduplicated_alias_count"] == 1
-    assert status["audit_observation_count"] == 1
-    assert status["rejected_with_proof_count"] == 1
-    assert status["operational_obligation_count"] == 1
-    assert status["default_is_with_needs_review_subset"] is True
-    assert status["all_canonical_needs_review_included"] is True
-    assert needs_review_count([review, audit], [review, audit]) == 1
-
-
-def test_report_invariant_rejects_unknown_terminal_or_missing_review_projection() -> None:
-    confirmed = {
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": "VAL_confirmed",
-        "status": "confirmed",
-    }
-    review = {
-        "candidate_disposition": "needs_review",
-        "validation_cluster_uid": "VAL_review",
-        "status": "needs_review",
-    }
-    unknown = {
-        "candidate_disposition": "mystery_terminal",
-        "validation_cluster_uid": "VAL_unknown",
-        "status": "mystery_terminal",
-    }
-
-    status = report_invariant_status(
-        [confirmed],
-        [],
-        [confirmed, review, unknown],
-        canonical_projection=True,
-    )
-
-    assert status["valid"] is False
-    assert status["unknown_terminal_disposition_count"] == 1
-    assert status["terminal_outcome_conservation_passed"] is False
-    assert status["all_canonical_needs_review_included"] is False
-
-
-def test_report_invariant_rejects_actual_review_view_missing_default_member() -> None:
-    confirmed = {
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": "VAL_confirmed",
-        "status": "confirmed",
-    }
-    review = {
-        "candidate_disposition": "needs_review",
-        "validation_cluster_uid": "VAL_review",
-        "status": "needs_review",
-    }
-
-    status = report_invariant_status(
-        [confirmed],
-        [review],
-        [confirmed, review],
-        canonical_projection=True,
-        default_items=[confirmed],
-        with_needs_review_items=[review],
-    )
-
-    assert status["valid"] is False
-    assert status["default_is_with_needs_review_subset"] is False
-    assert status["all_canonical_needs_review_included"] is True
-
-
-def test_report_invariant_rejects_extra_non_actionable_view_members() -> None:
-    confirmed = {
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": "VAL_confirmed",
-        "status": "confirmed",
-    }
-    review = {
-        "candidate_disposition": "needs_review",
-        "validation_cluster_uid": "VAL_review",
-        "status": "needs_review",
-    }
-    rejected = {
-        "candidate_disposition": "rejected_with_proof",
-        "validation_cluster_uid": "VAL_rejected",
-        "status": "rejected_with_proof",
-    }
-    audit = {
-        "candidate_disposition": "shadow_observation",
-        "validation_cluster_uid": "VAL_audit",
-        "status": "shadow_observation",
-    }
-
-    for extra in (rejected, audit):
-        status = report_invariant_status(
-            [confirmed],
-            [review],
-            [confirmed, review, rejected, audit],
-            canonical_projection=True,
-            default_items=[confirmed],
-            with_needs_review_items=[confirmed, review, extra],
-        )
-        assert status["valid"] is False
-        assert status["actual_with_needs_review_membership_exact"] is False
-
-
-def test_report_invariant_rejects_duplicate_or_empty_view_identities() -> None:
-    confirmed = {
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": "VAL_confirmed",
-        "status": "confirmed",
-    }
-    review = {
-        "candidate_disposition": "needs_review",
-        "validation_cluster_uid": "VAL_review",
-        "status": "needs_review",
-    }
-    duplicate = report_invariant_status(
-        [confirmed],
-        [review],
-        [confirmed, review],
-        canonical_projection=True,
-        default_items=[confirmed],
-        with_needs_review_items=[confirmed, review, review],
-    )
-    assert duplicate["valid"] is False
-    assert duplicate["view_membership_identities_unique"] is False
-
-    empty = report_invariant_status(
-        [confirmed],
-        [review],
-        [confirmed, review],
-        canonical_projection=True,
-        default_items=[confirmed],
-        with_needs_review_items=[confirmed, {"candidate_disposition": "needs_review"}],
-    )
-    assert empty["valid"] is False
-    assert empty["view_membership_identities_nonempty"] is False
-
-
-def test_apply_report_schema_attaches_both_canonical_views_when_missing() -> None:
-    confirmed = {
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": "VAL_confirmed",
-        "status": "confirmed",
-        "obligation_uid": "OBL_confirmed",
-    }
-    review = {
-        "candidate_disposition": "needs_review",
-        "validation_cluster_uid": "VAL_review",
-        "status": "needs_review",
-        "obligation_uid": "OBL_review",
-    }
-    report = {"issues": [confirmed]}
-    apply_report_schema_v2(
-        report,
-        state={
-            "canonical_outcome_projection": True,
-            "candidate_terminal_states": [confirmed, review],
-        },
-        issues=[confirmed],
-        observations=[review],
-        metadata={"run_id": "RUN"},
-        entry_function="entry",
-    )
-
-    assert set(report["report_views"]) == {"default", "with_needs_review"}
-    assert report["run_manifest"]["report_invariant_status"]["valid"] is True
 
 
 def test_candidate_envelope_separates_display_id_from_internal_occurrence() -> None:
@@ -578,7 +282,7 @@ def test_report_schema_marks_deferred_candidate_incomplete() -> None:
         entry_function="entry",
     )
 
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 2
     assert report["finding_status"] == "clean"
     assert report["completeness"] == "degraded"
     assert report["scan_outcome"] == "incomplete"
@@ -805,29 +509,9 @@ def test_shadow_observation_is_a_closed_non_user_visible_terminal() -> None:
     assert invariant["shadow_observation_count"] == 1
 
 
-def test_report_reuse_requires_complete_compatible_manifest_without_pending_work(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    successor_binding = {
-        "successor_implementation_root_sha256": "1" * 64,
-        "successor_qualification_sha256": "2" * 64,
-        "successor_review_status": "in_progress",
-        "successor_review_status_content_sha256": "3" * 64,
-        "successor_review_set_sha256": "",
-    }
-    monkeypatch.setattr(
-        report_schema_module,
-        "current_successor_runtime_binding",
-        lambda: dict(successor_binding),
-    )
-    authority = build_runtime_authority_manifest(
-        source_tree_hash="a" * 40,
-        config_sha256="b" * 64,
-        backend_sha256="c" * 64,
-        revisions={"proof_checker": "proof-checker.v2"},
-    )
+def test_report_reuse_requires_complete_compatible_manifest_without_pending_work() -> None:
     reusable = {
-        "schema_version": 3,
+        "schema_version": 2,
         "finding_status": "confirmed",
         "completeness": "complete",
         "issues": [
@@ -839,14 +523,8 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
         "candidate_terminal_states": [],
         "run_manifest": {
             "valid": True,
-            "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
-            "report_reuse_epoch": REPORT_REUSE_EPOCH,
-            **successor_binding,
-            "candidate_schema_version": "zscope.candidate.v3.3",
-            "cache_epoch": RUNTIME_CACHE_EPOCH,
-            "runtime_authority_manifest": authority,
-            "runtime_authority_sha256": authority["content_sha256"],
-            "decision_trace": {"complete": True},
+            "candidate_schema_version": "zscope.candidate.v3.5",
+            "validation_policy_version": VALIDATION_POLICY_VERSION,
             "config_hash": "CONFIG",
             "model_manifest_hash": "MODEL",
             "source_revision": "REV",
@@ -896,115 +574,10 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
     assert "candidate_schema_mismatch" in report_reuse_blockers(v32_candidate_schema)
     assert not report_is_reusable(v32_candidate_schema)
 
-    for key in successor_binding:
-        missing = {
+    for policy in ("", "old-score-only-policy"):
+        old_policy = {
             **reusable,
-            "run_manifest": {
-                name: value for name, value in reusable["run_manifest"].items() if name != key
-            },
+            "run_manifest": {**reusable["run_manifest"], "validation_policy_version": policy},
         }
-        assert f"successor_binding_missing:{key}" in report_reuse_blockers(missing)
-
-        mismatched = {
-            **reusable,
-            "run_manifest": {
-                **reusable["run_manifest"],
-                key: "reviewed" if key == "successor_review_status" else "f" * 64,
-            },
-        }
-        assert f"successor_binding_mismatch:{key}" in report_reuse_blockers(mismatched)
-
-    same_runtime_epoch_old_manifest = {
-        **reusable,
-        "run_manifest": {
-            **reusable["run_manifest"],
-            "schema_version": "zscope.run-manifest.v2",
-        },
-    }
-    assert "run_manifest_schema_mismatch" in report_reuse_blockers(same_runtime_epoch_old_manifest)
-
-    def stale_successor() -> dict[str, str]:
-        raise ValueError("successor_qualification_source_stale")
-
-    monkeypatch.setattr(
-        report_schema_module,
-        "current_successor_runtime_binding",
-        stale_successor,
-    )
-    assert "successor_qualification_not_current" in report_reuse_blockers(reusable)
-
-    # Maintain mode delegates to the same exact successor comparison and must
-    # not short-circuit a new analysis with a report from another review
-    # projection.
-    monkeypatch.setattr(
-        report_schema_module,
-        "current_successor_runtime_binding",
-        lambda: dict(successor_binding),
-    )
-    from zscope.core.analysis.analyzer import Analyzer
-
-    analyzer = SimpleNamespace(
-        maintain_mode=True,
-        config=SimpleNamespace(project=SimpleNamespace(project_root=".")),
-        _git_commit_sha=lambda _root: "REV",
-        _config_hash=lambda: "CONFIG",
-        _model_manifest_hash=lambda: "MODEL",
-        _knowledge_db_version=lambda: "11",
-        _effective_rules_sha256=lambda: "",
-    )
-    historical = {
-        **reusable,
-        "run_manifest": {
-            **reusable["run_manifest"],
-            "successor_review_status_content_sha256": "f" * 64,
-        },
-    }
-    state = {
-        "history_loaded": True,
-        "historical_report": historical,
-        "is_code_unchanged": True,
-        "entry_func": "entry",
-        "notes": [],
-    }
-    assert Analyzer._reuse_unchanged_report(analyzer, state) is False
-    assert "final_report_dict" not in state
-    assert "successor_binding_mismatch" in state["notes"][0]
-
-
-def test_reviewed_report_binding_requires_current_physical_review_evidence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        report_schema_module,
-        "load_successor_qualification",
-        lambda: {
-            "implementation_root_sha256": "1" * 64,
-            "content_sha256": "2" * 64,
-        },
-    )
-    monkeypatch.setattr(
-        report_schema_module,
-        "SUCCESSOR_RUNTIME_REVIEW_MANIFEST",
-        {
-            "status": "reviewed",
-            "content_sha256": "3" * 64,
-            "review_set_sha256": "4" * 64,
-        },
-    )
-    monkeypatch.setattr(
-        report_schema_module,
-        "validate_successor_runtime_review_status",
-        lambda *_args, **_kwargs: (True, "valid"),
-    )
-    monkeypatch.setattr(
-        report_schema_module,
-        "validate_current_successor_runtime_review_status",
-        lambda *_args, **_kwargs: (False, "successor_review_evidence_unavailable"),
-    )
-
-    with pytest.raises(ValueError, match="successor_review_evidence_unavailable"):
-        report_schema_module.current_successor_runtime_binding()
-
-    assert "successor_qualification_not_current" in report_reuse_blockers(
-        {"schema_version": 3, "run_manifest": {}}
-    )
+        assert "validation_policy_mismatch" in report_reuse_blockers(old_policy)
+        assert not report_is_reusable(old_policy)

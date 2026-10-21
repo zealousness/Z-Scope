@@ -170,9 +170,10 @@ class AgentSpec:
     role: str = ""
     skills: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
-    tools_declared: bool = False
     mcp_servers: List[str] = field(default_factory=list)
     context_policy: str = ""
+    can_spawn_subagents: bool = False
+    max_subagents: int = 0
     path: Optional[Path] = None
     body: str = ""
 
@@ -185,9 +186,10 @@ class AgentSpec:
             role=str(meta.get("role") or ""),
             skills=_as_list(meta.get("skills")),
             tools=_as_list(meta.get("tools")),
-            tools_declared="tools" in meta,
             mcp_servers=_as_list(meta.get("mcp_servers") or meta.get("mcpServers")),
             context_policy=str(meta.get("context_policy") or ""),
+            can_spawn_subagents=_as_bool(meta.get("can_spawn_subagents"), False),
+            max_subagents=int(meta.get("max_subagents") or 0),
             path=path,
             body=body.strip(),
         )
@@ -211,7 +213,8 @@ class AgentSpec:
             f"Role: {self.role or self.description}\n"
             f"Skills: {', '.join(skill_names) or 'none'}\n"
             f"Allowed tools: {tool_text}\n"
-            f"Context policy: {self.context_policy or 'runtime default'}\n\n"
+            f"Context policy: {self.context_policy or 'runtime default'}\n"
+            f"Can spawn subagents: {self.can_spawn_subagents}\n\n"
             f"{body}"
         )
 

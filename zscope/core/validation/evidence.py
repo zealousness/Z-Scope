@@ -3,16 +3,37 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from copy import deepcopy
 from typing import Any, Callable, Dict, List, Mapping, Optional, cast
 
 from ...common.issue_identity import canonical_issue_key, flatten_issue_text, parse_issue_location
 from ..candidates.evidence_models import build_evidence_models
 from ...snapshots.modeling_input import SemanticModelInputError, resolve_function_info
+from .context_budget import record_projection
 
-
-VALIDATOR_EVIDENCE_SLICE_V3 = "zscope.validator-evidence-slice.v3"
+VALIDATOR_EVIDENCE_SLICE_VERSION = "zscope.validator-evidence-slice.v2"
+VALIDATOR_EVIDENCE_SLICE_V3 = "zscope.validator-evidence-slice.v3.1"
+VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v2"
 VALIDATOR_PROTOCOL_V3 = "zscope.validator-protocol.v3"
+
+# Baseline list cap for the project-knowledge projection compaction.  The
+# effective cap is raised to the Wiki selection caps (resolved lazily to avoid
+# an import cycle) so no already-selected constraint/excerpt is dropped here.
+_PROJECT_KNOWLEDGE_PROJECTION_LIST_ITEMS = 16
+
+
+def _wiki_selection_max_list_items() -> int:
+    try:
+        from ...wiki.service import MAX_SOURCE_EXCERPTS, MAX_WIKI_CONSTRAINTS
+
+        return int(max(MAX_WIKI_CONSTRAINTS, MAX_SOURCE_EXCERPTS))
+    except Exception:
+        return _PROJECT_KNOWLEDGE_PROJECTION_LIST_ITEMS
+
+
+_WIKI_SELECTION_MAX_LIST_ITEMS = _wiki_selection_max_list_items()
+
 VALIDATOR_MISSING_FACT_KINDS = frozenset(
     {
         "guard_dominance",
@@ -100,6 +121,119 @@ def is_entry_root_dead_code_rejection(
     return any(term in text for term in dead_code_terms)
 
 
+# Interprocedural lock-protocol claims whose deterministic resolution needs
+# the callers' lock state at the call site (plan Phase 1.2 "调用方持锁").
+_CALLER_LOCK_RULES = frozenset(
+    {
+        "clang_cfg_unlock_without_matching_lock",
+        "clang_cfg_refcount_update_after_unlock",
+    }
+)
+
+
+def _direct_callers_from_paths(issue: Mapping[str, Any]) -> List[str]:
+    """Extract direct caller names from the candidate's recorded call paths."""
+
+    callers: List[str] = []
+    raw_paths = issue.get("call_paths")
+    paths: List[Any] = list(raw_paths) if isinstance(raw_paths, (list, tuple)) else []
+    single = issue.get("call_path")
+    if isinstance(single, (list, tuple)):
+        paths.append(single)
+    for path in paths:
+        if not isinstance(path, (list, tuple)) or len(path) < 2:
+            continue
+        direct = str(path[-2] or "").strip()
+        if direct and direct not in callers:
+            callers.append(direct)
+    return callers
+
+
+def _caller_lock_states(
+    code_index: Any,
+    issue_func: str,
+    caller_names: List[str],
+    limit: int = 8,
+    semantic_contracts: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Derive each caller's held lock at its call site of ``issue_func``.
+
+    Lexical bracket analysis of every resolvable caller body: a call site is
+    guarded by ``held_lock`` when a LOCK of that mutex appears before the
+    call with no matching UNLOCK in between.  Unresolvable callers are
+    reported with ``resolved: False`` so consumers can distinguish "unknown"
+    from "unlocked" and stay conservative.  Only the first call site per
+    caller is analysed by design.
+    """
+
+    from ...semantics.defaults import default_local_pattern_semantics
+
+    semantics = default_local_pattern_semantics()
+    semantics.merge_overlay(semantic_contracts or {})
+    registry = semantics.contracts
+
+    target = str(issue_func or "").strip()
+    call_pattern = re.compile(rf"\b{re.escape(target)}\s*\(") if target else None
+    states: List[Dict[str, Any]] = []
+    for raw in caller_names:
+        caller = str(raw or "").strip()
+        if not caller or not call_pattern or len(states) >= limit:
+            continue
+        try:
+            impl = code_index.get_function_impl(caller, max_lines=None, warn_missing=False)
+        except Exception:
+            impl = None
+        code = str((impl or {}).get("code") or "")
+        held_lock = ""
+        held_mode = "unknown"
+        call_site_line = 0
+        uncertain = False
+        operations: List[Dict[str, Any]] = []
+        if code:
+            stack: List[tuple[str, str, str]] = []
+            for line_number, text in enumerate(code.splitlines(), start=1):
+                if call_pattern.search(text):
+                    call_site_line = line_number
+                    held_lock = stack[-1][1] if stack else ""
+                    held_mode = stack[-1][2] if stack else "unknown"
+                    break
+                for site in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", text):
+                    name = site[1]
+                    if name not in semantics.lock_apis and name not in semantics.unlock_apis:
+                        continue
+                    arguments = registry.call_arguments(name, text[site.start():])
+                    if arguments is None:
+                        continue
+                    role = "lock" if name in semantics.lock_apis else "unlock"
+                    for event in registry.match_call(name, role, arguments):
+                        operations.append(event.to_dict())
+                        if event.applicability == "does_not_apply":
+                            continue
+                        uncertain |= event.applicability == "unknown" or event.source.startswith("inferred")
+                        if role == "lock" and event.object:
+                            stack.append((name, event.object, event.lock_mode))
+                        elif role == "unlock":
+                            for index in range(len(stack) - 1, -1, -1):
+                                if stack[index][1] == event.object and registry.release_status(stack[index][0], name, arguments, acquired_object=event.object) == "applies":
+                                    stack.pop(index)
+                                    break
+        states.append(
+            {
+                "caller": caller,
+                "call_site_line": call_site_line,
+                "held_lock": held_lock if not uncertain else "",
+                "held_lock_mode": held_mode if not uncertain else "unknown",
+                "possible_held_lock": held_lock if uncertain else "",
+                "call_semantics": operations,
+                "contract_version": registry.version,
+                # A retrievable body without the call site says nothing about
+                # the lock state; treat it as unresolved, not as unguarded.
+                "resolved": bool(code) and call_site_line > 0 and not uncertain,
+            }
+        )
+    return states
+
+
 def build_validation_evidence_pack(
     issue: Dict[str, Any],
     state: Dict[str, Any],
@@ -153,6 +287,7 @@ def build_validation_evidence_pack(
         "api",
         "communication",
         "thread",
+        "callback",
         "other_user_input",
     }
     reachable_from_entry = bool(
@@ -164,6 +299,14 @@ def build_validation_evidence_pack(
     )
     validation_requirements = _base_validation_requirements()
     validation_requirements.extend(category_validation_requirements(issue))
+    caller_lock_states: List[Dict[str, Any]] = []
+    if str(issue.get("rule") or "") in _CALLER_LOCK_RULES:
+        caller_lock_states = _caller_lock_states(
+            code_index,
+            issue_func,
+            _direct_callers_from_paths(issue),
+            semantic_contracts=issue.get("semantic_contracts") or candidate_evidence.get("semantic_contracts") or {},
+        )
     return {
         "mode": "tri_state_exploitability_validation",
         "dedup_key": issue.get("dedup_key") or issue_key_fn(issue),
@@ -188,9 +331,16 @@ def build_validation_evidence_pack(
         "semantic_overlays": issue.get("semantic_overlays")
         or candidate_evidence.get("semantic_overlays")
         or {},
+        "semantic_contracts": issue.get("semantic_contracts")
+        or candidate_evidence.get("semantic_contracts")
+        or {},
+        "semantic_contract_version": issue.get("semantic_contract_version")
+        or candidate_evidence.get("semantic_contract_version")
+        or "",
         "semantic_overlay_evidence": issue.get("semantic_overlay_evidence")
         or candidate_evidence.get("semantic_overlay_evidence")
         or {},
+        "caller_lock_states": caller_lock_states,
         "finding_kind": issue.get("finding_kind"),
         "defect_class": issue.get("defect_class") or issue.get("subcategory"),
         "rule_confidence": issue.get("rule_confidence"),
@@ -244,7 +394,7 @@ def build_validation_evidence_pack(
         or [],
         "primary_location_snippet": snippet,
         "function_context": {
-            "code": trim_code(issue_code, max_lines=140),
+            "code": issue_code,
             "snapshot_summary": compact_snapshot(snapshot),
             "callers": callers,
             "callees": callees,
@@ -253,12 +403,12 @@ def build_validation_evidence_pack(
     }
 
 
-def _build_validator_evidence_slice_base(
+def build_validator_evidence_slice_v2(
     issue: Mapping[str, Any],
     evidence_pack: Mapping[str, Any],
     issue_code: str,
 ) -> Dict[str, Any]:
-    """Build the common body of one occurrence-compact v3 evidence payload.
+    """Build one decision-complete, occurrence-compact Validator payload.
 
     A validation cluster may contain hundreds of entry occurrences.  Those
     paths are audit provenance, not independent decision facts, so the model
@@ -284,7 +434,7 @@ def _build_validator_evidence_slice_base(
                 continue
             candidate = raw[0] if isinstance(raw[0], list) else raw
             if isinstance(candidate, list):
-                return [str(item) for item in candidate[:16] if str(item)]
+                return [str(item) for item in candidate if str(item)]
         return []
 
     occurrence_uids = issue.get("occurrence_uids")
@@ -322,10 +472,7 @@ def _build_validator_evidence_slice_base(
         issue.get("call_path"),
         entry_context.get("call_path"),
     )
-    code = trim_code(
-        str(function_context.get("code") or issue_code or ""),
-        max_lines=110,
-    )
+    code = str(issue_code or function_context.get("code") or "")
     location_snippet = pack.get("primary_location_snippet")
     if isinstance(location_snippet, Mapping):
         location_snippet = {
@@ -336,26 +483,18 @@ def _build_validator_evidence_slice_base(
     elif location_snippet not in (None, ""):
         location_snippet = _trim_text(str(location_snippet), 1800)
 
-    return {
-        "schema_version": VALIDATOR_EVIDENCE_SLICE_V3,
-        "protocol_version": VALIDATOR_PROTOCOL_V3,
+    result: Dict[str, Any] = {
+        "schema_version": VALIDATOR_EVIDENCE_SLICE_VERSION,
+        "protocol_version": VALIDATOR_PROTOCOL_VERSION,
         "obligation": {
             "candidate_uid": issue.get("candidate_uid"),
             "validation_cluster_uid": issue.get("validation_cluster_uid"),
-            "obligation_uid": issue.get("obligation_uid")
-            or security_obligation.get("obligation_uid"),
-            "defect_family": issue.get("defect_class")
-            or issue.get("category")
-            or security_obligation.get("defect_family"),
-            "obligation_shape": issue.get("obligation_shape")
-            or security_obligation.get("obligation_shape"),
-            "subject_uid": issue.get("subject_uid")
-            or issue.get("resource_identity")
-            or security_obligation.get("subject_uid"),
+            "obligation_uid": issue.get("obligation_uid"),
+            "defect_family": issue.get("defect_class") or issue.get("category"),
+            "obligation_shape": issue.get("obligation_shape"),
+            "subject_uid": issue.get("resource_identity") or security_obligation.get("subject_uid"),
             "source_uid": issue.get("source_identity") or security_obligation.get("source_uid"),
             "sink_uid": issue.get("sink_identity") or security_obligation.get("sink_uid"),
-            "decision_region_uid": issue.get("decision_region_uid")
-            or security_obligation.get("decision_region_uid"),
             "function": issue.get("function") or finding.get("function"),
             "location": issue.get("location") or finding.get("location"),
             "category": issue.get("category") or finding.get("category"),
@@ -417,12 +556,144 @@ def _build_validator_evidence_slice_base(
                 "\n".join(sorted(str(value) for value in aliases if str(value))).encode("utf-8")
             ).hexdigest(),
         },
-        "validation_requirements": _compact_validation_value(
-            pack.get("validation_requirements") or [],
-            max_list_items=10,
-            max_string_chars=1000,
+        "validation_requirements": list(pack.get("validation_requirements") or []),
+    }
+    for key, original in (
+        ("fact_uids", list(fact_slice.get("fact_uids") or [])),
+        ("edge_uids", list(fact_slice.get("edge_uids") or [])),
+        ("dependency_code_hashes", list(fact_slice.get("dependency_code_hashes") or [])),
+        ("deterministic_proofs", deterministic_proofs),
+    ):
+        record_projection(result, "decision_facts." + key, original, result["decision_facts"][key])
+    for key, original in (
+        ("positive", issue.get("positive_evidence") or pack.get("positive_evidence") or []),
+        ("negative", issue.get("negative_evidence") or pack.get("negative_evidence") or []),
+        ("path_constraints", issue.get("path_constraints") or []),
+    ):
+        record_projection(result, "evidence." + key, original, result["evidence"][key])
+    record_projection(result, "code.location_snippet", pack.get("primary_location_snippet"), location_snippet)
+    record_projection(result, "validation_requirements", pack.get("validation_requirements") or [], result["validation_requirements"])
+    return result
+
+
+def build_validator_project_knowledge_projection(
+    knowledge: Mapping[str, Any], issue: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Project Wiki context into the compact shape shown to Validator LLMs."""
+
+    target_value = knowledge.get("target")
+    target: Mapping[str, Any] = (
+        target_value if isinstance(target_value, Mapping) else {}
+    )
+    issue_file = (
+        str(
+            issue.get("candidate_file")
+            or issue.get("relative_file")
+            or issue.get("file_path")
+            or issue.get("file")
+            or ""
+        )
+        .replace("\\", "/")
+        .lstrip("/")
+    )
+    if not issue_file:
+        location = str(issue.get("location") or "").replace("\\", "/")
+        match = re.match(r"^(.*?):\d+(?::\d+)?$", location)
+        issue_file = match.group(1).lstrip("/") if match else ""
+    raw_constraints = [
+        item for item in knowledge.get("constraints") or [] if isinstance(item, Mapping)
+    ]
+    constraint_subject_ids = list(
+        dict.fromkeys(
+            str(item.get("subject_id") or "")
+            for item in raw_constraints
+            if str(item.get("subject_id") or "")
+        )
+    )
+    # Target identity comes from the candidate/evidence obligation only.
+    # Never infer it from whichever constraints happened to match.
+    target_subject_ids = _candidate_subject_ids(issue)
+    target_obligation_kinds = _candidate_obligation_kinds(issue)
+    projected_target = {
+        "project_id": str(target.get("project_id") or knowledge.get("project_id") or ""),
+        "module_ids": list(target.get("module_ids") or []),
+        "subject_ids": target_subject_ids,
+        "obligation_kinds": target_obligation_kinds,
+        "candidate_file": str(
+            issue_file
+            or (
+                ""
+                if str(target.get("candidate_file") or "") == "unknown.md"
+                else target.get("candidate_file")
+            )
+            or "unknown.md"
+        ),
+        "function_name": str(
+            target.get("function_name") or target.get("function_id") or issue.get("function") or ""
         ),
     }
+    constraints = []
+    for item in raw_constraints:
+        subject_kind = item.get("subject_kind") or (
+            item.get("subject", {}).get("kind", "")
+            if isinstance(item.get("subject"), Mapping)
+            else ""
+        )
+        subject_id = str(item.get("subject_id") or "")
+        prefix = f"{subject_kind}:" if subject_kind else ""
+        if prefix and subject_id.startswith(prefix):
+            subject_id = subject_id[len(prefix) :]
+        constraints.append(
+            {
+                "constraint_id": item.get("constraint_id"),
+                "kind": item.get("kind"),
+                "subject_id": subject_id,
+                "subject_kind": subject_kind,
+                "statement": item.get("statement"),
+                "authority": item.get("authority"),
+                "normativity": item.get("normativity"),
+                "status": item.get("status"),
+                "source_refs": list(item.get("source_refs") or []),
+                "conflicts_with": list(item.get("conflicts_with") or []),
+            }
+        )
+    selection_value = knowledge.get("selection")
+    selection: Mapping[str, Any] = (
+        selection_value if isinstance(selection_value, Mapping) else {}
+    )
+    return {
+        "resolution_mode": knowledge.get("resolution_mode"),
+        "wiki_revision_id": knowledge.get("wiki_revision_id"),
+        "target": projected_target,
+        "constraints": constraints,
+        "source_excerpts": list(knowledge.get("source_excerpts") or []),
+        "conflicts": list(knowledge.get("conflicts") or []),
+        "omitted_constraint_count": int(selection.get("omitted_constraint_count", 0) or 0),
+        "omitted_source_excerpt_count": int(selection.get("omitted_source_excerpt_count", 0) or 0),
+        "fallback_reason": selection.get("fallback_reason"),
+    }
+
+
+def _candidate_subject_ids(issue: Mapping[str, Any]) -> list[str]:
+    values = issue.get("subject_ids") or issue.get("subject_id") or issue.get("subject")
+    if isinstance(values, Mapping):
+        values = values.get("canonical_id") or values.get("id")
+    if isinstance(values, str):
+        values = [values]
+    return list(dict.fromkeys(str(value).strip() for value in (values or []) if str(value).strip()))
+
+
+def _candidate_obligation_kinds(issue: Mapping[str, Any]) -> list[str]:
+    values = (
+        issue.get("obligation_kinds")
+        or issue.get("missing_fact_kinds")
+        or issue.get("fact_kinds")
+        or issue.get("obligation_kind")
+        or issue.get("fact_kind")
+    )
+    if isinstance(values, str):
+        values = [values]
+    return list(dict.fromkeys(str(value).strip() for value in (values or []) if str(value).strip()))
 
 
 def build_validator_evidence_slice_v3(
@@ -433,9 +704,17 @@ def build_validator_evidence_slice_v3(
     validation_pass: str = "initial",
     evidence_delta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build the readable, reference-addressable Validator v3 projection."""
+    """Build the readable, reference-addressable Validator v3 projection.
 
-    result = _build_validator_evidence_slice_base(issue, evidence_pack, issue_code)
+    v2 deliberately committed most decision data by UID/hash.  That is useful
+    for audit identity but forces a model to guess what those facts mean.  v3
+    keeps the commitments and adds bounded fact payloads, path edges, semantic
+    claims, and a catalog of the only references a model may cite.
+    """
+
+    result = build_validator_evidence_slice_v2(issue, evidence_pack, issue_code)
+    result["schema_version"] = VALIDATOR_EVIDENCE_SLICE_V3
+    result["protocol_version"] = VALIDATOR_PROTOCOL_V3
     result["validation_pass"] = validation_pass
 
     pack = dict(evidence_pack or {})
@@ -452,7 +731,7 @@ def build_validator_evidence_slice_v3(
     if isinstance(fact_payloads, Mapping):
         fact_payloads = [
             {"fact_uid": str(key), "payload": value}
-            for key, value in list(fact_payloads.items())[:32]
+            for key, value in fact_payloads.items()
         ]
     elif not isinstance(fact_payloads, list):
         fact_payloads = []
@@ -501,6 +780,28 @@ def build_validator_evidence_slice_v3(
         max_list_items=24,
         max_string_chars=1800,
     )
+    record_projection(result, "decision_facts.facts", fact_payloads, result["decision_facts"]["facts"])
+    for key in ("snapshot_summary", "callers", "callees"):
+        original: Any = function_context.get(key) or ({} if key == "snapshot_summary" else [])
+        record_projection(result, "code." + key, original, result["code"][key])
+    record_projection(result, "semantic_claims", semantic_claims, result["semantic_claims"])
+    record_projection(result, "evidence_delta", dict(evidence_delta or {}), result["evidence_delta"])
+
+    # Project knowledge keeps its full audit envelope in the evidence pack and
+    # exposes only the decision-relevant projection to the Validator model.
+    project_knowledge = pack.get("project_knowledge")
+    if isinstance(project_knowledge, Mapping):
+        result["project_knowledge"] = _compact_validation_value(
+            build_validator_project_knowledge_projection(project_knowledge, issue),
+            # The list cap must not be lower than the Wiki selection caps:
+            # a selected constraint that is silently dropped here is lost with
+            # no omitted-entry identity, unlike the token-budget selector.
+            max_list_items=max(
+                _WIKI_SELECTION_MAX_LIST_ITEMS,
+                _PROJECT_KNOWLEDGE_PROJECTION_LIST_ITEMS,
+            ),
+            max_string_chars=1800,
+        )
 
     catalog: Dict[str, Dict[str, Any]] = {}
 
@@ -567,20 +868,28 @@ def build_validator_evidence_slice_v3(
                     fact,
                 )
     result["evidence_ref_catalog"] = catalog
+    knowledge = result.get("project_knowledge")
+    if isinstance(knowledge, Mapping):
+        for item in knowledge.get("constraints") or []:
+            if isinstance(item, Mapping):
+                add_ref(item.get("constraint_id"), "project_constraint", item.get("statement"))
+                for ref in item.get("source_refs") or []:
+                    add_ref(ref, "project_document_ref", item.get("statement"))
+        for item in knowledge.get("source_excerpts") or []:
+            if isinstance(item, Mapping):
+                add_ref(item.get("ref_id"), "project_document_ref", item.get("relative_path"))
     return result
 
 
 def normalize_missing_fact_kinds(value: Any) -> List[str]:
-    """Project obligation vocabulary onto Validator/provider fact kinds.
+    """Normalize known aliases without erasing unsupported obligations.
 
-    Security obligations retain low-level event labels for provenance, while
-    evidence completion and V3 promotion operate on the fixed public fact
-    vocabulary.  Keeping this projection in one place prevents an event label
-    that no provider or Validator tool can emit from becoming an impossible
-    promotion requirement.
+    Provider dispatch validates its own fixed vocabulary. An obligation that
+    has no provider remains missing; dropping it here would turn partial
+    evidence into a complete slice and authorize an unsupported promotion.
     """
 
-    raw_values = value if isinstance(value, list) else [value]
+    raw_values = value if isinstance(value, (list, tuple)) else [value]
     result: List[str] = []
     aliases = {
         "event:shared_state_access": "lockset",
@@ -594,8 +903,6 @@ def normalize_missing_fact_kinds(value: Any) -> List[str]:
         if not text:
             continue
         normalized = aliases.get(text, text)
-        if normalized not in VALIDATOR_MISSING_FACT_KINDS:
-            continue
         if normalized not in result:
             result.append(normalized)
     return result
@@ -776,6 +1083,9 @@ def compact_snapshot(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
             snapshot.get("referenced_types")
         ),
         "suspicious_points": snapshot.get("suspicious_points"),
+        "interface_contracts": snapshot.get("interface_contracts"),
+        "contract_diagnostics": snapshot.get("contract_diagnostics"),
+        "snapshot_observation_status": "unverified_context_only",
     }
     for field in (
         "project_callees_truncation",
@@ -823,6 +1133,8 @@ def _entry_root_reachable(evidence_pack: Dict[str, Any]) -> bool:
 
 def _entry_exposure_from_prompt(entry_custom_prompt: str) -> str:
     prompt_lower = str(entry_custom_prompt or "").lower()
+    if "registered callback entry" in prompt_lower:
+        return "callback"
     if "public api declared" in prompt_lower or "header file" in prompt_lower:
         return "api"
     if "communication or ipc entry" in prompt_lower:

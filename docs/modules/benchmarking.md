@@ -7,36 +7,39 @@ sources:
   - zscope/benchmarking/runner.py
   - zscope/benchmarking/policy.py
   - zscope/benchmarking/isolation.py
-  - zscope/benchmarking/provider_runtime.py
   - zscope/benchmarking/attestation.py
   - zscope/benchmarking/replay_bundle.py
   - zscope/benchmarking/replay_provider.py
   - zscope/benchmarking/validator_replay.py
   - zscope/benchmarking/validator_experiment.py
+  - zscope/benchmarking/review_experiment.py
+  - scripts/replay_review_experiment.py
+  - scripts/score_review_experiment.py
+  - scripts/pilot_review_claims.py
   - zscope/benchmarking/discovery_ablation.py
   - zscope/benchmarking/discovery_ablation_experiment.py
-  - zscope/benchmarking/postscore_trace.py
   - zscope/cli/benchmark.py
   - scripts/external_benchmark.py
   - scripts/evaluate_range_regression.py
   - scripts/aggregate_range_release_runs.py
   - scripts/check_benchmark_hygiene.py
+  - scripts/portable_release.py
   - scripts/evaluate_release_candidate.py
+  - scripts/agent_plan_evaluation.py
   - scripts/run_validator_replay.py
   - scripts/describe_validator_replay_provider.py
   - scripts/score_validator_replay_experiment.py
   - scripts/plan_discovery_ablation.py
   - scripts/run_discovery_ablation_request.py
   - scripts/score_discovery_ablation_experiment.py
-  - scripts/compare_range_matchers.py
-  - scripts/build_postscore_decision_trace.py
   - docs/range-benchmark.md
   - test/range/benchmark/check_entry_coverage.py
 tests:
+  - tests/test_portable_release.py
   - tests/test_benchmark_protocol.py
+  - tests/test_review_experiment_protocol.py
   - tests/test_benchmark_leakage.py
   - tests/test_benchmark_runner.py
-  - tests/test_benchmark_provider_runtime.py
   - tests/test_range_benchmark_regression.py
   - tests/test_range_release_aggregate.py
   - tests/test_formal_benchmark_runner.py
@@ -46,13 +49,20 @@ tests:
   - tests/test_validator_replay.py
   - tests/test_validator_experiment.py
   - tests/test_external_benchmark_oci.py
+  - tests/test_agent_plan_evaluation.py
   - tests/test_discovery_ablation.py
   - tests/test_discovery_ablation_experiment.py
-  - tests/test_range_matcher_comparison.py
-  - tests/test_postscore_decision_trace.py
 ---
 
 # Benchmark
+
+## 实施计划的开发评测准备
+
+`scripts/agent_plan_evaluation.py` 提供 `plan`、`record`、`compare`：生成无答案的冷/热/增量矩阵，冻结已产生报告与 usage 账本，再按源码、入口、构建、配置、模型、工具和 schema 身份比较。它不执行扫描或模型、不读取 truth、不评分，产物始终为 `development_only`，不具备 formal/release 资格。矩阵命令由操作者在确认实际 Linux 工具链与模型配置后执行。
+
+冻结记录的 `record_id` 在加载时重新核对内容摘要；声明了 report-manifest 绑定的身份也重新与未修改的报告核对。没有报告 manifest 的记录明确保留 declared-only 来源，不能表述为实测同版本绑定。未知值保留 null，零分母是 N/A，失败、取消与重试成本保留。此准备工具及合成用例不代表完整 S09 正式准确率/性能评测完成，正式门禁和独立评分器仍走原协议。
+
+报告读取复用正式 `read_report`，完整解码当前 `zscope.shared-json.v1` 对象图并拒绝损坏引用/对象摘要，旧普通 JSON 保留；冻结摘要始终覆盖原始工件字节。答案隔离检查作用于逻辑报告。大报告的流式读取仍需可选 benchmark 依赖；本轮环境缺少 ijson，16MiB 分支实际拒绝，未作为流式能力通过证据。
 
 ## 职责与非职责
 
@@ -62,14 +72,13 @@ tests:
 
 ## 主入口和数据流
 
-- GitHub Actions 与自托管 runner 已退役，benchmark 由本地 CLI 调度。下文的工作流恢复、上传和 attestation 约束仅描述保留的历史证据协议；当前 P6 review material allowlist 只收集仍存在的源码、脚本与测试，不再要求已删除的 GitHub YAML。历史 workflow path 和 run lineage 仍严格校验，不为本地执行放宽来源证明。
-- `zscope/benchmarking/protocol.py` 提供 `zscope.benchmark.v4` 单次评分、候选生命周期漏斗、发现/决策二维归因和成本指标；旧 schema 仅作只读兼容。
+- `zscope/benchmarking/protocol.py` 提供 `zscope.benchmark.v4` 单次评分、候选生命周期漏斗、发现/决策二维归因和成本指标；旧 schema 仅作只读兼容。漏斗的 `canonical_group_attribution` 同时投影验证升级阶梯：`reached_by_rung`/`confirmed_by_rung`/`drop_reason_by_rung`（R1=R1_validator_v1、R2=R2_v3_reattempt、R3=R3_v2b_adjudication，R3 臂交付前恒 0）。
+- 验证级 rung 实验（R2/R3/τ）用 answer-free replay 臂离线差分：`scripts/replay_tau_channel.py`（τ 扫描，谓词与 pipeline 逐项对齐）与 `scripts/run_validator_replay.py`/`scripts/score_validator_replay_experiment.py`；扫描级 rung 累积差分用 `scripts/rung_attribution.py`（输入多份 run artifact 输出 TP_added/FP_added/tokens 差分表）。
 - `zscope-benchmark` 是内置 fixture 的唯一公开入口；`smoke`、`trial`、`formal` 分别承担离线结构门禁、单轮预览和至少五轮的发布门禁。
 - `scripts/external_benchmark.py` 是外部 suite 和 Range JSON 报告的标准评测入口。public external formal 当前只接受 `full_zscope_pipeline`，通过 `RootlessOciExecutor` 实际执行 scanner、采集 inspect evidence 并在容器退出后由 host scorer 读 truth；静态 `oci_capability` 不能形成 formal 结果。
 - `scripts/evaluate_range_regression.py` 评估确定性候选的 Range 覆盖。
-- Truth v16 的 Range fixture binding manifest 只接受批准的 UTF-8 源码/构建文本类型，对内容执行 LF 规范化后再记录长度和 SHA-256；LF/CRLF checkout identity 必须一致，未知类型、NUL、非 UTF-8 和裸 `CR` fail closed，避免 `core.autocrlf` 改变 Truth 重建或 attestation 结论。正式 scan-input artifact manifest 仍绑定 Linux/WSL 副本的原始字节，两种 identity 不得混用。
 - `check_entry_coverage.py` 在正式扫描前核对入口覆盖；它可以读取 truth，但不得把 truth 传入扫描 prompt。
-- 扫描报告生成后，独立 scorer 读取报告与 ground truth，输出 matched pairs、TP、FN、raw/effective FP、precision、recall 和 F1。`zscope.truth-matcher.v2` 只把类别兼容且 `file + function + line range` 来自同一结构化锚点的 pair 交给最大权匹配；关键词、自由文本、call path 和 `related_functions` 只能形成审计记录。
+- 扫描报告生成后，独立 scorer 读取报告与 ground truth，输出 matched pairs、TP、FN、raw/effective FP、precision、recall 和 F1。
 - `zscope.formal-benchmark.v3` 聚合至少五轮 cold run；`zscope.benchmark-policy.v1` 是发布门禁的唯一政策源。
 - answer-free `validator_replay_bundle.v1` 只导出 canonical validation groups、证据/事实与哈希，不含 truth、历史 Validator verdict 或评分结果，用于固定候选集上的 A–E 隔离实验。bundle 合约显式区分 V1 初始 facts 与 provider-resolvable frozen reservoir；同一 fact record 或 UID 出现在两个分区时 fail closed，V2 只能从 reservoir 取得新增量。
 - balanced/deep 产品分档召回实验与历史 A–E arm 分开解释：生产 V3 已移除 top-5%/top-20% 截断，balanced 调查 high/critical 或外部可达且有可闭合证据缺口的未决 cluster，deep 调查全部无完整反证的非 shadow 未决 cluster；每个 cluster 使用一个最多 50 次模型迭代的只读工具会话。实验必须先做 cold pilot 的 eligible→entered→promotion 链路检查，通过后才运行每档五轮，并同时归档双视图、V3 fact/transition 与逐 agent/stage token。
@@ -78,55 +87,30 @@ tests:
 - Validator arm 冻结后，`discovery_ablation_arms.v1.json` 与 `scripts/plan_discovery_ablation.py` 定义 D0–D4 语义/主动发现消融。五个 arm 共用显式 balanced 档、同一 12M post-run 成本预期、同一 Validator selected arm/spec/catalog/model/prompt、rules/scanner 身份和各五轮 isolated-cold 运行；plan 与 25 份 request 均绑定外部期望 SHA，且生成阶段递归拒绝 truth、历史 finding、候选 Ledger 和 scorer/score 字段。D0 不建语义地图也不发现，D1 只建图并补语义（包括禁止读取缓存 discovery report），D2 在零 LLM 骨架上 candidate-blind 发现，D3 同时启用二者。`scripts/run_discovery_ablation_request.py --execution-mode non-formal-in-process` 的 `package.module` adapter 只是开发执行入口：它必须绑定全套 Validator 与每轮独立 cold snapshot/cache identity，禁止 resume/maintain，并以和 report 同一 artifact 目录中的原始 usage JSONL 实际 SHA、call/stage/run token 守恒和 100% provider usage 复核 report；输出固定 `answer_free_attested=false`、`formal_eligible=false`、`release_eligible=false`，不能作为 formal 隔离证据。
 - D4 是 `zscope.discovery-ablation-legacy-full-entry-executor.v1` 外部协议：独立 legacy adapter 必须实际运行冻结的全入口 semantic-modeler/vulnerability-analyzer 路径并接受同一 12M cap。生产 bounded pipeline 会拒绝把 D4 runtime override 当作自身模式执行；没有外部 executor/artifact 时不得伪造 D4 成本上界。任意 Python adapter 与 scanner 同进程，技术上可访问其进程权限范围内的文件，因此不能自行证明 answer-free；formal/sealed 消融只能由中央控制面通过 digest-pinned `RootlessOciExecutor` 在只挂载 answer-free input、fresh cache 和 artifact output 的 rootless OCI 中执行，隔离能力或固定协议缺失时 fail closed。所有 D0–D4 artifact 都带 `benchmark_ablation` 标记，formal Release 会无条件拒绝，独立 scorer 只能在 25 份 scanner report 全部冻结后读取 truth。
 - `scripts/score_discovery_ablation_experiment.py` 是 D0–D4 的独立后置 scorer。它要求每个 arm 恰好五轮、25 份 execution、对应 report 与 raw usage JSONL，并分别接受外部冻结的 canonical/file/sidecar SHA；先校验 plan/dataset/config/Validator/arm/cold/12M、execution→report→usage 交叉哈希、complete 状态、双视图和 provider usage/token/by-stage 守恒，再首次打开 truth。输出 `zscope.discovery-ablation-experiment.v1`，按 confirmed/with-review 汇总 TP、recall、raw FP、actionable precision/FDR、发现来源独占/交集、tokens/独占 TP，以及五轮 median/p50/p95/Jaccard/range。当前协议只有 isolated-cold run，因此热缓存收益必须显式为 `N/A`，不能由 cached prompt token 推断；D4 只标记为成本上界，不参与质量 arm 选择，整个实验永久 `release_eligible=false`。
-- `zscope/benchmarking/runner.py` 在 WSL 原生临时文件系统运行 C/C++ scan/state，再导出 artifact；它分别记录 scan wall 与 end-to-end wall、验证队列/API call telemetry、双质量视图、命令哈希、Git tree、输入文件清单和 provenance。正式 Release 按 workflow run ID 下载不可变 artifact，并由 `scripts/evaluate_release_candidate.py` 校验 SHA、输入清单、truth 隔离和门禁。仓库归档只用于历史基线。
+- `zscope/benchmarking/runner.py` 在 WSL 原生文件系统运行 C/C++ scan/state，再导出 artifact；`--work-directory` 使用新建的固定目录并始终保留现场，默认仍使用临时目录。持久现场归档不删除构建或状态文件。大报告通过 `benchmark` 附加依赖流式解析，避免文本副本和重复对象同时驻留；评分口径与报告字段不变。它分别记录 scan wall 与 end-to-end wall、验证队列/API call telemetry、双质量视图、命令哈希、Git tree、输入文件清单和 provenance。正式 Release 按 workflow run ID 下载不可变 artifact，并由 `scripts/evaluate_release_candidate.py` 校验 SHA、输入清单、truth 隔离和门禁。仓库归档只用于历史基线。
 
 ## 必须保持的不变量
 
+- Review 实验 checkpoint 保存完整事实、构建依赖、前序 ValidatorResult 和原始工具结果；拒绝 truth、评分和离线标签字段。报告投影只允许 compiler pilot 诊断，缺少精确前序结果或失效依赖时不得当作可恢复 replay。
+- `replay_review_experiment.py` 在 Linux/WSL 中按冻结 RC 清单恢复，使用真实 ValidationRunner 的最终分流与关联 Ledger；baseline、protocol、facts、neutral、positive、related 各组独立运行。neutral 与 positive 使用相同工具、模型、迭代预算，只有 V3 任务目标不同。输出写在独立实验目录，正式 unified 协议、答案隔离和成本要求保持不变。
+- 独立审计分类为 true_defect、provable_fp、duplicate、out_of_scope、unknown，审计文件以内容哈希冻结，不能以未匹配 truth 推导 FP。`compare_paired_replays` 需要五个独立配对、每轮 truth 集合不退化、confirmed FP 不增加、全部原候选可追踪，以及自动拒绝可重新检查。新增关联 FP 纳入 review 总量，任何未知审计项或缺失正式 truth 集合都不得给出达标结论。
+
 - 扫描上下文与评分答案严格隔离；benchmark leakage 测试必须持续通过。
 - replay bundle 必须把同一 canonical cluster 的 alias occurrences、evidence 和 facts 做顺序无关的 union，并绑定 candidate/occurrence/entry/evidence/facts 的内容哈希；初始 facts 与 frozen reservoir 必须分区且无 record/UID 重叠。执行时还必须由调用方提供预期 bundle SHA，防止攻击者修改内容后自行重算内部哈希。
-- trial扫描失败或人工早停时，runner在清理临时answer-free workspace前只归档usage、decision/coverage trace、evidence objects和model events，生成`zscope.interrupted-benchmark-diagnostics.v1`并固定`release_eligible=false`；不得复制源码、配置、truth、scorer或reasoning正文。正常完成的run仍必须走report绑定的严格归档与守恒校验，partial诊断不能替代正式结果。
 - Range 是分布内开发/回归集，不是生产泛化结论。发布必须依次报告 Range、public external、独立团队保管的 sealed 集和真实项目 shadow；没有 sealed attestation 不能宣称通过生产门禁。
-- formal/sealed 扫描必须在 rootless OCI 隔离中运行，只挂载 answer-free 项目、配置、工具链和输出目录；scanner cwd、mount 和环境不得可达源码 checkout、`test/`、truth 或 scorer。真实 provider key 只写入 sealed anonymous memfd，经 Podman `--preserve-fds=1` 交给固定 FD 3 wrapper，并仅在 scanner 子进程内设置；正式 preflight 必须先执行随机 canary 验证真实通道。OCI argv、`Config.Env`、preflight、inspect、cleanup 和 reviewer 均不得含有或继承 credential；所有 scanner/canary 容器固定 `--log-driver=none`，也不得通过 `$GITHUB_ENV`、挂载 env 文件、原始日志或 artifact 持久化。inspect evidence 只保留固定安全投影。phase 日志只保留固定结构的退出摘要；SIGTERM/SIGINT 和直接 `KeyboardInterrupt` 必须从 `run` 前安装的 guard 进入同一 `finally`，临时屏蔽二次信号后按完整 container ID 强制删除容器、清除 credential 引用并恢复处理器。SIGKILL 需由 runner 级 orphan cleanup 兜底，不能宣称进程内可捕获。缺少 Podman 匿名 FD 或其他正式隔离能力时 fail closed。
-- 非 dry-run 的 P6 `pilot` 公共 CLI 不回显完整 aggregate，只输出固定 `zscope.p6-cli-summary.v1` 完成字段；answer-bearing issue、评分和调用明细仍密封在输出目录的 `aggregate.json`，受保护 workflow 继续丢弃 producer stdout/stderr。
-- `containers/p6/runtime-lock.json`、`containers/p6/Containerfile` 与 `zscope/benchmarking/p6_local_runtime.py` 共同拥有 P6 的可复现本地/runner 运行时：基础镜像和 LLVM/SVF 输入按 SHA-256 锁定，构建后以实际 derived image digest、完整 toolchain probe 和 source hashes 签发严格 provenance；无凭据 L4 relay 只接受 literal-IP allowlist，并以精确 Podman internal/egress network labels、alias 与上游哈希形成幂等边界。relay 不读取、转发或持久化 API key。
-- P6 cold balanced producer 是显式 answer-free producer：只归档 report、usage/trace sidecar 并确定性生成 `producer-metrics.json`，不得调用 scorer、读取 Truth 或创建 `score.json`。`zscope/benchmarking/p6_balanced_orchestrator.py` 在 freeze 时从原始 sidecar 重新计算 metrics 并与 report、producer projection、candidate/provider/runtime/config/OCI/cache/attempt 逐项交叉绑定；后续隔离 job 才从冻结字节分别生成 legacy v15 与 Truth v16 score，再运行 `zscope.p6-balanced-quality-gate.v1`。Gate 必须从已验证 producer projection 读取 `formal_benchmark=false` 和 `release_eligible=false`，不能用内置常量自我签发。两份 score 只在 post-scan 受控 artifact 中使用，不回流 scanner。
-- 双视图质量门禁使用整数交叉乘法：legacy v15 default 至少 82/136 且 `TP >= 4*raw_FP`，with-needs-review 至少 125/136 且 `TP >= raw_FP`；Truth v16 product default 至少 37/61 且 `TP >= 4*raw_FP`，with-needs-review 必须 61/61 且 `TP >= raw_FP`。default 匹配集必须是 with-needs-review 子集；v16 scorer 输出 61 个 product 与 75 个 design-risk 成员的 answer-separated commitments、分区摘要和 union 摘要，gate 必须据此重验 matched membership、分区互斥及各自/联合守恒，design-risk 仍不进入 product 分母。96/136、9倍 FP、43/61 与 3:2 precision 只是非阻塞挑战目标。
-- P6 cold balanced 是唯一使用运行时 token admission 的轨道：10,500,000 为低价值线索软水位，每批都必须保证 `used + reserved_inflight <= 11,999,999`。每个 prompt reservation 使用完整 request JSON 的 UTF-8 byte 上界和冻结的 chat-template allowance，另行预留最大 completion；chars/token 平均估算不能授权 provider 调用。probe/canary/qualification/review 分开记账，普通产品运行和其他 benchmark 仍在结束后评价成本。
-- P6 双评分只在冻结报告、两份 score 与全部 lineage 完整有效后形成结论。硬门禁未达标时允许生成单独的 `zscope.p6-balanced-quality-aggregate.v1` 聚合计数用于 answer-free 修复分流；它不得包含 matched ID、源码/Truth/expected，也不得混入成功 quality bundle 或 reviewer packet。输入损坏或绑定无效时不生成聚合文件。
-- P6/v4 同时提升 runtime、prompt、cache 与 proof revision。旧 TerminalAuthority v3、proof/certificate、checkpoint/cache 仅可审计，不得授权 live/resume confirmation；必须从原始 obligation 按 v4 完整重建与重验，无法重建时保持 needs-review。推送 PR 前必须先在 WSL Ubuntu 上以 digest-pinned `python:3.13`、rootless OCI、新 run ID/空 cache 和冻结 provider 完成一次 cold balanced，并让两套硬门禁与守恒全部通过；GitHub workflow 只能在正常合并后从精确 merge SHA 运行。
-- 历史 P5 `complete` latch 只保留为旧 reviewed tree 的 lineage。当前 package 递归 implementation root 的任一 regular packaged file 变化都会使 combined successor qualification 失效；只明确排除独立绑定的 review/qualification evidence 与 Python cache。该 deterministic qualification 足以运行 non-release P6，却不授予发布权。后续 release readiness 还必须匹配 evidence-only current-successor review status 中的 candidate/tree、successor、P6 qualification/final evidence、review set 与三份独立 reviewer roots。`reviewed` 只能由 qualification、三份角色 review 与 final-evidence 的精确恢复 artifact/receipt、候选 material snapshot 和 byte-exact final copies 通过现有严格 validators 后确定性投影；协调者自报的 ID/hash 或手填状态不能授权 current。未来 evidence-only PR 还必须从被审核 candidate 精确、单父派生，并由 CI 对所有中间及最终路径执行固定 allowlist。状态为 `in_progress` 时 bundle/receipt 必须 absent、报告固定包含 `successor_review_not_current`，且 P6 自身始终 `formal_benchmark=false`、`release_eligible=false`。
-- P6 的网络验证顺序不可交换：零网络单元/资格门禁通过后，必须先在原生 WSL Ubuntu 以 `llm_max_inflight=1` 执行 answer-free DeepSeek synthetic replay；该回放通过后才可启动 8 路 rootless OCI cold balanced。synthetic replay 只接受 provider contract 中冻结的 requested model 与 response-model alias 集合，不读取 Range fixture/Truth/Scorer，也不属于零网络测试或 11,999,999-token balanced 账本。
-- OCI 网络成员必须来自运行时证据。Docker 使用 `network inspect`；Podman 还使用精确 network filter 的 `ps --all` 成员快照，以兼容不在 `network inspect` 中暴露容器列表的 4.x 版本。两个来源同时可用时必须一致，快照摘要写入 preflight 与逐阶段 evidence。唯一预配置 proxy 是透明 L4 网络边界，只以固定 role 和 policy digest 绑定 endpoint origin；不声称能改写 HTTPS Authorization、限制 URL path 或控制 HTTP redirect。preflight 和每个 phase 都重验同一 proxy ID/标签/网络，scanner inspect 只在内存中确认 provider key 存在、非空且没有额外 credential-like 键。
-- Z-SCOPE 2.0 的评测轨新增 `zscope.benchmark.v5`、`zscope.formal-benchmark.v4`、`zscope.benchmark-policy.v2` 与 `zscope.defect-taxonomy.v1`。v5继续复用matcher v2的强结构化配对，不允许keyword、自由文本或跨锚点拼接形成TP；confirmable、pattern-model和retired truth分开计量。Security Spec、Hypothesis Hunter与Proof Engine指标缺失时开发评分显示`not_available`，formal v5则fail closed。Token在v5中只作运行后成本与Pareto度量，不是产品运行时门限。
-- Benchmark v5 的paired formal输入不是两个布尔值：每条记录必须绑定Truth v16的pair UID、pair manifest hash、两侧source hash、两份scanner report hash和`answer_material_present=false`。正式单轮还必须绑定Finding-root v2和完整Scorer依赖bundle，按agent、stage重新求和的token都必须等于总token。五轮聚合重新校验每份score content hash，分别输出default/with-review、组件、safe-pair和成本分布，按project/CWE/contract/taxonomy输出macro指标，并要求外部提供冻结baseline precision后才执行policy v2门禁。
+- formal/sealed 扫描必须在 rootless OCI 隔离中运行，只挂载 answer-free 项目、配置、工具链和输出目录；scanner cwd、mount 和环境不得可达源码 checkout、`test/`、truth 或 scorer。缺少 Podman/Docker 隔离能力时 fail closed。
 - formal workflow 除要求 `repository@sha256:<digest>` 外，还校验 scanner image 的 `org.opencontainers.image.revision` 等于被测 Git SHA；每轮 summary 绑定 report、score、input manifest、tool health、Validator replay bundle 与原始 usage sidecar 的实际字节 SHA，Release evaluator 会从下载 artifact 重新计算并逐项对账。
-- GitHub `actions/upload-artifact` 返回 64 位裸 SHA-256；受保护审核 workflow 必须在 provenance 边界补全 `sha256:` 算法标识，再由严格 provenance schema 与 attestation 消费，不能放宽 schema 接纳无算法 digest。
-- 受保护审核的 primary、仲裁 shard、failure checkpoint、reviewed、provenance 和 pair-author artifact 必须通过同一 bounded upload composite：固定最多三次并退避，第二、三次覆盖可能的同名半成品，最终只转发成功 attempt 的 immutable ID/URL/digest；CreateArtifact 或 FinalizeArtifact 重试耗尽必须 fail closed。
-- Arbitration job-local Codex doctor 若在 reviewer 启动前失败，workflow 必须建立空的 answer-free `decisions/raw/failures` checkpoint 骨架、发出固定失败分类，并继续经过严格 checkpoint 构建与上传；禁止让前置失败因输出目录尚未创建而丢失同 run `rerun-failed` 的恢复边界。
-- Safe-pair 匿名性提取必须从调用形状中排除完整 C11 关键字，避免把 `return (`、`for (` 等语言结构当作项目函数；C 标识符只按完整 token 匹配，truth ID 等非 C 标识符按完整字面量匹配，项目函数、宏与其他专有标识仍严格 fail closed。
-- Safe-pair 的严格 schema、初次验证、repair、raw envelope、checkpoint/resume 与 materialize 必须把 `kind`、`invariant_summary` 精确绑定冻结 recommendation。C facility 门禁按翻译 phase 1/2 投影处理 UTF-8 BOM、CR-only 换行并识别 trigraph、续行、digraph、任意 C 空白后的预处理指令，同时按完整 C token 禁止 `_Pragma`、`asm` 及冻结的 process/network/file/stream-I/O API 标识符；函数指针和 compiler builtin 拼写也不能绕过，命中门禁的源码不得送入编译器，注释和字符串中的同名文本不算 API。
-- Safe-pair author 只允许一次 answer-free contract repair：冻结 packet/decision/role/model identity，只提供被拒绝对象，以及确定性 validator 一次收集、按原验证顺序去重的全部当前可检测且可修复 validation class 和逐类固定约束；raw v5 仍只保留首个 validation class，不改变正式 artifact schema。严格 per-packet contract schema 以 `const` 绑定 truth ID、packet SHA-256 和 final-decision SHA-256，并从绑定 packet 重算完整禁止标识符 catalog；Codex wire schema 只投影 provider 支持的约束子集。长度、唯一性和复杂匿名正则仍由严格 schema 与同一确定性 validator 在接纳前强制执行。raw v5 复核时从绑定 packet/decision 独立重算并同时核对 wire/contract schema 哈希，拒绝任何身份未绑定、本地禁止标识符验证弱化或仅约束字段形状的 schema。`source_not_anonymous` 可提供完整 catalog、固定匹配语义，以及用同一匹配器产生的两份源码逐字段冲突清单与计数，但不提供审核正文或答案；`sources_identical` 使用忽略注释和空白的 C token 投影，拒绝只靠注释或格式形成的伪差异，并只重写 safe side 以执行冻结 recommendation；该投影不声称证明一般程序语义不等价。`independent_compile_failure` 只能反馈失败 source 字段和冻结编译契约，不能包含编译器 stdout/stderr 正文，结构无效或命中禁止 facility 的源码不得送入编译器。初次对象、repair 对象和 checkpoint/resume 重验都必须让两份源码分别通过 `cc -std=c11 -Werror -Wall -Wextra -c`，修复后的完整源码还必须没有任何剩余匿名性匹配。raw v5 必须绑定两次 envelope、唯一 accepted attempt 及最终 author 逐字段一致性，repair 后仍不合规即 fail closed，禁止第三次调用。
-- Safe-pair author 的首次 Codex 进程非零退出只允许一次冻结输入与命令不变的 transport-only retry；失败 batch 必须收集同批全部完成结果，并以不含正文的固定 failure manifest 留痕。`rerun-failed` 从同一 run 前一 attempt 的 retained workspace 或已上传 checkpoint 构造逐对象重验的 non-formal checkpoint，再以 `--resume` 跳过已通过的 author/raw 对；每个逻辑 checkpoint 用 `-attempt-<workflow-run-attempt>` 不可变名称保留历史，自动恢复只接受严格 attempt 后缀并按 `created_at`、artifact ID 选择最新未过期工件，单次 bounded upload 的覆盖只限本 attempt 半成品；checkpoint 不能直接进入 provenance、pair materialization 或 attestation。
-- Safe-pair author 只有通用退出码且尚不足以证明 defect class 时，独立诊断 workflow 只能按显式 run/source/不可变 artifact ID/外部 digest 恢复 verified checkpoint，并将其中已绑定的 failure record 投影为固定 failure class 与计数。历史 `contract_repair_failure` 只能将既有 failure `error_sha256` 与版本化固定 outcome/validation-class 消息闭集比较，未知 digest 固定拒绝；输出不得包含该 failure digest 或消息正文。该路径不调用 reviewer、不输出 truth ID、审核正文、stderr 或生成源码，诊断 artifact 永久 non-formal，不能进入 provenance、pair materialization 或 attestation。
 - public external formal 必须把项目复制到 checkout 外的临时 sealed input，再复制到独立的 writable cache project；只读输入、writable artifact 和 writable cache 三个 mount 必须互不包含。entries 要先通过 answer-key 字段检查，容器 config/compile commands 只含容器路径，truth 必须等 scanner 退出并通过 `require_release_isolation` 后才由 host scorer 加载。
 - 正式 unified 结果要求 Linux 用户态和完整工具链，SVF/Saber 降级结果不能冒充正式结果。
 - Windows 主机使用 WSL；原生 Linux 直接运行等价命令；原生 Windows 不形成正式结果。
 - `test/` 不包含执行 runner、历史报告或后台 launcher；fixture 根每种语言只保留一份正式配置。
 - C/C++ formal 不读取 deterministic entry manifest，入口必须由隔离副本中的自动发现产生。
-- scorer 以结构化 file/function/category/location/evidence 的同锚点 pair 匹配，并保留 `matched_pairs` 供人工审计；新 formal artifact 必须使用 `zscope.truth-matcher.v2`，缺失 matcher 版本的历史 v4 artifact 只能只读。
-- raw FP、`same_product_root`、`truth_covered_additional`、`cross_anchor_overlap`、`weak_legacy_overlap` 和 effective FP 必须分开保留，不能通过静默删除重复报告美化指标。`duplicate_of_matched_count` 仅作为 `same_product_root_count` 的弃用别名。
+- scorer 以结构化 file/function/category/location/evidence 匹配，并保留 `matched_pairs` 供人工审计。类别门是单向任一命中：truth 单一 `category` 命中 issue 的类别集合（`category`/`categories`/`defect_class`/`defect_family` 等）即 `category_exact`；两侧 CWE 集合（含 `cwes` 列表与斜杠复合标签）有交集即 `cwe_exact`；同预定义族为 `category_family`。配对策略为多 TP：每个 truth 独立认领其分数最高的强配对，同一 issue（例如聚合后的多 CWE 位点）可命中多个 truth，而每个 truth 无论被多少 issue 命中都只计一个 TP；额外的同位 issue 走 `truth_covered_additional`/`same_product_root` 豁免。
+- raw FP、duplicate-of-matched 和 effective FP 必须分开保留，不能通过静默删除重复报告美化指标。
 - 没有 safe units/true negatives 的数据集不得把 `FP/(TP+FP)` 称为经典 FPR；应报告 actionable FDR、raw FP 和 precision。经典 FPR 仅在 truth 明确给出 safe units 时计算。
 - 每次正式评分必须输出 `discovered_by × decided_by` 交叉表、LLM 独占 TP、tokens/TP、marginal tokens/新增 TP、tokens/KLOC、p50/p95、五轮 Jaccard/极差和 Range→sealed generalization gap。
 - 新 formal finding 显式归因覆盖率必须至少 99%，call 级 usage 与 run summary、by-agent、by-stage 聚合必须守恒。
-- v15 及更早 truth 是只读描述性回归；新 formal Range 必须具有独立签发的 `zscope.range-truth-contract.v2`，confirmed 门槛按 `ceil(0.85 × confirmable_truth_count)` 动态计算。历史 111/136、116/136 和 10M/12M 只能作为旧实验/成本期望，不是产品 token admission。聚合器继续执行 FDR、TP Jaccard、recall 极差、provider usage、归因、队列、telemetry、token 守恒和协议异常门禁；缺少 v16 contract 或任一字段均 fail closed。
-- Truth v16 的受保护双人审核把 raw stdout、decision、packet hash 和 reviewer command identity 分别归档并交叉验证。为兼容冻结协议，`fable`/`opus` 仍是机器槽位名称；实际路由分别是 Claude Code 2.1.233 + `glm-5.3` high，以及 Codex CLI 0.144.4 + `gpt-5.6-sol` xhigh。Codex 负责 mandatory/disagreement 仲裁与 safe-pair author，固定 read-only/ephemeral、忽略用户配置和规则、禁用 shell tool，并用内容绑定的 provider-supported wire JSON Schema 限制直接 JSON 输出；raw 同时绑定 wire 与完整严格本地 contract schema 的 canonical hash，所有 wire 省略约束仍须通过现有确定性 validator。第二主审固定为 DSH 0.1.0-rc.6，通过临时只读 patch 绑定小写 provider `deepseek`、model `deepseek-v4-pro-0813` 与 `reasoningEffort=max`。三个槽位的初次 reviewer 进程非零退出时只允许一次同输入、同命令、同冻结身份的 transport-only 重试；初次输出正文不保留而只绑定 stdout/stderr 哈希，第二次失败即停止。DeepSeek 的隔离 schema 以 `const` 绑定当前 packet/reviewer 身份；有界 format-only 重试必须同时通过严格 JSON、schema、packet/role 绑定和模型身份校验，可解析但字段不合法的对象仍会继续有界重试或 fail closed。格式重试耗尽或 Claude/Codex 首次 contract 失败后，只允许一次同 packet、同 reviewer 的 contract regeneration。可解析失败对象先剥离 provider transport envelope，再一次性枚举全部 answer-free 递归 schema 约束、独立确定性语义约束和冻结 binding 字段差异，由完整问题集产生最小 material 修复 allowlist；单次 regeneration 必须修复全部已列问题，allowlist 外字段用投影哈希冻结，纯身份错误的 allowlist 为空，无法证明修复边界时不声明 material 守恒。三个槽位对已通过 schema/身份但未通过 packet grounding 的输出最多执行一次 grounding-only 纠正；纠正仍使用原 reviewer 的冻结 harness/模型身份，只有 anchors/evidence refs 可变，实质投影哈希必须守恒。DeepSeek grounding 输出若不是严格 JSON artifact，只能进行最多两次有界 transport-only 重发；第二次只读取前一次格式输出和更新后的 answer-free 校验反馈，且每次最终非 grounding 投影仍须与原 decision 一致。已解析且只有冻结 identity 错误的 grounding 输出不再触发模型，而由版本化 `frozen_identity_rebind_v1` 写入系统已知 identity，并同时绑定原输出、feedback、变更字段、完整 material 投影和 rebind 输出哈希。任何 non-binding contract 问题、二次 grounding、投影变化或 raw/decision 不一致都会停止审核。失败 checkpoint 只复制重新通过全部 primary 校验的 raw/decision 对，并以内容哈希、源 SHA、受保护 run identity、计数、answer-free failure code、有限 retry/exit 信号和失败 retry 的通用 validation class/error hash 绑定；恢复调用必须同时绑定 protected run ID、不可变 artifact ID 与 source SHA。harness 通过 GitHub REST 单 artifact 端点逐一校验 metadata、run/source/name/expiry、服务端 SHA-256 digest 和 ZIP 路径安全，再把 manifest 的 workflow run identity 与预期 run ID 逐字比较；禁止依赖会按同名 artifact 过滤旧版本的 `latest` 列表。它固定为 non-formal，恢复时针对当前 packet 逐对象重验，孤立或无效输出不复制且不能进入仲裁、provenance 或 attestation，恢复 manifest 在继续主审前移除。双主审 matrix 不 fail-fast，失败后 checkpoint 步骤显式使用 `failure()`，retained-workspace recovery 必须在新 checkout 前冻结指定主审的原 workspace，并用当前受保护 harness 生成同一严格 checkpoint。
-- safe-pair author 使用最小权限 request 投影：只把 frozen packet identity、最终 decision hash、contract kind 和已裁定的 `safe_pair_recommendation` 交给 Codex，不重新传递完整 packet、code windows 或完整 decision。完整 packet 只留给本地匿名化/身份 validator；版本化 raw envelope 额外绑定 request schema 与 canonical request hash，并继续绑定完整 packet/decision identity、wire/strict schema 和 command identity，任何投影漂移均 fail closed。
-- 新 workflow SHA 只能通过精确 `{run_id, source_sha, artifact_id, sha256}` 引用已完成的 Fable/DeepSeek primary artifact。下载器先验证来源 repository、review workflow path、`workflow_dispatch`、`main`、head/source、成功的 producer job、名称、ID、expiry、服务端和外部 digest 以及 safe ZIP；当前 harness 再把全部 136 对 raw/decision 逐对象重验为 complete checkpoint。任一输入不完整，或 metadata、invalid、incomplete、missing、failure record 不符合契约，都在 Codex readiness 与任何模型调用前 fail closed，且完整 artifact 与失败 checkpoint 输入互斥。Claude artifact 迁移只允许当前 harness 精确重构的 pre-type-schema command identity，除此之外的 CLI、model、effort、tool isolation、参数或 schema 差异仍拒绝。只有 136/136 门禁通过后，primary 才以 `resume` 生成全 `reused` manifest，从而保持两个 primary 零调用复用。Primary failure checkpoint 也按 `-attempt-<workflow-run-attempt>` 保留不可变历史；同 run 的 `rerun-failed` 严格选择最新未过期 attempt，并优先于显式跨 run 恢复输入。
-- Codex 仲裁计划（`opus` 兼容槽位）绑定全部 packet 以及两侧 primary decision/raw 哈希，并按 truth ID 的 SHA-256 确定性分为 4 个独立失败/恢复 shard；它们不代表单 runner 上的天然并发。primary 与 arbitration matrix 固定 `max-parallel: 1`，受保护 workflow concurrency group 保证只有一个 review run 使用模型；primary、arbitration、checkpoint 与 safe-pair author 统一采用最多 8 路调用。每个 8 路 batch 收齐全部 future，失败时保留同批成功输出和固定 answer-free failure class/count，结束后不启动下一批。重跑先恢复当前 run 的同 shard failure checkpoint；否则可显式提供同一来源 run/source 下任意已完成正式 shard 的精确 artifact ID/digest。选择任一 shard 复用时必须同时提供两份完整 primary 的精确四元组；单一 reuse-preflight 在 Codex readiness 之前恢复并重验两份 primary，再验证全部选中 shard 的来源 workflow/job/metadata/digest/ZIP，并用当前 packets、当前 plan 和冻结模型身份逐对象复验，因此任一不一致都在包括 readiness 探针在内的任何模型调用前 fail closed。全部通过后才逐 shard 上传带必填来源 workflow run ID 的 complete checkpoint。matrix 对其 zero-call resume 并重新上传为当前 run/source 的正式 shard；显式复用缺失或不一致时禁止回退为模型调用。safe-pair author 全部成功后先构造 require-complete checkpoint，checkpoint 构造失败 fail closed，checkpoint 上传的纯 transport 失败不阻止正式 artifact 上传；正式上传失败后的 `rerun-failed` 可从完整 checkpoint zero-call 恢复且跳过 provider doctor。最终合并仍只接纳当前 run 的两份 primary 与四份正式 shard，重算计划、验证 shard 0..3 精确覆盖且无重复，再生成原有 `zscope.range-v16-arbitration-run.v1` manifest。
-- Range v16 & Benchmark v5 attestation preflight 不允许把 sealed runner 外部 `gh` CLI 当作未声明依赖。workflow 先 checkout 当前受保护 control-plane head，由其 Python 标准库实现以 bounded retry 读取 GitHub metadata，严格核对 repository、review workflow path、`workflow_dispatch`、`main`、run head/外部预期 source SHA 以及整体 `completed`/`success`，并要求 reviewed、provenance、pair-author 的 producer job 成功与精确 artifact ID/digest/expiry 一致。只有 preflight 成功后才 detached checkout 冻结 Truth commit 做组件验证；control-plane head 和 Truth commit 是双 checkout 的独立身份，不能用旧 Truth checkout 取代新 preflight 实现。workflow 显式绑定 `actions/setup-python` 输出的 Python 3.13 绝对路径并为每个 run/attempt 建立独立 venv；冻结 Truth 后只安装 hash-locked binary 依赖、执行 `pip check`，禁止 editable/build-isolation 引入未锁定 backend。provenance、normalization、safe-pair、Truth rebuild、Truth validation、focused tests 和正式签发拆成顺序 fail-closed 恢复/诊断域；不得依赖只有新 control-plane head 才存在、旧 Truth commit 中缺失的 helper。所有受保护命令丢弃 stdout/stderr，只发布固定 answer-free failure class/count；该诊断拆分不得改变正式 schema、路径或 artifact 名称。跨 run shard 复用可来自整体失败的来源 run，但仅接纳成功 producer job 产生且逐对象重验通过的 shard；attestation 所引用的 review run 必须整体完成并成功。失败时禁止读取或回显 job log、check summary/text、reviewer stderr 和审核正文。
-- Codex protected review 在任何 primary/shard 启动前先由共享 readiness job 校验脱敏 doctor 的凭据、provider HTTPS、安装和 runtime provenance，再用不含 benchmark 材料的常量对象填充完整代表性仲裁 wire schema，对冻结模型执行 schema 编译与活性探针；各 shard 和 safe-pair author runner 另做 doctor-only 校验。所有 Codex response-format schema 的 `const` 与 `enum` 节点必须具有显式 JSON `type`，并由递归门禁覆盖 preflight、仲裁 decision 和 safe-pair author schema；缺失类型时在处理 benchmark packet 前 fail closed。`CODEX_API_KEY` 只注入 Codex 调用步骤，空 secret 不得覆盖 sealed runner 的 `CODEX_HOME` 登录。readiness 只输出固定 answer-free failure class，不归档 doctor 正文或探针输出；失败后通过 `rerun-failed` 恢复，禁止用四 shard 首包失败反复探测服务状态。
-- `zscope.range-gap-analysis.v1` 是 answer-bearing 后置分析：每个 default FN 只能有一个主因，输出绑定 report/score/truth/usage/replay SHA 与 run identity。它不参与扫描或候选生成，避免把 truth 反馈进产品逻辑。
-- `zscope.postscore-decision-trace.v1` 只在报告和 scorer 输出都冻结后读取 truth，把 TP/FP/FN 关联到 decision/coverage trace，并指出最早可诊断环节。该产物固定 `answer_material_present=true`、`product_trace_mutated=false`；不能被扫描器、Planner、Agent 或产品 trace 读取。
+- 新 formal Range 使用冻结 Arm A 的五轮 paired baseline；聚合器实际执行 111 TP、10M 中位数、12M 单轮硬上限、FDR +1pp、TP Jaccard 0.90、recall 极差 2pp，以及 provider usage、归因、队列、telemetry、token 守恒和协议异常门禁。缺失字段不能按零值或历史默认通过。
 - Balanced 默认切换与后续非回归分别读取 policy 的 `sealed_delta_gates` 和 `non_regression_gates`。public external、sealed 与 shadow 结论只能由独立 attestation 注入，scanner 自己的报告不能自我签发。`zscope.balanced-default-attestation.v1` 绑定 Juliet/SV-COMP/Magma formal aggregate、dataset、truth、scanner bundle、scorer、Git、配置、rules、policy、model spec 和 baseline SHA。benchmark 聚合也必须通过 `--balanced-attestation-workflow-run-id` 接受调用方从受保护工作流取得的独立运行身份，缺失或与 artifact 不一致时 fail closed；它不把自包含 content hash 当成签名。受保护的 `balanced-default-attestation.yml` 只能从 scanner checkout 之外导入独立测试团队保管的证据；Release 按 workflow run ID 下载不可变 artifact，并通过 `evaluate_release_candidate.py --balanced-default-attestation --balanced-attestation-workflow-run-id` 同时绑定 release SHA 与签发运行身份。内容摘要负责完整性，签发信任来自受保护的独立测试环境和 artifact 链。
 - 性能门禁只读取 `scan_wall_seconds`；`end_to_end_wall_seconds` 单独展示，`wall_seconds` 仅作为历史 v2 artifact 的兼容别名。
 - confirmed 与 with-review 的 recall/precision 必须同时展示，旧顶层 `recall` 只能解释为 confirmed 兼容视图。
@@ -164,9 +148,17 @@ python scripts/evaluate_range_regression.py --deterministic-candidates
 
 完整 LLM/unified 扫描需要有效模型配置和 Linux 工具链，不应作为普通单元测试自动启动。
 
+Review 实验由 `replay_review_experiment.py` 读取无答案的完整检查点；`score_review_experiment.py` 在回放输出冻结后独立读取审计和 truth，复用官方评分并重放拒绝证明。五轮必须属于同一 arm、拥有不同 pair ID，并绑定相同输入、模型、调查限额和审计摘要。所有 unknown 审计项仍阻止验收通过；未匹配 truth 不能推断为 FP。
+
+开启 review RuntimeSpec 的 trial 会保留原生 Linux 工作目录，并在产物目录写 `review-workspace.json`，确保绝对依赖路径可重放；源码归档仍只复制密封输入。失败或中断也保留已产生的检查点。默认 trial 继续清理临时目录。此实验能力尚未取得正式资格，formal 入口拒绝这些开关，既有发布门禁不变。
+
 ## 权威源码和关联文档
 
 - 稳定入口见本文 frontmatter 的 `sources`。
 - Range 执行、隔离和评分协议以 `docs/range-benchmark.md` 为准。
 - 外部 suite 协议见 `docs/progress_docs/external_benchmark_protocol.md`。
 - 历史结果只从当次 run 目录和 release 报告读取，不复制到本模块说明。
+
+## Portable 发行验证
+
+`scripts/portable_release.py` 负责四个语言/架构发行件，`scripts/portable/abi.py` 分开审计运行 ELF、当前架构的 JAR 原生资源和编译 sysroot。manifest v2 校验要求四包、哈希、逐包 SPDX 与实际离线 smoke；正式发布另要求干净源码、匹配 tag 和签名，旧 v1 资产校验继续兼容。兼容性 smoke 使用普通用户、只读发布目录和断网容器，ARM 证据注明 QEMU。该证据验证发行可用性，不替代本模块的正式 benchmark、源码隔离和受保护 attestation 门禁。具体命令统一维护在根 `AGENTS.md`。

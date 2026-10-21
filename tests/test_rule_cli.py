@@ -93,10 +93,9 @@ def test_rule_list_json_reports_disabled_rule_and_table_has_governance_columns(
     )
     assert json_result.exit_code == 0, json_result.output
     payload = json.loads(json_result.output)
-    assert payload["disabled"] == [
-        {"id": "same_pointer_freed_twice", "reason": "disabled_by_config"}
-    ]
-    assert [row["id"] for row in payload["rules"]] == ["same_pointer_freed_twice"]
+    assert {"id": "same_pointer_freed_twice", "reason": "disabled_by_config"} in payload["disabled"]
+    assert "same_pointer_freed_twice" in {row["id"] for row in payload["rules"]}
+    assert any(row["reason"] == "disabled_by_default" for row in payload["disabled"])
 
     table_result = runner.invoke(
         rules_main,
@@ -124,7 +123,7 @@ def test_rule_show_json_resolves_descriptor_and_effective_reason(tmp_path: Path)
     assert payload["rule"]["id"] == "same_pointer_freed_twice"
     assert payload["rule"]["engine"] == "cpp_regex"
     assert payload["rule"]["skill"] == "temporal_memory"
-    assert payload["rule"]["revision"] == 1
+    assert payload["rule"]["revision"] == 9
     assert payload["rule"]["effective_status"] == "disabled"
     assert payload["rule"]["effective_reason"] == "disabled_by_config"
 

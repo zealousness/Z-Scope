@@ -7,8 +7,6 @@ versioned proof record), and turns them into small auditable decision proofs.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional, cast
 
@@ -29,7 +27,10 @@ class DecisionProof:
     cfg_nodes: tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        for name in ("fact_ids", "assumptions", "cfg_nodes"):
+            value[name] = list(value[name])
+        return value
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
@@ -127,6 +128,18 @@ _REJECTION_REQUIREMENTS = {
         "caller_owned_parent",
         "successful_return_transfers_responsibility",
     },
+    # Source-level unsynchronized-write refutation (Phase 1.2/1.3): the
+    # reported global's write set is dominated by one lock inside the
+    # function body.  Read-shaped claims are never refuted here.
+    "source_lockset_dominates_access": {
+        "lock_dominates_access",
+        "all_writes_guarded",
+    },
+    # Interprocedural lock-protocol refutation (Phase 1.2 "调用方持锁"):
+    # every recorded caller holds the same mutex at the call site.
+    "caller_lock_context_dominates": {
+        "caller_lock_held_at_every_call_site",
+    },
 }
 
 _CONFIRMATION_REQUIREMENTS = {
@@ -206,7 +219,35 @@ _CONFIRMATION_REQUIREMENTS = {
         "reachable_exit_without_release",
         "ownership_not_transferred",
     },
+    # Source-level twin of the CFG event leak proof (Phase 1.2/1.3):
+    # lifecycle facts re-derived from the validator's function source when
+    # the engine supplied no CFG events.  The fact set pins the
+    # path-independent negative existential exactly; no model text can mint
+    # these facts.
+    "source_lifecycle_acquire_without_release": {
+        "event:acquire",
+        "event:exit",
+        "no_intraprocedural_release",
+        "no_ownership_transfer",
+    },
+    # V01 controlled dynamic reproduction.  The facts are minted only by
+    # ``zscope/core/validation/dynamic_reproduction.py`` after the witness has
+    # been matched to the candidate object/site/defect family and independently
+    # replayed; the record additionally has to hold a live in-process
+    # attestation, so a serialized log can never regain this authority.
+    "dynamic_witness_candidate_match": {
+        "candidate_object_matched",
+        "candidate_site_matched",
+        "defect_family_matched",
+        "binary_identity_bound",
+        "source_identity_bound",
+        "replay_consistent",
+    },
 }
+
+# Confirmation kinds whose authority is process-scoped: the record must be
+# backed by a runner attestation still live in this process.
+_PROCESS_ATTESTED_CONFIRMATION_KINDS = frozenset({"dynamic_witness_candidate_match"})
 
 
 def deterministic_decision_proof(
@@ -222,22 +263,83 @@ def deterministic_decision_proof(
     """
 
     expected = str(outcome or "").lower()
+    if issue.get("analysis_scope") == "conditional_source_branch":
+        return None
+    if str(issue.get("rule_id") or issue.get("rule") or "") == "zscope.c_cpp.cpp_clang_cfg.object_protocol_path":
+        from .protocol_assessment import protocol_confirmation
+
+        # Serialized generic proofs cannot bypass this rule's business
+        # obligations. A negative business answer is not a safety proof.
+        return protocol_confirmation(issue) if expected == "confirm" else None
+    compiler_required = str(issue.get("rule_id") or issue.get("rule") or "") in {
+        "configured_acquire_without_release",
+        "clang_cfg_acquire_without_release_on_exit",
+        "clang_cfg_parent_release_without_owned_member_cleanup",
+        "clang_cfg_unchecked_insert_after_ownership_handoff",
+        "clang_cfg_allocation_result_used_without_null_check",
+        "clang_cfg_fd_open_return_without_close",
+        "clang_cfg_nonliteral_format_string",
+        "clang_cfg_narrowed_allocation_original_length_copy",
+        "clang_cfg_unbounded_count_indexes_fixed_array",
+        "clang_cfg_return_with_lock_held",
+        "clang_cfg_borrowed_pointer_returned_after_unlock",
+        "insert_failure_leaves_stale_tree_node",
+        "global_container_registration_without_cleanup_path",
+        "clang_cfg_external_size_allocation_without_limit",
+        "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "clang_cfg_callback_while_lock_held",
+    }
+    if expected == "reject" and (compiler_required or issue.get("review_checked_proofs_enabled") is True):
+        from .review_checks import checked_receipt
+
+        receipt = checked_receipt(dict(issue))
+        if receipt is None:
+            return None
+        return DecisionProof(
+            outcome="reject", proof_kind="compiler_checked_review_claim",
+            producer_engine=str(receipt["checker_version"]),
+            fact_ids=(str(receipt["fact_store_id"]),),
+            code_hash=str(receipt["candidate_binding"]),
+            assumptions=("bound compiler configuration",),
+            contradiction_or_obligation=str(receipt["reason"]),
+            scope="candidate_obligation_in_current_build", completeness="complete",
+            subject_identity=str(issue.get("candidate_uid") or ""),
+        )
     requirements = _REJECTION_REQUIREMENTS if expected == "reject" else _CONFIRMATION_REQUIREMENTS
     for proof in _proof_records(issue):
         proof_outcome = str(proof.get("outcome") or proof.get("decision") or "").lower()
         if proof_outcome not in {expected, "rejected" if expected == "reject" else "confirmed"}:
             continue
         kind = str(proof.get("proof_kind") or proof.get("kind") or "").lower()
+        if expected == "confirm" and kind == "deterministic_cfg_obligation_path" and str(
+            issue.get("rule_id") or issue.get("rule") or ""
+        ) == "clang_cfg_nonliteral_format_string":
+            # Historical detector-produced format events were not compiler
+            # operand/data-flow certificates. Keep the evidence, revoke authority.
+            continue
         required = requirements.get(kind)
         if not required:
+            continue
+        # M2 guard: the source_lifecycle acquire-without-release proof loses
+        # its confirm authority when the demotion flag rides on the issue
+        # (measured 0TP/1FP on the frozen balanced run).  The record stays
+        # attached for diagnostics; it simply cannot decide a confirmation.
+        if (
+            expected == "confirm"
+            and kind == "source_lifecycle_acquire_without_release"
+            and issue.get("demote_source_lifecycle_confirm") is True
+        ):
             continue
         facts = _fact_names(proof)
         if not required.issubset(facts):
             continue
         if not _complete(proof) or not _has_fact_ids(proof) or not _has_code_hash(proof, issue):
             continue
-        if proof.get("certificate_sha256") and not _valid_embedded_certificate(proof):
-            continue
+        if kind in _PROCESS_ATTESTED_CONFIRMATION_KINDS:
+            from .dynamic_reproduction import dynamic_witness_proof_is_live
+
+            if not dynamic_witness_proof_is_live(proof, issue):
+                continue
         engine = str(proof.get("producer_engine") or proof.get("engine") or "").lower()
         if not engine or engine in {"llm", "validator", "model"}:
             continue
@@ -331,40 +433,6 @@ def _code_hash(issue: Mapping[str, Any]) -> str:
 
 def _has_code_hash(proof: Mapping[str, Any], issue: Mapping[str, Any]) -> bool:
     return bool(str(proof.get("code_hash") or _code_hash(issue)).strip())
-
-
-def _valid_embedded_certificate(proof: Mapping[str, Any]) -> bool:
-    certificate = proof.get("verification_certificate")
-    if not isinstance(certificate, Mapping):
-        return False
-    if certificate.get("protocol_revision") == 2:
-        from .proof_kernel.models import validate_certificate_envelope, validate_check_result
-
-        check_result = proof.get("proof_check_result")
-        if not isinstance(check_result, Mapping):
-            return False
-        certificate_valid, _ = validate_certificate_envelope(certificate)
-        check_valid, _ = validate_check_result(check_result)
-        return bool(
-            certificate_valid
-            and check_valid
-            and certificate.get("content_sha256") == proof.get("certificate_sha256")
-            and check_result.get("certificate_uid") == certificate.get("certificate_uid")
-            and check_result.get("status") == "accepted"
-        )
-    supplied = str(certificate.get("certificate_sha256") or "")
-    if supplied != str(proof.get("certificate_sha256") or ""):
-        return False
-    body = dict(certificate)
-    body.pop("certificate_sha256", None)
-    payload = json.dumps(
-        body,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest() == supplied
 
 
 def _string_values(value: Any) -> list[str]:

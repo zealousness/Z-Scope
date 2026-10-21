@@ -36,6 +36,12 @@ _RESOURCE_KINDS = {
     "resource",
     "resource_acquire",
     "resource_release",
+    "io_acquire",
+    "io_release",
+    "send_sink",
+    "recv_source",
+    "format_sink",
+    "callback_register",
 }
 _LOCK_KINDS = {"lock", "unlock"}
 _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
@@ -116,12 +122,25 @@ class SemanticOverlayCompiler:
         self._query_attempts = 0
         self._query_errors = []
         defaults = default_overlay_models()
+        from ...semantics.defaults import default_local_pattern_semantics
+        from ...semantics.contracts import ApiContract, ApiPair, SymbolIdentity
+
+        registry = default_local_pattern_semantics().contracts
         resources: List[Dict[str, Any]] = list(defaults.get("resource_models") or [])
         locks: List[Dict[str, Any]] = list(defaults.get("lock_models") or [])
         macros: List[Dict[str, Any]] = list(defaults.get("macro_models") or [])
 
-        for row in self._safe_rows("list_external_functions"):
+        external_rows = self._safe_rows("list_external_functions")
+        pair_rows = self._safe_rows("list_paired_functions")
+        for row in external_rows:
+            contract = ApiContract.from_row(row)
+            if contract is None:
+                continue
+            registry.add(contract)
             model = self._symbol_model(row)
+            model["contract"] = contract.to_dict()
+            model["object_binding"] = contract.to_dict()["carrier"]
+            model["conditions"] = contract.conditions
             if not model.get("name"):
                 continue
             kind = str(model.get("kind") or "").lower()
@@ -133,11 +152,42 @@ class SemanticOverlayCompiler:
             if "macro" in symbol_type:
                 macros.append(model)
 
-        for row in self._safe_rows("list_paired_functions"):
+        for row in pair_rows:
+            registry.pairs.append(
+                ApiPair(
+                    SymbolIdentity(
+                        str(row.get("acquire_func") or ""),
+                        str(row.get("acquire_file_path") or ""),
+                        str(row.get("acquire_signature") or ""),
+                    ),
+                    SymbolIdentity(
+                        str(row.get("release_func") or ""),
+                        str(row.get("release_file_path") or ""),
+                        str(row.get("release_signature") or ""),
+                    ),
+                    row.get("conditions") or [],
+                    str(row.get("source") or "user_config"),
+                )
+            )
             resources.extend(self._paired_models(row, role="resource"))
             locks.extend(self._paired_models(row, role="lock"))
 
+        from ...semantics.inference import LocalPatternSemanticBuilder
+        from types import SimpleNamespace
+
+        published = default_local_pattern_semantics()
+        rows_view = SimpleNamespace(
+            list_external_functions=lambda: external_rows, list_paired_functions=lambda: pair_rows
+        )
+        published.merge(
+            LocalPatternSemanticBuilder(None, rows_view, None, []).semantics_from_user_config()
+        )
+        registry = published.contracts
+
         overlay: Dict[str, Any] = {
+            "contract_version": registry.version,
+            "api_contracts": [contract.to_dict() for contract in registry.contracts],
+            "api_pairs": [pair.to_dict() for pair in registry.pairs],
             "resource_models": self._dedupe_models(resources),
             "lock_models": self._dedupe_models(locks),
             "macro_models": self._dedupe_models(macros),
@@ -184,10 +234,15 @@ class SemanticOverlayCompiler:
         kind = str(row.get("kind") or "").strip().lower()
         return {
             "name": str(row.get("func_name") or row.get("symbol_name") or "").strip(),
+            "file_path": str(row.get("file_path") or ""),
+            "signature": str(row.get("signature") or ""),
+            "confidence": row.get("confidence"),
+            "notes": row.get("notes", ""),
+            "status": row.get("status", "active"),
             "kind": kind,
             "symbol_type": str(row.get("symbol_type") or "function").strip() or "function",
             "carrier": self._carrier(kind, memory_behavior, concurrency_behavior),
-            "pair": str(row.get("pair") or row.get("release_func") or row.get("acquire_func") or "").strip(),
+            "pair": row.get("pair") or row.get("release_func") or row.get("acquire_func") or "",
             "description": str(row.get("description") or "").strip(),
             "source": str(row.get("source") or "user_config").strip() or "user_config",
             "memory_behavior": memory_behavior,
@@ -253,7 +308,13 @@ class SemanticOverlayCompiler:
             kind = str(row.get("kind") or "").strip()
             if not name:
                 continue
-            key = (name, kind)
+            key = (
+                name,
+                kind,
+                str(row.get("file_path") or ""),
+                str(row.get("signature") or ""),
+                json.dumps(row.get("pair") or "", sort_keys=True),
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -276,6 +337,7 @@ def overlay_summary(overlay: Dict[str, Any]) -> Dict[str, Any]:
     pointer_target_models = _as_list(overlay.get("pointer_target_models"))
     function_intent_models = _as_list(overlay.get("function_intent_models"))
     return {
+        "contract_version": str(overlay.get("contract_version") or ""),
         "resource_model_count": len(resource_models),
         "lock_model_count": len(lock_models),
         "macro_model_count": len(macro_models),
@@ -332,6 +394,10 @@ def annotate_candidate_evidence(
         "evidence_engines": engines,
         "semantic_overlays": overlay_brief,
         "semantic_overlay_evidence": overlay_evidence,
+        "semantic_contracts": {
+            key: (overlay or {}).get(key, []) for key in ("api_contracts", "api_pairs")
+        },
+        "semantic_contract_version": str((overlay or {}).get("contract_version") or ""),
         "path_kind": path_kind,
         "candidate_is_conclusion": False,
         "validation_required": True,
@@ -342,6 +408,8 @@ def annotate_candidate_evidence(
     issue["evidence_engines"] = engines
     issue["semantic_overlays"] = overlay_brief
     issue["semantic_overlay_evidence"] = overlay_evidence
+    issue["semantic_contracts"] = metadata["semantic_contracts"]
+    issue["semantic_contract_version"] = metadata["semantic_contract_version"]
     issue["validation_required"] = True
     issue["must_validate"] = True
     issue.setdefault("candidate_role", "evidence_only")
@@ -475,7 +543,7 @@ def _as_list(value: Any) -> List[Dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _names(rows: List[Dict[str, Any]], limit: int = 32) -> List[str]:
+def _names(rows: List[Dict[str, Any]], limit: int = 96) -> List[str]:
     names = []
     for row in rows:
         name = str(row.get("name") or row.get("func_name") or row.get("symbol_name") or "").strip()

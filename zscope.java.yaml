@@ -1,46 +1,34 @@
-# Z-SCOPE Java 配置 v2。复制为目标项目的 zscope.yaml 后修改。
-config_version: 2
+# Z-SCOPE Java 配置 v3。复制为目标项目的 zscope.yaml 后修改。
+# v3 是当前唯一用户配置入口：project.root 相对本配置文件所在目录解析，
+# 其余项目路径相对解析后的 root，同一份文件从任意工作目录加载到同一工程。
+# 所有字符串支持 ${VAR} 环境变量展开；字段合法性以 zscope-config validate 为准。
+config_version: 3
 
 llms:
+  # profile 表：default 必需，可再定义命名 profile；v3 按原样保留全部 profile。
   default:
-    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
-    models: ["${Z_SCOPE_LLM_MODEL}"]
-    api_key: "${Z_SCOPE_API_KEY}"
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"] # OpenAI 兼容 endpoint；多个时最闲优先分流，故障端点自动冷却
+    models: ["${Z_SCOPE_LLM_MODEL}"] # 候选模型，按序回退
+    api_key: "${Z_SCOPE_API_KEY}" # 环境变量缺失时加载即报错
     max_tokens: 8192 # 单次响应长度上限；不是 scan-wide token 预算。
-    base_url_max_concurrent_requests: 4
+    base_url_max_concurrent_requests: 4 # 单个 endpoint 并发在途请求上限
 
 project:
-  language: java
-  root: .
-  source_root: .
-  include_paths: []
-  exclude_paths: [target, build, .gradle]
-  # 也可改用 entry_function 或 entry_functions_list；自动发现时请明确目标模块和 API 源文件。
-  entry_discovery:
-    enabled: true
-    search_root: .
-    interface_files: ["src/main/java/**/*.java"]
-    max_entries: 200
+  language: java # 只能是 c_cpp 或 java
+  root: . # 相对本配置文件所在目录解析（v3 语义）；绝对路径也接受
+  platform: linux_user # 当前仅接受 linux_user；平台专属行为尚未接线
+  targets:
+    # Java 目标没有编译数据库概念：compile_commands 对 Java 是禁止字段。
+    - id: main
 
 scan:
-  depth: fast # Java Preview 尚未开放 balanced/deep；显式请求会失败。
-  task: "" # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。
-  llm_profiles: {modeling: default, analysis: default, validation: default}
+  preset: quick # Java 当前仅开放 quick；overnight 对应深度尚未通过该语言门禁。
+  # focus: [memory, resources, async_lifecycle] # 已校验保留；尚未驱动 Skill 领域选择
+  # reproduction: auto # 声明复现意图；不启用内部动态复现实验
 
-indexing:
-  backend: java_unified
-  java:
-    structure_frontend: auto
-    signals: [joern]
-    # provider_commands: # 外部信号 provider 的命令及参数；provider 名应同时写入 signals。
-    #   semgrep: [semgrep, --json, --config, auto, .]
-  # tools: # 仅在 Joern 不可从 PATH 或默认服务地址访问时配置。
-  #   joern: {command: joern, host: 127.0.0.1, port: 8080, heap: 8g}
-
-concurrency:
-  entry_workers: 4
-  validator_workers: 2
-  investigator_workers: 1
-  evidence_completion_workers: 2
-  index_workers: 4
-  llm_max_inflight: 4
+execution:
+  # 以下字段声明后仅解析与展示，不伪装启用：时窗只解析为本轮一次绝对停止边界，
+  # 不创建周期任务；S08 作业调度与并发预算的消费尚未接线。
+  # timezone: Asia/Taipei # stop_at 必须与 timezone 同时声明
+  # stop_at: "08:00" # 本地 HH:MM；夏令时歧义/不存在的时间会被拒绝
+  # max_workers: 4 # 声明并发预算；当前使用既有默认并发

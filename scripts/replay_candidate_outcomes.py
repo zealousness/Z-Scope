@@ -13,13 +13,8 @@ import argparse
 import copy
 import hashlib
 import json
-import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from zscope.core.validation.evidence_completion import EvidenceCompletionQueue
 from zscope.core.validation.proofs import deterministic_decision_proof
@@ -35,15 +30,19 @@ def _sha256(path: Path) -> str:
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
-    with path.open(encoding="utf-8") as handle:
-        value = json.load(handle)
+    from zscope.reporting.json_io import read_report
+    value = read_report(path)
     if not isinstance(value, dict):
         raise ValueError(f"expected a JSON object: {path}")
     return value
 
 
 def _input_fingerprints(paths: Mapping[str, Path]) -> Dict[str, str]:
-    return {name: _sha256(path) for name, path in paths.items() if path.exists() and path.is_file()}
+    return {
+        name: _sha256(path)
+        for name, path in paths.items()
+        if path.exists() and path.is_file()
+    }
 
 
 def _verify_baseline(
@@ -86,24 +85,15 @@ def _deterministic_replay(
 ) -> Dict[str, Any]:
     replay = copy.deepcopy(dict(issue))
     old = str(
-        replay.get("terminal_disposition") or replay.get("candidate_disposition") or "needs_review"
+        replay.get("terminal_disposition")
+        or replay.get("candidate_disposition")
+        or "needs_review"
     ).lower()
     evidence = {
         "function_context": {
             "code": str(replay.get("code_snippet") or ""),
         }
     }
-    old_confirmation = deterministic_decision_proof(replay, outcome="confirm")
-    old_rejection = deterministic_decision_proof(replay, outcome="reject")
-    # Shadow replay must recompute provider decisions under the current code.
-    # Retaining an archived proof in any accepted proof collection would make
-    # a revoked provider decision self-perpetuating forever.
-    for field in ("deterministic_proofs", "decision_proofs", "proofs"):
-        replay[field] = []
-    pack = replay.get("evidence_pack")
-    if isinstance(pack, dict):
-        for field in ("deterministic_proofs", "decision_proofs", "proofs"):
-            pack[field] = []
     EvidenceCompletionQueue(enable_v12_providers=enable_v12).complete_prevalidation(
         replay,
         validation_evidence=evidence,
@@ -119,9 +109,6 @@ def _deterministic_replay(
     elif rejection is not None:
         new = "rejected_with_proof"
         reason = rejection.proof_kind
-    elif old_confirmation is not None or old_rejection is not None:
-        new = "needs_review"
-        reason = "archived_complete_proof_not_reproduced"
     else:
         new = old
         reason = "no_new_complete_proof"
@@ -135,7 +122,9 @@ def _deterministic_replay(
         "proof": (
             confirmation.to_dict()
             if confirmation is not None and rejection is None
-            else rejection.to_dict() if rejection is not None and confirmation is None else None
+            else rejection.to_dict()
+            if rejection is not None and confirmation is None
+            else None
         ),
     }
 
@@ -145,22 +134,20 @@ def replay_report(
     *,
     source_revision: str = "",
     enable_v12: bool = False,
-    finding_root_v2: bool = False,
     finding_root_v1: bool = False,
 ) -> Dict[str, Any]:
-    raw_manifest = report.get("run_manifest")
-    manifest: Mapping[str, Any] = raw_manifest if isinstance(raw_manifest, dict) else {}
-    raw_metadata = report.get("metadata")
-    metadata: Mapping[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
-    recorded_revision = str(manifest.get("source_revision") or metadata.get("commit_sha") or "")
+    manifest = report.get("run_manifest") if isinstance(report.get("run_manifest"), dict) else {}
+    recorded_revision = str(manifest.get("source_revision") or report.get("metadata", {}).get("commit_sha") or "")
     if source_revision and recorded_revision and source_revision != recorded_revision:
         raise ValueError(
             f"source revision mismatch: report={recorded_revision}, requested={source_revision}"
         )
     groups = list(_canonical_groups(report))
-    transitions = [_deterministic_replay(item, enable_v12=enable_v12) for item in groups]
+    transitions = [
+        _deterministic_replay(item, enable_v12=enable_v12)
+        for item in groups
+    ]
     changed = [item for item in transitions if item["transitioned"]]
-    finding_root_enabled = bool(finding_root_v2 or finding_root_v1)
     result = {
         "schema_version": "zscope.candidate-replay.v1",
         "source_revision": recorded_revision,
@@ -169,11 +156,13 @@ def replay_report(
         "transitions": transitions,
         "changed_transitions": changed,
         "proof_providers_v12": bool(enable_v12),
-        "finding_root_v2": finding_root_enabled,
-        "finding_root_v1_compat_flag_used": bool(finding_root_v1),
+        "finding_root_v1": bool(finding_root_v1),
     }
-    if finding_root_enabled:
-        by_cluster = {str(item.get("validation_cluster_uid") or ""): item for item in transitions}
+    if finding_root_v1:
+        by_cluster = {
+            str(item.get("validation_cluster_uid") or ""): item
+            for item in transitions
+        }
         replayed_groups = []
         for raw in groups:
             item = copy.deepcopy(raw)
@@ -187,7 +176,6 @@ def replay_report(
         projection = project_finding_roots(replayed_groups)
         result["finding_root_count"] = projection.finding_root_count
         result["finding_root_alias_count"] = projection.finding_root_alias_count
-        result["finding_root_projection"] = dict(projection.summary)
         result["projected_disposition_counts"] = {
             disposition: sum(
                 1
@@ -215,12 +203,7 @@ def main() -> int:
     parser.add_argument("--baseline-manifest", type=Path)
     parser.add_argument("--source-revision", default="")
     parser.add_argument("--proof-providers-v12", action="store_true")
-    parser.add_argument("--finding-root-v2", action="store_true")
-    parser.add_argument(
-        "--finding-root-v1",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
+    parser.add_argument("--finding-root-v1", action="store_true")
     parser.add_argument(
         "--shadow",
         action="store_true",
@@ -244,7 +227,6 @@ def main() -> int:
             _load_json(args.report),
             source_revision=args.source_revision,
             enable_v12=bool(args.proof_providers_v12),
-            finding_root_v2=bool(args.finding_root_v2),
             finding_root_v1=bool(args.finding_root_v1),
         )
     except ValueError as exc:

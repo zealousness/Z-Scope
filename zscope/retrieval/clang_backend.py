@@ -5,7 +5,7 @@ Provides precise C/C++ code structure extraction without Joern dependency.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .backend_base import CodeBackend
 from .clang_extractor import ClangExtractor
@@ -22,9 +22,9 @@ class ClangBackend(CodeBackend):
     """
 
     MACRO_EXTRACTOR_VERSION = "2"
-    SYMBOL_CONTEXT_EXTRACTOR_VERSION = "4"
+    SYMBOL_CONTEXT_EXTRACTOR_VERSION = "6"
     TYPE_EXTRACTOR_VERSION = "1"
-    FUNCTION_TYPE_REF_EXTRACTOR_VERSION = "4"
+    FUNCTION_TYPE_REF_EXTRACTOR_VERSION = "7"
     FUNCTION_SYMBOL_CONTEXT_INDEX = "function_symbol_context"
     FUNCTION_TYPE_REFS_INDEX = "function_type_refs"
 
@@ -33,18 +33,29 @@ class ClangBackend(CodeBackend):
         clangd_path: str = "clangd",
         db_path: str = ".zscope_knowledge/code_knowledge.db",
         batch_size: int = 50,
-        max_threads: int = 8,
+        max_threads: int = 4,
+        frontend: str = "auto",
+        clang_indexer_path: str = "zscope-clang-indexer",
     ):
+        if frontend not in {"auto", "batch", "lsp"}:
+            raise ValueError("clang frontend must be auto, batch, or lsp")
+        self._frontend = frontend
+        self._clang_indexer_path = clang_indexer_path
         self._clangd_path = clangd_path
         self._db_path = db_path
         self._batch_size = batch_size
         self._max_threads = max_threads
-        self._extractor: Optional[ClangExtractor] = None
+        self._extractor: Optional[Union[ClangExtractor, ClangExtractorPool]] = None
         self._db: Optional[KnowledgeDB] = None
         self._status = "idle"
         self._source_path: Optional[Path] = None
         self._include_paths: List[Path] = []
         self._exclude_paths: List[Path] = []
+        self._type_ref_scheduler: Any = None
+        self._compile_preparation: Any = None
+        self._compile_commands_path: Optional[str] = None
+        self._compile_generation_started = False
+        self._compile_preparation_tools: Dict[str, Any] = {}
 
     @property
     def db(self) -> Optional[KnowledgeDB]:
@@ -56,6 +67,9 @@ class ClangBackend(CodeBackend):
         """初始化 clangd + SQLite 后端。"""
         project_root = kwargs.get("project_root", source_path)
         self._compile_commands_path = kwargs.get("compile_commands_path")
+        self._compile_preparation = kwargs.get("compile_preparation")
+        self._compile_generation_started = False
+        self._compile_preparation_tools = kwargs.get("compile_preparation_tools", {})
         wait = kwargs.get("wait", True)
 
         self._source_path = Path(source_path).absolute()
@@ -114,14 +128,100 @@ class ClangBackend(CodeBackend):
                 compile_commands_dir=cc_dir,
                 max_threads=self._max_threads,
             )
+        receipt = self._compile_preparation
+        if receipt is not None:
+            receipt.validate()
+            for shard in getattr(self._extractor, "_shards", [self._extractor]):
+                shard._compile_preparation = receipt
         if not self._extractor.start():
             logger.error("Failed to start clangd extractor")
             return False
         return True
 
     def _run_full_extraction(self) -> bool:
+        # A base refresh owns publication exclusively. Stop continuations before
+        # replacing their function/type IDs, then start a new generation owner.
+        self._stop_type_ref_scheduler()
+        with self.pause_type_references():
+            if self._compile_generation_started:
+                # This explicit refresh starts a new generation after all old
+                # continuations stop. Deferred SVF never enters this branch.
+                self._compile_preparation = None
+            self._compile_generation_started = True
+            result = self._run_full_extraction_impl()
+        if (
+            result
+            and self._frontend == "auto"
+            and self._db is not None
+            and self._db.get_metadata("clang_fact_frontend") == "batch"
+        ):
+            from .clang_type_state import FALLBACK_KEY
+            import json
+
+            if json.loads(self._db.get_metadata(FALLBACK_KEY) or "{}"):
+                from .clang_type_scheduler import acquire_scheduler
+                from .clang_type_state import counts
+
+                logger.info(
+                    "[function-type-refs] handoff origin=batch_fallback mode=background "
+                    "query_ready=true functions=%s",
+                    counts(self._db),
+                )
+                self._type_ref_scheduler = acquire_scheduler(self)
+        return result
+
+    def _stop_type_ref_scheduler(self) -> None:
+        scheduler = getattr(self, "_type_ref_scheduler", None)
+        if scheduler is not None:
+            from .clang_type_scheduler import release_scheduler
+
+            release_scheduler(scheduler)
+            self._type_ref_scheduler = None
+
+    def pause_type_references(self) -> Any:
+        from .clang_type_scheduler import pause_registered_scheduler
+
+        return pause_registered_scheduler(self._db)
+
+    def _run_full_extraction_impl(self) -> bool:
         """Refresh base TU facts, then independently refresh derived indexes."""
         try:
+            if self._compile_commands_path:
+                if self._compile_preparation is None:
+                    from .compile_commands_prepare import prepare_compile_commands
+                    from .compile_preflight import discover_tools
+
+                    self._compile_preparation = prepare_compile_commands(
+                        Path(self._compile_commands_path),
+                        discover_tools(
+                            indexer=self._clang_indexer_path if self._frontend != "lsp" else "",
+                            clangd=self._clangd_path,
+                            **self._compile_preparation_tools,
+                        ),
+                        workers=self._max_threads,
+                    )
+                else:
+                    self._compile_preparation.validate()
+            if self._frontend != "lsp":
+                from .clang_batch import BatchIndexer, find_indexer
+
+                native = find_indexer(self._clang_indexer_path)
+                if not native and self._clang_indexer_path != "zscope-clang-indexer":
+                    raise RuntimeError(
+                        "Selected batch indexer is missing or incompatible: "
+                        + self._clang_indexer_path
+                    )
+                if native and self._compile_commands_path and self._db is not None:
+                    complete = BatchIndexer(self, *native).run()
+                    self._status = "ready" if complete else "error"
+                    return complete
+                if self._frontend == "batch":
+                    raise RuntimeError(
+                        "batch frontend requires a compatible zscope-clang-indexer and compile_commands.json"
+                    )
+                logger.info(
+                    "[clang-frontend] batch tool or compilation database unavailable; using LSP"
+                )
             file_list = self._collect_source_files()
             from .clang_extractor import ClangExtractor
 
@@ -130,6 +230,8 @@ class ClangBackend(CodeBackend):
                 return False
 
             db = self._db
+            if self._metadata_value(db, "clang_fact_frontend") == "batch":
+                return self._transition_to_lsp(db)
             source_root = self._source_path
             existing_tus = list(db.get_all_tus())
             macro_version = self._metadata_value(db, "macro_extractor_version")
@@ -184,6 +286,28 @@ class ClangBackend(CodeBackend):
                         }
             deferred_tu_commits = bool(getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False))
             force_refresh_paths: set[str] = set()
+            compile_context = ""
+            if self._compile_preparation is not None:
+                import json
+                from .indexing_identity import digest_json
+
+                receipt = self._compile_preparation
+                compile_context = digest_json(
+                    [
+                        receipt.effective_digest,
+                        receipt.dependencies_json,
+                        [
+                            tool
+                            for tool in json.loads(receipt.tools_json)
+                            if tool["name"] == "clangd"
+                        ],
+                    ]
+                )
+                previous = db.get_metadata("clang_prepared_lsp_context")
+                if (previous and previous != compile_context) or (
+                    not previous and receipt.effective_digest != receipt.original_digest
+                ):
+                    force_refresh_paths.update(current_files)
             deleted_paths: List[Path] = []
             changed_count = 0
             prescanned_tus: Dict[str, Tuple[int, bool]] = {}
@@ -288,7 +412,7 @@ class ClangBackend(CodeBackend):
 
             derived_work = self._derived_indexes_needing_rebuild(db)
             needs_clangd = bool(file_list) and bool(changed_count or derived_work)
-            extractor: Optional[ClangExtractor] = None
+            extractor: Optional[Union[ClangExtractor, ClangExtractorPool]] = None
             index_ready = False
             supports_deferred_index_barrier = False
             if needs_clangd:
@@ -310,9 +434,10 @@ class ClangBackend(CodeBackend):
                 if not supports_deferred_index_barrier and not extractor.wait_for_indexing(
                     timeout=120, idle_threshold=3.0
                 ):
-                    logger.error("clangd indexing did not become ready before the hard timeout")
-                    self._status = "error"
-                    return False
+                    logger.warning(
+                        "clangd indexing did not become ready before the soft timeout; "
+                        "continuing with a partially indexed project"
+                    )
                 index_ready = not supports_deferred_index_barrier
 
             def wait_for_index_once() -> bool:
@@ -323,7 +448,11 @@ class ClangBackend(CodeBackend):
                     return False
                 index_ready = bool(extractor.wait_for_indexing(timeout=120, idle_threshold=3.0))
                 if not index_ready:
-                    logger.error("clangd indexing did not become ready before the hard timeout")
+                    logger.warning(
+                        "clangd indexing did not become ready before the soft timeout; "
+                        "continuing with a partially indexed project"
+                    )
+                    index_ready = True
                 return index_ready
 
             if changed_count:
@@ -388,9 +517,7 @@ class ClangBackend(CodeBackend):
                     db,
                     derived_work,
                     changed_paths=[
-                        path
-                        for path, (_tu_id, changed) in prescanned_tus.items()
-                        if changed
+                        path for path, (_tu_id, changed) in prescanned_tus.items() if changed
                     ],
                     deleted_paths=[str(path) for path in deleted_paths],
                 )
@@ -432,6 +559,8 @@ class ClangBackend(CodeBackend):
                             )
                         else:
                             combined_result = combined_rebuild(db, use_staging=True)
+                        if self._compile_preparation is not None:
+                            self._compile_preparation.validate()
                         counts = dict(combined_result.get("counts") or {})
                         errors = dict(combined_result.get("errors") or {})
                         for index_name, target_version, _rebuild_method in derived_work:
@@ -521,9 +650,7 @@ class ClangBackend(CodeBackend):
                                         )
                                     )
                                 else:
-                                    row_count = int(
-                                        rebuild_method(extractor, db, use_staging=True)
-                                    )
+                                    row_count = int(rebuild_method(extractor, db, use_staging=True))
                                 stats_getter = getattr(
                                     extractor,
                                     "get_last_derived_stats",
@@ -537,6 +664,8 @@ class ClangBackend(CodeBackend):
                             else:
                                 row_count = 0
                                 last_stats = {"rows": 0, "files": 0, "functions": 0}
+                            if self._compile_preparation is not None:
+                                self._compile_preparation.validate()
                             if partial_only_files is not None:
                                 db.finalize_derived_index_rebuild(
                                     index_name,
@@ -571,6 +700,10 @@ class ClangBackend(CodeBackend):
             if derived_failed or not self._derived_indexes_are_current(db):
                 self._status = "error"
                 return False
+            if self._compile_preparation is not None:
+                self._compile_preparation.validate()
+                db.set_metadata("clang_prepared_lsp_context", compile_context)
+            db.set_metadata("clang_fact_frontend", "lsp")
             self._status = "ready"
             return True
         except Exception as e:
@@ -592,6 +725,45 @@ class ClangBackend(CodeBackend):
                 finally:
                     if self._extractor is extractor:
                         self._extractor = None
+
+    def _transition_to_lsp(self, published: KnowledgeDB) -> bool:
+        """Changing frontend must rebuild, including unchanged source files."""
+        import sqlite3
+        import tempfile
+        from .clang_batch import publish_staged_database
+        from .indexing_runtime import heartbeat
+
+        previous_frontend = self._frontend
+        with (
+            heartbeat("clang-frontend-transition"),
+            tempfile.TemporaryDirectory(
+                prefix="clang-lsp-transition-", dir=str(Path(published._db_path).parent)
+            ) as directory,
+        ):
+            path = Path(directory) / "stage.sqlite3"
+            with sqlite3.connect(str(path)) as target:
+                published._conn.backup(target)
+            stage = KnowledgeDB(str(path))
+            try:
+                setattr(stage, "_derived_cache_owner_path", published._db_path)
+                for tu in stage.get_all_tus():
+                    stage.mark_tu_pending(int(tu["id"]), commit=False)
+                stage._conn.execute(
+                    "UPDATE metadata SET value='' WHERE key LIKE 'clang_batch_base:%' OR key='clang_batch_input'"
+                )
+                stage.set_metadata("clang_fact_frontend", "lsp", commit=False)
+                stage._conn.execute("DELETE FROM compilation_facts")
+                stage._conn.execute("DELETE FROM compilation_instances")
+                stage.mark_derived_indexes_dirty(reason="compiler_frontend_changed", commit=False)
+                stage.commit()
+                self._db, self._frontend = stage, "lsp"
+                if not self._run_full_extraction():
+                    return False
+                publish_staged_database(published, path)
+                return True
+            finally:
+                self._db, self._frontend = published, previous_frontend
+                stage.close()
 
     @staticmethod
     def _metadata_value(db: Any, key: str) -> str:
@@ -652,7 +824,8 @@ class ClangBackend(CodeBackend):
             or explicit_base_version_mismatch
             or deleted_tus
             or not existing_tus
-            or self._metadata_value(db, "schema_version") != "14"
+            or self._metadata_value(db, "schema_version")
+            not in {"14", "15", KnowledgeDB.SCHEMA_VERSION}
         ):
             return False
         if any(str(tu.get("status") or "") != "indexed" for tu in existing_tus):
@@ -729,9 +902,7 @@ class ClangBackend(CodeBackend):
                 return None
             affected = compute(changed_paths, deleted_paths, candidates)
         except Exception as exc:
-            logger.warning(
-                "Partial derived rebuild planning failed; using full rebuild: %s", exc
-            )
+            logger.warning("Partial derived rebuild planning failed; using full rebuild: %s", exc)
             return None
         if affected is None:
             return None
@@ -756,10 +927,24 @@ class ClangBackend(CodeBackend):
                 return False
         return True
 
+    def _derived_indexes_ready_for_queries(self, db: Any) -> bool:
+        if self._derived_indexes_are_current(db):
+            return True
+        symbol = db.get_derived_index_state(self.FUNCTION_SYMBOL_CONTEXT_INDEX)
+        types = db.get_derived_index_state(self.FUNCTION_TYPE_REFS_INDEX)
+        return bool(
+            self._frontend == "auto"
+            and db.get_metadata("clang_type_refs_generation")
+            and symbol.get("status") == "current"
+            and symbol.get("applied_version") == self.SYMBOL_CONTEXT_EXTRACTOR_VERSION
+            and types.get("dirty_reason") == "deferred_type_refs"
+            and types.get("target_version") == self.FUNCTION_TYPE_REF_EXTRACTOR_VERSION
+        )
+
     @staticmethod
     def _record_derived_failure(
         db: Any,
-        extractor: Optional[ClangExtractor],
+        extractor: Optional[Union[ClangExtractor, ClangExtractorPool]],
         index_name: str,
         target_version: str,
         exc: Exception,
@@ -866,6 +1051,7 @@ class ClangBackend(CodeBackend):
         return sorted(list(set(files)))
 
     def close(self) -> None:
+        self._stop_type_ref_scheduler()
         if self._extractor:
             self._extractor.stop()
             self._extractor = None
@@ -912,6 +1098,78 @@ class ClangBackend(CodeBackend):
             return []
         return self._db.get_macro_definitions_batch(names)
 
+    def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        return self._db.get_global_definitions_batch(names) if self._db else []
+
+    def get_build_contexts(self, file_path: str = "") -> List[Dict[str, Any]]:
+        return self._db.get_build_contexts(file_path) if self._db else []
+
+    def get_function_program_facts(
+        self, func_name: str, file_path: str = "", *, build_context_id: str = ""
+    ) -> Dict[str, Any]:
+        if not self._db:
+            return {"complete": False, "events": [], "accesses": []}
+        import json
+        from .build_context import program_facts_result
+
+        if build_context_id:
+            # An explicit identity may name a variant where the function does
+            # not exist. Report missing evidence, never borrow another variant.
+            selected_context = self._db.get_build_context(build_context_id)
+            if selected_context is None:
+                return {
+                    "complete": False,
+                    "events": [],
+                    "accesses": [],
+                    "functions": [],
+                    "reason": "build_context_not_found",
+                    "build_context_id": build_context_id,
+                }
+            values = self._db.get_compilation_facts(
+                build_context_id,
+                symbol=func_name,
+                file_path=file_path,
+                kinds=("program_function", "program_access"),
+            )
+            return program_facts_result(values, context=selected_context)
+        contexts = self._db.get_function_build_contexts(func_name, file_path)
+        by_id = {context["build_context_id"]: context for context in contexts}
+        sources = {context["source"] for context in contexts}
+        if file_path:
+            sources.add(file_path)
+        for source in sources:
+            for context in self._db.get_build_contexts(source):
+                by_id[context["build_context_id"]] = context
+        if len(by_id) > 1:
+            return {
+                "complete": False,
+                "events": [],
+                "accesses": [],
+                "functions": [],
+                "reason": "ambiguous_build_context",
+                "build_contexts": list(by_id.values()),
+            }
+        if by_id:
+            context = next(iter(by_id.values()))
+            values = self._db.get_compilation_facts(
+                context["build_context_id"],
+                symbol=func_name,
+                file_path=file_path,
+                kinds=("program_function", "program_access"),
+            )
+            return program_facts_result(values, context=context)
+
+        selector = (
+            "json_extract(data, '$.owner.usr')=?" if func_name.startswith("c:") else "function=?"
+        )
+        query = "SELECT data FROM function_program_facts WHERE " + selector
+        args: list[Any] = [func_name]
+        if file_path:
+            query += " AND file_path=?"
+            args.append(file_path)
+        values = [json.loads(row[0]) for row in self._db._conn.execute(query, args)]
+        return program_facts_result(values)
+
     def get_function_symbol_context(
         self,
         func_name: str,
@@ -929,6 +1187,40 @@ class ClangBackend(CodeBackend):
     ) -> Dict[str, Any]:
         if not self._db:
             return {"referenced_types": []}
+        scheduler = getattr(self, "_type_ref_scheduler", None)
+        if (
+            scheduler is None
+            and self._frontend == "auto"
+            and self._db.get_metadata("clang_type_refs_generation")
+        ):
+            from .clang_type_scheduler import acquire_scheduler
+
+            scheduler = self._type_ref_scheduler = acquire_scheduler(self)
+        if scheduler is not None:
+            if scheduler.generation != self._db.get_metadata("clang_type_refs_generation"):
+                from .clang_type_scheduler import acquire_scheduler
+
+                self._stop_type_ref_scheduler()
+                scheduler = self._type_ref_scheduler = acquire_scheduler(self)
+            from .clang_type_state import function_record, read_current, TypeContextUnavailable
+
+            record = function_record(self._db, func_name, file_path, start_line)
+            if record is None:
+                raise TypeContextUnavailable("function_identity_ambiguous_or_missing")
+            if record.get("context") != "native":
+                logger.debug(
+                    "[function-type-refs] consumer_wait function=%s file=%s line=%s",
+                    func_name,
+                    file_path,
+                    start_line,
+                )
+                scheduler.ensure(record)
+                result = read_current(
+                    self._db, func_name, file_path, start_line, record["generation"]
+                )
+                if result is None:
+                    raise TypeContextUnavailable("base_generation_changed")
+                return result
         return self._db.get_function_type_context(func_name, file_path, start_line)
 
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
@@ -982,14 +1274,12 @@ class ClangBackend(CodeBackend):
         return []
 
     def find_function_pointers(self, func_name: str) -> List[Dict[str, Any]]:
-        """Find exact indirect calls and typed callback-registration edges."""
+        """通过 KnowledgeDB call_edges 中 call_type='indirect' 查找函数指针。"""
         if not self._db:
             return []
         rows = self._db._conn.execute(
             "SELECT DISTINCT caller_name, caller_file, call_line "
-            "FROM call_edges WHERE callee_name = ? "
-            "AND call_type IN ('indirect', 'callback') "
-            "ORDER BY caller_file, call_line, caller_name LIMIT 20",
+            "FROM call_edges WHERE callee_name = ? AND call_type = 'indirect' LIMIT 20",
             (func_name,),
         ).fetchall()
         return [

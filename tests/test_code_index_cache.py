@@ -211,13 +211,60 @@ def test_file_snippet_applies_explicit_and_implicit_line_limits(tmp_path) -> Non
     assert omitted is not None
     assert omitted["end_line"] == 50
     assert len(omitted["code"].splitlines()) == 50
+    assert omitted["total_lines"] == 600
+    assert omitted["truncated"] is False
     assert invalid is not None
     assert invalid["end_line"] == 50
     assert explicit is not None
     assert explicit["end_line"] == 500
     assert len(explicit["code"].splitlines()) == 500
+    assert explicit["truncated"] is True
     assert narrowed is not None
     assert narrowed["end_line"] == 25
+    assert narrowed["truncated"] is True
+
+
+def test_file_snippet_end_line_past_eof_reads_to_eof(tmp_path) -> None:
+    # An end_line beyond the file end is a "read to the end of the file"
+    # request: it must clamp to EOF within the hard max_lines ceiling instead
+    # of silently falling back to the short default window, and the result
+    # must report total_lines plus a truncated flag.
+    source_path = tmp_path / "eof.c"
+    source_path.write_text(
+        "".join(f"line_{line}\n" for line in range(1, 601)),
+        encoding="utf-8",
+    )
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        indexing_config=SimpleNamespace(backend="regex"),
+    )
+
+    to_eof = index.get_file_snippet("eof.c", 100, 999999)
+
+    assert to_eof is not None
+    assert to_eof["total_lines"] == 600
+    assert to_eof["end_line"] == 599  # start + max_lines - 1
+    assert to_eof["truncated"] is True  # EOF still lies beyond the 500-line cap
+    assert len(to_eof["code"].splitlines()) == 500
+    assert to_eof["code"].splitlines()[0].startswith("100 |")
+
+    exact = index.get_file_snippet("eof.c", 10, 20)
+    assert exact is not None
+    assert exact["end_line"] == 20
+    assert exact["truncated"] is False
+    assert len(exact["code"].splitlines()) == 11
+
+    small_path = tmp_path / "small.c"
+    small_path.write_text(
+        "".join(f"s{line}\n" for line in range(1, 31)),
+        encoding="utf-8",
+    )
+    tail = index.get_file_snippet("small.c", 25, 999999)
+    assert tail is not None
+    assert tail["total_lines"] == 30
+    assert tail["end_line"] == 30
+    assert tail["truncated"] is False
 
 
 def test_function_impl_supports_unbounded_source_for_semantic_modeling(tmp_path) -> None:
@@ -453,7 +500,9 @@ def test_find_all_files_scans_each_root_once_and_keeps_filtering(
         allowed_header.resolve(),
         allowed_inc.resolve(),
     }
-    assert [pattern for _, pattern in calls] == ["*", "*"]
+    # src_dir is nested inside tmp_path, so the contained root is dropped and
+    # only the covering root is walked; files and filters are unaffected.
+    assert [pattern for _, pattern in calls] == ["*"]
 
 
 def test_macro_fallback_returns_multiline_function_like_macro(tmp_path) -> None:

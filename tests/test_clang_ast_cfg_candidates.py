@@ -1,9 +1,16 @@
+from semantic_fixtures import configured_test_semantics
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from zscope.core.candidates.regex import LocalPatternSemantics
 
 
 def _rules(code: str, *, semantics=None, overlay=None):
+    from semantic_fixtures import configured_test_semantics
+
+    configured = configured_test_semantics()
+    if semantics is not None:
+        configured.merge(semantics)
+    semantics = configured
     generator = ClangAstCfgCandidateGenerator(semantics, semantic_overlay=overlay)
     return generator.generate_issues("demo", code, "src/demo.c")
 
@@ -31,9 +38,7 @@ def test_clang_ast_cfg_detects_double_free_and_use_after_free() -> None:
 
     assert "clang_cfg_same_object_released_twice" in rules
     assert "clang_cfg_use_after_release" in rules
-    double_free = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_same_object_released_twice"
-    )
+    double_free = next(issue for issue in issues if issue["rule"] == "clang_cfg_same_object_released_twice")
     assert double_free["candidate_source"] == "clang_ast_cfg"
     assert double_free["evidence_pack"]["checker"] == "clang_ast_cfg_checker"
     assert double_free["evidence_pack"]["ast_cfg"]["cfg_path"] == [12, 13]
@@ -50,7 +55,9 @@ def test_clang_ast_cfg_detects_detached_container_member_without_transfer() -> N
     )
 
     issue = next(
-        item for item in issues if item["rule"] == "clang_cfg_container_unlink_without_release"
+        item
+        for item in issues
+        if item["rule"] == "clang_cfg_container_unlink_without_release"
     )
     assert issue["category"] == "memory_leak"
     assert issue["evidence_pack"]["path"]["complete_in_function"] is True
@@ -66,7 +73,9 @@ def test_clang_ast_cfg_does_not_report_container_member_released_after_unlink() 
 """
     )
 
-    assert "clang_cfg_container_unlink_without_release" not in {item["rule"] for item in issues}
+    assert "clang_cfg_container_unlink_without_release" not in {
+        item["rule"] for item in issues
+    }
 
 
 def test_clang_ast_cfg_detects_partial_composite_owner_cleanup() -> None:
@@ -81,7 +90,9 @@ def test_clang_ast_cfg_detects_partial_composite_owner_cleanup() -> None:
     )
 
     issue = next(
-        item for item in issues if item["rule"] == "clang_cfg_incomplete_owned_member_cleanup"
+        item
+        for item in issues
+        if item["rule"] == "clang_cfg_incomplete_owned_member_cleanup"
     )
     assert issue["category"] == "incomplete_cleanup"
 
@@ -149,8 +160,7 @@ def test_clang_ast_cfg_terminal_branch_release_does_not_hide_fallthrough_leak() 
     issues = _rules(code)
 
     assert any(
-        issue["rule"] == "clang_cfg_acquire_without_release_on_exit"
-        and issue["location"] == "src/demo.c:14"
+        issue["rule"] == "clang_cfg_acquire_without_release_on_exit" and issue["location"] == "src/demo.c:14"
         for issue in issues
     )
     assert not any(issue["rule"] == "clang_cfg_same_object_released_twice" for issue in issues)
@@ -175,7 +185,7 @@ def test_clang_ast_cfg_terminal_release_returning_freed_global_is_uaf() -> None:
     assert "g_runtime_pbuf_pool" in issue["sink"]
 
 
-def test_clang_ast_cfg_safe_free_comes_from_packaged_default_semantics() -> None:
+def test_clang_ast_cfg_safe_free_requires_explicit_configuration() -> None:
     code = """
 10 | int demo(char *p) {
 11 |     SAFE_FREE(p);
@@ -184,8 +194,12 @@ def test_clang_ast_cfg_safe_free_comes_from_packaged_default_semantics() -> None
 14 | }
 """
 
-    default_rules = {issue["rule"] for issue in _rules(code)}
-    assert "clang_cfg_same_object_released_twice" in default_rules
+    default_rules = {
+        issue["rule"]
+        for issue in ClangAstCfgCandidateGenerator().generate_issues("demo", code, "src/demo.c")
+    }
+    assert "clang_cfg_same_object_released_twice" not in default_rules
+    assert "clang_cfg_same_object_released_twice" in {issue["rule"] for issue in _rules(code)}
 
     semantics = LocalPatternSemantics()
     semantics.add_api("deallocator", "SAFE_FREE", "user_config")
@@ -222,9 +236,7 @@ def test_clang_ast_cfg_detects_same_member_double_free() -> None:
 """
 
     issues = _rules(code)
-    double_free = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_same_object_released_twice"
-    )
+    double_free = next(issue for issue in issues if issue["rule"] == "clang_cfg_same_object_released_twice")
 
     assert double_free["defect_class"] == "double_free"
     assert "node->payload" in double_free["description"]
@@ -286,15 +298,13 @@ def test_clang_ast_cfg_detects_parent_release_without_owned_member_cleanup() -> 
         for issue in _rules(explicit_code)
         if issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
     )
-    implicit = next(
-        issue
+    assert not any(
+        issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
         for issue in _rules(implicit_code)
-        if issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
     )
 
     assert explicit["defect_class"] == "memory_leak"
     assert "node->children" in explicit["description"]
-    assert "child/list" in implicit["description"]
 
 
 def test_clang_ast_cfg_preserves_member_allocation_identity() -> None:
@@ -310,11 +320,10 @@ def test_clang_ast_cfg_preserves_member_allocation_identity() -> None:
 """
 
     issues = _rules(code, semantics=semantics)
-    leak = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit"
-    )
+    leak = next(issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit")
 
-    assert "`node->children` is acquired" in leak["description"]
+    assert "`node->children`" in leak["description"]
+    assert "获取" in leak["description"]
 
 
 def test_clang_ast_cfg_detects_acquire_without_release_on_return() -> None:
@@ -329,9 +338,7 @@ def test_clang_ast_cfg_detects_acquire_without_release_on_return() -> None:
     issues = _rules(code)
 
     assert any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
-    assert not any(
-        issue["rule"] == "clang_cfg_alloc_result_deref_without_null_guard" for issue in issues
-    )
+    assert not any(issue["rule"] == "clang_cfg_alloc_result_deref_without_null_guard" for issue in issues)
 
 
 def test_clang_ast_cfg_treats_returning_allocator_wrappers_as_ownership_transfer() -> None:
@@ -350,7 +357,7 @@ def test_clang_ast_cfg_treats_returning_allocator_wrappers_as_ownership_transfer
     assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
 
 
-def test_clang_ast_cfg_treats_explicit_global_assignment_as_ownership_transfer() -> None:
+def test_clang_ast_cfg_global_spelling_is_not_ownership_proof() -> None:
     code = """
 10 | int install(void) {
 11 |     g_cache.buffer = malloc(32);
@@ -361,7 +368,7 @@ def test_clang_ast_cfg_treats_explicit_global_assignment_as_ownership_transfer()
 
     issues = _rules(code)
 
-    assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
+    assert any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
 
 
 def test_clang_ast_cfg_suppresses_varargs_format_forwarding_wrappers() -> None:
@@ -379,7 +386,12 @@ def test_clang_ast_cfg_suppresses_varargs_format_forwarding_wrappers() -> None:
 32 | }
 """
 
-    wrapper_rules = {issue["rule"] for issue in _rules(wrapper)}
+    wrapper_rules = {
+        issue["rule"]
+        for issue in ClangAstCfgCandidateGenerator(configured_test_semantics()).generate_issues(
+            "log_wrapper", wrapper, "demo.c"
+        )
+    }
     direct_rules = {issue["rule"] for issue in _rules(direct_sink)}
 
     assert "clang_cfg_nonliteral_format_string" not in wrapper_rules
@@ -463,10 +475,7 @@ def test_clang_ast_cfg_detects_return_while_lock_held() -> None:
 
     assert issue["defect_class"] == "missing_unlock"
     assert "line 31" in "\n".join(issue["positive_evidence"])
-    assert (
-        issue["evidence_pack"]["path"]["backend"]
-        == "Clang function body plus synthesized local CFG"
-    )
+    assert issue["evidence_pack"]["path"]["backend"] == "Clang function body plus synthesized local CFG"
 
 
 def test_clang_ast_cfg_keeps_lock_state_on_terminating_unlock_branch() -> None:
@@ -499,11 +508,12 @@ def test_clang_ast_cfg_does_not_analyze_unlock_wrapper_or_macro_definition() -> 
 22 | }
 """
 
+    assert "clang_cfg_unlock_without_matching_lock" not in {issue["rule"] for issue in _rules(macro)}
     assert "clang_cfg_unlock_without_matching_lock" not in {
-        issue["rule"] for issue in _rules(macro)
-    }
-    assert "clang_cfg_unlock_without_matching_lock" not in {
-        issue["rule"] for issue in _rules(wrapper)
+        issue["rule"]
+        for issue in ClangAstCfgCandidateGenerator(configured_test_semantics()).generate_issues(
+            "_unlock_wrapper", wrapper, "demo.c"
+        )
     }
 
 
@@ -514,9 +524,12 @@ def test_clang_ast_cfg_respects_custom_user_config_out_param_acquire() -> None:
         "resource_models": [
             {
                 "name": "SHM_FileMngFileCreate",
+                "pair": "SHM_FileClose",
                 "kind": "resource_acquire",
                 "carrier": "argument_resource",
                 "return_semantics": "returns resource via output argument",
+                "object_binding": {"kind": "output_argument", "argument_index": 1},
+                "contract": {"carrier": {"kind": "output_argument", "argument_index": 1}},
                 "memory_behavior": {"allocates": True},
                 "source": "user_config",
             },
@@ -540,9 +553,7 @@ def test_clang_ast_cfg_respects_custom_user_config_out_param_acquire() -> None:
 """
 
     issues = _rules(code, semantics=semantics, overlay=overlay)
-    leak = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit"
-    )
+    leak = next(issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit")
 
     assert "fd" in leak["positive_evidence"][0]
     assert "uiRet" not in leak["positive_evidence"][0]
@@ -556,9 +567,12 @@ def test_clang_ast_cfg_suppresses_out_param_leak_after_configured_release() -> N
         "resource_models": [
             {
                 "name": "SHM_FileMngFileCreate",
+                "pair": "SHM_FileClose",
                 "kind": "resource_acquire",
                 "carrier": "argument_resource",
                 "return_semantics": "returns resource via output argument",
+                "object_binding": {"kind": "output_argument", "argument_index": 1},
+                "contract": {"carrier": {"kind": "output_argument", "argument_index": 1}},
                 "memory_behavior": {"allocates": True},
                 "source": "user_config",
             }
@@ -586,9 +600,12 @@ def test_clang_ast_cfg_suppresses_out_param_leak_after_braced_failure_return() -
         "resource_models": [
             {
                 "name": "SHM_FileMngFileCreate",
+                "pair": "SHM_FileClose",
                 "kind": "resource_acquire",
                 "carrier": "argument_resource",
                 "return_semantics": "returns resource via output argument",
+                "object_binding": {"kind": "output_argument", "argument_index": 1},
+                "contract": {"carrier": {"kind": "output_argument", "argument_index": 1}},
                 "memory_behavior": {"allocates": True},
                 "source": "user_config",
             }
@@ -607,9 +624,7 @@ def test_clang_ast_cfg_suppresses_out_param_leak_after_braced_failure_return() -
     issues = _rules(code, semantics=semantics, overlay=overlay)
 
     assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
-    assert not any(
-        issue["rule"] == "clang_cfg_out_param_used_before_success_check" for issue in issues
-    )
+    assert not any(issue["rule"] == "clang_cfg_out_param_used_before_success_check" for issue in issues)
 
 
 def test_clang_ast_cfg_detects_out_param_use_before_status_guard() -> None:
@@ -617,9 +632,12 @@ def test_clang_ast_cfg_detects_out_param_use_before_status_guard() -> None:
         "resource_models": [
             {
                 "name": "SHM_FileMngFileCreate",
+                "pair": "SHM_FileClose",
                 "kind": "resource_acquire",
                 "carrier": "argument_resource",
                 "return_semantics": "returns resource via output argument",
+                "object_binding": {"kind": "output_argument", "argument_index": 1},
+                "contract": {"carrier": {"kind": "output_argument", "argument_index": 1}},
                 "memory_behavior": {"allocates": True},
                 "source": "user_config",
             },
@@ -644,11 +662,7 @@ def test_clang_ast_cfg_detects_out_param_use_before_status_guard() -> None:
 """
 
     issues = _rules(code, semantics=semantics, overlay=overlay)
-    issue = next(
-        issue
-        for issue in issues
-        if issue["rule"] == "clang_cfg_out_param_used_before_success_check"
-    )
+    issue = next(issue for issue in issues if issue["rule"] == "clang_cfg_out_param_used_before_success_check")
 
     assert issue["defect_class"] == "bad_parameter_or_api_misuse"
     assert issue["evidence_pack"]["ast_cfg"]["events"][1]["kind"] == "use_before_status_guard"
@@ -996,7 +1010,9 @@ def test_clang_ast_cfg_detects_registry_unlink_free_after_unlock() -> None:
 
     issues = _rules(code, semantics=semantics)
     race = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_registry_unlink_free_after_unlock"
+        issue
+        for issue in issues
+        if issue["rule"] == "clang_cfg_registry_unlink_free_after_unlock"
     )
 
     assert race["category"] == "race"
@@ -1018,7 +1034,9 @@ def test_clang_ast_cfg_detects_raw_fd_to_encoded_validator_mismatch() -> None:
 
     issues = _rules(code)
     mismatch = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_raw_fd_revalidated_as_encoded"
+        issue
+        for issue in issues
+        if issue["rule"] == "clang_cfg_raw_fd_revalidated_as_encoded"
     )
 
     assert mismatch["category"] == "fd_encoding_mismatch"
@@ -1115,9 +1133,7 @@ def test_clang_ast_cfg_detects_structured_protocol_shapes() -> None:
     assert "clang_cfg_recv_retry_loop_without_timeout_or_budget" in rules
     assert "clang_cfg_global_dynamic_array_resize_without_lock" in rules
     magic_issue = next(
-        issue
-        for issue in issues
-        if issue["rule"] == "clang_cfg_wide_count_read_without_magic_guard"
+        issue for issue in issues if issue["rule"] == "clang_cfg_wide_count_read_without_magic_guard"
     )
     assert magic_issue["category"] == "protocol_validation"
     assert magic_issue["cwe"] == "CWE-20"
@@ -1164,7 +1180,7 @@ def test_clang_ast_cfg_callback_under_lock_is_contract_risk_not_exploit_claim() 
 
     assert issue["confidence"] == 0.68
     assert issue["impact_level"] == "medium"
-    assert "if callers can register" in issue["root_cause"]
+    assert "调用方能够注册" in issue["root_cause"]
     assert "externally controllable" in " ".join(issue["negative_evidence"])
 
 
@@ -1205,12 +1221,25 @@ def test_clang_ast_cfg_macro_lock_race_uses_generic_macro_guard_shape() -> None:
 146 | }
 """
 
-    issues = _rules(code)
-    issue = next(
-        issue
-        for issue in issues
-        if issue["rule"] == "clang_cfg_macro_guarded_lock_may_compile_to_noop"
-    )
+    from zscope.semantics.contracts import ApiContract
+
+    semantics = configured_test_semantics()
+    for name, role in (("PROJECT_FAST_LOCK", "lock"), ("PROJECT_FAST_UNLOCK", "unlock")):
+        semantics.contracts.add(
+            ApiContract.from_row(
+                {
+                    "symbol_name": name,
+                    "symbol_type": "macro",
+                    "kind": role,
+                    "pair": ["PROJECT_FAST_UNLOCK"] if role == "lock" else [],
+                    "contract": {"carrier": {"kind": "global", "global_name": "g_guard"}},
+                }
+            )
+        )
+        semantics.add_api(role, name, "test:user_config")
+    overlay = {"api_contracts": [c.to_dict() for c in semantics.contracts.contracts]}
+    issues = _rules(code, semantics=semantics, overlay=overlay)
+    issue = next(issue for issue in issues if issue["rule"] == "clang_cfg_macro_guarded_lock_may_compile_to_noop")
 
     assert issue["defect_class"] == "race"
     assert "PROJECT_FAST_LOCK" in issue["source"]
@@ -1226,91 +1255,12 @@ def test_clang_ast_cfg_evidence_contains_declarations_and_guards() -> None:
 """
 
     issues = _rules(code)
-    issue = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit"
-    )
+    issue = next(issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit")
     ast_cfg = issue["evidence_pack"]["ast_cfg"]
 
     assert any(row["name"] == "p" and row["pointer_depth"] >= 1 for row in ast_cfg["declarations"])
     assert any("!p" in row["condition"] for row in ast_cfg["condition_guards"])
     assert 82 in ast_cfg["scope_summary"]["branch_lines"]
-
-
-def test_clang_ast_cfg_leak_binds_unique_structured_acquisition_identity() -> None:
-    issue = next(
-        issue
-        for issue in _rules(
-            """
-10 | int demo(void) {
-11 |     char *p = malloc(16);
-12 |     p[0] = 1;
-13 |     return 0;
-14 | }
-"""
-        )
-        if issue["rule"] == "clang_cfg_acquire_without_release_on_exit"
-    )
-
-    endpoint = issue["source_endpoint"]
-    assert issue["resource_signature"] == "p"
-    assert issue["resource_identity"] == "p"
-    assert endpoint == {
-        "kind": "resource_acquire",
-        "function": "demo",
-        "file": "src/demo.c",
-        "line": 11,
-        "api": "malloc",
-        "operation": "malloc",
-        "resource": "p",
-    }
-    assert issue["evidence_pack"]["source"] == endpoint
-    assert issue["evidence_pack"]["resource_signature"] == "p"
-
-
-def test_clang_ast_cfg_ambiguous_acquisition_events_do_not_bind_identity() -> None:
-    endpoint = ClangAstCfgCandidateGenerator._unique_resource_acquisition_endpoint(
-        {
-            "events": [
-                {"kind": "acquire", "line": 11, "variable": "p", "api": "malloc"},
-                {"kind": "acquire", "line": 12, "variable": "q", "api": "malloc"},
-            ]
-        },
-        func_name="demo",
-        file_path="src/demo.c",
-    )
-
-    assert endpoint is None
-
-
-def test_clang_ast_cfg_leak_emitter_fails_closed_on_ambiguous_acquisition() -> None:
-    class _AmbiguousAcquisitionGenerator(ClangAstCfgCandidateGenerator):
-        def _ast_cfg_pack(self, lines, events, cfg_path):
-            result = super()._ast_cfg_pack(lines, events, cfg_path)
-            acquisitions = [event for event in events if event.get("kind") == "acquire"]
-            if acquisitions:
-                duplicate = dict(acquisitions[0])
-                duplicate.update({"line": duplicate["line"] + 1, "variable": "q"})
-                result["events"] = [*events, duplicate]
-            return result
-
-    issues = _AmbiguousAcquisitionGenerator().generate_issues(
-        "demo",
-        """
-10 | int demo(void) {
-11 |     char *p = malloc(16);
-12 |     return 0;
-13 | }
-""",
-        "src/demo.c",
-    )
-    issue = next(
-        value for value in issues if value["rule"] == "clang_cfg_acquire_without_release_on_exit"
-    )
-
-    assert "resource_signature" not in issue
-    assert "resource_identity" not in issue
-    assert "source_endpoint" not in issue
-    assert issue["evidence_pack"]["source"]["expression"].startswith("malloc(")
 
 
 def test_clang_ast_cfg_attaches_optional_tooling_evidence() -> None:
@@ -1334,9 +1284,7 @@ def test_clang_ast_cfg_attaches_optional_tooling_evidence() -> None:
 """,
         "src/demo.c",
     )
-    issue = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit"
-    )
+    issue = next(issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit")
 
     tooling = issue["evidence_pack"]["ast_cfg"]["clang_tooling"]
     assert tooling["schema"] == "clang_tooling_evidence_v1"
@@ -1447,9 +1395,7 @@ def test_clang_ast_cfg_detects_unchecked_allocation_use() -> None:
 
     issues = _rules(code)
 
-    assert any(
-        issue["rule"] == "clang_cfg_allocation_result_used_without_null_check" for issue in issues
-    )
+    assert any(issue["rule"] == "clang_cfg_allocation_result_used_without_null_check" for issue in issues)
 
 
 def test_clang_ast_cfg_detects_wire_integer_pointer_deref() -> None:
@@ -1504,9 +1450,7 @@ def test_clang_ast_cfg_detects_unbounded_heap_allocation() -> None:
 
     issues = _rules(code)
 
-    assert any(
-        issue["rule"] == "clang_cfg_external_size_allocation_without_limit" for issue in issues
-    )
+    assert any(issue["rule"] == "clang_cfg_external_size_allocation_without_limit" for issue in issues)
 
 
 def test_clang_ast_cfg_detects_fixed_array_count_overflow() -> None:
@@ -1548,12 +1492,13 @@ def test_clang_ast_cfg_detects_unlock_without_matching_lock() -> None:
 """
 
     issues = _rules(code)
-    rule = next(
-        issue for issue in issues if issue["rule"] == "clang_cfg_unlock_without_matching_lock"
-    )
-
-    assert rule["category"] == "lock_protocol_violation"
-    assert rule["cwe"] == "CWE-832"
+    # A parameter may already be held by the caller; a hidden status cannot
+    # independently establish a successful unmatched unlock.
+    assert not any(issue["rule"] == "clang_cfg_unlock_without_matching_lock" for issue in issues)
+    generator = ClangAstCfgCandidateGenerator(semantics=configured_test_semantics())
+    generator.generate_issues("demo", code, "demo.c")
+    assert any(event["role"] == "unlock" and event["applicability"] == "unknown"
+               for event in generator.last_semantic_events)
 
 
 def test_analyzer_prioritizes_dangerous_callees_for_local_rule_scan() -> None:
@@ -1577,7 +1522,7 @@ def test_analyzer_runs_clang_ast_cfg_checker_only_for_clang_like_backends() -> N
         backend_name = "unified"
         backend = UnifiedBackend()
 
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             return None
 
     analyzer = object.__new__(Analyzer)
@@ -1623,7 +1568,7 @@ def test_analyzer_lifts_internal_clang_sink_to_entry_call_path() -> None:
         backend_name = "unified"
         backend = UnifiedBackend()
 
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             if name == "parse_inner":
                 return {
                     "file": "src/demo.c",
@@ -1673,8 +1618,7 @@ def test_analyzer_lifts_internal_clang_sink_to_entry_call_path() -> None:
     lifted = [
         issue
         for issue in issues
-        if issue.get("function") == "parse_inner"
-        and issue.get("candidate_source") == "clang_ast_cfg"
+        if issue.get("function") == "parse_inner" and issue.get("candidate_source") == "clang_ast_cfg"
     ]
 
     assert lifted
@@ -1715,11 +1659,7 @@ def test_clang_ast_cfg_emits_heap_overflow_for_narrowed_allocation_then_original
 """
 
     issues = _rules(code)
-    heap = next(
-        issue
-        for issue in issues
-        if issue["rule"] == "clang_cfg_narrowed_allocation_original_length_copy"
-    )
+    heap = next(issue for issue in issues if issue["rule"] == "clang_cfg_narrowed_allocation_original_length_copy")
 
     assert heap["defect_class"] == "heap_overflow"
     assert heap["candidate_priority_group"] == "exact_sink"
@@ -1745,9 +1685,7 @@ def test_clang_ast_cfg_suppresses_bounded_short_lived_unbounded_allocation_candi
 
     issues = _rules(code)
 
-    assert not any(
-        issue["defect_class"] == "resource_allocation_without_limits" for issue in issues
-    )
+    assert not any(issue["defect_class"] == "resource_allocation_without_limits" for issue in issues)
 
 
 def test_clang_ast_cfg_keeps_lifetime_sensitive_external_allocation_candidate() -> None:
@@ -1802,11 +1740,7 @@ def test_clang_ast_cfg_emits_file_type_validation_order() -> None:
 429 | }
 """
 
-    issue = next(
-        issue
-        for issue in _rules(code)
-        if issue["rule"] == "clang_cfg_file_type_validation_after_mapping_size_check"
-    )
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_file_type_validation_after_mapping_size_check")
 
     assert issue["defect_class"] == "file_type_validation"
     assert issue["candidate_priority_group"] == "semantic_suspicious_point"
@@ -1880,7 +1814,7 @@ def test_clang_ast_cfg_emits_global_pointer_length_publication_without_lock() ->
     )
 
     assert issue["defect_class"] == "unsynchronized_shared_state"
-    assert "pointer/length" in issue["description"]
+    assert "指针/长度" in issue["description"]
 
 
 def test_clang_ast_cfg_emits_permission_mode_mismatch() -> None:
@@ -1905,7 +1839,7 @@ def test_clang_ast_cfg_emits_permission_mode_mismatch() -> None:
     )
 
     assert issue["defect_class"] == "permission"
-    assert "Requested" in issue["description"]
+    assert "权限" in issue["description"]
 
 
 def test_clang_ast_cfg_emits_timer_callback_lock_order_candidate() -> None:
@@ -1931,7 +1865,7 @@ def test_clang_ast_cfg_emits_timer_callback_lock_order_candidate() -> None:
     )
 
     assert issue["defect_class"] == "deadlock"
-    assert "Timer/callback" in issue["description"]
+    assert "定时器/回调" in issue["description"]
 
 
 def test_clang_ast_cfg_emits_pointer_backtrack_underread_and_underwrite() -> None:
@@ -1951,16 +1885,8 @@ def test_clang_ast_cfg_emits_pointer_backtrack_underread_and_underwrite() -> Non
 514 | }
 """
 
-    read_issue = next(
-        issue
-        for issue in _rules(read_code)
-        if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack"
-    )
-    write_issue = next(
-        issue
-        for issue in _rules(write_code)
-        if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack"
-    )
+    read_issue = next(issue for issue in _rules(read_code) if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack")
+    write_issue = next(issue for issue in _rules(write_code) if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack")
 
     assert read_issue["defect_class"] == "buffer_underread"
     assert write_issue["defect_class"] == "buffer_underwrite"
@@ -1977,9 +1903,7 @@ def test_clang_ast_cfg_emits_pointer_backtrack_for_decremented_footer_pointer() 
 526 | }
 """
 
-    issue = next(
-        issue for issue in _rules(code) if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack"
-    )
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack")
 
     assert issue["defect_class"] == "buffer_underread"
     assert "footer_backtrack" in issue["source"]
@@ -1996,11 +1920,7 @@ def test_clang_ast_cfg_emits_fixed_array_member_write_count_overflow() -> None:
 536 | }
 """
 
-    issue = next(
-        issue
-        for issue in _rules(code)
-        if issue["rule"] == "clang_cfg_unbounded_count_indexes_fixed_array"
-    )
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_unbounded_count_indexes_fixed_array")
 
     assert issue["defect_class"] == "out_of_bounds_write"
     assert "header.segment_count" in issue["description"]
@@ -2016,11 +1936,7 @@ def test_clang_ast_cfg_emits_offset_length_overread() -> None:
 545 | }
 """
 
-    issue = next(
-        issue
-        for issue in _rules(code)
-        if issue["rule"] == "clang_cfg_offset_length_copy_without_source_bound"
-    )
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_offset_length_copy_without_source_bound")
 
     assert issue["defect_class"] == "buffer_overread"
     assert "digest_offset" in issue["description"]
@@ -2038,11 +1954,7 @@ def test_clang_ast_cfg_emits_heap_overflow_for_distinct_header_alloc_and_copy_le
 557 | }
 """
 
-    issue = next(
-        issue
-        for issue in _rules(code)
-        if issue["rule"] == "clang_cfg_narrowed_allocation_original_length_copy"
-    )
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_narrowed_allocation_original_length_copy")
 
     assert issue["defect_class"] == "heap_overflow"
     assert "copy_len" in issue["sink"]
@@ -2096,11 +2008,7 @@ def test_clang_ast_cfg_emits_slot_overwrite_leak() -> None:
 577 | }
 """
 
-    issue = next(
-        issue
-        for issue in _rules(code)
-        if issue["rule"] == "clang_cfg_slot_overwrite_without_existing_owner_cleanup"
-    )
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_slot_overwrite_without_existing_owner_cleanup")
 
     assert issue["defect_class"] == "memory_leak"
     assert "plugin->context" in issue["sink"]
@@ -2118,24 +2026,16 @@ def test_clang_ast_cfg_emits_key_truncation_and_key_generation_race() -> None:
 """
     race_code = """
 590 | int demo(const char *path, int project_id) {
-591 |     if (!_file_exists(path)) { LOG_WARN("missing"); }
-592 |     int key = (int)(_hash_string(path) & 0xffffu) | ((project_id & 0xff) << 16);
+591 |     struct stat st; if (stat(path, &st) != 0) { return -1; }
+592 |     int key = (int)(ftok(path, project_id) & 0xffffu) | ((project_id & 0xff) << 16);
 593 |     LOCK(&g_runtime_ftok_lock); if (_runtime_find_shared_zone(path) != NULL) { LOG_WARN("collision"); }
 594 |     UNLOCK(&g_runtime_ftok_lock);
 595 |     return key;
 596 | }
 """
 
-    truncation = next(
-        issue
-        for issue in _rules(truncation_code)
-        if issue["rule"] == "clang_cfg_full_key_lookup_truncated_key_insert"
-    )
-    race = next(
-        issue
-        for issue in _rules(race_code)
-        if issue["rule"] == "clang_cfg_path_state_key_generation_before_locked_registration"
-    )
+    truncation = next(issue for issue in _rules(truncation_code) if issue["rule"] == "clang_cfg_full_key_lookup_truncated_key_insert")
+    race = next(issue for issue in _rules(race_code) if issue["rule"] == "clang_cfg_path_state_key_generation_before_locked_registration")
 
     assert truncation["defect_class"] == "key_truncation"
     assert race["defect_class"] == "key_generation_race"
@@ -2155,11 +2055,7 @@ def test_clang_ast_cfg_emits_header_length_copy_without_wire_bound() -> None:
 609 | }
 """
 
-    issue = next(
-        issue
-        for issue in _rules(code)
-        if issue["rule"] == "clang_cfg_header_length_reaches_copy_without_wire_bound"
-    )
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_header_length_reaches_copy_without_wire_bound")
 
     assert issue["defect_class"] == "bounds"
     assert "body_len" in issue["sink"]
@@ -2177,11 +2073,7 @@ def test_clang_ast_cfg_detects_multiline_allocation_used_without_null_check() ->
 617 | }
 """
 
-    issue = next(
-        issue
-        for issue in _rules(code)
-        if issue["rule"] == "clang_cfg_allocation_result_used_without_null_check"
-    )
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_allocation_result_used_without_null_check")
 
     assert issue["defect_class"] == "unchecked_allocation"
     assert issue["location"] == "src/demo.c:615"
@@ -2261,9 +2153,7 @@ def test_analyzer_candidate_budget_keeps_quota_lifetime_sensitive_generic() -> N
     budgeted = Analyzer._apply_candidate_validation_budget(issues)
 
     assert all(issue.get("validation_required") is not False for issue in budgeted)
-    assert {issue["validation_budget_class"] for issue in budgeted} == {
-        "quota_lifetime_sensitive_generic"
-    }
+    assert {issue["validation_budget_class"] for issue in budgeted} == {"quota_lifetime_sensitive_generic"}
 
 
 def test_analyzer_balanced_callee_queue_preserves_original_prefix_before_danger_sort() -> None:

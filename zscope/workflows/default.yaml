@@ -5,15 +5,24 @@ steps:
   - id: discover_entries
     scope: session
     handler: discover_entries
+    required: false
     action: classify API, communication, thread, and other user-input entries when requested
-  - id: collect_candidates
+  - id: wiki_compile
+    scope: session
+    handler: wiki_compile
+    action: compile and pin project Wiki before entry analysis and validation
+  - id: focused_subagent_planning
     scope: entry
-    agent: hypothesis_hunter
-    action: register deterministic and bounded hypothesis candidates in the Candidate Ledger
-  - id: validate_candidates
+    agent: vulnerability_analyzer
+    action: create narrow worker tickets for allocation, release, copy, lock, and thread events
+  - id: vulnerability_mining
     scope: entry
-    agent: proof_engine
-    action: replay proof actions and close registered candidates through TerminalAuthority
+    agent: vulnerability_analyzer
+    action: run focused memory and concurrency analysis
+  - id: validate_findings
+    scope: entry
+    agent: validator_agent
+    action: confirm suspected findings and reject only with evidence
   - id: persist_report
     scope: entry
     action: write final JSON/Markdown report and snapshot final_report_file

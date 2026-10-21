@@ -9,21 +9,35 @@ import logging
 import time
 import datetime
 import inspect
-import os
 import re
-import subprocess
 import threading
 import uuid
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    TYPE_CHECKING,
+    cast,
+)
+
+if TYPE_CHECKING:
+    from ...semantics.instance_semantics import InstanceSemanticsSnapshot
 
 from ...config.config import ZScopeConfig, minimum_optional_positive_seconds
 from ...config.function_entry import FunctionEntry
 from ...config.user_config_store import UserConfigStore
 from ...common.utils import normalize_path
 from ...retrieval.code_index import CodeIndex
+from ...retrieval.instance_index import InstanceScope, wrap_scoped_code_index
 from ...snapshots.store import SnapshotStore
 from ...snapshots.modeling_input import (
     SemanticModelInputError,
@@ -65,6 +79,11 @@ from ..candidates.java_evidence import merge_java_evidence_candidates
 from ...orchestration.agent_policy import (
     agent_system_prompt,
     attach_agent_contract,
+    compact_subagent_item,
+    compact_subagent_items,
+    compact_subagent_reports,
+    route_vulnerability_skills_with_llm,
+    subagent_llm_ref_for_ticket,
     tool_audit_log_path,
     tool_policy_for_agent,
 )
@@ -94,8 +113,13 @@ from ..validation.evidence import (
     trim_code,
     validation_verdict,
 )
+from ...semantics.inference import (
+    LocalPatternSemanticBuilder,
+    classify_api_name,
+)
 from ...semantics.user_config_context import relevant_user_config_context
 from ...snapshots.policy import (
+    SNAPSHOT_CANDIDATE_POLICY_VERSION,
     build_lightweight_snapshot,
     build_trivial_snapshot,
     is_lightweight_snapshot_candidate,
@@ -107,138 +131,83 @@ from ...framework.llm_usage import (
     ensure_scan_token_usage_ledger,
     scan_token_usage_snapshot,
 )
+from ...agents.semantic_modeler.agent import SemanticModeler
+from ...agents.semantic_modeler.retry import run_semantic_model_with_retries
+from ...wiki.service import ProjectKnowledgeService
+from ...wiki.source_index import SourceIndex
+from ...wiki.source_manifest import build_source_manifest
+from ...wiki.compiler.compiler import WikiCompiler
+from ...wiki.compiler.llm_compiler import LLMWikiCompilerProvider
+from ...wiki.compiler.workset import build_ingest_workset
+from ...wiki.maintenance import WikiWriterLock, compare_manifests
+from ...wiki.store.revision_store import WikiStore, resolve_project_state_root
 from ...reporting.report import FinalReport, Issue, ReportGenerator
 from ...common.issue_identity import (
     canonical_issue_key,
     deduplicate_semantic_issues_programmatic,
+    deduplicate_issues,
     flatten_issue_text,
+    issue_call_path_signature,
+    issue_resource_signature,
     issue_rank,
+    issue_sink_signature,
+    issues_may_share_root_cause,
     normalize_issue_category,
     normalize_issue_key_part,
     parse_issue_location,
+    semantic_category_family,
+    semantic_related_cluster_keys,
+    semantic_root_cause_key,
+    merge_duplicate_issue,
 )
 from ...reporting.assembler import ReportAssembler
-from ...common.cancellation import CancellationToken, bind_cancellation_token
+from ...common.cancellation import CancellationError, CancellationToken, bind_cancellation_token
 from ...orchestration.workflow_runner import WorkflowRunner
-from ...common.utils import extract_json_blocks, validate_json_schema
+from ...orchestration.bounded_investigation import make_investigation_runner
+from ...common.utils import extract_json_blocks
 from ..._version import __version__
 from ...orchestration.specs import SpecRegistry, WorkflowStep
-from ...orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
-from ...orchestration.rollout import rollout_runtime_policy
-from ...orchestration.candidates import CandidateLedger, CandidateRegistrar, CandidateTicket
-from ...orchestration.hunting_profile import resolve_hunting_profile
-from ...orchestration.hypothesis_hunter import (
-    HypothesisArtifactStore,
-    HypothesisHunterAgent,
-    HypothesisHunterRuntime,
-    HypothesisProofCatalog,
+from ...orchestration.workflow_executor import (
+    WorkflowExecutor,
+    WorkflowStepHandler,
+    workflow_steps_for_scope,
 )
-from ...orchestration.runtime_authority import build_runtime_authority_manifest
-from ..validation.fact_capabilities import FunctionIRFactService
-from ...semantics.security_specs.compiler import SecuritySpecCompiler
-from ...semantics.security_specs.qualification import load_builtin_qualification
-from ...semantics.security_specs.runtime import SecuritySpecRuntime
-from ...semantics.security_specs.store import SecuritySpecStore
-from ...orchestration.decision_trace import ensure_decision_trace_store
+from ...orchestration.subagents import SubAgentOrchestrator, SubAgentTicket
+from ...orchestration.active_discovery import (
+    ActiveDiscoveryAgent,
+    ActiveDiscoveryCoordinator,
+    SemanticEnrichmentAgent,
+    SemanticMapEnricher,
+    candidate_coverage_keys,
+    historical_variant_keys,
+    make_agent_report_runner,
+    make_semantic_enrichment_runner,
+    resolve_discovery_profile,
+)
+from ...orchestration.rollout import (
+    rollout_active_discovery_mode,
+    rollout_runtime_policy,
+)
+from ...orchestration.candidates import CandidateLedger, CandidateRegistrar
 from ...orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     annotate_issue_identity,
 )
 from ...orchestration.scheduler import ScanScheduler
 from ...orchestration.budget import EffectiveBudget, RiskBudgetPlanner
-from ...orchestration.skill_selection import SkillSelection
+from ...orchestration.skill_selection import SkillSelection, select_vulnerability_skills
 from ...reporting.schema import report_reuse_blockers
 
 logger = logging.getLogger(__name__)
 
-_SOURCE_REVISION_SUFFIXES = frozenset(
-    {
-        ".c",
-        ".cc",
-        ".cpp",
-        ".cxx",
-        ".h",
-        ".hh",
-        ".hpp",
-        ".hxx",
-        ".inc",
-        ".inl",
-        ".java",
-    }
-)
-_SOURCE_REVISION_EXCLUDED_DIRECTORIES = frozenset(
-    {
-        ".git",
-        ".hg",
-        ".svn",
-        ".venv",
-        ".zscope_knowledge",
-        ".zscope_snapshots",
-        "__pycache__",
-        "build",
-        "node_modules",
-        "out",
-        "target",
-        "venv",
-    }
-)
-
-
-def analysis_source_revision(project_root: Path) -> str:
-    """Return a path-independent revision for Git and sealed source copies.
-
-    Sealed and copied inputs deliberately omit ``.git``.  Candidate, SecuritySpec,
-    and Hunter identities still require an immutable source revision, so a
-    deterministic source manifest is used when no Git commit is available.
-    Generated/cache directories and symlinks are excluded from that manifest.
-    """
-
-    root = Path(project_root)
-    commit = Analyzer._git_commit_sha(root)
-    if commit:
-        return commit
-    digest = hashlib.sha256()
-    digest.update(b"zscope.source-revision.v1\0")
-    if not root.is_dir() or root.is_symlink():
-        return digest.hexdigest()
-    rows: list[tuple[str, Path]] = []
-    for current_root, directory_names, file_names in os.walk(root, followlinks=False):
-        directory_names[:] = sorted(
-            name
-            for name in directory_names
-            if name not in _SOURCE_REVISION_EXCLUDED_DIRECTORIES
-            and not (Path(current_root) / name).is_symlink()
-        )
-        current = Path(current_root)
-        for name in sorted(file_names):
-            path = current / name
-            if path.is_symlink() or path.suffix.lower() not in _SOURCE_REVISION_SUFFIXES:
-                continue
-            try:
-                relative = path.relative_to(root).as_posix()
-            except ValueError:
-                continue
-            rows.append((relative, path))
-    for relative, path in sorted(rows):
-        encoded = relative.encode("utf-8")
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-        try:
-            with path.open("rb") as handle:
-                while chunk := handle.read(1024 * 1024):
-                    digest.update(chunk)
-        except OSError:
-            # A disappearing or unreadable source must not produce a partial
-            # identity that looks complete.
-            return ""
-    return digest.hexdigest()
-
-
 DEFAULT_SCAN_STEP_IDS = (
-    "collect_candidates",
-    "validate_candidates",
+    "focused_subagent_planning",
+    "vulnerability_mining",
+    "validate_findings",
     "persist_report",
 )
+
+_PROJECT_KNOWLEDGE_UNSET = object()
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -249,6 +218,34 @@ def _as_dict(value: Any) -> Dict[str, Any]:
 def _as_list(value: Any) -> List[Any]:
     """Narrow an untyped runtime payload to a list without copying it."""
     return cast(List[Any], value) if isinstance(value, list) else []
+
+
+def _wiki_revision_compiler_kind(store: WikiStore, active: Optional[Dict[str, Any]]) -> str:
+    revision_id = str((active or {}).get("revision_id") or "")
+    if not revision_id:
+        return ""
+    path = store.revisions_root / revision_id / "revision.json"
+    try:
+        revision = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    compiler = revision.get("compiler") if isinstance(revision, dict) else None
+    return str(compiler.get("kind") or "") if isinstance(compiler, dict) else ""
+
+
+def _wiki_maintenance_requested(
+    *,
+    had_active_revision: bool,
+    manifest_changed: bool,
+    auto_maintain: bool,
+    compiler_enabled: bool,
+    active_compiler_kind: str,
+) -> bool:
+    if had_active_revision and manifest_changed:
+        return True
+    if not had_active_revision:
+        return compiler_enabled
+    return bool(auto_maintain and compiler_enabled and active_compiler_kind not in {"llm", "mixed"})
 
 
 class Analyzer:
@@ -275,8 +272,23 @@ class Analyzer:
         decision_fact_cache: Optional[DecisionFactGraphCache] = None,
         write_root_reports: bool = True,
         defer_validation_to_scan: bool = False,
+        project_knowledge_service: Any = _PROJECT_KNOWLEDGE_UNSET,
+        owns_project_knowledge_service: bool = False,
+        semantic_result: Any = None,
+        reproduction_service: Any = None,
+        instance_scope: Optional[InstanceScope] = None,
+        instance_semantics_snapshot: Optional["InstanceSemanticsSnapshot"] = None,
+        instance_semantics_current: Optional[Callable[["InstanceSemanticsSnapshot"], bool]] = None,
     ):
         self.config = config
+        self.semantic_result = semantic_result
+        self._instance_semantics_snapshot = instance_semantics_snapshot
+        self._instance_semantics_current = instance_semantics_current
+        if instance_semantics_snapshot is not None:
+            if instance_scope is None or instance_semantics_snapshot.scope != instance_scope:
+                raise ValueError("instance_semantics_scope_mismatch")
+            if semantic_result is not None:
+                raise ValueError("instance_semantics_cannot_consume_global_model")
         # Defensive preflight for third-party callers that construct an
         # Analyzer from an in-memory config instead of going through
         # ConfigLoader.  It is intentionally before CodeIndex/external tools.
@@ -321,7 +333,25 @@ class Analyzer:
                 config.concurrency.svf_workers or config.concurrency.index_workers
             ),
         )
+        # A scoped Analyzer consumes only the program facts of one exact
+        # compilation instance.  The facade pins every program-facts query to
+        # that build context; navigation consumers that cannot preserve scope
+        # are recorded, never silently trusted for build identity.
+        self.instance_scope = instance_scope
+        if instance_scope is not None:
+            self.code_index = wrap_scoped_code_index(self.code_index, instance_scope)
+        self._require_instance_semantics_current()
         self.snapshot_store = snapshot_store or SnapshotStore.from_config(config)
+        from ..validation.reproduction_planner import SessionReproductionPlanner
+
+        self.reproduction_service = reproduction_service or SessionReproductionPlanner(config)
+        # The reproduction service is scan-scoped and shared across instances; it
+        # must bind to the owning (unscoped) index, not to one instance's facade.
+        reproduction_index = self.code_index
+        base_index_getter = getattr(self.code_index, "base_index", None)
+        if callable(base_index_getter):
+            reproduction_index = base_index_getter()
+        self.reproduction_service.attach_index(reproduction_index)
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
         self.history_reconciler = HistoryReconciler(
@@ -334,16 +364,45 @@ class Analyzer:
             else Path(config.analysis.snapshot_dir)
         )
         self.user_config = user_config or UserConfigStore(db_dir)
-        self.validation_pipeline = ValidationPipeline(self.user_config)
+        self.validation_pipeline = ValidationPipeline(
+            self.user_config,
+            enable_deterministic_proof_routing=True,
+            uncertain_confirm_threshold=getattr(
+                config.analysis, "validation_uncertain_confirm_threshold", None
+            ),
+        )
         self.candidate_pipeline = CandidatePipeline(
-            local_detector=self._detect_local_rule_candidates,
-            graph_detector=self._detect_graph_rule_candidates,
-            backend_detector=self._detect_backend_signal_candidates,
-            unified_merger=self._merge_unified_evidence_candidates,
+            local_detector=lambda state: self._observe_instance_collection(
+                "local", lambda: self._detect_local_rule_candidates(state)
+            ),
+            graph_detector=lambda state: self._observe_instance_collection(
+                "graph", lambda: self._detect_graph_rule_candidates(state)
+            ),
+            backend_detector=lambda state: self._observe_instance_collection(
+                "backend", lambda: self._detect_backend_signal_candidates(state)
+            ),
+            unified_merger=lambda issues: self._observe_instance_collection(
+                "merge", lambda: self._merge_unified_evidence_candidates(issues)
+            ),
             budget_refresher=self._refresh_effective_budget,
-            candidate_persister=self._persist_candidate_ir_records,
+            candidate_persister=lambda issues: self._observe_instance_collection(
+                "persist", lambda: self._persist_candidate_ir_records(issues)
+            ),
         )
         self._owns_llm_clients = llm_clients is None
+        self._interface_probe_used = 0
+        # M6 6.1 visibility: per-run interface-probe accounting so the A/B
+        # pilot can attribute scan-side effects of the custom-interface
+        # change directly instead of degenerating to a pure diff.
+        self._interface_probe_stats: Dict[str, Any] = {
+            "probed": 0,
+            "classified": 0,
+            "declined": 0,
+            "skipped_budget": 0,
+            "skipped_known_role": 0,
+            "roles": {},
+            "classified_functions": [],
+        }
         self.validation_result_cache = validation_result_cache
         self.llm_clients: Dict[str, LLMClient]
         if llm_clients is not None:
@@ -356,7 +415,6 @@ class Analyzer:
                     api_key=llm_cfg.api_key,
                     base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                     models=llm_cfg.models,
-                    response_model_map=getattr(llm_cfg, "response_model_map", {}),
                     timeout=minimum_optional_positive_seconds(
                         llm_cfg.timeout,
                         getattr(
@@ -378,19 +436,34 @@ class Analyzer:
                     supports_structured_output=getattr(
                         llm_cfg, "supports_structured_output", False
                     ),
-                    require_exact_response_model=getattr(
-                        llm_cfg, "require_exact_response_model", False
-                    ),
                     token_usage_ledger=token_usage_ledger,
                     llm_ref=name,
                 )
+        if project_knowledge_service is _PROJECT_KNOWLEDGE_UNSET:
+            self.project_knowledge_service = self._build_project_knowledge_service()
+            self._owns_project_knowledge_service = True
+        else:
+            self.project_knowledge_service = cast(
+                Optional[ProjectKnowledgeService],
+                project_knowledge_service,
+            )
+            self._owns_project_knowledge_service = bool(owns_project_knowledge_service)
         self.validation_runner = self._make_validation_runner()
         self.report_generator = ReportGenerator(config.project.project_root)
         self.report_assembler = ReportAssembler(
             self.report_generator,
             self.snapshot_store,
             resolve_issue_locations=self._resolve_issue_locations,
+            deduplicate_observations=self._deduplicate_candidate_issues,
+            deduplicate_report_issues=self._deduplicate_report_issues,
             metadata_factory=self._build_workflow_metadata,
+        )
+        self.candidate_ledger = candidate_ledger or CandidateLedger(
+            project_id=str(
+                getattr(config.project, "project_id", "") or config.project.project_root.name
+            ),
+            project_root=str(config.project.project_root),
+            revision=self._git_commit_sha(config.project.project_root),
         )
         self.tools_runtime = ToolsRuntime(
             self.code_index,
@@ -400,20 +473,12 @@ class Analyzer:
                 pre_hooks=[deny_sensitive_paths_hook],
                 audit_log_path=self._tool_audit_log_path(),
             ),
+            snapshot_resolver=self._get_or_build_snapshot,
+            candidate_ledger=self.candidate_ledger,
         )
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
-        self.decision_trace_store = ensure_decision_trace_store(config)
-        self.candidate_ledger = candidate_ledger or CandidateLedger(
-            project_id=str(
-                getattr(config.project, "project_id", "") or config.project.project_root.name
-            ),
-            project_root=str(config.project.project_root),
-            revision=analysis_source_revision(config.project.project_root),
-            decision_trace_store=self.decision_trace_store,
-        )
-        if self.candidate_ledger.decision_trace_store is None:
-            self.candidate_ledger.decision_trace_store = self.decision_trace_store
         self.budget_planner = RiskBudgetPlanner(config.analysis)
+        self._skill_selection_cache: Dict[str, SkillSelection] = {}
         self._local_pattern_semantics: Optional[LocalPatternSemantics] = (
             deepcopy(shared_local_pattern_semantics)
             if shared_local_pattern_semantics is not None
@@ -422,12 +487,20 @@ class Analyzer:
         self._semantic_overlay: Optional[Dict[str, Any]] = (
             deepcopy(shared_semantic_overlay) if shared_semantic_overlay is not None else None
         )
+        if instance_semantics_snapshot is not None:
+            from ...semantics.instance_semantics import materialize_effect_semantics
+
+            self._require_instance_semantics_current()
+            self._local_pattern_semantics, self._semantic_overlay = materialize_effect_semantics(
+                instance_semantics_snapshot
+            )
         self._clang_tooling_provider: Optional[ClangToolingEvidenceProvider] = None
         self._clang_tooling_evidence_cache: Dict[tuple[str, str, int, int], Dict[str, Any]] = {}
         self._runtime_engine_capabilities: Dict[str, Dict[str, Any]] = {}
         self._runtime_engine_capabilities_lock = threading.RLock()
         self._reachable_function_cache: Dict[tuple[str, int, int, int], Set[str]] = {}
         self._reachable_function_cache_lock = threading.RLock()
+        self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
         self.workflow_progress: List[Dict[str, Any]] = []
         self.current_workflow_step: Optional[str] = None
         self.workflow_step_handlers: Dict[str, WorkflowStepHandler] = (
@@ -461,12 +534,251 @@ class Analyzer:
 
     def run(self) -> Dict[str, Any]:
         """Run the selected workflow as executable orchestration steps."""
+        self._require_instance_semantics_current()
+        scope = getattr(self, "instance_scope", None)
+        if scope is None:
+            return self._run_workflow()
+        from ...semantics.build_scope import bind_build_scope
+
+        with bind_build_scope({"build_context_id": scope.build_context_id}):
+            report = self._run_workflow()
+        self._require_instance_semantics_current()
+        self._annotate_instance_scope(report)
+        return report
+
+    def _require_instance_semantics_current(self) -> None:
+        """Recheck the coordinator's live dependencies before scoped consumption."""
+        snapshot = getattr(self, "_instance_semantics_snapshot", None)
+        if snapshot is None:
+            return
+        if snapshot.scope != getattr(self, "instance_scope", None):
+            raise ValueError("instance_semantics_scope_mismatch")
+        check = getattr(self, "_instance_semantics_current", None)
+        if not callable(check):
+            raise ValueError("instance_semantics_currentness_unverifiable")
+        try:
+            current = check(snapshot)
+        except Exception as exc:
+            raise ValueError("instance_semantics_currentness_unverifiable") from exc
+        if current is not True:
+            raise ValueError("instance_semantics_not_current")
+
+    def _user_semantic_context(self, function_name: str, source_text: str, file_path: str) -> str:
+        snapshot = getattr(self, "_instance_semantics_snapshot", None)
+        if snapshot is not None:
+            from ...semantics.instance_semantics import advisory_context
+
+            self._require_instance_semantics_current()
+            context_text = advisory_context(
+                snapshot, function_name=function_name, source_text=source_text, file_path=file_path
+            )
+            if not isinstance(context_text, str):
+                raise ValueError("instance_semantics_advisory_context_not_text")
+            return context_text
+        return relevant_user_config_context(self.user_config, function_name, source_text, file_path)
+
+    def _run_workflow(self) -> Dict[str, Any]:
+        self._begin_instance_collection()
         with bind_cancellation_token(self.cancellation_token):
             if self.cancellation_token is not None:
                 self.cancellation_token.raise_if_cancelled()
+            self.prepare_semantics()
             return self.workflow_runner.run()
 
+    def _begin_instance_collection(self) -> None:
+        snapshot = getattr(self, "_instance_semantics_snapshot", None)
+        self._instance_collection: Optional[Dict[str, Any]] = None
+        if snapshot is None:
+            return
+        selected = [
+            step.id for step in workflow_steps_for_scope(self._selected_workflow_steps(), "entry")
+        ]
+        supported = bool(
+            getattr(self, "defer_validation_to_scan", False)
+            and selected == list(DEFAULT_SCAN_STEP_IDS)
+        )
+        self._instance_collection = {
+            "schema": "zscope.instance-collection-closure.v1",
+            "supported": supported,
+            "selected_workflow": selected,
+            "selected_stages": ["local", "graph", "backend", "merge", "persist", "registration"],
+            "semantics_digest": snapshot.digest,
+            "scope": snapshot.scope.to_payload(),
+            "stages": {},
+            "collection_closed": False,
+            "input_current": False,
+            "active_stage_errors": [],
+            # Raw KnowledgeDB access is explicitly denied by ScopedCodeIndex;
+            # this optional inspection projection is predeclared unsupported.
+            "unsupported_stages": {"persist": "scoped_raw_knowledge_db_unavailable"},
+            "excluded_capabilities": {
+                "semantic_modeling": "instance_scoped_builtin_manual_advisory_no_inferred",
+                # The scoped signal accessor can refuse for a particular instance
+                # (no scoped handle, stale rows, a command shared by several
+                # contexts). A refusal is a *declared* exclusion, so the closure
+                # check compares this fixed reason; the precise attribution
+                # verdict travels in the capability's ``detail`` field instead.
+                "svf_taint_query": "scoped_raw_knowledge_db_unavailable",
+            },
+            "excluded_subchannels": (
+                {
+                    "clang_knowledge_db": "scoped_raw_knowledge_db_unavailable",
+                }
+                if hasattr(self.code_index, "get_instance_backend_signals")
+                else {
+                    "svf_taint_query": "scoped_raw_knowledge_db_unavailable",
+                    "clang_knowledge_db": "scoped_raw_knowledge_db_unavailable",
+                }
+            ),
+        }
+
+    def _observe_instance_collection(self, stage: str, operation: Callable[[], Any]) -> Any:
+        tracker = getattr(self, "_instance_collection", None)
+        if tracker is None:
+            return operation()
+        stages = tracker["stages"]
+        stages[stage] = {"disposition": "running", "reason": ""}
+        try:
+            self._require_instance_semantics_current()
+            result = operation()
+            self._require_instance_semantics_current()
+            if stage in {"local", "graph", "backend", "merge"} and (
+                not isinstance(result, list) or any(not isinstance(item, dict) for item in result)
+            ):
+                raise ValueError("instance_collection_invalid_detector_output")
+        except BaseException as exc:
+            stages[stage] = {
+                "disposition": "cancelled" if isinstance(exc, CancellationError) else "error",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            raise
+        unsupported = tracker["unsupported_stages"].get(stage)
+        stages[stage] = {
+            "disposition": "unsupported" if unsupported else "complete",
+            "reason": unsupported or "",
+        }
+        return result
+
+    def _close_instance_collection(self, state: Dict[str, Any]) -> None:
+        tracker = getattr(self, "_instance_collection", None)
+        if tracker is None:
+            return
+        errors: list[str] = []
+        if tracker["supported"] is not True:
+            errors.append("instance_collection_workflow_not_supported")
+        for stage in tracker["selected_stages"]:
+            disposition = tracker["stages"].get(stage, {}).get("disposition")
+            if disposition == "complete":
+                continue
+            if disposition == "unsupported" and stage in tracker["unsupported_stages"]:
+                continue
+            errors.append(f"instance_collection_stage_not_complete:{stage}")
+        capabilities = getattr(self, "_runtime_engine_capabilities", {})
+        for name, capability in capabilities.items():
+            if (
+                name in tracker["excluded_capabilities"]
+                and capability.get("status") == "excluded"
+                and capability.get("active") is False
+                and capability.get("reason") == tracker["excluded_capabilities"][name]
+            ):
+                continue
+            if capability.get("status") != "complete":
+                errors.append(f"{name}:{capability.get('reason') or capability.get('status')}")
+        if state.get("error") or _as_dict(state.get("impl_result")).get("truncated"):
+            errors.append("instance_collection_source_or_workflow_incomplete")
+        self._require_instance_semantics_current()
+        tracker["entry_identity"] = str(state.get("entry_identity") or "")
+        tracker["input_current"] = True
+        tracker["active_stage_errors"] = sorted(set(errors))
+        tracker["collection_closed"] = not errors
+        state["instance_collection"] = deepcopy(tracker)
+
+    def _annotate_instance_scope(self, report: Any) -> None:
+        """Record the consumed instance scope on the entry report metadata."""
+
+        if not isinstance(report, dict):
+            return
+        scope = getattr(self, "instance_scope", None)
+        if scope is None:
+            return
+        metadata = report.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            report["metadata"] = metadata
+        metadata["instance_scope"] = scope.to_payload()
+        metadata["build_context_id"] = str(scope.build_context_id or "")
+        snapshot = getattr(self, "_instance_semantics_snapshot", None)
+        if snapshot is not None:
+            self._require_instance_semantics_current()
+            metadata["instance_semantics"] = snapshot.authority_policy
+            metadata["instance_semantics_digest"] = snapshot.digest
+            metadata["instance_semantics_schema"] = snapshot.schema
+        scope_report = getattr(self.code_index, "scope_report", None)
+        if callable(scope_report):
+            metadata["instance_scope_report"] = scope_report()
+
+    def prepare_semantics(self, entries: Optional[List[FunctionEntry]] = None) -> Any:
+        """Shared pre-rule barrier, also used by direct Analyzer callers."""
+        if self.config.project.language == "java":
+            return None
+        if getattr(self, "instance_scope", None) is not None:
+            # Instance analysis never runs the project-wide semantic model on an
+            # unwrapped index.  Contracts stay at the generator's standard
+            # roots; the omission is a declared capability gap, not authorization.
+            self._record_engine_capability(
+                "semantic_modeling",
+                status=(
+                    "excluded"
+                    if getattr(self, "_instance_semantics_snapshot", None) is not None
+                    else "skipped"
+                ),
+                active=False,
+                reason=(
+                    "instance_scoped_builtin_manual_advisory_no_inferred"
+                    if getattr(self, "_instance_semantics_snapshot", None) is not None
+                    else "instance_scoped_defaults_only"
+                ),
+            )
+            return self.semantic_result
+        if self.semantic_result is None:
+            from ...orchestration.global_modeler import GlobalModeler
+
+            modeler = GlobalModeler.from_analyzer_helpers(
+                self.config,
+                self.code_index,
+                self.snapshot_store,
+                self.user_config,
+                llm_clients=self.llm_clients,
+                tools_factory=self._get_tools,
+                tool_policy_factory=self._tool_policy_for_agent,
+                attach_contract=self._attach_agent_contract,
+            )
+            if entries is None:
+                entries = [
+                    FunctionEntry(
+                        str(self.config.project.entry_function or ""),
+                        file_path=self.config.project.entry_file_path,
+                        signature=self.config.project.entry_signature,
+                    )
+                ]
+            with bind_cancellation_token(self.cancellation_token):
+                modeler.run(entries)
+            self.semantic_result = modeler.result
+        if getattr(self, "semantic_result", None) is not None:
+            self._local_pattern_semantics = deepcopy(self.semantic_result.local_semantics)
+            self._semantic_overlay = deepcopy(self.semantic_result.overlay)
+            self._record_engine_capability(
+                "semantic_modeling",
+                status="partial" if self.semantic_result.partial else "complete",
+                active=True,
+                contract_version=self.semantic_result.contract_version,
+                **self.semantic_result.stats.to_dict(),
+            )
+        return self.semantic_result
+
     def close(self) -> None:
+        if getattr(self, "_owns_project_knowledge_service", False):
+            self.close_project_knowledge_service(getattr(self, "project_knowledge_service", None))
         if not getattr(self, "_owns_llm_clients", False):
             return
         seen: Set[int] = set()
@@ -478,6 +790,224 @@ class Analyzer:
             close_client = getattr(client, "close", None)
             if callable(close_client):
                 close_client()
+
+    @staticmethod
+    def close_project_knowledge_service(
+        service: Optional[ProjectKnowledgeService],
+    ) -> None:
+        source_index = getattr(service, "source_index", None)
+        wiki_store = getattr(service, "wiki_store", None)
+        for resource in (source_index, wiki_store):
+            close_resource = getattr(resource, "close", None)
+            if callable(close_resource):
+                try:
+                    close_resource()
+                except Exception:
+                    logger.debug("Failed to close Wiki resource", exc_info=True)
+
+    def _build_project_knowledge_service(self) -> Optional[ProjectKnowledgeService]:
+        return self.build_project_knowledge_service(self.config, self.llm_clients)
+
+    @staticmethod
+    def build_project_knowledge_service(
+        config: ZScopeConfig,
+        llm_clients: Dict[str, LLMClient],
+    ) -> Optional[ProjectKnowledgeService]:
+        """Build one scan-pinned Wiki/source resolver when explicitly enabled."""
+
+        wiki = getattr(getattr(config, "project", None), "wiki", None)
+        mode = str(getattr(wiki, "mode", "off") or "off").strip().lower()
+        if mode == "off":
+            return None
+        root = Path(config.project.project_root)
+        try:
+            state_dir = resolve_project_state_root(
+                root,
+                str(getattr(wiki, "state_dir", ".zscope_knowledge/wiki")),
+            )
+        except ValueError as exc:
+            logger.warning("Wiki state directory rejected: %s", exc)
+            state_dir = None
+        manifest = None
+        source_index = None
+        source_index_ready = False
+        wiki_store = None
+        try:
+            overrides = {
+                "exclude": list(getattr(wiki, "document_exclude", []) or []),
+                "explanatory": list(getattr(wiki, "explanatory_overrides", []) or []),
+                "generated": list(getattr(wiki, "generated_overrides", []) or []),
+            }
+            manifest = build_source_manifest(
+                root,
+                project_id=str(getattr(config.project, "project_id", "") or root.name),
+                overrides=overrides,
+                max_file_bytes=int(getattr(wiki, "max_file_bytes", 10 * 1024 * 1024)),
+                max_files=int(getattr(wiki, "max_files", 10_000)),
+                max_total_bytes=int(getattr(wiki, "max_total_bytes", 100 * 1024 * 1024)),
+                prune_paths=(
+                    (state_dir.relative_to(root.resolve()),) if state_dir is not None else None
+                ),
+            )
+            source_index = SourceIndex(
+                state_dir / "source-index.db" if state_dir is not None else ":memory:"
+            )
+            source_index.rebuild(
+                root,
+                manifest=manifest,
+                overrides=overrides,
+                prune_paths=(
+                    (state_dir.relative_to(root.resolve()),) if state_dir is not None else None
+                ),
+            )
+            source_index_ready = True
+            if state_dir is None:
+                if mode == "build_only":
+                    source_index.close()
+                    return None
+                return ProjectKnowledgeService(
+                    source_index=source_index,
+                    wiki_store=None,
+                    source_manifest_digest=manifest.source_manifest_digest,
+                    mode=mode if mode in {"shadow", "active"} else "shadow",
+                )
+            wiki_store = WikiStore(state_dir)
+            active = wiki_store.active_revision()
+            had_active_revision = active is not None
+            manifest_changed = (
+                active is None
+                or active.get("source_manifest_digest") != manifest.source_manifest_digest
+            )
+            if mode in {"build_only", "shadow", "active"} and active is None:
+                wiki_store.build_skeleton(root, manifest)
+                active = wiki_store.active_revision()
+            # Compiler maintenance is opt-in and uses the same bounded
+            # workset/ChangeSet/store boundary as the standalone CLI.  A
+            # missing client never turns into a fake successful revision; the
+            # Validator will use direct source fallback instead.
+            maintenance_requested = _wiki_maintenance_requested(
+                had_active_revision=had_active_revision,
+                manifest_changed=manifest_changed,
+                auto_maintain=bool(getattr(wiki, "auto_maintain", False)),
+                compiler_enabled=bool(getattr(wiki, "compiler_enabled", False)),
+                active_compiler_kind=_wiki_revision_compiler_kind(wiki_store, active),
+            )
+            if maintenance_requested and active:
+                compiler_client = llm_clients.get("wiki_compiler") or llm_clients.get("default")
+                previous_manifest = wiki_store.revision_manifest(str(active.get("revision_id")))
+                if previous_manifest is not None:
+                    delta = compare_manifests(previous_manifest, manifest)
+                else:
+                    delta = None
+                # Constraint-only compilation has no page closure.  A revision
+                # without a prior successful constraint projection is rebuilt
+                # from all accepted Markdown so failed/empty parent revisions
+                # cannot strand the project in a partial state.
+                has_constraints = bool(
+                    wiki_store.connection.execute(
+                        "SELECT 1 FROM constraints WHERE revision_id=? LIMIT 1",
+                        (active.get("revision_id"),),
+                    ).fetchone()
+                )
+                accepted_delta_empty = bool(
+                    has_constraints
+                    and delta is not None
+                    and not delta.added_source_ids
+                    and not delta.changed_source_ids
+                    and not delta.removed_source_ids
+                )
+                if accepted_delta_empty:
+                    # A manifest can change because an excluded/unsupported
+                    # artifact was added or removed while the accepted
+                    # Markdown set remains identical.  Refresh the
+                    # program-owned manifest pin deterministically and reuse
+                    # the existing constraints; never turn an empty delta
+                    # into a full Compiler invocation.
+                    added_source_ids: Tuple[str, ...] = ()
+                    changed_source_ids: Tuple[str, ...] = ()
+                    removed_source_ids: Tuple[str, ...] = ()
+                elif not has_constraints:
+                    added_source_ids = tuple(
+                        sorted(str(item.source_id) for item in manifest.accepted)
+                    )
+                    changed_source_ids = ()
+                    removed_source_ids = delta.removed_source_ids if delta else ()
+                else:
+                    added_source_ids = delta.added_source_ids if delta else ()
+                    changed_source_ids = delta.changed_source_ids if delta else ()
+                    removed_source_ids = delta.removed_source_ids if delta else ()
+                workset = build_ingest_workset(
+                    manifest,
+                    source_index=source_index,
+                    base_revision_id=str(active.get("revision_id")),
+                    added_source_ids=added_source_ids,
+                    changed_source_ids=changed_source_ids,
+                    removed_source_ids=removed_source_ids,
+                    max_wall_seconds=getattr(wiki, "max_wall_seconds", None),
+                    initial=(
+                        False
+                        if accepted_delta_empty
+                        else (not had_active_revision or not has_constraints)
+                    ),
+                )
+                compiler_workers = int(
+                    getattr(getattr(config, "concurrency", None), "wiki_compiler_workers", 4) or 4
+                )
+                compiler = WikiCompiler(max_workers=compiler_workers)
+                if (
+                    not accepted_delta_empty
+                    and bool(getattr(wiki, "compiler_enabled", False))
+                    and compiler_client is not None
+                ):
+                    compiler = WikiCompiler(
+                        LLMWikiCompilerProvider(
+                            compiler_client,
+                            max_tokens=getattr(wiki, "compiler_max_tokens", None),
+                        ),
+                        max_workers=compiler_workers,
+                    )
+                lock_path = state_dir / "locks" / "compiler.lock"
+                with WikiWriterLock(lock_path, timeout_seconds=0.0):
+                    wiki_store.compile_and_apply(root, manifest, workset, compiler)
+            if mode == "build_only":
+                # Keep the build artifact but do not expose it to Validator.
+                source_index.close()
+                wiki_store.close()
+                return None
+            return ProjectKnowledgeService(
+                source_index=source_index,
+                wiki_store=wiki_store,
+                source_manifest_digest=manifest.source_manifest_digest,
+                mode=mode if mode in {"shadow", "active"} else "shadow",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Wiki preflight failed; Validator will use direct source fallback when available: %s",
+                exc,
+            )
+            try:
+                if wiki_store is not None:
+                    wiki_store.close()
+            except Exception:
+                pass
+            if (
+                mode != "build_only"
+                and source_index_ready
+                and source_index is not None
+                and manifest is not None
+            ):
+                return ProjectKnowledgeService(
+                    source_index=source_index,
+                    wiki_store=None,
+                    source_manifest_digest=manifest.source_manifest_digest,
+                    mode=mode if mode in {"shadow", "active"} else "shadow",
+                )
+            if source_index is not None:
+                try:
+                    source_index.close()
+                except Exception:
+                    pass
+            return None
 
     def _set_current_workflow_step(self, step_id: Optional[str]) -> None:
         self.current_workflow_step = step_id
@@ -534,7 +1064,7 @@ class Analyzer:
             )
             impl_result = self.code_index.get_function_impl(
                 semantic_model_input["index_name"],
-                max_lines=self.config.analysis.max_function_lines,
+                max_lines=None,
                 file_path=semantic_model_input["file_path"],
             )
         except SemanticModelInputError as exc:
@@ -560,12 +1090,15 @@ class Analyzer:
 
         agent_context = {
             "func_name": semantic_model_input["func_name"],
-            "code": impl_result["code"],
+            "code": "\n".join(
+                impl_result["code"].splitlines()[: self.config.analysis.max_function_lines]
+            ),
+            "code_truncated": len(impl_result["code"].splitlines())
+            > self.config.analysis.max_function_lines,
             "location": f"{impl_result['file']}:{impl_result['start_line']}",
         }
 
-        user_config_context = relevant_user_config_context(
-            self.user_config,
+        user_config_context = self._user_semantic_context(
             semantic_model_input["func_name"],
             semantic_model_input["code"],
             semantic_model_input["file_path"],
@@ -609,13 +1142,18 @@ class Analyzer:
             "is_code_unchanged": False,
             "history_loaded": False,
             "history_reconciled": False,
+            "subagent_candidates": [],
+            "subagent_ticket_plan": [],
+            "subagent_unassigned_candidates": [],
+            "subagent_reports": [],
+            "subagent_report_summary": {},
             "candidate_ledger": self.candidate_ledger,
-            "decision_trace_store": self.decision_trace_store,
             "candidate_ledger_context": [],
             "candidate_ledger_summary": {},
             "candidate_lifecycle_v3": True,
             "canonical_outcome_projection_enabled": True,
-            "finding_root_projection_enabled": True,
+            "finding_root_v1_enabled": True,
+            "same_site_aggregation_enabled": True,
             "budget_exhaustion_policy": str(
                 getattr(self.config.analysis, "budget_exhaustion_policy", "observe") or "observe"
             ),
@@ -704,6 +1242,7 @@ class Analyzer:
         rule_candidates: Optional[Sequence[Any]] = None,
         graph_candidates: Optional[Sequence[Any]] = None,
         backend_candidates: Optional[Sequence[Any]] = None,
+        subagent_candidates: Optional[Sequence[Any]] = None,
     ) -> EffectiveBudget:
         """Compute and attach the current adaptive budget to workflow state."""
 
@@ -712,6 +1251,7 @@ class Analyzer:
             rule_candidates=rule_candidates,
             graph_candidates=graph_candidates,
             backend_candidates=backend_candidates,
+            subagent_candidates=subagent_candidates,
         )
         budget_dict = budget.to_dict()
         state["effective_budget"] = budget_dict
@@ -745,13 +1285,16 @@ class Analyzer:
     def _build_workflow_step_handlers(self) -> Dict[str, WorkflowStepHandler]:
         return {
             "load_snapshot_state": self._handle_load_history_state,
-            "compare_entry_state": self._handle_load_history_state,
-            "reuse_unchanged_report": self._handle_reuse_unchanged_report,
-            "reconcile_history": self._handle_reconcile_changed_issues,
-            "run_pending_entries": self._handle_default_scan_subworkflow,
-            "run_changed_entry": self._handle_default_scan_subworkflow,
-            "collect_candidates": self._handle_collect_candidates,
-            "validate_candidates": self._handle_validate_findings,
+            "compare_hashes": self._handle_load_history_state,
+            "reuse_unchanged": self._handle_reuse_unchanged_report,
+            "reconcile_changed": self._handle_reconcile_changed_issues,
+            "analyze_remaining": self._handle_default_scan_subworkflow,
+            "rescan_changed": self._handle_default_scan_subworkflow,
+            "premodel_reachable_callees": self._handle_premodel_reachable_callees,
+            "model_entry": self._handle_model_entry,
+            "focused_subagent_planning": self._handle_focused_subagent_planning,
+            "vulnerability_mining": self._handle_vulnerability_mining,
+            "validate_findings": self._handle_validate_findings,
             "persist_report": self._handle_persist_report,
         }
 
@@ -770,8 +1313,20 @@ class Analyzer:
         self._execute_default_scan_subworkflow(state)
         return True
 
-    def _handle_collect_candidates(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
-        self._step_collect_candidates(state)
+    def _handle_premodel_reachable_callees(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        self._step_premodel_reachable_callees(state)
+        return False
+
+    def _handle_model_entry(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        self._step_model_entry(state)
+        return False
+
+    def _handle_focused_subagent_planning(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        self._step_focused_subagent_planning(state)
+        return False
+
+    def _handle_vulnerability_mining(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        self._step_vulnerability_mining(state)
         return False
 
     def _handle_validate_findings(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
@@ -803,13 +1358,22 @@ class Analyzer:
         )
 
     def _reuse_unchanged_report(self, state: Dict[str, Any]) -> bool:
+        if getattr(self, "semantic_result", None) is not None and self.semantic_result.partial:
+            return False
         if not state.get("history_loaded"):
             self._load_history_state(state)
 
         historical_report = state.get("historical_report")
+        from ...snapshots.policy import semantic_experiment_requires_scan
+
+        if semantic_experiment_requires_scan(
+            self.config.analysis, (historical_report or {}).get("metadata")
+        ):
+            return False
         if self.maintain_mode and state.get("is_code_unchanged") and historical_report:
             blockers = report_reuse_blockers(
                 historical_report,
+                business_answer_store=self.user_config,
                 expected_manifest={
                     "source_revision": self._git_commit_sha(self.config.project.project_root),
                     "config_hash": self._config_hash(),
@@ -844,6 +1408,30 @@ class Analyzer:
             self._load_history_state(state)
 
         valid_hist_issues = state.get("valid_hist_issues", [])
+        from ...semantics.business_assumptions import feedback_reuse_problem
+
+        current_history = []
+        for historical_issue in valid_hist_issues:
+            if feedback_reuse_problem(historical_issue, self.user_config):
+                reopened = deepcopy(historical_issue)
+                for key in (
+                    "decision_proof",
+                    "proof_provider",
+                    "proof_coverage",
+                    "promotion_reason",
+                    "needs_review_sub_state",
+                ):
+                    reopened.pop(key, None)
+                reopened.update(validation_status="pending", candidate_disposition="pending")
+                self._register_candidate_issues(state, [reopened], source="business_feedback")
+                state.setdefault("pending_new_issues", []).append(reopened)
+                state.setdefault("notes", []).append(
+                    "Business premise changed; revalidating " + str(reopened.get("id", ""))
+                )
+            else:
+                current_history.append(historical_issue)
+        valid_hist_issues = current_history
+        state["valid_hist_issues"] = current_history
         if not state.get("is_code_unchanged") and valid_hist_issues:
             entry_func = state["entry_func"]
             logger.info(
@@ -852,7 +1440,7 @@ class Analyzer:
                 len(valid_hist_issues),
             )
             recon_agent_cfg = next(
-                (a for a in self.config.project.agents if a.name == "history_maintenance_agent"),
+                (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
                 None,
             )
             recon_llm_ref = (
@@ -862,13 +1450,13 @@ class Analyzer:
             )
             recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
             if recon_client is None:
-                raise RuntimeError("No LLM client configured for historical maintenance")
+                raise RuntimeError("No LLM client configured for issue reconciliation")
 
-            from ...agents.history_maintenance.agent import HistoryMaintenanceAgent
+            from ...agents.issue_reconciler.agent import IssueReconcilerAgent
 
-            reconciler_agent = HistoryMaintenanceAgent(
+            reconciler_agent = IssueReconcilerAgent(
                 recon_client,
-                tool_policy=self._tool_policy_for_agent("history_maintenance_agent"),
+                tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
             )
             verified_hist_issues = []
             for hist_issue in valid_hist_issues:
@@ -902,313 +1490,585 @@ class Analyzer:
 
         state["history_reconciled"] = True
 
-    def _step_collect_candidates(self, state: Dict[str, Any]) -> None:
-        if self._semantic_overlay is None or self._local_pattern_semantics is None:
-            self._prepare_single_entry_security_spec_runtime(state)
-        agent_context = state["agent_context"]
-        active_cfg = next(
-            (agent for agent in self.config.project.agents if agent.name == "hypothesis_hunter"),
-            None,
-        )
-        task = str(
-            getattr(getattr(self.config, "scan", None), "task", "")
-            or getattr(active_cfg, "task", "")
-            or ""
-        )
-        selection = self._candidate_first_skill_selection(
-            list(getattr(active_cfg, "skills", []) or [])
-        )
-        agent_context["task"] = task
-        agent_context["entry_custom_prompt"] = getattr(active_cfg, "entry_custom_prompt", None)
-        agent_context["active_skills"] = selection.skills
-        agent_context["skill_selection_restricted"] = False
-
-        candidate_batch = self.candidate_pipeline.collect_signal_candidates(state)
-        self.candidate_pipeline.accumulate_summary(state, candidate_batch)
-        self.candidate_pipeline.persist(candidate_batch)
-        candidate_signals = candidate_batch.merged_candidates
-        agent_context["candidate_signal_summary"] = candidate_batch.summary_increment()
-        agent_context["candidate_signal_candidates"] = self._compact_candidate_signal_items(
-            candidate_signals,
-            limit=80,
-        )
-
-        self._register_candidate_issues(
-            state,
-            candidate_signals,
-            source="deterministic_candidate_discovery",
-        )
-        state["pending_new_issues"].extend(list(candidate_signals))
-        state["notes"].append(
-            "Routed structured deterministic candidates directly to the shared "
-            "Candidate Ledger and validation lifecycle."
-        )
-        self._record_engine_capability(
-            "candidate_collection",
-            status="complete",
-            active=True,
-            reason="candidate_ledger_registration",
-            candidate_count=len(candidate_signals),
-        )
-
-        if not getattr(self, "defer_validation_to_scan", False):
-            self._run_single_entry_hypothesis_hunter(state)
-
-    def _prepare_single_entry_security_spec_runtime(self, state: Dict[str, Any]) -> None:
-        """Compile strict SecuritySpecs before a standalone Analyzer collects candidates."""
-
-        profile = resolve_hunting_profile(self.config)
-        entry = FunctionEntry(
-            function_name=str(state.get("entry_func") or ""),
-            file_path=str(state.get("entry_file_path") or "") or None,
-            signature=str(state.get("entry_signature") or "") or None,
-        )
-        raw_overlay = SemanticOverlayCompiler(self.user_config).compile()
-        semantic_map = ZeroLLMSecurityMapBuilder(
-            self.code_index,
-            project_id=str(
-                getattr(self.config.project, "project_id", "")
-                or self.config.project.project_root.name
-            ),
-            revision=str(getattr(self.candidate_ledger, "revision", "") or ""),
-            profile=profile.name,
-            semantic_overlay=raw_overlay,
-            project_root=self.config.project.project_root,
-            max_functions=int(
-                getattr(
-                    self.config.analysis,
-                    "security_map_max_functions",
-                    15_000 if profile.name == "deep" else 5_000,
-                )
-            ),
-        ).build([entry])
-        store = SecuritySpecStore(Path(self.config.analysis.snapshot_dir) / "security_specs")
-        qualification = load_builtin_qualification()
-        evidence_refs = {
-            str(ref)
-            for claim in semantic_map.claims
-            for ref in getattr(claim, "evidence_refs", ()) or ()
-        }
-        dependency_hashes = {
-            str(value)
-            for record in semantic_map.functions
-            for value in (
-                record.code_hash,
-                hashlib.sha256(
-                    json.dumps(
-                        record.backend_coverage,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest(),
-            )
-            if str(value)
-        }
-        runtime = SecuritySpecRuntime(store).run(
-            semantic_map,
-            qualification_hashes=[str(qualification["content_sha256"])],
-            qualifications=[qualification],
-            resolvable_evidence_refs=evidence_refs,
-            current_dependency_hashes=dependency_hashes,
-            additional_specs=store.list_specs(),
-        )
-        overlay = SecuritySpecCompiler.semantic_overlay(runtime["compilation"])
-        self._semantic_overlay = overlay
-        self._local_pattern_semantics = self._local_semantics_from_compiled_specs(overlay)
-        authoritative_map = ZeroLLMSecurityMapBuilder(
-            self.code_index,
-            project_id=str(
-                getattr(self.config.project, "project_id", "")
-                or self.config.project.project_root.name
-            ),
-            revision=str(getattr(self.candidate_ledger, "revision", "") or ""),
-            profile=profile.name,
-            semantic_overlay=overlay,
-            project_root=self.config.project.project_root,
-            max_functions=int(
-                getattr(
-                    self.config.analysis,
-                    "security_map_max_functions",
-                    15_000 if profile.name == "deep" else 5_000,
-                )
-            ),
-        ).build([entry])
-        semantic_store = SQLiteSecurityMapStore(
-            Path(self.config.analysis.snapshot_dir) / "security_map.db"
-        )
-        semantic_store.save_map(authoritative_map)
-        semantic_store.export_json(
-            authoritative_map,
-            Path(self.config.analysis.snapshot_dir) / "security_semantic_map.json",
-        )
-        state["security_semantic_map"] = authoritative_map
-        state["security_spec_runtime"] = runtime
-        state["security_runtime"] = {
-            "enabled": profile.name != "fast",
-            "profile": profile.name,
-            "status": "security_spec_compiled",
-            "security_spec_runtime": runtime,
-        }
-        self.decision_trace_store.update_identity(
-            {
-                "security_spec_mode": "authoritative",
-                "security_spec_root_manifest_sha256": str(
-                    runtime.get("root_manifest_sha256") or ""
-                ),
-                "security_spec_artifact_refs": list(runtime.get("artifact_refs") or []),
-                "security_spec_decision": {
-                    "active_product_effect": "semantic_input",
-                    "compiled_spec_count": int(runtime.get("compiled_spec_count", 0) or 0),
-                    "reason_code": "security_spec_authoritative",
-                },
-            }
-        )
-
-    @staticmethod
-    def _local_semantics_from_compiled_specs(
-        overlay: Dict[str, Any],
-    ) -> LocalPatternSemantics:
-        semantics = LocalPatternSemantics()
-        for value in overlay.get("resource_models") or []:
-            if not isinstance(value, dict):
-                continue
-            category = {
-                "resource_acquire": "allocator",
-                "resource_release": "deallocator",
-                "resource_transfer": "reallocator",
-            }.get(str(value.get("kind") or ""))
-            if category:
-                semantics.add_api(category, str(value.get("name") or ""), "security_spec_compiler")
-        for value in overlay.get("lock_models") or []:
-            if isinstance(value, dict) and str(value.get("kind") or "") in {"lock", "unlock"}:
-                semantics.add_api(
-                    str(value["kind"]),
-                    str(value.get("name") or ""),
-                    "security_spec_compiler",
-                )
-        return semantics
-
-    def _run_single_entry_hypothesis_hunter(self, state: Dict[str, Any]) -> None:
-        """Run the same bounded Hunter contract used by batch scans."""
-
-        profile = resolve_hunting_profile(self.config)
-        if profile.name == "fast":
-            state["security_runtime"].update(
-                {
-                    "enabled": False,
-                    "status": "disabled_by_profile",
-                    "llm_discovery_call_count": 0,
-                }
+    def _step_premodel_reachable_callees(self, state: Dict[str, Any]) -> None:
+        if (
+            getattr(self, "semantic_result", None) is not None
+            or self.config.analysis.enable_global_model
+        ):
+            state["notes"].append(
+                "Premodel reachable callees skipped because global modeling is enabled."
             )
             return
-        semantic_map = state.get("security_semantic_map")
-        spec_runtime = state.get("security_spec_runtime")
-        if semantic_map is None or not isinstance(spec_runtime, dict):
-            raise RuntimeError("authoritative_security_spec_runtime_missing")
-        compile_commands = getattr(self.code_index, "compile_commands_path", None)
-        fact_service = FunctionIRFactService(
-            Path(compile_commands) if compile_commands else None,
-            enabled=self._project_language() == "c_cpp",
+
+        sm_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "semantic_modeler"), None
+        )
+        sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+        sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
+        budget = self._refresh_effective_budget(state, "premodel")
+        if budget.premodel_depth <= 0 or budget.premodel_callees <= 0:
+            state["notes"].append("Premodel skipped because adaptive budget is 0.")
+            self._record_engine_capability(
+                "semantic_premodel",
+                status="degraded",
+                active=False,
+                reason="semantic_premodel_budget_disabled",
+            )
+            return
+
+        try:
+            modeled, skipped, tokens = self._premodel_callees(
+                state["entry_func"],
+                sm_client,
+                max_depth=budget.premodel_depth,
+                max_callees=budget.premodel_callees,
+                state=state,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[premodel] Reachable callee premodeling failed for '%s'; "
+                "continuing with entry analysis.",
+                state["entry_func"],
+            )
+            state["notes"].append(
+                "Premodel reachable callees skipped after retrieval error: " f"{exc}"
+            )
+            self._record_engine_failed_work(
+                state,
+                engine="semantic_premodel",
+                function_name=str(state.get("entry_func") or ""),
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+            self._record_engine_capability(
+                "semantic_premodel",
+                status="failed",
+                active=True,
+                reason="semantic_premodel_failed",
+            )
+            return
+        state["total_context_tokens"] += tokens
+        state["total_cumulative_total_tokens"] += tokens
+        state["notes"].append(
+            f"Premodeled {modeled} reachable callee(s), reused {skipped} snapshot(s)."
         )
 
-        def graph_provider(record: Any, event: Any) -> Any:
-            raw_path = Path(str(record.file_path))
-            path = (
-                raw_path if raw_path.is_absolute() else self.config.project.project_root / raw_path
-            )
-            line = int(event.line or record.start_line or 0)
-            return fact_service.graph(
-                {
-                    "function": str(record.function_name),
-                    "function_signature": str(record.function_name),
-                    "file": str(path),
-                    "line": line,
-                    "source": {"line": line, "expression": str(event.expression or "")},
-                    "sink": {"line": line, "expression": str(event.expression or "")},
-                },
-                {},
-            )
-
-        client = self._scan_role_llm_client("analysis")
-        report_runner = None
-        if client is not None:
-            agent = HypothesisHunterAgent(client)
-
-            def report_runner(projection: Any, unit: Any, offers: Any) -> Any:
-                return agent.run(
-                    {"projection": projection, "audit_unit": unit, "offers": list(offers)}
+    def _step_model_entry(self, state: Dict[str, Any]) -> None:
+        if (
+            getattr(self, "semantic_result", None) is not None
+            or self.config.analysis.enable_global_model
+        ):
+            impl_result = _as_dict(state.get("impl_result"))
+            entry_func = str(state.get("entry_func") or "")
+            entry_index_name = str(state.get("entry_index_name") or "")
+            snapshot = self.snapshot_store.load_snapshot(entry_index_name)
+            state["snapshot_generation"] = self.snapshot_store.observed_generation(entry_index_name)
+            if snapshot:
+                try:
+                    needs_refresh, reason = self.snapshot_store.needs_refresh(
+                        entry_index_name,
+                        str(impl_result.get("code") or ""),
+                        state["semantic_model_input"],
+                    )
+                except Exception:
+                    needs_refresh, reason = True, "snapshot_refresh_check_failed"
+                if not needs_refresh:
+                    self._record_engine_capability(
+                        "semantic_entry_model",
+                        status="complete",
+                        active=True,
+                        reason="reused_global_snapshot",
+                    )
+                    state["notes"].append(f"Reused globally modeled snapshot for {entry_func}.")
+                    logger.info(
+                        "[global-model] Reusing entry snapshot for '%s' (%s).",
+                        entry_func,
+                        reason or "current",
+                    )
+                    return
+                logger.info(
+                    "[global-model] Entry snapshot for '%s' needs refresh (%s); falling back to model_entry.",
+                    entry_func,
+                    reason or "unknown",
+                )
+            else:
+                logger.info(
+                    "[global-model] No entry snapshot for '%s'; falling back to model_entry.",
+                    entry_func,
                 )
 
-        registrar = CandidateRegistrar(
-            self.candidate_ledger,
-            project_id=str(
-                getattr(self.config.project, "project_id", "")
-                or self.config.project.project_root.name
-            ),
-            project_root=str(self.config.project.project_root),
-            revision=str(getattr(self.candidate_ledger, "revision", "") or ""),
-            run_id=str(state.get("run_id") or ""),
-            decision_fact_cache=self.decision_fact_cache,
+        sm_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "semantic_modeler"), None
         )
-        result = HypothesisHunterRuntime(
-            HypothesisArtifactStore(Path(self.config.analysis.snapshot_dir) / "hypothesis_hunter"),
-            risk_threshold=profile.risk_threshold,
-            max_units=profile.max_units,
-            max_concurrent_calls=int(self.config.concurrency.llm_max_inflight),
-            model_profile=profile.name,
-        ).run(
-            semantic_map,
-            candidate_registrar=registrar,
-            security_spec_runtime=spec_runtime,
-            proof_bundle_provider=HypothesisProofCatalog(
-                graph_provider,
-                project_uid=str(semantic_map.project_id),
-                revision_uid=str(semantic_map.revision),
-                project_root=self.config.project.project_root,
-            ).bundles,
-            report_runner=report_runner,
+        sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+        sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
+
+        def make_semantic_agent() -> SemanticModeler:
+            return SemanticModeler(
+                sm_client,
+                self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+                tool_policy=self._tool_policy_for_agent("semantic_modeler"),
+            )
+
+        agent_context = state["agent_context"]
+        semantic_context = deepcopy(state["semantic_model_input"])
+
+        logger.info("Running Semantic Modeler agent with '%s' LLM...", sm_llm_ref)
+        self._attach_agent_contract(semantic_context, "semantic_modeler")
+        response = run_semantic_model_with_retries(
+            make_semantic_agent,
+            semantic_context,
+            log_context="entry",
+            index_name=state["entry_index_name"],
+            snapshot_store=self.snapshot_store,
         )
-        state["security_runtime"].update(
-            {
-                "enabled": True,
-                "status": "complete",
-                "hypothesis_hunter_runtime": result,
-                "hypothesis_count": int(result.get("hypothesis_count", 0) or 0),
-                "llm_discovery_call_count": int(result.get("llm_call_count", 0) or 0),
-            }
+        sm_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
+        state["total_context_tokens"] += sm_tokens
+        self._accumulate_cumulative_token_metadata(
+            state, response.metadata if response.metadata else {}
         )
-        self.decision_trace_store.update_identity(
-            {
-                "hypothesis_hunter_mode": "active",
-                "hypothesis_hunter_root_manifest_sha256": str(
-                    result.get("root_manifest_sha256") or ""
+
+        if response.success:
+            state["snapshot_generation"] = self.snapshot_store.save_snapshot(
+                state["entry_index_name"],
+                response.data,
+                semantic_context["code"],
+                dependency_context=semantic_context,
+            )
+            logger.info(
+                "[snapshot-llm] completed context=entry index_name=%s "
+                "success=true context_tokens=%d",
+                state["entry_index_name"],
+                sm_tokens,
+            )
+            state["notes"].append(f"Successfully modeled function: {state['entry_func']}")
+            self._record_engine_capability(
+                "semantic_entry_model",
+                status="complete",
+                active=True,
+                candidate_count=0,
+            )
+        else:
+            failure_reason = str((response.metadata or {}).get("reason") or "semantic_model_failed")
+            logger.warning(
+                "[snapshot-llm] completed context=entry index_name=%s "
+                "success=false context_tokens=%d reason=%s error=%s",
+                state["entry_index_name"],
+                sm_tokens,
+                failure_reason,
+                response.error,
+            )
+            state["notes"].append(f"Semantic modeling failed: {response.error}")
+            self._record_engine_failed_work(
+                state,
+                engine="semantic_entry_model",
+                function_name=str(state.get("entry_func") or ""),
+                reason=f"{failure_reason}: {response.error}",
+            )
+            self._record_engine_capability(
+                "semantic_entry_model",
+                status="failed",
+                active=True,
+                reason=failure_reason,
+            )
+
+    def _step_focused_subagent_planning(self, state: Dict[str, Any]) -> None:
+        # Candidate-first is deliberately a *single* deterministic discovery
+        # path.  The old planning step duplicated those collectors for every
+        # entry and then asked the LLM to choose worker tickets before there
+        # was a validation group.  Besides producing the same lead repeatedly,
+        # it consumed an LLM request per entry even when no contradictory
+        # decision evidence existed. The stable path keeps candidate creation
+        # deterministic and routes frozen validation groups downstream.
+        state["notes"].append(
+            "Focused investigator planning skipped for the stable candidate-first "
+            "lifecycle; deterministic discovery owns candidate creation."
+        )
+        self._record_engine_capability(
+            "focused_investigators",
+            status="complete",
+            active=False,
+            reason="stable_candidate_first_lifecycle",
+        )
+        return
+
+    def _add_snapshot_candidates_to_ledger(
+        self,
+        ledger: CandidateLedger,
+        orchestrator: SubAgentOrchestrator,
+        entry_index_name: str,
+        active_skills: List[str],
+        local_records: List[Any],
+        *,
+        max_depth: int,
+        max_callees: int,
+    ) -> int:
+        """Compatibility entry point: observations are Validator context only."""
+        return 0
+
+    def _step_vulnerability_mining(self, state: Dict[str, Any]) -> None:
+        agent_context = state["agent_context"]
+        for agent_cfg in self.config.project.agents:
+            if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
+                continue
+
+            logger.info("Running Vulnerability Analyzer agent for task: %s", agent_cfg.task)
+            # The stable candidate-first path collects every inexpensive
+            # deterministic fact. A task router would be a lossy pre-filter:
+            # omitted keywords must not turn into false negatives.
+            selection = self._candidate_first_skill_selection(agent_cfg)
+
+            agent_context["task"] = agent_cfg.task
+            agent_context["entry_custom_prompt"] = getattr(
+                agent_cfg,
+                "entry_custom_prompt",
+                None,
+            )
+            agent_context["active_skills"] = selection.skills
+            agent_context["skill_selection_restricted"] = selection.restricted
+            self._attach_agent_contract(
+                agent_context,
+                "vulnerability_analyzer",
+                agent_cfg.skills,
+                active_skill_names=selection.skills,
+            )
+            candidate_batch = self.candidate_pipeline.collect_signal_candidates(state)
+            self.candidate_pipeline.accumulate_summary(state, candidate_batch)
+            self.candidate_pipeline.persist(candidate_batch)
+            rule_candidates = candidate_batch.local_candidates
+            graph_candidates = candidate_batch.graph_candidates
+            backend_candidates = candidate_batch.backend_candidates
+            candidate_signals = candidate_batch.merged_candidates
+            candidate_signal_summary = candidate_batch.summary_increment()
+            agent_context["candidate_signal_summary"] = candidate_signal_summary
+            agent_context["candidate_signal_candidates"] = self._compact_candidate_signal_items(
+                candidate_signals,
+                limit=80,
+            )
+
+            # Candidate lifecycle v3 deliberately separates cheap, complete
+            # discovery from expensive semantic investigation.  Running a
+            # general-purpose tool agent once for every entry re-discovers the
+            # same sinks, re-builds snapshots, and creates entry-local copies
+            # of the same validation obligation.  The default route therefore
+            # sends structured deterministic candidates directly to the shared
+            # validator.  Focused deep workers remain available for the small
+            # set of high-risk contradictory tickets planned above.
+            self._observe_instance_collection(
+                "registration",
+                lambda: self._register_candidate_issues(
+                    state, candidate_signals, source="deterministic_candidate_discovery"
                 ),
-                "hypothesis_hunter_artifact_refs": list(result.get("artifact_refs") or []),
-                "hypothesis_hunter_decision": {
-                    "active_product_effect": "candidate_registration_only",
-                    "reason_code": "hypothesis_hunter_candidate_registration_only",
-                    "coverage_summary": dict(result.get("coverage_summary") or {}),
-                },
+            )
+            new_issues = self._deduplicate_against_history(
+                list(candidate_signals),
+                state,
+            )
+            state["pending_new_issues"].extend(new_issues)
+            state["notes"].append(
+                "Routed structured deterministic candidates directly to "
+                "validation through the stable candidate-first lifecycle."
+            )
+            self._record_engine_capability(
+                "vulnerability_analyzer",
+                status="complete",
+                active=False,
+                reason="stable_candidate_first_lifecycle",
+                candidate_count=len(candidate_signals),
+            )
+            continue
+
+        if not getattr(self, "defer_validation_to_scan", False):
+            self._run_single_entry_active_discovery(state)
+            self._register_snapshot_shadow_candidates(state)
+
+    def _register_snapshot_shadow_candidates(self, state: Dict[str, Any]) -> None:
+        """Register opt-in observations only after candidate-blind discovery."""
+        mode = getattr(self.config.analysis, "semantic_snapshot_candidate_mode", "off")
+        if mode != "shadow" or state.get("snapshot_shadow_attempted"):
+            return
+        state["snapshot_shadow_attempted"] = True
+        result = getattr(self, "semantic_result", None)
+        ledger = state.get("candidate_ledger")
+        if result is None or not isinstance(ledger, CandidateLedger):
+            return
+        token = getattr(self, "cancellation_token", None)
+        if token is not None:
+            token.raise_if_cancelled()
+        from ...orchestration.snapshot_candidates import register_conditional_snapshot_candidates
+
+        registrar = CandidateRegistrar(
+            ledger,
+            project_id=str(getattr(self.config.project, "project_id", "") or ""),
+            project_root=str(self.config.project.project_root),
+            revision=str(ledger.revision or ""),
+            run_id=str(state.get("run_id") or ""),
+            decision_fact_cache=getattr(self, "decision_fact_cache", None),
+        )
+        issues = register_conditional_snapshot_candidates(
+            result,
+            registrar,
+            mode=mode,
+            project_root=self.config.project.project_root,
+            entry=str(state.get("entry_func") or ""),
+            entry_file=str(state.get("entry_file_path") or ""),
+            entry_signature=str(state.get("entry_signature") or ""),
+        )
+        state.setdefault("pending_new_issues", []).extend(issues)
+
+    def _run_single_entry_active_discovery(self, state: Dict[str, Any]) -> None:
+        """Run the shared map/discovery stage before local validation."""
+
+        if state.get("active_discovery_attempted"):
+            return
+        state["active_discovery_attempted"] = True
+        profile = resolve_discovery_profile(self.config)
+        discovery_mode = rollout_active_discovery_mode(self.config)
+        if profile.name == "fast" or discovery_mode == "disabled":
+            state["active_discovery"] = {
+                "enabled": False,
+                "profile": profile.name,
+                "status": (
+                    "disabled_by_profile" if profile.name == "fast" else "disabled_by_rollout"
+                ),
+                "visibility_mode": discovery_mode,
+                "rollout": rollout_runtime_policy(self.config),
+                "llm_semantic_model_calls": 0,
+                "llm_discovery_call_count": 0,
             }
+            return
+
+        snapshot_dir = Path(self.config.analysis.snapshot_dir)
+        sidecar_path = snapshot_dir / "security_map.db"
+        export_path = snapshot_dir / "security_semantic_map.json"
+        ledger = state.get("candidate_ledger")
+        if not isinstance(ledger, CandidateLedger):
+            state["active_discovery"] = {
+                "enabled": True,
+                "profile": profile.name,
+                "status": "failed",
+                "failures": [{"reason": "candidate ledger unavailable"}],
+            }
+            return
+        before_clusters = {record.validation_cluster_uid for record in ledger.records()}
+        started = time.monotonic()
+        try:
+            entry = FunctionEntry(
+                function_name=str(state.get("entry_func") or self.config.project.entry_function),
+                file_path=str(state.get("entry_file_path") or "") or None,
+                signature=str(state.get("entry_signature") or "") or None,
+                diff_focus=(
+                    dict(state.get("diff_focus") or {})
+                    if isinstance(state.get("diff_focus"), dict)
+                    else None
+                ),
+            )
+            semantic_map = ZeroLLMSecurityMapBuilder(
+                self.code_index,
+                project_id=str(
+                    getattr(self.config.project, "project_id", "")
+                    or self.config.project.project_root.name
+                ),
+                revision=str(getattr(ledger, "revision", "") or ""),
+                profile=profile.name,
+                semantic_overlay=self._get_semantic_overlay(),
+                project_root=self.config.project.project_root,
+                max_functions=int(
+                    getattr(
+                        self.config.analysis,
+                        "security_map_max_functions",
+                        15_000 if profile.name == "deep" else 5_000,
+                    )
+                ),
+            ).build([entry])
+            store = SQLiteSecurityMapStore(sidecar_path)
+            registrar = CandidateRegistrar(
+                ledger,
+                project_id=str(
+                    getattr(self.config.project, "project_id", "")
+                    or self.config.project.project_root.name
+                ),
+                project_root=str(self.config.project.project_root),
+                revision=str(getattr(ledger, "revision", "") or ""),
+                run_id=str(state.get("run_id") or ""),
+                decision_fact_cache=self.decision_fact_cache,
+            )
+            discovery_llm_client = self._scan_role_llm_client("analysis")
+            modeling_llm_client = self._scan_role_llm_client("modeling")
+            report_runner = None
+            semantic_enricher = None
+            if discovery_llm_client is not None:
+                report_runner = make_agent_report_runner(ActiveDiscoveryAgent(discovery_llm_client))
+            if modeling_llm_client is not None:
+                semantic_enricher = SemanticMapEnricher(
+                    profile=profile,
+                    store=store,
+                    model_identity=str(
+                        (getattr(modeling_llm_client, "models", None) or ["unknown"])[0]
+                    ),
+                    user_semantics_fingerprint=str(
+                        semantic_map.fingerprints.get("semantic_overlay") or ""
+                    ),
+                    report_runner=make_semantic_enrichment_runner(
+                        SemanticEnrichmentAgent(modeling_llm_client)
+                    ),
+                    mode=str(
+                        getattr(
+                            self.config.analysis,
+                            "security_semantic_enrichment_mode",
+                            "shadow",
+                        )
+                        or "shadow"
+                    ),
+                )
+            planned_map, discovery_state = ActiveDiscoveryCoordinator(
+                profile=profile,
+                store=store,
+                registrar=registrar,
+                report_runner=report_runner,
+                investigation_runner=make_investigation_runner(
+                    self.config,
+                    semantic_map,
+                    discovery_llm_client,
+                    cancellation=getattr(self, "cancellation_token", None),
+                ),
+                semantic_enricher=semantic_enricher,
+                visibility_mode=discovery_mode,
+                rollout_stage=str(rollout_runtime_policy(self.config).get("stage") or "unmanaged"),
+            ).run(
+                semantic_map,
+                covered_keys=candidate_coverage_keys(ledger, semantic_map=semantic_map),
+                known_variant_keys=historical_variant_keys(
+                    (
+                        state.get("historical_report", {}).get("issues", [])
+                        if isinstance(state.get("historical_report"), dict)
+                        else []
+                    )
+                ),
+                export_path=export_path,
+            )
+            discovery_state.update(
+                {
+                    "sidecar_path": str(sidecar_path),
+                    "json_export_path": str(export_path),
+                    "duration_seconds": round(time.monotonic() - started, 4),
+                }
+            )
+            planned_units = list(planned_map.audit_units)
+            missing_modeling = modeling_llm_client is None and bool(planned_units)
+            missing_discovery = discovery_llm_client is None and int(
+                discovery_state.get("completed_report_count", 0) or 0
+            ) < len(planned_units)
+            if missing_modeling or missing_discovery:
+                discovery_state["status"] = "planned_no_llm_client"
+                missing_roles = [
+                    role
+                    for role, missing in (
+                        ("modeling", missing_modeling),
+                        ("analysis", missing_discovery),
+                    )
+                    if missing
+                ]
+                discovery_state.setdefault("failures", []).append(
+                    {
+                        "reason": (
+                            "No LLM client was configured for required scan role(s): "
+                            + ", ".join(missing_roles)
+                        )
+                    }
+                )
+                discovery_state["uncovered_unit_ids"] = list(
+                    dict.fromkeys(
+                        [
+                            *list(discovery_state.get("uncovered_unit_ids") or []),
+                            *(unit.unit_id for unit in planned_units),
+                        ]
+                    )
+                )
+            state["active_discovery"] = discovery_state
+            for record in ledger.records():
+                if record.validation_cluster_uid in before_clusters:
+                    continue
+                evidence = (
+                    record.ticket.evidence if isinstance(record.ticket.evidence, dict) else {}
+                )
+                payload = evidence.get("candidate_payload")
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("candidate_source") or "") != "active_discovery":
+                    continue
+                issue = deepcopy(payload)
+                issue["evidence_pack"] = deepcopy(evidence)
+                issue.setdefault("code_snippet", record.ticket.context_slice)
+                state["pending_new_issues"].append(issue)
+            state["candidate_ledger_context"] = ledger.to_context()
+            state["candidate_ledger_summary"] = ledger.summary()
+            state["total_context_tokens"] += int(discovery_state.get("context_tokens", 0) or 0)
+            state["total_cumulative_prompt_tokens"] += int(
+                discovery_state.get("cumulative_prompt_tokens", 0) or 0
+            )
+            state["total_cumulative_completion_tokens"] += int(
+                discovery_state.get("cumulative_completion_tokens", 0) or 0
+            )
+            state["total_cumulative_total_tokens"] += int(
+                discovery_state.get("cumulative_total_tokens", 0) or 0
+            )
+        except Exception as exc:
+            state["active_discovery"] = {
+                "enabled": True,
+                "profile": profile.name,
+                "status": "failed",
+                "sidecar_path": str(sidecar_path),
+                "json_export_path": str(export_path),
+                "duration_seconds": round(time.monotonic() - started, 4),
+                "failures": [{"reason": f"{type(exc).__name__}: {exc}"}],
+            }
+            logger.exception("[active-discovery] single-entry stage failed")
+        discovery_status = str(
+            (state.get("active_discovery") or {}).get("status") or "failed"
+        ).lower()
+        capability_status = (
+            "partial"
+            if discovery_status
+            in {
+                "partial",
+                "planned_no_llm_client",
+            }
+            else ("complete" if discovery_status in {"complete", "semantic_only"} else "failed")
+        )
+        discovery_failures = (state.get("active_discovery") or {}).get("failures") or []
+        discovery_reason = ""
+        if isinstance(discovery_failures, list) and discovery_failures:
+            first_failure = discovery_failures[0]
+            discovery_reason = (
+                str(first_failure.get("reason") or "")
+                if isinstance(first_failure, dict)
+                else str(first_failure)
+            )
+        self._record_engine_capability(
+            "security_semantic_map.active_discovery",
+            status=capability_status,
+            reason=discovery_reason,
+            active=True,
+            profile=profile.name,
+            stage_status=discovery_status,
         )
 
     def _scan_role_llm_client(self, role: str) -> Optional[LLMClient]:
-        """Resolve the public P5 scan role mapping."""
+        """Resolve the public scan role mapping ahead of legacy Agent fields."""
 
         profiles = getattr(getattr(self.config, "scan", None), "llm_profiles", None)
         configured_ref = str(getattr(profiles, role, "") or "")
         if not configured_ref:
-            role_names = {
-                "modeling": ("security_spec_miner",),
-                "analysis": ("hypothesis_hunter",),
-                "validation": ("proof_engine",),
-            }.get(role, ())
+            legacy_names = (
+                ("active_discovery", "vulnerability_analyzer")
+                if role == "analysis"
+                else ("semantic_modeler",)
+            )
             configured_ref = next(
                 (
                     str(getattr(item, "llm_ref", "") or "")
                     for item in self.config.project.agents
-                    if str(getattr(item, "name", "") or "") in role_names
+                    if str(getattr(item, "name", "") or "") in legacy_names
                     and bool(getattr(item, "enabled", True))
                     and str(getattr(item, "llm_ref", "") or "")
                 ),
@@ -1275,10 +2135,96 @@ class Analyzer:
         )
         return True
 
+    def _deduplicate_against_history(
+        self,
+        raw_new_issues: List[Dict[str, Any]],
+        state: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        dedup_reference_issues = state.get("verified_hist_issues", []) + state.get(
+            "user_rejected_hist_issues", []
+        )
+        if not raw_new_issues or not dedup_reference_issues:
+            return raw_new_issues
+        semantic_cfg = getattr(
+            getattr(self.config, "reporting", None),
+            "semantic_dedup",
+            None,
+        )
+        if not bool(getattr(semantic_cfg, "llm_enabled", False)):
+            state.setdefault("notes", []).append(
+                "Historical LLM duplicate suggestions skipped by default; "
+                "all candidates remain in the validation ledger."
+            )
+            return raw_new_issues
+
+        logger.info(
+            "Deduplicating %d new issue(s) against %d reference issue(s).",
+            len(raw_new_issues),
+            len(dedup_reference_issues),
+        )
+        recon_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
+            None,
+        )
+        recon_llm_ref = (
+            recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+        )
+        recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
+        if recon_client is None:
+            raise RuntimeError("No LLM client configured for issue reconciliation")
+
+        from ...agents.issue_reconciler.agent import IssueReconcilerAgent
+
+        reconciler_agent = IssueReconcilerAgent(
+            recon_client,
+            tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
+        )
+        user_rejected_hist_issues = state.get("user_rejected_hist_issues", [])
+        new_issues = []
+        for raw_issue in raw_new_issues:
+            input_data = {
+                "mode": "deduplicate",
+                "historical_issues": dedup_reference_issues,
+                "new_issue": raw_issue,
+            }
+            resp = reconciler_agent.run(input_data)
+            if resp.success and resp.data.get("is_duplicate"):
+                matched_id = resp.data.get("matched_historical_id")
+                matched_user_rejected = any(
+                    iss.get("id") == matched_id and iss.get("rejection_source") == "user"
+                    for iss in user_rejected_hist_issues
+                )
+                raw_issue.setdefault("dedup_cluster_suggestions", []).append(
+                    {
+                        "kind": "historical_duplicate",
+                        "matched_historical_id": matched_id,
+                        "matched_user_rejected": matched_user_rejected,
+                        "reasoning": str(resp.data.get("reasoning") or ""),
+                        "advisory_only": True,
+                    }
+                )
+                logger.info(
+                    "Historical duplicate suggestion recorded for issue %s -> %s; "
+                    "the candidate remains in validation.",
+                    raw_issue.get("id"),
+                    matched_id,
+                )
+            new_issues.append(raw_issue)
+        return new_issues
+
     def _detect_local_rule_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Seed backend-appropriate local candidates before LLM validation."""
         entry_func = state["entry_func"]
         impl = state.get("impl_result") or {}
+        if impl.get("truncated") or not str(impl.get("code") or "").strip():
+            self._record_engine_failed_work(
+                state,
+                engine="deterministic_local_rules",
+                function_name=entry_func,
+                reason="source_truncated" if impl.get("truncated") else "source_unavailable",
+                call_path=[entry_func],
+            )
+            return []
         code = str(impl.get("code") or "")
         file_path = str(impl.get("file") or "")
         profile = self._candidate_backend_profile()
@@ -1317,8 +2263,10 @@ class Analyzer:
             issues.extend(self._detect_java_project_file_rule_candidates(java_generator))
         elif profile == "regex":
             regex_generator = RegexCandidateGenerator(
-                self._get_local_pattern_semantics(),
+                program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+                semantics=self._get_local_pattern_semantics(),
                 rule_policy=getattr(self, "rule_policy", None),
+                restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
             )
             issues.extend(regex_generator.generate_issues(entry_func, code, file_path))
             issues.extend(
@@ -1334,10 +2282,12 @@ class Analyzer:
             )
         if self._project_language() != "java" and profile in {"clang", "unified"}:
             clang_generator = ClangAstCfgCandidateGenerator(
-                self._get_local_pattern_semantics(),
+                program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+                semantics=self._get_local_pattern_semantics(),
                 semantic_overlay=self._get_semantic_overlay(),
                 tooling_evidence_provider=self._clang_tooling_evidence_for,
                 rule_policy=getattr(self, "rule_policy", None),
+                restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
             )
             issues.extend(clang_generator.generate_issues(entry_func, code, file_path))
             issues.extend(
@@ -1413,6 +2363,16 @@ class Analyzer:
             self._extension_rule_registry = registry
 
         impl = _as_dict(state.get("impl_result"))
+        if impl.get("truncated") or not str(impl.get("code") or "").strip():
+            function_name = str(state.get("entry_func") or impl.get("function") or "")
+            self._record_engine_failed_work(
+                state,
+                engine="extension_rules",
+                function_name=function_name,
+                reason="source_truncated" if impl.get("truncated") else "source_unavailable",
+                call_path=[function_name],
+            )
+            return []
         context = RuleContext(
             language=self._project_language(),
             project_root=Path(self.config.project.project_root),
@@ -1457,6 +2417,7 @@ class Analyzer:
             self._get_local_pattern_semantics(),
             semantic_overlay=self._get_semantic_overlay(),
             rule_policy=getattr(self, "rule_policy", None),
+            restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
         )
         issues = generator.generate_for_entry(
             entry_func,
@@ -1527,6 +2488,87 @@ class Analyzer:
         if not isinstance(functions, (list, tuple, set)):
             return 0
         return len({str(item) for item in functions if str(item)})
+
+    def _detect_graph_rule_tickets(
+        self,
+        state: Dict[str, Any],
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[Any]:
+        generator = GraphCandidateGenerator(
+            self.code_index,
+            self._get_local_pattern_semantics(),
+            semantic_overlay=self._get_semantic_overlay(),
+            rule_policy=getattr(self, "rule_policy", None),
+            restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
+        )
+        issues = self._detect_graph_rule_candidates(state)
+        state.setdefault("_candidate_signal_cache", {})["graph"] = issues
+        tickets = [generator.issue_to_ticket(issue) for issue in issues]
+        if allowed_skills is None:
+            return tickets
+        allowed = set(allowed_skills)
+        return [ticket for ticket in tickets if ticket.skill in allowed]
+
+    def _detect_local_rule_tickets(
+        self,
+        state: Dict[str, Any],
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[Any]:
+        """Create tickets from the same deterministic batch used by mining."""
+        profile = self._candidate_backend_profile()
+        generator: Optional[RegexCandidateGenerator] = None
+        java_generator: Optional[JavaRuleCandidateGenerator] = None
+        clang_generator: Optional[ClangAstCfgCandidateGenerator] = None
+        if self._project_language() == "java":
+            java_generator = JavaRuleCandidateGenerator(
+                rule_policy=getattr(self, "rule_policy", None)
+            )
+        elif profile == "regex":
+            generator = RegexCandidateGenerator(
+                program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+                semantics=self._get_local_pattern_semantics(),
+                rule_policy=getattr(self, "rule_policy", None),
+                restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
+            )
+        if self._project_language() != "java" and profile in {"clang", "unified"}:
+            clang_generator = ClangAstCfgCandidateGenerator(
+                program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+                semantics=self._get_local_pattern_semantics(),
+                semantic_overlay=self._get_semantic_overlay(),
+                tooling_evidence_provider=self._clang_tooling_evidence_for,
+                rule_policy=getattr(self, "rule_policy", None),
+                restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
+            )
+        issues = self._detect_local_rule_candidates(state)
+        state.setdefault("_candidate_signal_cache", {})["local"] = issues
+        if not issues:
+            return []
+        tickets = [
+            (
+                java_generator.issue_to_ticket(issue)
+                if java_generator is not None
+                else (
+                    clang_generator.issue_to_ticket(issue)
+                    if issue.get("candidate_source") == "clang_ast_cfg"
+                    and clang_generator is not None
+                    else (
+                        generator
+                        or RegexCandidateGenerator(
+                            self._get_local_pattern_semantics(),
+                            rule_policy=getattr(self, "rule_policy", None),
+                            restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
+                        )
+                    ).issue_to_ticket(issue)
+                )
+            )
+            for issue in issues
+            if issue.get("validation_required") is not False
+            and str(issue.get("finding_kind") or "").lower() != "audit_observation"
+        ]
+        if allowed_skills is None:
+            return tickets
+        allowed = set(allowed_skills)
+        return [ticket for ticket in tickets if ticket.skill in allowed]
 
     @staticmethod
     def _apply_candidate_validation_budget(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1607,7 +2649,7 @@ class Analyzer:
         ):
             return False
         return bool(
-            re.search(r"\b(?:malloc|calloc|alloc|realloc|_safe_malloc|_safe_calloc)\b", text)
+            re.search(r"\b(?:malloc|calloc|alloc|realloc)\b", text)
             or re.search(r"\b(?:allocation|allocate|heap|resource)\b", text)
         )
 
@@ -1651,8 +2693,20 @@ class Analyzer:
 
     def _direct_callee_rule_scan_budget(self, state: Dict[str, Any]) -> Dict[str, int]:
         budget = self._current_effective_budget(state)
-        configured_breadth = int(budget.get("graph_functions") or 16)
-        configured_depth = int(budget.get("graph_depth") or 2)
+        hard_caps = _as_dict(budget.get("hard_caps"))
+        analysis_config = getattr(getattr(self, "config", None), "analysis", None)
+        configured_breadth = int(
+            budget.get("premodel_callees")
+            or hard_caps.get("max_premodel_callees")
+            or getattr(analysis_config, "max_premodel_callees", 16)
+            or 16
+        )
+        configured_depth = int(
+            budget.get("premodel_depth")
+            or hard_caps.get("max_premodel_depth")
+            or getattr(analysis_config, "max_premodel_depth", 2)
+            or 2
+        )
         limit = max(16, min(64, configured_breadth))
         max_depth = max(2, min(4, configured_depth))
         total_limit = max(80, min(256, limit * max_depth * 4))
@@ -1680,10 +2734,23 @@ class Analyzer:
         """Run local candidate rules on project callees of thin public facades."""
         issues: List[Dict[str, Any]] = []
         root = str(entry_func or impl.get("function") or impl.get("name") or "").strip()
+
+        def external_modeled(name: str, caller: str, item: Any = None) -> bool:
+            classify = getattr(self.code_index, "call_model_status", None)
+            status = classify(name, caller, item) if callable(classify) else ""
+            if status in {"standard_model", "external_model_missing"}:
+                if state is not None:
+                    records = state.setdefault("external_call_models", [])
+                    row = {"name": name, "caller": caller, "status": status}
+                    if row not in records:
+                        records.append(row)
+                return True
+            return False
+
         queued: List[tuple[str, int, List[str]]] = []
         for item in impl.get("callees", []):
             name = self._callee_item_name(item)
-            if not name or name == root:
+            if not name or name == root or external_modeled(name, root, item):
                 continue
             queued.append((name, 1, [root, name] if root else [name]))
         # Breadth is a prioritization hint only. Deterministic work must not
@@ -1699,11 +2766,15 @@ class Analyzer:
         )
         while queued and analyzed < total_limit:
             callee, depth, call_path = queued.pop(0)
-            if callee in visited:
+            if callee in visited or external_modeled(
+                callee, call_path[-2] if len(call_path) > 1 else root
+            ):
                 continue
             visited.add(callee)
             try:
-                callee_impl = self.code_index.get_function_impl(callee, warn_missing=False)
+                callee_impl = self.code_index.get_function_impl(
+                    callee, max_lines=None, warn_missing=False
+                )
             except Exception as exc:
                 logger.warning(
                     "Skipping direct callee candidate scan for '%s': %s",
@@ -1719,7 +2790,14 @@ class Analyzer:
                     call_path=call_path,
                 )
                 continue
-            if not callee_impl:
+            if not callee_impl or callee_impl.get("truncated"):
+                self._record_engine_failed_work(
+                    state,
+                    engine=engine_name,
+                    function_name=callee,
+                    reason="source_truncated" if callee_impl else "source_unavailable",
+                    call_path=call_path,
+                )
                 continue
             impl_cache[callee] = callee_impl
             analyzed += 1
@@ -1762,7 +2840,12 @@ class Analyzer:
             if depth >= max_depth and not expand_dispatcher_siblings:
                 for nested in callee_impl.get("callees", []):
                     nested_name = self._callee_item_name(nested)
-                    if nested_name and nested_name not in visited and nested_name not in call_path:
+                    if (
+                        nested_name
+                        and nested_name not in visited
+                        and nested_name not in call_path
+                        and not external_modeled(nested_name, callee, nested)
+                    ):
                         self._record_deferred_deterministic_work(
                             state,
                             engine=engine_name,
@@ -1775,7 +2858,12 @@ class Analyzer:
             nested_queue: List[tuple[str, int, List[str]]] = []
             for nested in callee_impl.get("callees", []):
                 nested_name = self._callee_item_name(nested)
-                if nested_name and nested_name not in visited and nested_name not in call_path:
+                if (
+                    nested_name
+                    and nested_name not in visited
+                    and nested_name not in call_path
+                    and not external_modeled(nested_name, callee, nested)
+                ):
                     nested_queue.append((nested_name, depth + 1, call_path + [nested_name]))
             queued.extend(nested_queue)
             queued = self._order_callee_work_queue(queued)
@@ -2388,6 +3476,99 @@ class Analyzer:
     def _merge_rule_candidate_duplicate(primary: Dict[str, Any], duplicate: Dict[str, Any]) -> None:
         merge_rule_candidate_duplicate(primary, duplicate)
 
+    def _detect_instance_backend_signals(
+        self,
+        state: Dict[str, Any],
+        *,
+        entry_func: str,
+        reachable_funcs: Set[str],
+    ) -> List[Dict[str, Any]]:
+        """Saber signals the producer attributed to this instance's command.
+
+        Under instance scope the raw KnowledgeDB handle is refused, so the plain
+        taint query cannot run. The scoped accessor answers a narrower question —
+        which stored signals carry *this* compile command's identity — and refuses
+        when the command is shared by several contexts. A refusal is recorded as an
+        excluded capability with its reason; it is never reported as "SVF found
+        nothing".
+        """
+
+        accessor = getattr(self.code_index, "get_instance_backend_signals", None)
+        if not callable(accessor):
+            return []
+        scope = getattr(self, "instance_scope", None)
+        build_context_id = str(getattr(scope, "build_context_id", "") or "")
+        try:
+            signals = accessor(
+                build_context_id=build_context_id,
+                func_names=sorted(reachable_funcs),
+            )
+        except Exception as exc:
+            logger.warning("Instance backend signal query failed: %s", exc)
+            self._record_engine_capability(
+                "svf_taint_query",
+                status="failed",
+                active=False,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+            self._record_engine_failed_work(
+                state,
+                engine="svf_taint_query",
+                function_name=entry_func,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+            return []
+        signals = signals if isinstance(signals, dict) else {}
+        status = str(signals.get("status") or "unavailable")
+        if status != "complete":
+            # Declared exclusion (see ``_begin_instance_collection``): the fixed
+            # reason keeps the collection closure comparable, and ``detail``
+            # carries which refusal happened and why.
+            self._record_engine_capability(
+                "svf_taint_query",
+                status="excluded",
+                active=False,
+                reason="scoped_raw_knowledge_db_unavailable",
+                detail=f"{status}:{signals.get('reason') or ''}",
+                build_context_id=build_context_id,
+            )
+            return []
+        bugs: List[Dict[str, Any]] = []
+        for row in signals.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            bug = dict(row)
+            bug["build_context_id"] = build_context_id
+            bugs.append(bug)
+        self._record_engine_capability(
+            "svf_taint_query",
+            status="complete",
+            active=True,
+            reason=(
+                "instance_scoped:"
+                f"command={signals.get('command_id') or ''}"
+                f";exact={int(signals.get('exact_rows') or 0)}"
+                f";ambiguous={int(signals.get('ambiguous_rows') or 0)}"
+                f";unattributed={int(signals.get('unattributed_rows') or 0)}"
+            ),
+            candidate_count=len(bugs),
+        )
+        issues = SvfValueFlowCandidateGenerator(
+            source_path_resolver=self._reconstruct_svf_source_path,
+        ).generate_issues(
+            bugs,
+            entry_func=entry_func,
+        )
+        if issues:
+            logger.info(
+                "Instance-scoped Saber signals for entry '%s': command=%s bugs=%d candidates=%d",
+                entry_func,
+                signals.get("command_id"),
+                len(bugs),
+                len(issues),
+            )
+        return issues
+
     def _detect_backend_signal_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Convert KnowledgeDB/SVF/Saber findings into normal candidates."""
         scan_started = time.time()
@@ -2454,6 +3635,14 @@ class Analyzer:
                     len(svf_candidates),
                 )
             candidates.extend(svf_candidates)
+        else:
+            candidates.extend(
+                self._detect_instance_backend_signals(
+                    state,
+                    entry_func=entry_func,
+                    reachable_funcs=reachable_funcs,
+                )
+            )
         candidates.extend(
             self._detect_clang_knowledgedb_candidates(
                 state,
@@ -2686,8 +3875,14 @@ class Analyzer:
     ) -> List[Dict[str, Any]]:
         if db is None or self._candidate_backend_profile() not in {"clang", "unified"}:
             return []
-        find_missing = getattr(db, "find_callers_without_callee", None)
+        find_missing = getattr(db, "find_acquisition_calls", None)
         if not callable(find_missing):
+            self._record_engine_capability(
+                "clang_knowledge_db",
+                status="degraded",
+                active=True,
+                reason="object_acquisition_inventory_unavailable",
+            )
             return []
         entry_func = str(state.get("entry_func") or "")
         pairs = self._resource_release_pairs_from_overlay()
@@ -2701,12 +3896,17 @@ class Analyzer:
         rows_seen = 0
         query_failures = 0
         legacy_queries = 0
+        grouped_pairs: Dict[str, Tuple[Set[str], Set[str]]] = {}
         for acquire, release, pair_source in pairs:
+            releases, sources = grouped_pairs.setdefault(acquire, (set(), set()))
+            releases.add(release)
+            sources.add(pair_source)
+        for acquire, (releases, sources) in grouped_pairs.items():
+            release = " or ".join(sorted(releases))
+            pair_source = ", ".join(sorted(sources))
             try:
                 rows, legacy_query = self._collect_missing_release_rows(
-                    find_missing,
-                    acquire,
-                    release,
+                    find_missing, acquire, sorted(releases)
                 )
             except Exception as exc:
                 logger.warning("Unable to query KnowledgeDB pair %s/%s: %s", acquire, release, exc)
@@ -2724,13 +3924,14 @@ class Analyzer:
                 func = str(row.get("function") or "")
                 if not self._target_in_reachable_functions(func, reachable_funcs):
                     continue
-                candidates.append(
-                    self._clang_pair_row_to_candidate(
-                        row,
-                        entry_func=entry_func,
-                        pair_source=pair_source,
+                for object_row in self._knowledge_db_object_rows(row):
+                    candidates.append(
+                        self._clang_pair_row_to_candidate(
+                            object_row,
+                            entry_func=entry_func,
+                            pair_source=pair_source,
+                        )
                     )
-                )
         logger.info(
             "Backend Clang KnowledgeDB signal scan entry='%s': pairs=%d rows=%d reachable=%d "
             "candidates=%d duration=%.2fs",
@@ -2743,7 +3944,7 @@ class Analyzer:
         )
         capability_status = "complete"
         capability_reason = ""
-        if query_failures and query_failures >= len(pairs):
+        if query_failures and query_failures >= len(grouped_pairs):
             capability_status = "failed"
             capability_reason = "all_resource_pair_queries_failed"
         elif query_failures:
@@ -2764,11 +3965,57 @@ class Analyzer:
         )
         return candidates
 
+    def _knowledge_db_object_rows(self, row: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Resolve every acquisition object; absence of facts stays reviewable."""
+        from ...retrieval.validation_facts import scan_compiler_facts
+        from ...retrieval.lifecycle_analysis import lifecycle_facts
+        from ..validation.review_checks import ReviewClaimChecker, function_in_source
+
+        try:
+            root = Path(self.config.project.project_root).resolve()
+            commands = Path(
+                self.config.project.compile_commands_path or root / "compile_commands.json"
+            )
+            directory = Path(self.config.analysis.snapshot_dir) / "review_experiment" / "facts"
+            store = scan_compiler_facts(self.code_index, root, commands, directory)
+            descriptor = store.collect(str(row.get("file_path") or ""))
+            if not descriptor.get("complete"):
+                return [
+                    {**row, "lifecycle_gap": descriptor.get("reason", "compiler_facts_incomplete")}
+                ]
+            data = store.load(descriptor["fact_store_id"])
+            fn = ReviewClaimChecker._functions(data).get(str(row.get("function") or ""))
+            if not fn or not function_in_source(fn, data["source"]):
+                return [{**row, "lifecycle_gap": "function_identity_missing_or_ambiguous"}]
+            registry = self._get_local_pattern_semantics().contracts
+            source = Path(data["source"]).read_text(encoding="utf-8")
+            analysis = lifecycle_facts(store, registry, data, fn, source)
+            objects = [
+                o
+                for o in analysis["obligations"]
+                if o["api"] == row.get("acquire_func") and o["line"] == row.get("line")
+            ]
+            if not objects:
+                return [{**row, "lifecycle_gap": "acquisition_identity_not_resolved"}]
+            return [
+                {
+                    **row,
+                    "lifecycle_obligation": obj,
+                    "lifecycle_gap": analysis["gaps"],
+                    "contract_version": registry.version,
+                }
+                for obj in objects
+            ]
+        except (AttributeError, OSError, KeyError, TypeError, ValueError) as exc:
+            return [
+                {**row, "lifecycle_gap": "compiler_lifecycle_unavailable:" + type(exc).__name__}
+            ]
+
     @staticmethod
     def _collect_missing_release_rows(
         query: Any,
         acquire: str,
-        release: str,
+        release: Any,
         *,
         page_size: int = 500,
     ) -> tuple[List[Dict[str, Any]], bool]:
@@ -2831,6 +4078,29 @@ class Analyzer:
         entry_func: str,
         pair_source: str,
     ) -> Dict[str, Any]:
+        from ...semantics.models import LocalPatternSemantics
+
+        semantics = LocalPatternSemantics()
+        semantics.merge_overlay(self._get_semantic_overlay())
+        row = {"contract_version": semantics.contracts.version, **row}
+        getter = getattr(getattr(self, "code_index", None), "get_function_impl", None)
+        if callable(getter):
+            try:
+                impl = getter(
+                    str(row.get("function") or ""),
+                    file_path=str(row.get("file_path") or ""),
+                    max_lines=None,
+                )
+                if isinstance(impl, dict):
+                    row["call_semantics"] = semantics.contracts.trace_calls(
+                        {
+                            **impl,
+                            "func_name": row.get("function"),
+                            "file_path": row.get("file_path"),
+                        }
+                    )
+            except (KeyError, ValueError, TypeError, RuntimeError) as exc:
+                row["call_semantics_unavailable"] = type(exc).__name__
         return clang_pair_row_to_candidate(
             row,
             entry_func=entry_func,
@@ -3529,8 +4799,9 @@ class Analyzer:
         return "java" if language in {"java", "java_src", "javasrc"} else "c_cpp"
 
     def _get_semantic_overlay(self) -> Dict[str, Any]:
+        self._require_instance_semantics_current()
         if self._semantic_overlay is None:
-            raise RuntimeError("authoritative_security_spec_overlay_not_prepared")
+            self._semantic_overlay = SemanticOverlayCompiler(self.user_config).compile()
         return self._semantic_overlay
 
     def _annotate_candidate_issues(
@@ -3751,7 +5022,7 @@ class Analyzer:
             if not call_paths:
                 call_paths = [[entry_identity]]
             for call_path in call_paths:
-                ticket = CandidateTicket(
+                ticket = SubAgentTicket(
                     id=str(issue.get("candidate_id") or issue.get("id") or envelope.run_issue_uid),
                     skill=str(
                         issue.get("skill")
@@ -3789,6 +5060,21 @@ class Analyzer:
                     record_role="validation_obligation",
                     entry_identity=entry_identity,
                 )
+        tracker = getattr(self, "_instance_collection", None)
+        if tracker is not None and source == "deterministic_candidate_discovery":
+            with ledger._lock:
+                for issue in issues:
+                    key = issue.get("validation_cluster_uid")
+                    record = ledger._records.get(str(key or ""))
+                    if (
+                        record is None
+                        or record.candidate_uid != issue.get("candidate_uid")
+                        or record.obligation_uid != issue.get("obligation_uid")
+                        or not any(
+                            item.entry_identity == entry_identity for item in record.occurrences
+                        )
+                    ):
+                        raise ValueError("instance_collection_candidate_not_registered")
         state["candidate_ledger_context"] = ledger.to_context()
         state["candidate_ledger_summary"] = ledger.summary()
 
@@ -3835,10 +5121,33 @@ class Analyzer:
             "unified": "svf_saber_backend_signal_adapter",
         }.get(self._candidate_backend_profile(), "knowledge_db_backend_signal_adapter")
 
+    def _detect_backend_signal_tickets(
+        self,
+        state: Dict[str, Any],
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[Any]:
+        generator = RegexCandidateGenerator(
+            self._get_local_pattern_semantics(),
+            restrict_to_semantics=getattr(self, "instance_scope", None) is not None,
+        )
+        issues = self._detect_backend_signal_candidates(state)
+        state.setdefault("_candidate_signal_cache", {})["backend"] = issues
+        tickets = [generator.issue_to_ticket(issue) for issue in issues]
+        if allowed_skills is None:
+            return tickets
+        allowed = set(allowed_skills)
+        return [ticket for ticket in tickets if ticket.skill in allowed]
+
     def _get_local_pattern_semantics(self) -> LocalPatternSemantics:
-        """Return qualification-backed semantics compiled for this scan."""
+        """Build once-per-run local-pattern aliases and project API semantics."""
+        self._require_instance_semantics_current()
         if self._local_pattern_semantics is None:
-            raise RuntimeError("authoritative_security_spec_semantics_not_prepared")
+            self._local_pattern_semantics = LocalPatternSemanticBuilder(
+                self.code_index,
+                self.user_config,
+                self.snapshot_store,
+                (Path(path) for path in self.config.project.exclude_paths),
+            ).build()
         return self._local_pattern_semantics
 
     def _get_knowledge_db(self) -> Optional[Any]:
@@ -3922,6 +5231,24 @@ class Analyzer:
                     file_path,
                     line,
                     issue_func,
+                    column_number=(
+                        int(
+                            ((issue.get("evidence_pack") or {}).get("sink") or {}).get("column")
+                            or 1
+                        )
+                        if isinstance((issue.get("evidence_pack") or {}).get("sink"), dict)
+                        else 1
+                    ),
+                    event_ordinal=(
+                        int(
+                            ((issue.get("evidence_pack") or {}).get("sink") or {}).get(
+                                "event_ordinal"
+                            )
+                            or 0
+                        )
+                        if isinstance((issue.get("evidence_pack") or {}).get("sink"), dict)
+                        else 0
+                    ),
                     kind="candidate_sink",
                     normalized_code=sink_text or str(issue.get("description") or ""),
                     ast_kind=defect_class,
@@ -4054,6 +5381,7 @@ class Analyzer:
         # Preserve compatibility for focused callers/tests that construct the
         # legacy facade without running ``__init__``.
         if getattr(self, "defer_validation_to_scan", False):
+            self._close_instance_collection(state)
             pending = len(state.get("pending_new_issues") or [])
             if pending:
                 state.setdefault("notes", []).append(
@@ -4067,8 +5395,8 @@ class Analyzer:
             return
         ledger = state.get("candidate_ledger")
         if isinstance(ledger, CandidateLedger):
-            # Candidate-blind discovery is the final producer for a
-            # single-entry scan.  Seal the obligation set before V0-V3 starts
+            # Discovery and opt-in snapshot observations have finished.
+            # Seal the obligation set before V0-V3 starts
             # so late producers cannot evade this validation pass.
             ledger.freeze()
         runner = getattr(self, "validation_runner", None)
@@ -4094,31 +5422,14 @@ class Analyzer:
         """Aggregate single-entry V1→V3 fact and verdict telemetry."""
 
         transitions: Dict[str, int] = {}
-        fact_by_kind: Dict[str, Dict[str, int]] = {}
-        fact_terminal_statuses: Dict[str, int] = {}
         fact_completed = 0
         fact_requested = 0
         for issue in issues:
-            raw_resolutions = issue.get("validator_fact_resolutions")
-            resolutions = (
-                [item for item in raw_resolutions if isinstance(item, dict)]
-                if isinstance(raw_resolutions, list)
-                else []
-            )
-            legacy = issue.get("validator_fact_resolution")
-            if not resolutions and isinstance(legacy, dict):
-                resolutions = [legacy]
-            for resolution in resolutions:
+            resolution = issue.get("validator_fact_resolution")
+            if isinstance(resolution, dict):
                 fact_requested += 1
-                status = str(
-                    resolution.get("terminal_status") or resolution.get("status") or "unknown"
-                )
-                if status in {"resolved", "completed", "completed_partial", "completed_with_proof"}:
+                if str(resolution.get("status") or "").startswith("completed"):
                     fact_completed += 1
-                fact_terminal_statuses[status] = fact_terminal_statuses.get(status, 0) + 1
-                kind = str(resolution.get("fact_kind") or "unknown")
-                by_status = fact_by_kind.setdefault(kind, {})
-                by_status[status] = by_status.get(status, 0) + 1
             history = issue.get("validator_pass_history")
             if not isinstance(history, list):
                 continue
@@ -4138,11 +5449,6 @@ class Analyzer:
             "validator_fact_resolution_success_rate": (
                 round(fact_completed / fact_requested, 4) if fact_requested else None
             ),
-            "validator_fact_resolution_by_kind": {
-                kind: dict(sorted(statuses.items()))
-                for kind, statuses in sorted(fact_by_kind.items())
-            },
-            "validator_fact_terminal_status_counts": dict(sorted(fact_terminal_statuses.items())),
         }
 
     def _make_validation_runner(self) -> ValidationRunner:
@@ -4160,10 +5466,19 @@ class Analyzer:
             deduplicate_issues_fn=self._deduplicate_candidate_issues,
             result_cache=getattr(self, "validation_result_cache", None),
             scheduler=getattr(self, "scheduler", None),
+            project_knowledge_service=getattr(self, "project_knowledge_service", None),
+            get_contract_registry=lambda: self._get_local_pattern_semantics().contracts,
+            reproduction_service=getattr(self, "reproduction_service", None),
+            instance_scope=getattr(self, "instance_scope", None),
+            input_current_guard=self._require_instance_semantics_current,
+            instance_semantics_digest=str(
+                getattr(getattr(self, "_instance_semantics_snapshot", None), "digest", "")
+            ),
         )
 
     def _remember_validation_result(self, issue: Dict[str, Any], status: str) -> None:
         """Persist validator disposition as review memory for later scans."""
+        self._require_instance_semantics_current()
         dedup_key = str(issue.get("dedup_key") or self._canonical_issue_key(issue))
         if not dedup_key:
             return
@@ -4205,6 +5520,7 @@ class Analyzer:
             pipeline = ValidationPipeline(
                 user_config,
                 issue_key_fn=self._canonical_issue_key,
+                enable_deterministic_proof_routing=True,
             )
         return pipeline.score_components(issue, val_data)
 
@@ -4235,6 +5551,428 @@ class Analyzer:
         """Merge candidate findings that point at the same root-cause sink."""
         deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
         return deduped
+
+    def _deduplicate_report_issues(
+        self,
+        issues: List[Dict[str, Any]],
+        state: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Apply final-report semantic dedup before report views are built."""
+        semantic_cfg = getattr(getattr(self.config, "reporting", None), "semantic_dedup", None)
+        if semantic_cfg is None or not getattr(semantic_cfg, "enabled", True):
+            deduped = deduplicate_issues(issues)
+            state["semantic_dedup_summary"] = {
+                "enabled": False,
+                "input_issue_count": len(issues),
+                "output_issue_count": len(deduped),
+            }
+            return deduped
+
+        deduped, summary = deduplicate_semantic_issues_programmatic(issues)
+        summary.update(
+            {
+                "enabled": True,
+                "llm_enabled": bool(getattr(semantic_cfg, "llm_enabled", False)),
+                "input_issue_count": len(issues),
+                "after_programmatic_issue_count": len(deduped),
+            }
+        )
+        if getattr(semantic_cfg, "llm_enabled", False):
+            deduped, llm_summary = self._deduplicate_report_clusters_with_llm(
+                deduped,
+                semantic_cfg=semantic_cfg,
+            )
+            summary.update(llm_summary)
+        summary["output_issue_count"] = len(deduped)
+        state["semantic_dedup_summary"] = summary
+        return deduped
+
+    def _deduplicate_report_clusters_with_llm(
+        self,
+        issues: List[Dict[str, Any]],
+        *,
+        semantic_cfg: Any,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        max_cluster_size = max(2, int(getattr(semantic_cfg, "max_cluster_size", 8) or 8))
+        threshold = float(getattr(semantic_cfg, "llm_confidence_threshold", 0.85) or 0.85)
+        clusters: Dict[str, List[Dict[str, Any]]] = {}
+        for issue in issues:
+            for key in semantic_related_cluster_keys(issue):
+                clusters.setdefault(key, []).append(issue)
+
+        candidate_clusters: List[List[Dict[str, Any]]] = []
+        seen_cluster_sets: Set[tuple[int, ...]] = set()
+        prefilter_skipped = 0
+        for group in clusters.values():
+            for candidate_group in self._split_semantic_dedup_cluster(group, max_cluster_size):
+                if len(candidate_group) < 2:
+                    continue
+                if not self._semantic_dedup_cluster_needs_llm(candidate_group):
+                    prefilter_skipped += 1
+                    continue
+                cluster_ids = tuple(sorted(id(issue) for issue in candidate_group))
+                if cluster_ids in seen_cluster_sets:
+                    continue
+                seen_cluster_sets.add(cluster_ids)
+                candidate_clusters.append(candidate_group)
+        summary: Dict[str, Any] = {
+            "llm_candidate_cluster_count": len(candidate_clusters),
+            "llm_clusters_called": 0,
+            "llm_cache_hits": 0,
+            "llm_merge_count": 0,
+            "llm_suggestion_count": 0,
+            "llm_rejected_merge_count": 0,
+            "llm_failed_cluster_count": 0,
+            "llm_prefilter_skipped_count": prefilter_skipped,
+        }
+        if not candidate_clusters:
+            return issues, summary
+
+        recon_agent = self._make_issue_reconciler_agent()
+        if recon_agent is None:
+            summary["llm_disabled_reason"] = "no_issue_reconciler_llm_client"
+            return issues, summary
+
+        self._assign_semantic_dedup_ids(issues)
+        by_issue_id: Dict[str, Dict[str, Any]] = {}
+        issue_order: List[str] = []
+        issue_indices = {id(issue): index for index, issue in enumerate(issues)}
+        for index, issue in enumerate(issues):
+            issue_id = self._semantic_dedup_issue_id(issue, index)
+            by_issue_id[issue_id] = issue
+            issue_order.append(issue_id)
+
+        removed: Set[str] = set()
+        for cluster in candidate_clusters:
+            active_cluster = [
+                issue
+                for issue in cluster
+                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
+                not in removed
+            ]
+            if len(active_cluster) < 2:
+                continue
+            cluster_payload = self._semantic_dedup_cluster_payload(active_cluster, issue_indices)
+            cluster_fingerprint = self._semantic_dedup_cluster_fingerprint(cluster_payload)
+            decision = self._semantic_dedup_llm_cache.get(cluster_fingerprint)
+            if decision is not None:
+                summary["llm_cache_hits"] += 1
+            else:
+                response = recon_agent.run(cluster_payload)
+                summary["llm_clusters_called"] += 1
+                if not response.success or not isinstance(response.data, dict):
+                    summary["llm_failed_cluster_count"] += 1
+                    continue
+                decision = response.data
+                self._semantic_dedup_llm_cache[cluster_fingerprint] = decision
+
+            suggested, rejected = self._apply_llm_dedup_decision(
+                decision,
+                by_issue_id,
+                removed,
+                threshold=threshold,
+            )
+            summary["llm_suggestion_count"] += suggested
+            summary["llm_rejected_merge_count"] += rejected
+
+        result = [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed]
+        for issue in issues:
+            issue.pop("_semantic_dedup_uid", None)
+        return result, summary
+
+    @staticmethod
+    def _semantic_dedup_cluster_needs_llm(group: List[Dict[str, Any]]) -> bool:
+        for left_index, left in enumerate(group):
+            for right in group[left_index + 1 :]:
+                if Analyzer._semantic_dedup_pair_needs_llm(left, right):
+                    return True
+        return False
+
+    @staticmethod
+    def _semantic_dedup_pair_needs_llm(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+        left_file, _ = parse_issue_location(str(left.get("location") or left.get("file") or ""))
+        right_file, _ = parse_issue_location(str(right.get("location") or right.get("file") or ""))
+        same_file = bool(
+            left_file
+            and right_file
+            and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file)
+        )
+        left_funcs = {
+            normalize_issue_key_part(str(value or ""))
+            for value in (
+                left.get("function"),
+                left.get("sink_function"),
+                left.get("entry_function"),
+            )
+            if value
+        }
+        right_funcs = {
+            normalize_issue_key_part(str(value or ""))
+            for value in (
+                right.get("function"),
+                right.get("sink_function"),
+                right.get("entry_function"),
+            )
+            if value
+        }
+        same_function = bool(left_funcs & right_funcs)
+        same_family = semantic_category_family(
+            normalize_issue_category(
+                str(
+                    left.get("category")
+                    or left.get("defect_class")
+                    or left.get("subcategory")
+                    or ""
+                )
+            )
+        ) == semantic_category_family(
+            normalize_issue_category(
+                str(
+                    right.get("category")
+                    or right.get("defect_class")
+                    or right.get("subcategory")
+                    or ""
+                )
+            )
+        )
+        shared_resource_or_sink = bool(
+            issue_resource_signature(left)
+            and issue_resource_signature(left) == issue_resource_signature(right)
+        ) or bool(
+            issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right)
+        )
+        return bool(same_family and ((same_file and same_function) or shared_resource_or_sink))
+
+    @staticmethod
+    def _split_semantic_dedup_cluster(
+        group: List[Dict[str, Any]],
+        max_cluster_size: int,
+    ) -> List[List[Dict[str, Any]]]:
+        if len(group) <= max_cluster_size:
+            return [group]
+
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for issue in group:
+            bucket_key = (
+                issue_resource_signature(issue)
+                or issue_sink_signature(issue)
+                or semantic_root_cause_key(issue)
+                or str(issue.get("function") or issue.get("func_name") or "")
+                or "fallback"
+            )
+            buckets.setdefault(bucket_key, []).append(issue)
+
+        split: List[List[Dict[str, Any]]] = []
+        for bucket in buckets.values():
+            for start in range(0, len(bucket), max_cluster_size):
+                chunk = bucket[start : start + max_cluster_size]
+                if len(chunk) > 1:
+                    split.append(chunk)
+        return split
+
+    def _make_issue_reconciler_agent(self) -> Any:
+        recon_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
+            None,
+        )
+        recon_llm_ref = (
+            recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+        )
+        recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
+        if recon_client is None:
+            logger.warning(
+                "Semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured."
+            )
+            return None
+        from ...agents.issue_reconciler.agent import IssueReconcilerAgent
+
+        return IssueReconcilerAgent(
+            recon_client,
+            tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
+        )
+
+    @staticmethod
+    def _semantic_dedup_issue_id(issue: Dict[str, Any], index: int) -> str:
+        return str(
+            issue.get("_semantic_dedup_uid")
+            or issue.get("run_issue_uid")
+            or issue.get("occurrence_uid")
+            or issue.get("candidate_uid")
+            or issue.get("candidate_id")
+            or issue.get("dedup_key")
+            or f"semantic_issue_{index}"
+        )
+
+    @staticmethod
+    def _assign_semantic_dedup_ids(issues: List[Dict[str, Any]]) -> None:
+        """Assign private reconciliation ids without consulting display ``id``."""
+        bases = []
+        for index, issue in enumerate(issues):
+            internal = (
+                issue.get("run_issue_uid")
+                or issue.get("occurrence_uid")
+                or issue.get("candidate_uid")
+                or issue.get("candidate_id")
+                or issue.get("dedup_key")
+            )
+            if not internal:
+                payload = {
+                    "canonical": canonical_issue_key(issue),
+                    "evidence_hash": issue.get("evidence_hash"),
+                    "index": index,
+                }
+                internal = (
+                    "SEM_"
+                    + hashlib.sha256(
+                        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()[:24]
+                )
+            bases.append(str(internal))
+        counts = {base: bases.count(base) for base in set(bases)}
+        for index, (issue, base) in enumerate(zip(issues, bases)):
+            if counts[base] == 1:
+                issue["_semantic_dedup_uid"] = base
+                continue
+            issue["_semantic_dedup_uid"] = str(
+                issue.get("run_issue_uid") or issue.get("occurrence_uid") or f"{base}::{index}"
+            )
+
+    def _semantic_dedup_cluster_payload(
+        self,
+        cluster: List[Dict[str, Any]],
+        issue_indices: Dict[int, int],
+    ) -> Dict[str, Any]:
+        compact_issues = []
+        files = set()
+        functions = set()
+        resources = set()
+        families = set()
+        for issue in cluster:
+            issue_id = self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
+            compact = self._compact_issue_for_semantic_dedup(issue, issue_id)
+            compact_issues.append(compact)
+            if compact.get("file"):
+                files.add(compact["file"])
+            if compact.get("function"):
+                functions.add(compact["function"])
+            if compact.get("resource_signature"):
+                resources.add(compact["resource_signature"])
+            if compact.get("category_family"):
+                families.add(compact["category_family"])
+        cluster_id = self._semantic_dedup_cluster_fingerprint(
+            {"issues": compact_issues, "mode": "deduplicate_cluster"}
+        )
+        return {
+            "mode": "deduplicate_cluster",
+            "cluster_id": cluster_id,
+            "issues": compact_issues,
+            "deterministic_hints": {
+                "category_families": sorted(families),
+                "same_file": len(files) <= 1,
+                "same_function": len(functions) <= 1,
+                "resource_signatures": sorted(resources),
+            },
+        }
+
+    @staticmethod
+    def _compact_issue_for_semantic_dedup(issue: Dict[str, Any], issue_id: str) -> Dict[str, Any]:
+        location = str(issue.get("location") or issue.get("file") or "")
+        file_path, _line = parse_issue_location(location)
+        category = str(issue.get("category") or issue.get("subcategory") or "")
+        return {
+            "id": issue_id,
+            "category": category,
+            "category_family": semantic_category_family(category),
+            "function": issue.get("function") or issue.get("func_name"),
+            "file": file_path,
+            "location": location,
+            "root_cause": issue.get("root_cause"),
+            "description": issue.get("description"),
+            "positive_evidence": issue.get("positive_evidence"),
+            "candidate_source": issue.get("candidate_source") or issue.get("finding_kind"),
+            "resource_signature": issue_resource_signature(issue),
+            "root_cause_key": semantic_root_cause_key(issue),
+            "source": issue.get("source"),
+            "sink": issue.get("sink") or issue.get("sink_function"),
+            "call_path": issue.get("call_path"),
+            "call_path_signature": issue_call_path_signature(issue),
+            "sink_signature": issue_sink_signature(issue),
+        }
+
+    @staticmethod
+    def _semantic_dedup_cluster_fingerprint(payload: Dict[str, Any]) -> str:
+        stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _apply_llm_dedup_decision(
+        decision: Dict[str, Any],
+        by_issue_id: Dict[str, Dict[str, Any]],
+        removed: Set[str],
+        *,
+        threshold: float,
+    ) -> tuple[int, int]:
+        applied = 0
+        rejected = 0
+        keep_distinct = {
+            str(issue_id)
+            for issue_id in decision.get("must_keep_distinct_issue_ids", [])
+            if issue_id
+        }
+        groups = decision.get("duplicate_groups")
+        if not isinstance(groups, list):
+            return 0, 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            primary_id = str(group.get("primary_issue_id") or "")
+            primary = by_issue_id.get(primary_id)
+            if primary is None or primary_id in removed:
+                rejected += 1
+                continue
+            try:
+                confidence = float(group.get("confidence", 0) or 0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            for duplicate_id in group.get("duplicate_issue_ids", []) or []:
+                duplicate_id = str(duplicate_id or "")
+                duplicate = by_issue_id.get(duplicate_id)
+                if (
+                    not duplicate_id
+                    or duplicate is None
+                    or duplicate_id == primary_id
+                    or duplicate_id in removed
+                    or duplicate_id in keep_distinct
+                    or primary_id in keep_distinct
+                ):
+                    rejected += 1
+                    continue
+                if not issues_may_share_root_cause(
+                    primary,
+                    duplicate,
+                    confidence=confidence,
+                    threshold=threshold,
+                    allow_cross_function_root=True,
+                ):
+                    rejected += 1
+                    continue
+                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(
+                    primary
+                )
+                suggestion = {
+                    "method": "issue_reconciler_agent_suggestion",
+                    "root_cause_key": root_key,
+                    "confidence": confidence,
+                    "reasoning": group.get("reasoning"),
+                }
+                primary.setdefault("dedup_cluster_suggestions", []).append(
+                    {**suggestion, "role": "primary", "peer_issue_uid": duplicate_id}
+                )
+                duplicate.setdefault("dedup_cluster_suggestions", []).append(
+                    {**suggestion, "role": "possible_alias", "peer_issue_uid": primary_id}
+                )
+                applied += 1
+        return applied, rejected
 
     def _build_validation_evidence_pack(
         self,
@@ -4291,14 +6029,24 @@ class Analyzer:
     def _build_final_report(self, state: Dict[str, Any]) -> None:
         state.setdefault("_report_tail_started", time.monotonic())
         ledger = state.get("candidate_ledger")
+        if getattr(self, "semantic_result", None) is not None and ledger is not None:
+            from ...orchestration.snapshot_candidates import update_snapshot_outcomes
+
+            update_snapshot_outcomes(self.semantic_result, ledger)
         snapshot = getattr(ledger, "lifecycle_snapshot", None)
         if callable(snapshot):
             state["candidate_lifecycle_snapshot"] = snapshot(
                 entry_identity=str(state.get("entry_identity") or state.get("entry_func") or "")
             )
+        if getattr(self, "semantic_result", None) is not None and self.semantic_result.partial:
+            state["completeness"] = "partial"
         self.report_assembler.build(state)
 
     def _build_workflow_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        from ...retrieval.build_context import scan_build_coverage
+
+        if getattr(self, "semantic_result", None) is not None:
+            state["semantic_contract_version"] = self.semantic_result.contract_version
         engine_capabilities = self._engine_capabilities()
         state["engine_capabilities"] = engine_capabilities
         llm_usage = scan_token_usage_snapshot(self.config)
@@ -4310,65 +6058,51 @@ class Analyzer:
             else dict(state.get("candidate_ledger_summary", {}))
         )
         state["candidate_ledger_summary"] = ledger_summary
-        commit_sha = self._git_commit_sha(self.config.project.project_root)
-        source_tree_hash = self._git_tree_sha(self.config.project.project_root) or commit_sha
-        if not source_tree_hash:
-            source_tree_hash = hashlib.sha256(
-                str(self.config.project.project_root).encode("utf-8")
-            ).hexdigest()
-        config_hash = self._config_hash()
-        security_runtime = state.get("security_runtime")
-        security_runtime = security_runtime if isinstance(security_runtime, dict) else {}
-        spec_runtime = security_runtime.get("security_spec_runtime")
-        if not isinstance(spec_runtime, dict):
-            spec_runtime = state.get("security_spec_runtime")
-        spec_runtime = spec_runtime if isinstance(spec_runtime, dict) else {}
-        hunter_runtime = security_runtime.get("hypothesis_hunter_runtime")
-        hunter_runtime = hunter_runtime if isinstance(hunter_runtime, dict) else {}
-        lifecycle = state.get("candidate_lifecycle_snapshot")
-        lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
-        outcomes = lifecycle.get("outcomes")
-        outcomes = outcomes if isinstance(outcomes, list) else []
-        proof_identity = [
-            {
-                "cluster": str(value.get("validation_cluster_uid") or ""),
-                "refs": list(value.get("proof_kernel_artifact_refs") or []),
-                "terminal": value.get("terminal_authority_decision") or {},
+        wiki_service = getattr(self, "project_knowledge_service", None)
+        wiki_telemetry_fn = getattr(wiki_service, "telemetry_snapshot", None)
+        wiki_telemetry = (
+            wiki_telemetry_fn()
+            if callable(wiki_telemetry_fn)
+            else {
+                "effective_mode": "off",
+                "active_effective_mode": False,
+                "resolution_count": 0,
+                "wiki_resolution_count": 0,
+                "source_fallback_count": 0,
+                "none_count": 0,
+                "knowledge_context_tokens": 0,
+                "incremental_fact_count": 0,
+                "wiki_context_injected": False,
+                "selected_constraint_ids": {},
+                "selected_source_ref_ids": {},
+                "fallback_reasons": {},
             }
-            for value in outcomes
-            if isinstance(value, dict)
-        ]
-        runtime_authority = build_runtime_authority_manifest(
-            source_tree_hash=source_tree_hash,
-            config_sha256=config_hash,
-            backend_sha256=hashlib.sha256(
-                json.dumps(
-                    {
-                        "profile": self._candidate_backend_profile(),
-                        "knowledge_db": self._knowledge_db_version(),
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest(),
-            security_spec_root_sha256=str(spec_runtime.get("root_manifest_sha256") or ""),
-            hypothesis_hunter_root_sha256=str(hunter_runtime.get("root_manifest_sha256") or ""),
-            proof_root_sha256=hashlib.sha256(
-                json.dumps(proof_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest(),
-            revisions={
-                "security_spec_compiler": SecuritySpecCompiler.compiler_version,
-                "hypothesis_hunter": "hypothesis-hunter.v4",
-                "proof_registry": "proof-kernel.v4",
-                "proof_checker": "proof-checker.v2",
-                "proof_provider": "proof-provider.v2",
-                "terminal_authority": "terminal-authority.v4",
-            },
         )
-        state["runtime_authority_manifest"] = runtime_authority
+        state["wiki_telemetry"] = wiki_telemetry
+        build_coverage = scan_build_coverage(getattr(self, "code_index", None))
+        # A per-entry scan runs one instance facade; record which view produced
+        # the counts so report/acceptance cannot present it as scan coverage.
+        state["build_coverage_view"] = str(build_coverage.get("view") or "")
         return {
             "timestamp": datetime.datetime.now().isoformat(),
+            "build_coverage": build_coverage,
+            "snapshot_candidate_policy": SNAPSHOT_CANDIDATE_POLICY_VERSION,
+            "semantic_contract_version": (
+                self.semantic_result.contract_version if self.semantic_result else ""
+            ),
+            "semantic_modeling": (
+                self.semantic_result.stats.to_dict() if self.semantic_result else {}
+            ),
+            "semantic_snapshot_candidates": (
+                self.semantic_result.suspicious_metrics if self.semantic_result else {}
+            ),
+            **(
+                {"semantic_model_demand": deepcopy(self.semantic_result.demand_plan)}
+                if getattr(getattr(self, "semantic_result", None), "demand_plan", None)
+                else {}
+            ),
             "run_id": state.get("run_id", ""),
+            "instance_collection": deepcopy(state.get("instance_collection")),
             "entry_identity": state.get("entry_identity", state.get("entry_func", "")),
             "entry_file_path": state.get("entry_file_path", ""),
             "entry_signature": state.get("entry_signature", ""),
@@ -4378,10 +6112,8 @@ class Analyzer:
                 or self.config.project.project_root.name
             ),
             "source_root": str(self.config.project.source_root),
-            "commit_sha": commit_sha,
-            "source_tree_hash": source_tree_hash,
-            "config_hash": config_hash,
-            "runtime_authority_manifest": runtime_authority,
+            "commit_sha": self._git_commit_sha(self.config.project.project_root),
+            "config_hash": self._config_hash(),
             "model_manifest_hash": self._model_manifest_hash(),
             "effective_rules_sha256": self._effective_rules_sha256(),
             "rule_catalog": serialize_effective_rules(self.effective_rules),
@@ -4400,9 +6132,22 @@ class Analyzer:
             "rollout": rollout_runtime_policy(self.config),
             "llm_usage": llm_usage,
             "engine_capabilities": engine_capabilities,
+            "wiki_telemetry": wiki_telemetry,
+            "interface_probe": {
+                "probed": int(self._interface_probe_stats["probed"]),
+                "classified": int(self._interface_probe_stats["classified"]),
+                "declined": int(self._interface_probe_stats["declined"]),
+                "skipped_budget": int(self._interface_probe_stats["skipped_budget"]),
+                "skipped_known_role": int(self._interface_probe_stats["skipped_known_role"]),
+                "skipped_external": int(self._interface_probe_stats.get("skipped_external", 0)),
+                "skipped_no_client": int(self._interface_probe_stats.get("skipped_no_client", 0)),
+                "errors": int(self._interface_probe_stats.get("errors", 0)),
+                "roles": dict(sorted(self._interface_probe_stats["roles"].items())),
+                "classified_functions": list(self._interface_probe_stats["classified_functions"]),
+            },
             "version": __version__,
             "knowledge_db_version": self._knowledge_db_version(),
-            "snapshot_schema_version": "semantic_snapshot_v1",
+            "snapshot_schema_version": "semantic_snapshot_v2",
             "context_tokens": state.get("total_context_tokens", 0),
             "cumulative_prompt_tokens": state.get("total_cumulative_prompt_tokens", 0),
             "cumulative_completion_tokens": state.get("total_cumulative_completion_tokens", 0),
@@ -4427,11 +6172,24 @@ class Analyzer:
             ),
             "workflow_progress": list(self.workflow_progress),
             "current_workflow_step": self.workflow_executor.current_step,
+            "subagent_candidate_count": len(state.get("subagent_candidates", [])),
+            "subagent_ticket_count": len(state.get("subagent_ticket_plan", [])),
+            "subagent_unassigned_count": len(state.get("subagent_unassigned_candidates", [])),
+            "subagent_reports_count": len(state.get("subagent_reports", [])),
+            "subagent_report_summary": dict(state.get("subagent_report_summary", {})),
+            "subagent_ticket_plan": self._compact_subagent_items(
+                state.get("subagent_ticket_plan", [])
+            ),
+            "subagent_unassigned_candidates": self._compact_subagent_items(
+                state.get("subagent_unassigned_candidates", [])
+            ),
+            "subagent_reports": self._compact_subagent_reports(state.get("subagent_reports", [])),
             "candidate_ledger_summary": dict(ledger_summary),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
-            "security_runtime": dict(state.get("security_runtime", {}) or {}),
+            "active_discovery": dict(state.get("active_discovery", {}) or {}),
             "deferred_deterministic_work_count": len(state.get("deferred_deterministic_work", [])),
             "deferred_deterministic_work": list(state.get("deferred_deterministic_work", [])),
+            "va_candidate_coverage_summary": dict(state.get("va_candidate_coverage_summary", {})),
             "validation_performance": {
                 "iterations": int(state.get("validation_iterations", 0) or 0),
                 "tool_call_count": int(state.get("validation_tool_call_count", 0) or 0),
@@ -4476,12 +6234,6 @@ class Analyzer:
                     state.get("validator_fact_resolution_success_count", 0) or 0
                 ),
                 "fact_resolution_success_rate": state.get("validator_fact_resolution_success_rate"),
-                "fact_resolution_by_kind": dict(
-                    state.get("validator_fact_resolution_by_kind", {}) or {}
-                ),
-                "fact_terminal_status_counts": dict(
-                    state.get("validator_fact_terminal_status_counts", {}) or {}
-                ),
                 "evidence_recheck_count": int(
                     state.get("validator_evidence_recheck_count", 0) or 0
                 ),
@@ -4490,6 +6242,7 @@ class Analyzer:
                 ),
                 "verdict_transitions": dict(state.get("validator_verdict_transitions", {}) or {}),
             },
+            "semantic_dedup_summary": dict(state.get("semantic_dedup_summary", {})),
             "budget_stage": state.get("budget_stage", ""),
             "budget_hard_caps": dict(state.get("budget_hard_caps", {})),
             "effective_budget": dict(state.get("effective_budget", {})),
@@ -4504,18 +6257,8 @@ class Analyzer:
                 and item.get("budget_reached")
             ),
             "diff_focus": dict(state.get("diff_focus", {})),
-            **self._audit_observation_metadata(state),
-        }
-
-    @staticmethod
-    def _audit_observation_metadata(state: Mapping[str, Any]) -> Dict[str, Any]:
-        """Export the pre-score audit bucket, never the actionable review view."""
-
-        raw = state.get("audit_observations")
-        observations = list(raw) if isinstance(raw, list) else []
-        return {
-            "audit_observation_count": len(observations),
-            "audit_observations": observations,
+            "audit_observation_count": len(state.get("observations", [])),
+            "audit_observations": list(state.get("observations", [])),
         }
 
     @staticmethod
@@ -4646,10 +6389,18 @@ class Analyzer:
         **details: Any,
     ) -> None:
         normalized = str(status or "failed").lower()
-        if normalized not in {"complete", "partial", "degraded", "failed", "interrupted"}:
+        if normalized not in {
+            "complete",
+            "excluded",
+            "partial",
+            "degraded",
+            "failed",
+            "interrupted",
+        }:
             normalized = "failed"
         severity = {
             "complete": 0,
+            "excluded": 0,
             "partial": 1,
             "degraded": 2,
             "failed": 3,
@@ -4706,6 +6457,13 @@ class Analyzer:
         parent: str = "",
         call_path: Optional[Sequence[str]] = None,
     ) -> None:
+        self._record_engine_capability(
+            engine,
+            status="degraded",
+            active=True,
+            reason=reason,
+            failed_function=function_name,
+        )
         self._record_deterministic_work_terminal(
             state,
             engine=engine,
@@ -4805,7 +6563,11 @@ class Analyzer:
 
     def _config_hash(self) -> str:
         payload = {
+            "snapshot_candidate_policy": SNAPSHOT_CANDIDATE_POLICY_VERSION,
             "analysis": self._public_config_value(getattr(self.config, "analysis", None)),
+            "semantic_contract_version": (
+                getattr(getattr(self, "semantic_result", None), "contract_version", "")
+            ),
             "indexing": self._public_config_value(getattr(self.config, "indexing", None)),
             "reporting": self._public_config_value(getattr(self.config, "reporting", None)),
             "scan": self._public_config_value(getattr(self.config, "scan", None)),
@@ -4910,30 +6672,16 @@ class Analyzer:
 
     @staticmethod
     def _git_commit_sha(project_root: Path) -> str:
+        git_dir = project_root / ".git"
+        head_path = git_dir / "HEAD"
         try:
-            result = subprocess.run(
-                ["git", "-C", str(project_root), "rev-parse", "HEAD"],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return result.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            return ""
-
-    @staticmethod
-    def _git_tree_sha(project_root: Path) -> str:
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(project_root), "rev-parse", "HEAD^{tree}"],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return result.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
+            head = head_path.read_text(encoding="utf-8").strip()
+            if head.startswith("ref:"):
+                ref_path = git_dir / head.split(":", 1)[1].strip()
+                if ref_path.exists():
+                    return ref_path.read_text(encoding="utf-8").strip()
+            return head
+        except OSError:
             return ""
 
     def _knowledge_db_version(self) -> str:
@@ -5005,13 +6753,51 @@ class Analyzer:
             visible_tool_names=visible_tool_names,
         )
 
-    def _candidate_first_skill_selection(self, extra_skills: Sequence[str]) -> SkillSelection:
-        """Return every language-compatible deterministic skill."""
-        get_agent = getattr(self.spec_registry, "get_agent", None)
-        active_spec = get_agent("hypothesis_hunter") if callable(get_agent) else None
-        available = list(getattr(active_spec, "skills", []) or self.spec_registry.skills)
-        available.extend(str(skill) for skill in extra_skills if str(skill))
-        available = self._language_filtered_analysis_skills(list(dict.fromkeys(available)))
+    def _select_vulnerability_skills_for_config(
+        self,
+        agent_cfg: Any,
+        llm_client: Optional[LLMClient] = None,
+    ) -> SkillSelection:
+        """Select active vulnerability skills from the configured analyzer task."""
+        available = [
+            skill.name
+            for skill in self.spec_registry.skills_for_agent(
+                "vulnerability_analyzer",
+                extra=getattr(agent_cfg, "skills", None),
+            )
+        ]
+        available = self._language_filtered_vulnerability_skills(available)
+        task = getattr(agent_cfg, "task", None)
+        semantic_router = None
+        if llm_client is not None:
+            semantic_router = (
+                lambda task_text, skill_names: self._route_vulnerability_skills_with_llm(
+                    task_text,
+                    skill_names,
+                    llm_client,
+                )
+            )
+        selection = select_vulnerability_skills(task, available, semantic_router=semantic_router)
+        if selection.restricted:
+            logger.info(
+                "Task-selected vulnerability skills for '%s': %s (source=%s, confidence=%.2f)",
+                task or "",
+                ", ".join(selection.skills) or "none",
+                selection.source,
+                selection.confidence,
+            )
+        return selection
+
+    def _candidate_first_skill_selection(self, agent_cfg: Any) -> SkillSelection:
+        """Return every deterministic vulnerability skill without semantic routing."""
+        available = [
+            skill.name
+            for skill in self.spec_registry.skills_for_agent(
+                "vulnerability_analyzer",
+                extra=getattr(agent_cfg, "skills", None),
+            )
+        ]
+        available = self._language_filtered_vulnerability_skills(available)
         return SkillSelection(
             skills=available,
             restricted=False,
@@ -5019,6 +6805,77 @@ class Analyzer:
             confidence=1.0,
             reasons=["complete deterministic fact collection"],
         )
+
+    def _route_vulnerability_skills_with_llm(
+        self,
+        task: str,
+        available_skill_names: Sequence[str],
+        llm_client: LLMClient,
+    ) -> Dict[str, Any]:
+        return route_vulnerability_skills_with_llm(
+            task,
+            available_skill_names,
+            llm_client,
+            self._skill_selection_cache,
+        )
+
+    def _should_spawn_subagents(self, agent_cfg: Any) -> bool:
+        """Decide whether focused deep-worker LLM calls are enabled for this run."""
+        if not self.config.analysis.enable_subagent_workers:
+            return False
+        explicit = getattr(agent_cfg, "can_spawn_subagents", None)
+        if explicit is not None:
+            return bool(explicit)
+        agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
+        return bool(agent_spec and agent_spec.can_spawn_subagents)
+
+    @staticmethod
+    def _is_high_risk_conflicting_ticket(ticket: Any) -> bool:
+        """Reserve deep investigation for high-risk contradictory evidence."""
+
+        try:
+            priority = int(getattr(ticket, "priority_score", 0) or 0)
+        except (TypeError, ValueError):
+            priority = 0
+        if priority < 70:
+            return False
+        evidence = getattr(ticket, "evidence", None)
+        if not isinstance(evidence, dict):
+            return False
+        if evidence.get("conflicting_evidence") is True:
+            return True
+        positive = evidence.get("positive_evidence") or []
+        negative = evidence.get("negative_evidence") or []
+        if not positive or not negative:
+            return False
+        negative_text = " ".join(str(item) for item in negative if str(item).strip()).lower()
+        return any(
+            marker in negative_text
+            for marker in (
+                "guard",
+                "bound",
+                "sanit",
+                "released",
+                "cleanup",
+                "unreachable",
+                "ownership",
+                "alias",
+                "lock",
+                "happens-before",
+            )
+        )
+
+    @staticmethod
+    def _subagent_llm_ref_for_ticket(
+        ticket: Any,
+        skill_llm_refs: Dict[str, str],
+        fallback_ref: str,
+    ) -> str:
+        return subagent_llm_ref_for_ticket(ticket, skill_llm_refs, fallback_ref)
+
+    @classmethod
+    def _compact_subagent_items(cls, items: Any, *, limit: int = 50) -> List[Dict[str, Any]]:
+        return compact_subagent_items(items, limit=limit)
 
     @staticmethod
     def _compact_candidate_signal_items(items: Any, *, limit: int = 80) -> List[Dict[str, Any]]:
@@ -5064,26 +6921,81 @@ class Analyzer:
             compact.append({"truncated": True, "omitted_count": len(items) - limit})
         return compact
 
+    @staticmethod
+    def _normalize_candidate_coverage(raw: Any) -> Dict[str, Dict[str, Any]]:
+        if not isinstance(raw, list):
+            return {}
+        coverage: Dict[str, Dict[str, Any]] = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = str(item.get("candidate_id") or item.get("id") or "").strip()
+            if not candidate_id:
+                continue
+            coverage[candidate_id] = {
+                "status": str(item.get("status") or "").strip(),
+                "reason": item.get("reason"),
+                "issue_id": item.get("issue_id"),
+            }
+        return coverage
+
+    @staticmethod
+    def _candidate_coverage_summary(coverage: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
+        summary: Dict[str, int] = {"total": len(coverage)}
+        for item in coverage.values():
+            status = str(item.get("status") or "unknown")
+            summary[status] = summary.get(status, 0) + 1
+        return summary
+
+    @staticmethod
+    def _mark_va_unreviewed_candidates(
+        candidates: List[Dict[str, Any]],
+        coverage: Dict[str, Dict[str, Any]],
+    ) -> None:
+        covered_ok = {"reported", "rejected_by_evidence"}
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            evidence_pack = _as_dict(candidate.get("evidence_pack"))
+            candidate_id = str(
+                candidate.get("candidate_id")
+                or candidate.get("id")
+                or evidence_pack.get("candidate_id")
+                or ""
+            )
+            status = str((coverage.get(candidate_id) or {}).get("status") or "")
+            if status not in covered_ok:
+                candidate["va_unreviewed"] = True
+                evidence_pack["va_unreviewed"] = True
+                if evidence_pack:
+                    candidate["evidence_pack"] = evidence_pack
+
+    @staticmethod
+    def _compact_subagent_item(item: Any) -> Dict[str, Any]:
+        return compact_subagent_item(item)
+
+    @classmethod
+    def _compact_subagent_reports(cls, reports: Any, *, limit: int = 50) -> List[Dict[str, Any]]:
+        return compact_subagent_reports(reports, limit=limit)
+
     def _get_tools(
         self,
         agent_name: Optional[str] = None,
         *,
+        enable_on_demand_snapshots: bool = True,
         active_skill_names: Optional[List[str]] = None,
     ) -> List[Any]:
         """Initialize and return the set of tools."""
         from ...tools.registry import build_tool_registry
 
-        include_advanced = getattr(self.code_index, "backend_name", "") in {
-            "joern",
-            "svf",
-            "unified",
-        }
+        snapshot_resolver = self._get_or_build_snapshot if enable_on_demand_snapshots else None
         tools = list(
             build_tool_registry(
                 self.code_index,
                 self.snapshot_store,
                 self.user_config,
-                include_advanced=include_advanced,
+                snapshot_resolver=snapshot_resolver,
+                candidate_ledger=getattr(self, "candidate_ledger", None),
             ).values()
         )
         if agent_name:
@@ -5115,6 +7027,219 @@ class Analyzer:
     def _tool_audit_log_path(self) -> Optional[Path]:
         return tool_audit_log_path(getattr(self, "config", None))
 
+    def _get_or_build_snapshot(
+        self, func_name: str, file_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Load a snapshot, or build and persist one under the snapshot lock."""
+        if getattr(self, "semantic_result", None) is not None:
+            matches = [
+                snapshot
+                for snapshot in self.semantic_result.snapshots.values()
+                if func_name in {snapshot.get("func_name"), snapshot.get("index_name")}
+                and (not file_path or snapshot.get("file_path") == file_path)
+            ]
+            if len(matches) == 1:
+                return {
+                    "success": True,
+                    "data": deepcopy(matches[0]),
+                    "message": "Pinned session semantic snapshot.",
+                }
+            return {
+                "success": False,
+                "data": None,
+                "reason": "snapshot_outside_pinned_semantic_coverage",
+                "error": "No unique current snapshot in this scan's semantic coverage; use source evidence.",
+            }
+        try:
+            context = build_semantic_model_input(
+                self.code_index,
+                func_name,
+                file_path=file_path or "",
+                include_context=True,
+            )
+            context = hydrate_project_callee_summaries(
+                context,
+                self.code_index,
+                self.snapshot_store,
+            )
+        except SemanticModelInputError as exc:
+            return {"success": False, "error": str(exc), "reason": exc.reason}
+
+        index_name = str(context["index_name"])
+        existing = self.snapshot_store.load_snapshot(index_name)
+        if existing is not None:
+            needs_refresh, reason = self.snapshot_store.needs_refresh(
+                index_name,
+                context["code"],
+                context,
+            )
+            if not needs_refresh:
+                return {
+                    "success": True,
+                    "data": existing,
+                    "message": (
+                        f"Snapshot is current ({reason})." if reason else "Snapshot is current."
+                    ),
+                }
+            self.snapshot_store.lock_manager.invalidate(index_name)
+
+        lock_started = time.monotonic()
+        logger.info(
+            "[snapshot-lock] waiting context=on_demand index_name=%s",
+            index_name,
+        )
+        status = self.snapshot_store.lock_manager.acquire(index_name, timeout=120.0)
+        logger.info(
+            "[snapshot-lock] outcome context=on_demand index_name=%s status=%s waited=%.2fs",
+            index_name,
+            status,
+            time.monotonic() - lock_started,
+        )
+        if status == "done":
+            snapshot = self.snapshot_store.load_snapshot(index_name)
+            return {
+                "success": True,
+                "data": snapshot,
+                "message": "Snapshot was built concurrently by another worker.",
+            }
+        if status == "timeout":
+            return {
+                "success": False,
+                "error": f"Timed out waiting for snapshot build of '{index_name}'",
+                "reason": "snapshot_lock_timeout",
+            }
+
+        success = False
+        try:
+            existing = self.snapshot_store.load_snapshot(index_name)
+            if existing is not None:
+                needs_refresh, reason = self.snapshot_store.needs_refresh(
+                    index_name,
+                    context["code"],
+                    context,
+                )
+                if not needs_refresh:
+                    success = True
+                    return {
+                        "success": True,
+                        "data": existing,
+                        "message": (
+                            f"Snapshot is current ({reason})." if reason else "Snapshot is current."
+                        ),
+                    }
+
+            if self._is_lightweight_snapshot_candidate(context["func_name"], context):
+                snapshot = self._build_lightweight_snapshot(context["func_name"], context)
+                snapshot = self._maybe_inject_interface_role(
+                    context["func_name"], snapshot, context
+                )
+                self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
+                success = True
+                return {
+                    "success": True,
+                    "data": snapshot,
+                    "message": "Generated and saved lightweight static snapshot.",
+                }
+
+            if self._is_trivial_function(
+                context["code"],
+                self.config.analysis.trivial_function_max_lines,
+            ):
+                snapshot = self._build_trivial_snapshot(context["func_name"], context)
+                self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
+                success = True
+                return {
+                    "success": True,
+                    "data": snapshot,
+                    "message": "Generated and saved syntactic snapshot for trivial function.",
+                }
+
+            sm_agent_cfg = next(
+                (a for a in self.config.project.agents if a.name == "semantic_modeler"),
+                None,
+            )
+            sm_llm_ref = (
+                sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+            )
+            sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients.get("default"))
+            if sm_client is None:
+                return {
+                    "success": False,
+                    "error": "No LLM client configured for snapshot build",
+                    "reason": "semantic_model_llm_missing",
+                }
+
+            def make_semantic_agent() -> SemanticModeler:
+                return SemanticModeler(
+                    sm_client,
+                    self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+                    tool_policy=self._tool_policy_for_agent("semantic_modeler"),
+                )
+
+            self._attach_agent_contract(context, "semantic_modeler")
+            logger.info("[snapshot] On-demand modeling index_name=%s", index_name)
+            response = run_semantic_model_with_retries(
+                make_semantic_agent,
+                context,
+                log_context="on_demand",
+                index_name=index_name,
+                snapshot_store=self.snapshot_store,
+            )
+            response_metadata = response.metadata or {}
+            context_tokens = int(
+                response_metadata.get("context_tokens", 0)
+                or response_metadata.get("total_tokens", 0)
+                or 0
+            )
+            if not response.success:
+                failure_reason = str(response_metadata.get("reason") or "semantic_model_failed")
+                logger.warning(
+                    "[snapshot-llm] completed context=on_demand index_name=%s "
+                    "success=false context_tokens=%d reason=%s error=%s",
+                    index_name,
+                    context_tokens,
+                    failure_reason,
+                    response.error,
+                )
+                return {
+                    "success": False,
+                    "error": f"On-demand snapshot build failed for '{index_name}': {response.error}",
+                    "metadata": response.metadata,
+                    "reason": failure_reason,
+                }
+            self.snapshot_store.save_snapshot(
+                index_name,
+                response.data,
+                context["code"],
+                dependency_context=context,
+            )
+            logger.info(
+                "[snapshot-llm] completed context=on_demand index_name=%s "
+                "success=true context_tokens=%d",
+                index_name,
+                context_tokens,
+            )
+            success = True
+            return {
+                "success": True,
+                "data": response.data,
+                "metadata": response.metadata,
+                "message": "Generated and saved semantic snapshot on demand.",
+            }
+        except Exception as exc:
+            logger.exception(
+                "[snapshot-llm] failed context=on_demand index_name=%s "
+                "success=false reason=semantic_model_exception",
+                index_name,
+            )
+            return {
+                "success": False,
+                "error": str(exc),
+                "reason": "semantic_model_exception",
+            }
+        finally:
+            self.snapshot_store.lock_manager.release(index_name, success=success)
+
     @staticmethod
     def _build_trivial_snapshot(func_name: str, impl: Dict[str, Any]) -> Dict[str, Any]:
         return build_trivial_snapshot(func_name, impl)
@@ -5133,6 +7258,522 @@ class Analyzer:
     @staticmethod
     def _build_lightweight_snapshot(func_name: str, impl: Dict[str, Any]) -> Dict[str, Any]:
         return build_lightweight_snapshot(func_name, impl)
+
+    def _maybe_inject_interface_role(
+        self,
+        func_name: str,
+        snapshot: Dict[str, Any],
+        impl: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """LLM-classify an unknown lightweight wrapper and stamp its role.
+
+        The stamped ``role`` field is consumed by
+        ``semantics_from_snapshots`` (this scan and future ones), so the cost
+        is paid once per function and the result feeds rule-facing semantics.
+        """
+
+        if getattr(self, "semantic_result", None) is not None:
+            return snapshot
+        analysis_cfg = self.config.analysis
+        if not bool(getattr(analysis_cfg, "llm_interface_inference", True)):
+            return snapshot
+        if snapshot.get("role") or classify_api_name(func_name):
+            self._interface_probe_stats["skipped_known_role"] = (
+                int(self._interface_probe_stats["skipped_known_role"]) + 1
+            )
+            return snapshot
+        budget = int(getattr(analysis_cfg, "llm_interface_inference_budget", 50) or 0)
+        if budget <= 0 or self._interface_probe_used >= budget:
+            self._interface_probe_stats["skipped_budget"] = (
+                int(self._interface_probe_stats["skipped_budget"]) + 1
+            )
+            return snapshot
+        if self.user_config.get_external_function(func_name):
+            self._interface_probe_stats["skipped_external"] = (
+                int(self._interface_probe_stats.get("skipped_external", 0)) + 1
+            )
+            return snapshot
+        llm_client = self._scan_role_llm_client("analysis")
+        if llm_client is None:
+            self._interface_probe_stats["skipped_no_client"] = (
+                int(self._interface_probe_stats.get("skipped_no_client", 0)) + 1
+            )
+            return snapshot
+
+        from ...orchestration.user_config_inference import (
+            classify_single_interface_with_llm,
+        )
+
+        try:
+            decision = classify_single_interface_with_llm(
+                llm_client,
+                func_name,
+                {
+                    "file": str(impl.get("file") or ""),
+                    "signature": str(impl.get("signature") or ""),
+                    "code_excerpt": str(impl.get("code") or ""),
+                },
+            )
+        except Exception as exc:
+            logger.debug(
+                "[interface-probe] LLM classification failed for '%s': %s",
+                func_name,
+                exc,
+            )
+            self._interface_probe_stats["errors"] = (
+                int(self._interface_probe_stats.get("errors", 0)) + 1
+            )
+            return snapshot
+        self._interface_probe_used += 1
+        self._interface_probe_stats["probed"] = int(self._interface_probe_stats["probed"]) + 1
+        if not decision:
+            # Mark as probed so later scans do not re-ask for a function the
+            # model already declined to classify.
+            snapshot["role"] = ""
+            snapshot["role_source"] = "llm_interface_probe"
+            self._interface_probe_stats["declined"] = (
+                int(self._interface_probe_stats["declined"]) + 1
+            )
+            return snapshot
+        snapshot["role"] = str(decision.get("kind") or "")
+        snapshot["role_confidence"] = float(decision.get("confidence") or 0.0)
+        snapshot["role_source"] = "llm_interface_probe"
+        role = str(decision.get("kind") or "unknown")
+        roles = self._interface_probe_stats["roles"]
+        roles[role] = int(roles.get(role, 0)) + 1
+        if len(self._interface_probe_stats["classified_functions"]) < 64:
+            self._interface_probe_stats["classified_functions"].append(
+                {
+                    "function": func_name,
+                    "role": role,
+                    "confidence": snapshot["role_confidence"],
+                }
+            )
+        self._interface_probe_stats["classified"] = (
+            int(self._interface_probe_stats["classified"]) + 1
+        )
+        logger.info(
+            "[interface-probe] classified '%s' as '%s' (confidence %.2f)",
+            func_name,
+            snapshot["role"],
+            snapshot["role_confidence"],
+        )
+        return snapshot
+
+    def _premodel_callees(
+        self,
+        entry_func: str,
+        sm_client: "LLMClient",
+        max_depth: int = 3,
+        max_callees: int = 20,
+        *,
+        state: Optional[Dict[str, Any]] = None,
+    ) -> tuple[int, int, int]:
+        """
+        Recursively pre-model reachable callees for an entry function.
+        Returns:
+            (modeled_count, skipped_count, total_context_tokens)
+        """
+        # 1. BFS 閺€鍫曟肠閸欘垵鎻?callee 閸?
+        callee_graph: Dict[str, List[str]] = {}
+        visited: Set[str] = set()
+        scheduled: Set[str] = {entry_func}
+        queue = deque([(entry_func, 0)])
+        expanded_by_depth: Dict[int, int] = {}
+        capped_depths: Set[int] = set()
+        impl_cache: Dict[str, Any] = {}
+        last_progress_log = time.monotonic()
+
+        logger.info(
+            "[premodel] Collecting reachable callees for '%s' (depth<=%s, per-level<=%s)",
+            entry_func,
+            max_depth,
+            max_callees,
+        )
+
+        while queue:
+            func, depth = queue.popleft()
+            if func in visited or depth > max_depth:
+                continue
+            visited.add(func)
+            if depth >= max_depth:
+                callee_graph.setdefault(func, [])
+                try:
+                    capped_callees = self.code_index.get_callees(
+                        func,
+                        limit=1_000_000,
+                    )
+                except Exception as exc:
+                    self._record_engine_failed_work(
+                        state,
+                        engine="semantic_premodel",
+                        function_name=func,
+                        reason=f"{type(exc).__name__}: {exc}",
+                    )
+                    capped_callees = []
+                for item in capped_callees or []:
+                    callee_name = str(item.get("name") or "") if isinstance(item, dict) else ""
+                    if callee_name:
+                        self._record_deferred_deterministic_work(
+                            state,
+                            engine="semantic_premodel",
+                            function_name=callee_name,
+                            reason="semantic_premodel_max_depth",
+                            parent=func,
+                        )
+                continue
+
+            try:
+                # Enumerating the call graph is cheap deterministic work.  Fetch
+                # it completely, then apply the semantic-modeling budget while
+                # recording every deferred function.
+                callees_raw = self.code_index.get_callees(func, limit=1_000_000)
+            except Exception as exc:
+                logger.warning(
+                    "[premodel] Failed to retrieve callees for '%s'; "
+                    "continuing without this branch: %s",
+                    func,
+                    exc,
+                    exc_info=True,
+                )
+                callee_graph[func] = []
+                self._record_engine_failed_work(
+                    state,
+                    engine="semantic_premodel",
+                    function_name=func,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                continue
+            callee_names = [c["name"] for c in callees_raw if c.get("name")]
+
+            # Only premodel callees with source implementations.
+            resolvable = []
+            next_depth = depth + 1
+            for c in callee_names:
+                if c in visited or c in scheduled:
+                    continue
+                if expanded_by_depth.get(next_depth, 0) >= max_callees:
+                    capped_depths.add(next_depth)
+                    self._record_deferred_deterministic_work(
+                        state,
+                        engine="semantic_premodel",
+                        function_name=c,
+                        reason="semantic_premodel_breadth_budget",
+                        parent=func,
+                    )
+                    continue
+                try:
+                    impl = self.code_index.get_function_impl(
+                        c,
+                        max_lines=None,
+                        warn_missing=False,
+                        include_context=False,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[premodel] Failed to resolve callee '%s'; skipping: %s",
+                        c,
+                        exc,
+                        exc_info=True,
+                    )
+                    self._record_engine_failed_work(
+                        state,
+                        engine="semantic_premodel",
+                        function_name=c,
+                        reason=f"{type(exc).__name__}: {exc}",
+                        parent=func,
+                    )
+                    continue
+                if impl is not None:
+                    impl_cache[c] = impl
+                    resolvable.append(c)
+                    scheduled.add(c)
+                    expanded_by_depth[next_depth] = expanded_by_depth.get(next_depth, 0) + 1
+                    if not self._is_lightweight_snapshot_candidate(c, impl):
+                        queue.append((c, next_depth))
+                else:
+                    logger.debug("[premodel] Skipping unresolved callee '%s'", c)
+
+            callee_graph[func] = resolvable
+            now = time.monotonic()
+            if now - last_progress_log >= 30.0:
+                logger.info(
+                    "[premodel] Still collecting callees for '%s': visited=%s queued=%s",
+                    entry_func,
+                    len(visited),
+                    len(queue),
+                )
+                last_progress_log = now
+
+        # 2. 逆拓扑排序：叶子函数优先
+        if capped_depths:
+            logger.info(
+                "[premodel] Breadth cap reached for '%s' at depth(s): %s",
+                entry_func,
+                ", ".join(str(d) for d in sorted(capped_depths)),
+            )
+
+        order = self._topo_sort(callee_graph, entry_func)
+        # 过滤掉入口函数本身（由主流程建模）
+        order = [f for f in order if f != entry_func]
+
+        if not order:
+            deferred_count = sum(
+                1
+                for item in (state or {}).get("deferred_deterministic_work", [])
+                if item.get("engine") == "semantic_premodel"
+                and item.get("candidate_disposition") == "deferred_budget"
+            )
+            failed_count = sum(
+                1
+                for item in (state or {}).get("deferred_deterministic_work", [])
+                if item.get("engine") == "semantic_premodel"
+                and item.get("candidate_disposition") == "engine_failed"
+            )
+            self._record_engine_capability(
+                "semantic_premodel",
+                status=(
+                    "failed" if failed_count else ("degraded" if deferred_count else "complete")
+                ),
+                active=True,
+                reason=(
+                    "semantic_premodel_failed"
+                    if failed_count
+                    else ("semantic_premodel_budget_deferred" if deferred_count else "")
+                ),
+                modeled_count=0,
+                cache_hit_count=0,
+                deferred_count=deferred_count,
+                failed_count=failed_count,
+            )
+            return 0, 0, 0
+
+        logger.info(f"[premodel] {len(order)} reachable callees to pre-model for '{entry_func}'")
+
+        # 3. 逐个建模
+        def make_semantic_agent() -> SemanticModeler:
+            return SemanticModeler(
+                sm_client,
+                self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+                tool_policy=self._tool_policy_for_agent("semantic_modeler"),
+            )
+
+        modeled = 0
+        skipped = 0
+        total_tokens = 0
+
+        for func in order:
+            try:
+                impl = impl_cache.get(func) or self.code_index.get_function_impl(
+                    func,
+                    max_lines=None,
+                    warn_missing=False,
+                    include_context=False,
+                )
+            except Exception as exc:
+                self._record_engine_failed_work(
+                    state,
+                    engine="semantic_premodel",
+                    function_name=func,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                continue
+            if not impl:
+                continue
+            impl_file = str(impl.get("file") or "")
+            try:
+                context = build_semantic_model_input(
+                    self.code_index,
+                    func,
+                    file_path=impl_file,
+                    index_name=str(impl.get("index_name") or ""),
+                    start_line=int(impl.get("start_line") or 0) or None,
+                    include_context=True,
+                )
+                context = hydrate_project_callee_summaries(
+                    context,
+                    self.code_index,
+                    self.snapshot_store,
+                )
+            except SemanticModelInputError as exc:
+                logger.warning(
+                    "[premodel] Skipping unresolved semantic input func=%s reason=%s",
+                    func,
+                    exc.reason,
+                )
+                self._record_engine_failed_work(
+                    state,
+                    engine="semantic_premodel",
+                    function_name=func,
+                    reason=f"semantic_input:{exc.reason}",
+                )
+                continue
+            index_name = str(context["index_name"])
+
+            existing = self.snapshot_store.load_snapshot(index_name)
+            if existing is not None:
+                needs_refresh, _reason = self.snapshot_store.needs_refresh(
+                    index_name,
+                    context["code"],
+                    context,
+                )
+                if not needs_refresh:
+                    skipped += 1
+                    continue
+                self.snapshot_store.lock_manager.invalidate(index_name)
+
+            # 跨线程锁保护。
+            lock_started = time.monotonic()
+            logger.info(
+                "[snapshot-lock] waiting context=premodel entry=%s index_name=%s",
+                entry_func,
+                index_name,
+            )
+            status = self.snapshot_store.lock_manager.acquire(
+                index_name,
+                timeout=120.0,
+            )
+            lock_wait = time.monotonic() - lock_started
+            logger.info(
+                "[snapshot-lock] outcome context=premodel entry=%s index_name=%s status=%s waited=%.2fs",
+                entry_func,
+                index_name,
+                status,
+                lock_wait,
+            )
+            if status == "done":
+                skipped += 1
+                continue
+            if status == "timeout":
+                logger.warning(f"[premodel] Timeout waiting for '{func}', skipping.")
+                self._record_engine_failed_work(
+                    state,
+                    engine="semantic_premodel",
+                    function_name=func,
+                    reason="snapshot_lock_timeout",
+                )
+                continue
+
+            # status == "acquired"：由当前 Worker 建模
+            success = False
+            try:
+                if self._is_lightweight_snapshot_candidate(func, context):
+                    logger.info(f"[premodel] Auto-summarizing lightweight helper '{func}'")
+                    snapshot = self._build_lightweight_snapshot(context["func_name"], context)
+                    snapshot = self._maybe_inject_interface_role(
+                        context["func_name"], snapshot, context
+                    )
+                    self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
+                    success = True
+                    modeled += 1
+                    continue
+
+                # 高效拦截：平凡函数不需要让大模型看
+                if self._is_trivial_function(
+                    context["code"], self.config.analysis.trivial_function_max_lines
+                ):
+                    logger.info(f"[premodel] Auto-summarizing trivial function '{func}'")
+                    snapshot = self._build_trivial_snapshot(context["func_name"], context)
+                    self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
+                    success = True
+                    modeled += 1
+                    continue
+                self._attach_agent_contract(context, "semantic_modeler")
+
+                logger.info(
+                    "[premodel] Modeling callee index_name=%s ...",
+                    context["index_name"],
+                )
+                resp = run_semantic_model_with_retries(
+                    make_semantic_agent,
+                    context,
+                    log_context="premodel",
+                    index_name=index_name,
+                    snapshot_store=self.snapshot_store,
+                )
+                call_tokens = resp.metadata.get("context_tokens", 0) if resp.metadata else 0
+                total_tokens += call_tokens
+
+                if resp.success:
+                    self.snapshot_store.save_snapshot(
+                        index_name,
+                        resp.data,
+                        context["code"],
+                        dependency_context=context,
+                    )
+                    logger.info(
+                        "[snapshot-llm] completed context=premodel index_name=%s "
+                        "success=true context_tokens=%d",
+                        index_name,
+                        call_tokens,
+                    )
+                    success = True
+                    modeled += 1
+                else:
+                    failure_reason = str(
+                        (resp.metadata or {}).get("reason") or "semantic_model_failed"
+                    )
+                    logger.warning(
+                        "[snapshot-llm] completed context=premodel index_name=%s "
+                        "success=false context_tokens=%d reason=%s error=%s",
+                        index_name,
+                        call_tokens,
+                        failure_reason,
+                        resp.error,
+                    )
+                    self._record_engine_failed_work(
+                        state,
+                        engine="semantic_premodel",
+                        function_name=func,
+                        reason=f"{failure_reason}: {resp.error}",
+                    )
+            except Exception as e:
+                logger.exception(
+                    "[snapshot-llm] failed context=premodel index_name=%s "
+                    "success=false reason=semantic_model_exception error=%s",
+                    index_name,
+                    e,
+                )
+                self._record_engine_failed_work(
+                    state,
+                    engine="semantic_premodel",
+                    function_name=func,
+                    reason=f"{type(e).__name__}: {e}",
+                )
+            finally:
+                self.snapshot_store.lock_manager.release(index_name, success=success)
+
+        deferred_count = sum(
+            1
+            for item in (state or {}).get("deferred_deterministic_work", [])
+            if item.get("engine") == "semantic_premodel"
+            and item.get("candidate_disposition") == "deferred_budget"
+        )
+        failed_count = sum(
+            1
+            for item in (state or {}).get("deferred_deterministic_work", [])
+            if item.get("engine") == "semantic_premodel"
+            and item.get("candidate_disposition") == "engine_failed"
+        )
+        self._record_engine_capability(
+            "semantic_premodel",
+            status=("failed" if failed_count else ("degraded" if deferred_count else "complete")),
+            active=True,
+            reason=(
+                "semantic_premodel_failed"
+                if failed_count
+                else ("semantic_premodel_budget_deferred" if deferred_count else "")
+            ),
+            modeled_count=modeled,
+            cache_hit_count=skipped,
+            deferred_count=deferred_count,
+            failed_count=failed_count,
+        )
+
+        logger.info(
+            f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx ≈{total_tokens:,} tokens)"
+        )
+        return modeled, skipped, total_tokens
 
     @staticmethod
     def _is_trivial_function(code: str, max_lines_threshold: int) -> bool:
@@ -5156,80 +7797,80 @@ class Analyzer:
         return order
 
     def _tool_executor_wrapper(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Wrapper to intercept tool execution for snapshot logic."""
-
-        # Intercept get_function_impl to check for snapshot refresh
-        if tool_name == "get_function_impl" and self.config.analysis.enable_snapshot_cache:
-            func_name = str(args.get("func_name") or "")
-            return self._smart_get_implementation(func_name, args)
-
+        """Execute through the unified runtime; semantic rebuild lives in its tool."""
         return self.tools_runtime.execute_tool(tool_name, args)
 
-    def _smart_get_implementation(self, func_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Smart implementation retrieval:
-        1. Get current code.
-        2. Check if snapshot exists.
-        3. If snapshot exists, check if code changed (hash check).
-        4. If code changed, fail closed and refuse the pre-P5 snapshot.
-        """
-        # 1. Get real implementation
-        impl_result = self.tools_runtime.execute_tool("get_function_impl", args)
-        if not impl_result.get("success"):
-            return impl_result
+    def _default_llm_client(self) -> LLMClient:
+        client = self.llm_clients.get("default")
+        if client is None:
+            try:
+                client = next(iter(self.llm_clients.values()))
+            except StopIteration as exc:
+                raise RuntimeError("No LLM clients configured") from exc
+        return client
 
-        current_code = impl_result["data"]["code"]
-        index_name = str(impl_result["data"].get("index_name") or "")
-        if not index_name:
-            return impl_result
-
-        try:
-            symbol_context = resolve_function_info(
-                self.code_index,
-                index_name,
-                file_path=str(impl_result["data"].get("file") or ""),
-                index_name=index_name,
-                start_line=int(impl_result["data"].get("start_line") or 0) or None,
-            )
-        except SemanticModelInputError as exc:
-            logger.warning(
-                "Snapshot refresh context unavailable index_name=%s reason=%s",
-                index_name,
-                exc.reason,
-            )
-            return impl_result
-
-        # 2. Check snapshot status with canonical index name
-        needs_refresh, reason = self.snapshot_store.needs_refresh(
-            index_name,
-            current_code,
-            symbol_context,
+    def _ask_refresh_decision(
+        self, func_name: str, old_snapshot: Dict[str, Any], new_code: str
+    ) -> Dict[str, Any]:
+        """Ask LLM if snapshot needs refresh."""
+        prompt = (
+            f"Function '{func_name}' has changed.\n"
+            f"Old Snapshot Summary: {old_snapshot.get('summary')}\n"
+            f"Old Fingerprint: {old_snapshot.get('semantic_fingerprint')}\n\n"
+            "New Code:\n"
+            "```c\n"
+            f"{new_code}\n"
+            "```\n\n"
+            "Determine if the semantic contract/behavior relevant to defect attributes "
+            "(resources, errors, concurrency) has changed. Output only JSON of type "
+            "'snapshot_refresh_decision'."
         )
+        messages = [
+            {
+                "role": "system",
+                "content": self._snapshot_refresh_decision_system_prompt(),
+            },
+            {"role": "user", "content": prompt},
+        ]
 
-        if not needs_refresh and reason != "no_snapshot":
-            # Snapshot is valid and up to date (or only cosmetic changes)
-            logger.info(
-                "Using cached snapshot index_name=%s reason=%s",
-                index_name,
-                reason,
+        # Use a separate simpler call (no tools)
+        try:
+            response = self._default_llm_client().chat_completion(
+                messages,
+                max_tokens=500,
+                trace_agent="snapshot_refresh_decision",
+                trace_label=f"function={func_name}",
+                trace_iteration=1,
             )
-            snapshot = self.snapshot_store.load_snapshot(index_name)
-            return {
-                "success": True,
-                "data": impl_result["data"],
-                "snapshot": snapshot,
-                "note": "Snapshot allows skipping deep analysis if irrelevant.",
-            }
+            content = response["choices"][0]["message"]["content"]
+            decision = self._extract_json_block(content, "snapshot_refresh_decision")
+            return decision or {"refresh_needed": True, "reason": "Failed to parse decision"}
+        except Exception as e:
+            logger.error(f"Failed to get refresh decision: {e}")
+            return {"refresh_needed": True, "reason": "Error calling LLM"}
 
-        if reason == "code_changed":
-            logger.info(
-                "Code changed index_name=%s; invalidating legacy semantic snapshot",
-                index_name,
+    def _snapshot_refresh_decision_system_prompt(self) -> str:
+        skill = self.spec_registry.get_skill("snapshot_refresh_decision")
+        skill_contract = (
+            skill.to_prompt_block(
+                allowed_tools=[],
+                allowed_mcp_tools=[],
+                allowed_mcp_resources=[],
             )
-            self.snapshot_store.lock_manager.invalidate(index_name)
-
-        # P5 consumers use source/IR facts; no model may bless a stale snapshot.
-        return impl_result
+            if skill
+            else (
+                "## Skill: snapshot_refresh_decision\n"
+                "Determine whether an existing function snapshot must be refreshed after code changes.\n"
+                "Return exactly one JSON object with type=snapshot_refresh_decision."
+            )
+        )
+        return (
+            "You are the Z-SCOPE snapshot refresh decision reviewer. Decide whether "
+            "the old semantic snapshot still captures defect-relevant behavior in the "
+            "new implementation. No tools or MCP resources are available in this call.\n\n"
+            "[Loaded Skill Contract]\n"
+            f"{skill_contract}"
+        )
 
     def _extract_final_report(self, text: str) -> Optional[FinalReport]:
         """Parse final report from text."""
@@ -5260,8 +7901,6 @@ class Analyzer:
         """
         Extract JSON block from text using robust utility.
         """
-        from ...common.utils import extract_json_blocks
-
         candidates = extract_json_blocks(text)
 
         for data in candidates:
@@ -5281,7 +7920,53 @@ class Analyzer:
 
         return None
 
-        return None
+    def _save_snapshot_from_llm(self, snapshot_data: Dict[str, Any]) -> None:
+        """Save a snapshot emitted by LLM."""
+        index_name = str(snapshot_data.get("index_name") or "")
+        if not index_name:
+            return
+        try:
+            context = build_semantic_model_input(
+                self.code_index,
+                index_name,
+                index_name=index_name,
+                include_context=False,
+            )
+            context = hydrate_project_callee_summaries(
+                context,
+                self.code_index,
+                self.snapshot_store,
+            )
+        except SemanticModelInputError as exc:
+            logger.warning(
+                "Skipping LLM snapshot save index_name=%s reason=%s",
+                index_name,
+                exc.reason,
+            )
+            return
+
+        for field in (
+            "project_callees",
+            "external_callees",
+            "referenced_globals",
+            "referenced_macros",
+            "referenced_types",
+            "project_callees_truncation",
+            "external_callees_truncation",
+            "referenced_globals_truncation",
+            "referenced_macros_truncation",
+            "unresolved_referenced_types",
+            "referenced_types_truncation",
+        ):
+            if field in context:
+                snapshot_data[field] = deepcopy(context[field])
+        if context.get("code"):
+            self.snapshot_store.save_snapshot(
+                index_name=index_name,
+                snapshot=snapshot_data,
+                code=context["code"],
+                dependency_context=context,
+            )
 
     def _resolve_issue_locations(self, issues: List[Dict[str, Any]]) -> None:
         """Format absolute line numbers outputted by LLM into standard file:line format."""
@@ -5407,6 +8092,10 @@ class Analyzer:
                 list(candidate_signals), limit=24
             ),
             "candidate_ledger_summary": state.get("candidate_ledger_summary") or {},
+            "subagent_unassigned_candidates": self._compact_subagent_items(
+                state.get("subagent_unassigned_candidates") or [],
+                limit=24,
+            ),
             "active_skills": list(active_skills),
             "review_policy": (
                 "LLM-only Java active findings must use candidate_source=java_llm_active_audit "
@@ -5641,18 +8330,18 @@ class Analyzer:
             code_index=getattr(self, "code_index", None),
         )
 
-    def _language_filtered_analysis_skills(
+    def _language_filtered_vulnerability_skills(
         self,
         skill_names: Sequence[str],
     ) -> List[str]:
-        """Keep candidate-analysis skills aligned with the configured language."""
+        """Keep vulnerability skills aligned with the configured project language."""
         names = list(dict.fromkeys(skill_names))
         language = self._project_language()
 
         def supports_language(name: str) -> bool:
             skill = self.spec_registry.get_skill(name)
             if skill is None:
-                raise ValueError(f"Unknown candidate-analysis skill {name!r}")
+                raise ValueError(f"Unknown vulnerability skill {name!r}")
             languages = list(getattr(skill, "languages", []))
             if not languages:
                 raise ValueError(f"Skill {name!r} has no language metadata")
@@ -5662,9 +8351,11 @@ class Analyzer:
         if filtered:
             return filtered
 
-        # Java defaults come from language-scoped Skill contracts rather than
-        # a second hard-coded name list. Shared modeling/validation skills
-        # declare both languages and are not part of this analysis fallback.
+        # The shared vulnerability-analyzer AGENT.md intentionally remains a
+        # C/C++-oriented prompt contract. Java defaults therefore come from
+        # language-scoped Skill contracts rather than a second hard-coded
+        # name list. Shared modeling/validation skills declare both languages
+        # and are not part of this vulnerability fallback.
         registry_skills = getattr(self.spec_registry, "skills", {})
         return sorted(
             skill.name

@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from ..common.defect_cwe_map import cwe_tokens
 from ..common.issue_identity import canonical_issue_key, stable_issue_fingerprint
 
 
@@ -63,7 +64,9 @@ def report_to_sarif(
 
 def _load_report(report_or_path: Any) -> Dict[str, Any]:
     if isinstance(report_or_path, (str, Path)):
-        loaded = json.loads(Path(report_or_path).read_text(encoding="utf-8"))
+        from .json_io import read_report
+
+        loaded = read_report(Path(report_or_path))
         if isinstance(loaded, dict):
             return loaded
         raise TypeError("SARIF report JSON root must be an object")
@@ -108,15 +111,17 @@ def _build_rules(issues: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             or rule_id
         )
         cwe = str(issue.get("cwe") or "").strip()
+        cwes = _issue_cwes(issue)
         tags = ["security", name.replace("_", "-")]
-        if cwe:
-            tags.append(cwe)
+        tags.extend(cwes)
         properties: Dict[str, Any] = {
             "tags": tags,
             "legacyRuleId": _legacy_rule_id(issue),
         }
         if cwe:
             properties["cwe"] = cwe
+        if cwes:
+            properties["cwes"] = cwes
         for field in (
             "rule_engine",
             "rule_revision",
@@ -270,6 +275,21 @@ def _rule_id(issue: Dict[str, Any]) -> str:
         or issue.get("subcategory")
         or "zscope-finding"
     ).strip()
+
+
+def _issue_cwes(issue: Dict[str, Any]) -> List[str]:
+    """Ordered CWE labels: the primary first, then the full multi-CWE set."""
+
+    ordered: List[str] = []
+    values: List[Any] = [issue.get("cwe"), issue.get("cwes")]
+    evidence_pack = issue.get("evidence_pack")
+    if isinstance(evidence_pack, dict):
+        values.append(evidence_pack.get("cwes"))
+    for value in values:
+        for token in cwe_tokens(value):
+            if token not in ordered:
+                ordered.append(token)
+    return ordered
 
 
 def _legacy_rule_id(issue: Dict[str, Any]) -> str:

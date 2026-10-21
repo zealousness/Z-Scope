@@ -56,13 +56,28 @@ def test_range_truth_function_identities_do_not_appear_in_product_scan_code() ->
         Path("zscope/tools"),
     )
     offenders: list[str] = []
-    for root in product_roots:
-        for path in root.rglob("*"):
-            if path.suffix not in {".py", ".md", ".yaml"} or "__pycache__" in path.parts:
-                continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            for function_name in function_names:
-                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(function_name)}(?![A-Za-z0-9_])", text):
-                    offenders.append(f"{path}: exact Range truth function {function_name!r}")
+    if function_names:
+        # One word-bounded alternation (longest names first) keeps the exact
+        # match semantics of a per-name search while scanning each file once.
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9_])(?:"
+            + "|".join(
+                re.escape(name) for name in sorted(function_names, key=len, reverse=True)
+            )
+            + r")(?![A-Za-z0-9_])"
+        )
+        seen: set[tuple[Path, str]] = set()
+        for root in product_roots:
+            for path in root.rglob("*"):
+                if path.suffix not in {".py", ".md", ".yaml"} or "__pycache__" in path.parts:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                for match in pattern.finditer(text):
+                    if (path, match.group(0)) in seen:
+                        continue
+                    seen.add((path, match.group(0)))
+                    offenders.append(
+                        f"{path}: exact Range truth function {match.group(0)!r}"
+                    )
 
     assert offenders == []

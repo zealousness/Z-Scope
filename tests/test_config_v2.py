@@ -63,7 +63,9 @@ def _write(root: Path, data: dict, name: str = "zscope.yaml") -> Path:
 
 def test_empty_task_activates_every_available_skill(tmp_path: Path) -> None:
     config = ConfigLoader.load(str(_write(tmp_path, _config(tmp_path))))
-    analyzer = next(agent for agent in config.project.agents if agent.name == "hypothesis_hunter")
+    analyzer = next(
+        agent for agent in config.project.agents if agent.name == "vulnerability_analyzer"
+    )
 
     assert analyzer.task == ""
     selection = select_vulnerability_skills(analyzer.task, ["memory", "concurrency"])
@@ -160,6 +162,89 @@ def test_rules_enabled_ids_reject_duplicates(tmp_path: Path) -> None:
     data["rules"] = {"enabled_ids": ["same_pointer_freed_twice", "same_pointer_freed_twice"]}
 
     with pytest.raises(ValueError, match=r"rules\.enabled_ids\[1\].*duplicate"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_project_wiki_config_is_strict_and_root_relative(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {
+        "mode": "shadow",
+        "auto_maintain": True,
+        "documents": {
+            "exclude": ["legacy/**"],
+            "classify": {"explanatory": ["docs/contracts/**/*.md"], "generated": ["artifacts/**"]},
+        },
+        "max_constraints": 12,
+    }
+    config = ConfigLoader.load(str(_write(tmp_path, data)))
+    assert config.project.wiki.mode == "shadow"
+    assert config.project.wiki.auto_maintain is True
+    assert config.project.wiki.max_constraints == 12
+    assert config.project.wiki.document_exclude == ["legacy/**"]
+    assert config.project.wiki.explanatory_overrides == ["docs/contracts/**/*.md"]
+
+
+def test_project_wiki_limits_default_to_unlimited_without_changing_llm_profile(tmp_path: Path) -> None:
+    config = ConfigLoader.load(str(_write(tmp_path, _config(tmp_path))))
+
+    wiki = config.project.wiki
+    assert wiki.compiler_max_tokens is None
+    assert wiki.max_wall_seconds is None
+    assert wiki.max_constraints is None
+    assert config.llms["default"].max_tokens == 4096
+
+
+def test_project_wiki_accepts_explicit_local_limits(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {
+        "compiler_max_tokens": 6000,
+        "max_wall_seconds": 9000,
+        "max_constraints": 10,
+    }
+
+    config = ConfigLoader.load(str(_write(tmp_path, data)))
+
+    wiki = config.project.wiki
+    assert wiki.compiler_max_tokens == 6000
+    assert wiki.max_wall_seconds == 9000
+    assert wiki.max_constraints == 10
+
+
+def test_project_wiki_rejects_absolute_state_dir(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {"mode": "active", "state_dir": "/tmp/wiki"}
+    with pytest.raises(ValueError, match=r"project\.wiki\.state_dir"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+@pytest.mark.parametrize("pattern", ["../legacy/**", "/tmp/docs/**", "C:/docs/**"])
+def test_project_wiki_rejects_non_relative_document_globs(
+    tmp_path: Path,
+    pattern: str,
+) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {
+        "mode": "shadow",
+        "documents": {"exclude": [pattern]},
+    }
+
+    with pytest.raises(ValueError, match=r"project\.wiki\.documents\.exclude"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_project_wiki_rejects_conflicting_classification_globs(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {
+        "mode": "shadow",
+        "documents": {
+            "classify": {
+                "explanatory": ["docs/contracts/**"],
+                "generated": ["docs/contracts/**"],
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="same glob"):
         ConfigLoader.load(str(_write(tmp_path, data)))
 
 
@@ -264,20 +349,55 @@ def test_runtime_paths_are_anchored_to_project_root(tmp_path: Path) -> None:
     )
 
 
-def test_search_root_is_relative_to_project_root_and_cannot_escape(tmp_path: Path) -> None:
-    module = tmp_path / "modules" / "api"
+def test_search_root_is_relative_to_source_root_and_cannot_escape(tmp_path: Path) -> None:
+    module = tmp_path / "src" / "modules" / "api"
     module.mkdir(parents=True)
     data = _config(tmp_path)
     data["project"]["source_root"] = "src"
-    (tmp_path / "src").mkdir()
     data["project"]["entry_discovery"]["search_root"] = "modules/api"
     config = ConfigLoader.load(str(_write(tmp_path, data)))
     assert config.project.entry_discovery.search_root == module.resolve()
 
     data["project"]["entry_discovery"]["search_root"] = "../outside"
-    (tmp_path.parent / "outside").mkdir(exist_ok=True)
-    with pytest.raises(ValueError, match="inside project.root"):
+    (tmp_path / "outside").mkdir(exist_ok=True)
+    with pytest.raises(ValueError, match="inside project.source_root"):
         ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_search_root_inside_project_root_but_outside_source_root_is_rejected(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "modules").mkdir()
+    data = _config(tmp_path)
+    data["project"]["source_root"] = "src"
+    data["project"]["entry_discovery"]["search_root"] = "../modules"
+    with pytest.raises(ValueError, match="inside project.source_root"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_relative_project_root_resolves_against_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """相对 project.root 基于加载进程的 CWD 解析（仓库内 demo 配置的既有约定）。
+
+    子进程继承同一 CWD，因此 CLI / Web 仪表盘 / MCP 的解析结果保持一致；
+    search_root 相对路径则固定基于 source_root，与 CWD 无关。
+    """
+
+    project_dir = tmp_path / "demo"
+    (project_dir / "src" / "api").mkdir(parents=True)
+    data = _config(project_dir)
+    data["project"]["root"] = "demo"
+    data["project"]["source_root"] = "src"
+    data["project"]["entry_discovery"]["search_root"] = "api"
+    _write(project_dir, data)
+
+    monkeypatch.chdir(tmp_path)
+    config = ConfigLoader.load(str(project_dir / "zscope.yaml"))
+    assert config.project.project_root == project_dir.resolve()
+    assert config.project.source_root == (project_dir / "src").resolve()
+    assert config.project.entry_discovery.search_root == (project_dir / "src" / "api").resolve()
 
 
 def test_cross_language_fields_are_rejected(tmp_path: Path) -> None:
@@ -345,7 +465,7 @@ def test_runtime_override_requires_developer_mode_and_records_provenance(
     assert len(config.runtime_provenance.sha256) == 64
 
 
-def test_removed_semantic_enrichment_override_requires_explicit_migration(
+def test_runtime_override_controls_semantic_enrichment_rollout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_path = _write(tmp_path, _config(tmp_path))
@@ -356,7 +476,14 @@ def test_removed_semantic_enrichment_override_requires_explicit_migration(
     )
     monkeypatch.setenv("Z_SCOPE_DEVELOPER_MODE", "1")
     monkeypatch.setenv("Z_SCOPE_RUNTIME_SPEC", str(override.resolve()))
-    with pytest.raises(ValueError, match="explicit compat migration"):
+    config = ConfigLoader.load(str(config_path))
+    assert config.analysis.security_semantic_enrichment_mode == "active"
+
+    override.write_text(
+        "runtime_spec_version: 1\n" "analysis:\n" "  security_semantic_enrichment_mode: unsafe\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be 'shadow' or 'active'"):
         ConfigLoader.load(str(config_path))
 
 
@@ -373,38 +500,4 @@ def test_runtime_override_is_strict_and_must_be_absolute(
     override.write_text("runtime_spec_version: 1\nunknown: true\n", encoding="utf-8")
     monkeypatch.setenv("Z_SCOPE_RUNTIME_SPEC", str(override.resolve()))
     with pytest.raises(ValueError, match="runtime.unknown"):
-        ConfigLoader.load(str(config_path))
-
-
-@pytest.mark.parametrize(
-    ("override_text", "message"),
-    [
-        (
-            "runtime_spec_version: 1\nagents:\n  vulnerability_analyzer:\n"
-            "    enabled: true\n    llm_role: analysis\n",
-            "migrate explicitly to runtime.agents.hypothesis_hunter",
-        ),
-        (
-            "runtime_spec_version: 1\nanalysis:\n  enable_subagent_workers: true\n",
-            "explicit compat migration",
-        ),
-        (
-            "runtime_spec_version: 1\nreporting:\n  semantic_dedup:\n" "    enabled: true\n",
-            "Finding-root v2 is the sole live report projection",
-        ),
-    ],
-)
-def test_removed_p1_runtime_fields_fail_with_migration_guidance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    override_text: str,
-    message: str,
-) -> None:
-    config_path = _write(tmp_path, _config(tmp_path))
-    override = tmp_path / "runtime.override.yaml"
-    override.write_text(override_text, encoding="utf-8")
-    monkeypatch.setenv("Z_SCOPE_DEVELOPER_MODE", "1")
-    monkeypatch.setenv("Z_SCOPE_RUNTIME_SPEC", str(override.resolve()))
-
-    with pytest.raises(ValueError, match=message):
         ConfigLoader.load(str(config_path))

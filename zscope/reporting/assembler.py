@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
 from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional, cast
 
 from ..core.validation.pipeline import preserve_issue_location
+from ..common.defect_cwe_map import ensure_issue_cwes
 from ..orchestration.candidate_envelope import annotate_issue_collection
-from ..orchestration.runtime_authority import current_successor_reviewed
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..reporting.finding_roots import project_finding_roots
+from ..reporting.issue_aggregation import project_issue_aggregation
 from ..reporting.schema import (
     REPORT_SCHEMA_VERSION,
     build_run_manifest,
@@ -19,7 +19,6 @@ from ..reporting.schema import (
     engine_failure_terminal_states,
     finding_status,
     needs_review_count,
-    report_invariant_status as compute_report_invariant_status,
     scan_outcome,
     terminal_candidate_identity,
 )
@@ -28,11 +27,12 @@ from ..reporting.views import (
     report_view_summary,
     review_governance_summary,
 )
-from ..reporting.funnel import candidate_funnel
 from ..snapshots.store import SnapshotStore
 
 
 IssueResolver = Callable[[List[Dict[str, Any]]], None]
+ObservationDeduper = Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]
+ReportIssueDeduper = Callable[[List[Dict[str, Any]], Dict[str, Any]], List[Dict[str, Any]]]
 MetadataFactory = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
@@ -49,29 +49,19 @@ class ReportAssembler:
         snapshot_store: Optional[SnapshotStore],
         *,
         resolve_issue_locations: IssueResolver,
+        deduplicate_observations: ObservationDeduper,
+        deduplicate_report_issues: Optional[ReportIssueDeduper] = None,
         metadata_factory: MetadataFactory,
     ) -> None:
         self.report_generator = report_generator
         self.snapshot_store = snapshot_store
         self.resolve_issue_locations = resolve_issue_locations
+        self.deduplicate_observations = deduplicate_observations
+        self.deduplicate_report_issues = deduplicate_report_issues
         self.metadata_factory = metadata_factory
 
     def build(self, state: Dict[str, Any]) -> FinalReport:
         metadata = self.metadata_factory(state)
-        trace_store = state.get("decision_trace_store")
-        update_trace_identity = getattr(trace_store, "update_identity", None)
-        if callable(update_trace_identity):
-            update_trace_identity(
-                {
-                    "source_revision": str(
-                        metadata.get("commit_sha") or metadata.get("source_revision") or ""
-                    ),
-                    "source_tree_hash": str(metadata.get("source_tree_hash") or ""),
-                    "config_hash": str(metadata.get("config_hash") or ""),
-                    "model_manifest_hash": str(metadata.get("model_manifest_hash") or ""),
-                    "effective_rules_sha256": str(metadata.get("effective_rules_sha256") or ""),
-                }
-            )
         all_issues = state.get("issues", []) + state.get("verified_hist_issues", [])
         observations = list(state.get("observations", []))
         identity_kwargs = {
@@ -95,57 +85,43 @@ class ReportAssembler:
             entry_function=identity_kwargs["entry_function"],
             run_id=identity_kwargs["run_id"],
         )
-        canonical_outcomes = self._canonical_outcome_items(state)
-        if canonical_outcomes is None:
-            raise RuntimeError(
-                "live report assembly requires frozen Candidate Ledger outcomes; "
-                "read historical non-canonical reports through zscope.compat"
-            )
-        # A frozen group outcome, not an entry-local report, is the sole
-        # authority for final security dispositions. Keep raw projections for
-        # diagnostics, but never let them add or override findings.
-        state["raw_observations"] = list(observations)
-        all_issues = [
-            item
-            for item in canonical_outcomes
-            if str(item.get("candidate_disposition") or "").lower() == "confirmed"
-        ]
-        observations = [
-            item
-            for item in canonical_outcomes
-            if str(item.get("candidate_disposition") or "").lower() == "needs_review"
-        ]
-        state["_canonical_report_issues"] = list(all_issues)
-        state["_canonical_review_observations"] = list(observations)
-        lifecycle = state.get("candidate_lifecycle_snapshot")
-        lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle, dict) else {}
-        if int((lifecycle_summary or {}).get("nonterminal_validation_count") or 0):
-            state["completeness"] = "degraded"
-            state["notes"].append(
-                "Validation lifecycle did not close; nonterminal groups were excluded from security findings."
+        canonical_outcomes = (
+            self._canonical_outcome_items(state)
+            if bool(state.get("canonical_outcome_projection_enabled", True))
+            else None
+        )
+        if canonical_outcomes is not None:
+            # A frozen group outcome, not an entry-local report, is the sole
+            # authority for final security dispositions.  Keep raw projections
+            # for diagnostics, but never let them add or override findings.
+            state["raw_observations"] = list(observations)
+            all_issues = [
+                item
+                for item in canonical_outcomes
+                if str(item.get("candidate_disposition") or "").lower() == "confirmed"
+            ]
+            observations = [
+                item
+                for item in canonical_outcomes
+                if str(item.get("candidate_disposition") or "").lower() == "needs_review"
+            ]
+            state["_canonical_report_issues"] = list(all_issues)
+            state["_canonical_review_observations"] = list(observations)
+            lifecycle = state.get("candidate_lifecycle_snapshot")
+            lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle, dict) else {}
+            if int((lifecycle_summary or {}).get("nonterminal_validation_count") or 0):
+                state["completeness"] = "degraded"
+                state["notes"].append(
+                    "Validation lifecycle did not close; nonterminal groups were excluded from security findings."
+                )
+        else:
+            observations.extend(
+                self._unresolved_candidate_observations(
+                    state,
+                    list(all_issues) + observations,
+                )
             )
         state["observations"] = observations
-        # Canonical lifecycle outcomes are already frozen terminal records.
-        # Re-annotation may fill report-only envelope fields for historical
-        # snapshots, but it must not replace an authority-issued identity and
-        # make the public view diverge from its terminal source of truth.
-        frozen_observation_identities = [
-            {
-                key: deepcopy(item[key])
-                for key in (
-                    "candidate_uid",
-                    "occurrence_uid",
-                    "validation_cluster_uid",
-                    "obligation_uid",
-                    "evidence_hash",
-                    "decision_evidence_hash",
-                    "context_signature",
-                )
-                if item.get(key) not in (None, "")
-            }
-            for item in observations
-            if isinstance(item, dict)
-        ]
         annotate_issue_collection(
             [issue for issue in observations if isinstance(issue, dict)],
             default_disposition="needs_review",
@@ -155,20 +131,41 @@ class ReportAssembler:
             entry_function=identity_kwargs["entry_function"],
             run_id=identity_kwargs["run_id"],
         )
-        for observation, frozen_identity in zip(
-            (item for item in observations if isinstance(item, dict)),
-            frozen_observation_identities,
-        ):
-            observation.update(frozen_identity)
         self.resolve_issue_locations(all_issues)
+        if canonical_outcomes is None and self.deduplicate_report_issues:
+            all_issues = self.deduplicate_report_issues(all_issues, state)
+            state["_deduped_report_issues"] = all_issues
+        elif canonical_outcomes is not None:
+            # Each item is already the immutable projection of one validation
+            # group.  Report-time semantic de-duplication is not allowed to
+            # erase a distinct decision context.
+            state["semantic_dedup_summary"] = {
+                "enabled": False,
+                "canonical_projection": True,
+                "input_issue_count": len(all_issues),
+                "output_issue_count": len(all_issues),
+            }
         self.resolve_issue_locations(observations)
         for observation in observations:
             preserve_issue_location(observation)
+        if observations and canonical_outcomes is None:
+            state["observations"] = self.deduplicate_observations(observations)
         if state.get("observations"):
             state["notes"].append(
                 f"Kept {len(state.get('observations', []))} non-reportable candidate(s) "
                 "as audit observations; they are excluded from the default vulnerability report."
             )
+
+        # Final CWE backstop: every report-visible issue and observation must
+        # carry the CWE range of its root-cause classification, whatever its
+        # source (rule governance, validator correction, LLM discovery, or the
+        # observation fallback path).
+        for issue in all_issues:
+            if isinstance(issue, dict):
+                ensure_issue_cwes(issue)
+        for observation in state.get("observations", []):
+            if isinstance(observation, dict):
+                ensure_issue_cwes(observation)
 
         verdict = self._overall_verdict(state, all_issues)
         finding = finding_status(all_issues, state.get("observations", []))
@@ -188,20 +185,6 @@ class ReportAssembler:
                 for existing in terminal_states
             ):
                 terminal_states.append(item)
-        finalize_trace = getattr(trace_store, "finalize_issue", None)
-        if callable(finalize_trace):
-            for item in terminal_states:
-                if item.get("decision_trace_ref"):
-                    continue
-                if not item.get("validation_cluster_uid"):
-                    stable = terminal_candidate_identity(item) or str(item)
-                    item["validation_cluster_uid"] = (
-                        "VAL_ENGINE_" + hashlib.sha256(stable.encode("utf-8")).hexdigest()[:32]
-                    )
-                finalize_trace(item, view_memberships=("excluded",))
-            snapshot_trace = getattr(trace_store, "snapshot", None)
-            if callable(snapshot_trace):
-                state["decision_trace_manifest"] = snapshot_trace()
         if finding == "clean" and any(
             str(item.get("candidate_disposition") or "").lower() == "needs_review"
             for item in terminal_states
@@ -228,26 +211,11 @@ class ReportAssembler:
                 item for item in state.get("observations", []) if isinstance(item, dict)
             ],
         )
-        canonical_report_views = build_report_views(
-            [dict(item) for item in all_issues if isinstance(item, dict)],
-            [dict(item) for item in state.get("observations", []) if isinstance(item, dict)],
-            canonical_projection=True,
-        )
-        canonical_default = canonical_report_views.get("default")
-        canonical_default_items = (
-            canonical_default.get("issues") if isinstance(canonical_default, dict) else None
-        )
-        canonical_with_review = canonical_report_views.get("with_needs_review")
-        canonical_with_review_items = (
-            canonical_with_review.get("issues") if isinstance(canonical_with_review, dict) else None
-        )
         invariant_status = self._report_invariant_status(
             all_issues,
             state.get("observations", []),
             terminal_states,
-            True,
-            canonical_default_items,
-            canonical_with_review_items,
+            canonical_outcomes is not None,
         )
         if "validation_queue_drained" in state and not bool(state.get("validation_queue_drained")):
             invariant_status["valid"] = False
@@ -283,7 +251,6 @@ class ReportAssembler:
             needs_review_governance=governance,
         )
         final_report.metadata = metadata
-        final_report.report_views = canonical_report_views
         final_report.run_manifest["canonical_validation_group_count"] = int(
             invariant_status["canonical_validation_group_count"]
         )
@@ -294,12 +261,6 @@ class ReportAssembler:
                     "validation_group_alias_count",
                     "validator_invocation_count",
                     "rejected_with_proof_count",
-                    "deduplicated_alias_count",
-                    "shadow_observation_count",
-                    "audit_observation_count",
-                    "operational_obligation_count",
-                    "terminal_outcome_count",
-                    "unknown_terminal_disposition_count",
                     "cluster_fragmentation_count",
                 )
             }
@@ -311,25 +272,10 @@ class ReportAssembler:
         final_report.run_manifest["finding_root_alias_count"] = int(
             state.get("finding_root_alias_count", 0) or 0
         )
-        final_report.run_manifest["finding_root_projection"] = dict(
-            state.get("finding_root_projection_summary") or {}
+        final_report.run_manifest["aggregation_count"] = int(state.get("aggregation_count", 0) or 0)
+        final_report.run_manifest["aggregation_alias_count"] = int(
+            state.get("aggregation_alias_count", 0) or 0
         )
-        trace_manifest = state.get("decision_trace_manifest")
-        if isinstance(trace_manifest, dict):
-            final_report.run_manifest["decision_trace"] = {
-                key: deepcopy(trace_manifest.get(key))
-                for key in (
-                    "schema_version",
-                    "manifest_path",
-                    "manifest_sha256",
-                    "trace_count",
-                    "coverage_trace_count",
-                    "evidence_object_count",
-                    "model_event_count",
-                    "complete",
-                    "errors",
-                )
-            }
         final_report.run_manifest.update(self._release_observability(state))
         self.refresh(final_report, state)
         state["final_report"] = final_report
@@ -340,14 +286,21 @@ class ReportAssembler:
         if not final_report.report_views:
             canonical_issues = state.get("_canonical_report_issues")
             canonical_observations = state.get("_canonical_review_observations")
-            if not isinstance(canonical_issues, list) or not isinstance(
-                canonical_observations, list
-            ):
-                raise RuntimeError("canonical Candidate Ledger projections are unavailable")
             final_report.report_views = build_report_views(
-                canonical_issues,
-                canonical_observations,
-                canonical_projection=True,
+                (
+                    canonical_issues
+                    if isinstance(canonical_issues, list)
+                    else state.get("_deduped_report_issues")
+                    or (state.get("issues", []) + state.get("verified_hist_issues", []))
+                ),
+                (
+                    canonical_observations
+                    if isinstance(canonical_observations, list)
+                    else state.get("observations", [])
+                ),
+                canonical_projection=(
+                    isinstance(canonical_issues, list) and isinstance(canonical_observations, list)
+                ),
             )
         with_review = final_report.report_views.get("with_needs_review", {})
         governance = (
@@ -383,21 +336,30 @@ class ReportAssembler:
                 governance.get("displayed_review_count") or 0
             ) + int(governance.get("operational_obligation_count") or 0)
         final_report.metadata["report_view_summary"] = report_view_summary(final_report.to_dict())
+        # Keep the lifecycle funnel in the product artifact as well as the
+        # benchmark score.  The local import avoids making reporting module
+        # import-time initialization depend on the benchmark package.
+        from ..benchmarking.protocol import candidate_funnel
+
         final_report.metadata["candidate_funnel"] = candidate_funnel(final_report.to_dict())
 
     def persist(self, state: Dict[str, Any], *, write_root_reports: bool = True) -> Dict[str, Any]:
         final_report = state["final_report"]
         self.refresh(final_report, state)
+        report_dict = cast(Dict[str, Any], final_report.to_dict())
+        if self.snapshot_store:
+            published = self.snapshot_store.save_final_report(
+                state["entry_index_name"],
+                report_dict,
+                expected_generation=state.get("snapshot_generation"),
+            )
+            if published is False:
+                report_dict.setdefault("metadata", {})["snapshot_report_published"] = False
+                report_dict["metadata"]["snapshot_report_reason"] = "snapshot_version_conflict_or_missing"
+                final_report.metadata.update(report_dict["metadata"])
         if write_root_reports:
             self.report_generator.save_json_report(final_report)
             self.report_generator.save_markdown_report(final_report)
-
-        report_dict = cast(Dict[str, Any], final_report.to_dict())
-        if self.snapshot_store:
-            self.snapshot_store.save_final_report(
-                state["entry_index_name"],
-                report_dict,
-            )
         return report_dict
 
     def finalize_returned_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -428,8 +390,6 @@ class ReportAssembler:
             blockers.append("report_invariant_failed")
         if str(state.get("budget_exhaustion_policy") or "observe") != "observe":
             blockers.append("budget_policy_not_observe_only")
-        if not current_successor_reviewed():
-            blockers.append("successor_review_not_current")
         llm_usage = state.get("llm_usage")
         return {
             "validator_session_count": int(state.get("validator_session_count", 0) or 0),
@@ -569,17 +529,6 @@ class ReportAssembler:
                         "impact_level",
                         "confidence",
                         "validation_status",
-                        "decision_trace_ref",
-                        "decision_trace_sha256",
-                        "terminal_event_uid",
-                        "terminal_transition_event_uid",
-                        "terminal_transition_event_hash",
-                        "terminal_transition_authority_sha256",
-                        "terminal_transition_level",
-                        "terminal_transition_disposition",
-                        "terminal_authority",
-                        "terminal_reason_codes",
-                        "open_clause_ids",
                         "evidence_pack",
                         "evidence_refs",
                     )
@@ -674,33 +623,16 @@ class ReportAssembler:
                 value["validation_status"] = "operational"
             result.append(value)
         result.sort(key=lambda item: str(item.get("validation_cluster_uid") or ""))
-        if bool(
-            state.get(
-                "finding_root_projection_enabled",
-                state.get("finding_root_v1_enabled", False),
-            )
-        ):
+        if bool(state.get("finding_root_v1_enabled", False)):
             projection = project_finding_roots(result)
             state["finding_root_count"] = projection.finding_root_count
             state["finding_root_alias_count"] = projection.finding_root_alias_count
-            state["finding_root_projection_summary"] = dict(projection.summary)
             result = list(projection.outcomes)
-        trace_store = state.get("decision_trace_store")
-        finalize_issue = getattr(trace_store, "finalize_issue", None)
-        if callable(finalize_issue):
-            for item in result:
-                disposition = str(item.get("candidate_disposition") or "").lower()
-                memberships: List[str] = []
-                if disposition == "confirmed":
-                    memberships = ["default", "with_needs_review"]
-                elif disposition == "needs_review":
-                    memberships = ["with_needs_review"]
-                else:
-                    memberships = ["excluded"]
-                finalize_issue(item, view_memberships=memberships)
-            snapshot = getattr(trace_store, "snapshot", None)
-            if callable(snapshot):
-                state["decision_trace_manifest"] = snapshot()
+        if bool(state.get("same_site_aggregation_enabled", False)):
+            aggregation = project_issue_aggregation(result)
+            state["aggregation_count"] = aggregation.aggregation_count
+            state["aggregation_alias_count"] = aggregation.aggregation_alias_count
+            result = list(aggregation.items)
         return result
 
     @staticmethod
@@ -709,17 +641,93 @@ class ReportAssembler:
         observations: List[Any],
         terminal_states: List[Dict[str, Any]],
         canonical_enabled: bool,
-        default_items: List[Any] | None = None,
-        with_needs_review_items: List[Any] | None = None,
     ) -> Dict[str, Any]:
-        return compute_report_invariant_status(
-            issues,
-            observations,
-            terminal_states,
-            canonical_projection=canonical_enabled,
-            default_items=default_items,
-            with_needs_review_items=with_needs_review_items,
+        default_count = sum(1 for item in issues if isinstance(item, dict))
+        review_count = sum(
+            1
+            for item in observations
+            if isinstance(item, dict)
+            and str(item.get("candidate_disposition") or "").lower() == "needs_review"
         )
+        terminal_confirmed = sum(
+            1
+            for item in terminal_states
+            if str(item.get("candidate_disposition") or "").lower() == "confirmed"
+        )
+        terminal_review = sum(
+            1
+            for item in terminal_states
+            if str(item.get("candidate_disposition") or "").lower() == "needs_review"
+        )
+        reportable_terminal_states = [
+            item
+            for item in terminal_states
+            if str(item.get("candidate_disposition") or "").lower() != "shadow_observation"
+        ]
+        clusters = {
+            str(item.get("validation_cluster_uid") or "")
+            for item in reportable_terminal_states
+            if item.get("validation_cluster_uid")
+        }
+        security_terminal_count = sum(
+            1
+            for item in reportable_terminal_states
+            if str(item.get("record_role") or "") != "operational_obligation"
+        )
+        terminal_items = [item for item in terminal_states if isinstance(item, dict)]
+        open_completion_count = sum(
+            1
+            for item in terminal_items
+            if str(item.get("evidence_completion_status") or "").lower()
+            in {"requested", "running", "queued"}
+            or str(item.get("evidence_completion_terminal_status") or "").lower()
+            in {"requested", "running", "queued"}
+        )
+        open_validation_count = sum(
+            1
+            for item in terminal_items
+            if str(item.get("status") or "").lower() in {"pending", "queued", "planned", "running"}
+        )
+        obligation_uids = {
+            str(item.get("obligation_uid") or item.get("candidate_uid") or "")
+            for item in reportable_terminal_states
+            if str(item.get("record_role") or "") != "operational_obligation"
+        }
+        valid = not canonical_enabled or (
+            default_count == terminal_confirmed
+            and review_count == terminal_review
+            and len(clusters) == security_terminal_count
+            and open_completion_count == 0
+            and open_validation_count == 0
+        )
+        return {
+            "valid": valid,
+            "canonical_projection": canonical_enabled,
+            "default_confirmed_count": default_count,
+            "terminal_confirmed_count": terminal_confirmed,
+            "displayed_review_count": review_count,
+            "terminal_review_count": terminal_review,
+            "shadow_observation_count": sum(
+                1
+                for item in terminal_states
+                if str(item.get("candidate_disposition") or "").lower() == "shadow_observation"
+            ),
+            "canonical_validation_group_count": len(clusters),
+            "validation_group_alias_count": sum(
+                len(item.get("alias_occurrence_uids") or []) for item in terminal_items
+            ),
+            "validator_invocation_count": sum(
+                int(item.get("validation_attempt_count") or 0) for item in terminal_items
+            ),
+            "rejected_with_proof_count": sum(
+                1
+                for item in terminal_items
+                if str(item.get("candidate_disposition") or "").lower() == "rejected_with_proof"
+            ),
+            "cluster_fragmentation_count": max(0, len(clusters) - len(obligation_uids)),
+            "open_evidence_completion_count": open_completion_count,
+            "open_validation_group_count": open_validation_count,
+        }
 
     @staticmethod
     def _unresolved_candidate_observations(

@@ -10,25 +10,15 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, List, Mapping, Optional
+from typing import List, Optional
 
 from zscope.benchmarking.runner import (
     BenchmarkError,
-    P6_CANDIDATE_COMMIT_ENVIRONMENT_KEY,
-    SPECS,
     clean_benchmark_artifacts,
     repository_root,
     run_benchmark,
     score_artifact,
 )
-from zscope.benchmarking.provider_runtime import (
-    P6_API_KEY_ENVIRONMENT_KEY,
-    ProviderRuntimeError,
-    reject_conflicting_provider_identity_environment,
-    require_p6_provider_contract,
-    required_environment_keys,
-)
-from zscope.benchmarking.p6_protocol import FAILURE_CLASS_TO_STAGE, diagnose_pilot
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -36,7 +26,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="run a bundled benchmark")
     run.add_argument("--language", choices=("c_cpp", "java"), required=True)
-    run.add_argument("--mode", choices=("smoke", "trial", "formal", "pilot"), required=True)
+    run.add_argument("--mode", choices=("smoke", "trial", "formal"), required=True)
     run.add_argument("--runs", type=int)
     run.add_argument(
         "--scan-depth",
@@ -45,16 +35,16 @@ def _parser() -> argparse.ArgumentParser:
         help="Select the analysis depth; token use is measured after the run.",
     )
     run.add_argument("--output", type=Path)
+    run.add_argument(
+        "--work-directory",
+        type=Path,
+        help="New absolute directory for persistent, cold run-NN workspaces; never cleaned automatically.",
+    )
     run.add_argument("--dry-run", action="store_true")
     clean = commands.add_parser("clean", help="preview or remove generated fixture artifacts")
     clean.add_argument("--scope", choices=("c_cpp", "java", "all"), required=True)
     clean.add_argument("--apply", action="store_true")
     clean.add_argument("--include-runs", action="store_true")
-    diagnose = commands.add_parser(
-        "diagnose-pilot", help="emit an answer-free P6 pilot failure diagnostic"
-    )
-    diagnose.add_argument("--run-dir", type=Path, required=True)
-    diagnose.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -65,40 +55,24 @@ def _score_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _public_run_payload(
-    payload: Mapping[str, Any], *, mode: str, dry_run: bool
-) -> Mapping[str, Any]:
-    """Return the CLI-safe view of one benchmark result.
-
-    Pilot aggregates intentionally contain answer-bearing issue and scoring
-    material for the sealed artifact.  Printing that aggregate would copy it
-    into an operator terminal or workflow log.  Keep historical trial/formal
-    output compatibility, while making every non-dry-run pilot invocation
-    emit only fixed, answer-free completion fields.
-    """
-
-    if mode != "pilot" or dry_run:
-        return payload
-    return {
-        "schema_version": "zscope.p6-cli-summary.v1",
-        "mode": "pilot",
-        "scan_depth": payload.get("scan_depth"),
-        "completed": payload.get("all_completed") is True,
-        "passed": payload.get("passed") is True,
-        "formal_benchmark": False,
-        "release_eligible": False,
-    }
-
-
 def _wsl_argv(argv: List[str]) -> List[str]:
     root = repository_root()
-    converted = subprocess.check_output(["wsl", "wslpath", "-a", str(root)], text=True).strip()
+    # wsl.exe strips backslashes from bare argv ("C:\Users" arrives as
+    # "C:Users"), so hand wslpath forward-slash Windows paths instead.
+    converted = subprocess.check_output(
+        ["wsl", "wslpath", "-a", root.as_posix()], text=True
+    ).strip()
     converted_arguments = list(argv)
-    if "--output" in converted_arguments:
-        index = converted_arguments.index("--output") + 1
+    for option in ("--output", "--work-directory"):
+        if option not in converted_arguments:
+            continue
+        index = converted_arguments.index(option) + 1
         if index < len(converted_arguments):
+            if converted_arguments[index].startswith("/"):
+                continue
             converted_arguments[index] = subprocess.check_output(
-                ["wsl", "wslpath", "-a", converted_arguments[index]], text=True
+                ["wsl", "wslpath", "-a", converted_arguments[index].replace("\\", "/")],
+                text=True,
             ).strip()
     forwarded = ["python3", "-m", "zscope.cli.benchmark", *converted_arguments]
     command = (
@@ -129,19 +103,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 apply=args.apply,
                 include_runs=args.include_runs,
             )
-        elif args.command == "diagnose-pilot":
-            payload = dict(diagnose_pilot(args.run_dir.resolve(), args.output.resolve()))
         else:
-            if args.mode == "pilot" and not args.dry_run:
-                try:
-                    pilot_provider = require_p6_provider_contract(SPECS[args.language].config_path)
-                    reject_conflicting_provider_identity_environment(pilot_provider, os.environ)
-                except ProviderRuntimeError as exc:
-                    failure_class = exc.failure_class or "provider_identity_mismatch"
-                    raise BenchmarkError(
-                        failure_class,
-                        failure_class=failure_class,
-                    ) from exc
             if (
                 platform.system() == "Windows"
                 and args.language == "c_cpp"
@@ -149,43 +111,18 @@ def main(argv: Optional[List[str]] = None) -> None:
                 and os.environ.get("Z_SCOPE_BENCHMARK_IN_WSL") != "1"
             ):
                 environment = dict(os.environ)
-                provider_keys = list(required_environment_keys(SPECS[args.language].config_path))
-                if args.mode == "pilot":
-                    provider_keys = [
-                        key for key in provider_keys if key != P6_API_KEY_ENVIRONMENT_KEY
-                    ]
-                    provider_keys.append("Z_SCOPE_P6_API_KEY_FILE/p")
-                    provider_keys.append(P6_CANDIDATE_COMMIT_ENVIRONMENT_KEY)
-                    # The direct key and legacy provider selectors must not be
-                    # present in the wsl.exe child environment.  WSL receives
-                    # only the explicit one-key file locator; the Linux child
-                    # validates and loads it without mutating its global env.
-                    environment.pop(P6_API_KEY_ENVIRONMENT_KEY, None)
-                    environment.pop("Z_SCOPE_LLM_BASE_URL", None)
-                    environment.pop("Z_SCOPE_LLM_MODEL", None)
-                provider_keys = [
-                    item for item in provider_keys if item.removesuffix("/p") in environment
-                ]
                 forwarded = [
-                    *provider_keys,
-                    *(
-                        ["Z_SCOPE_DEVELOPER_MODE"]
-                        if "Z_SCOPE_DEVELOPER_MODE" in environment
-                        else []
-                    ),
-                    *(["Z_SCOPE_RUNTIME_SPEC/p"] if "Z_SCOPE_RUNTIME_SPEC" in environment else []),
-                    *(
-                        ["Z_SCOPE_BENCHMARK_WORK_ROOT/p"]
-                        if "Z_SCOPE_BENCHMARK_WORK_ROOT" in environment
-                        else []
-                    ),
-                    "Z_SCOPE_BENCHMARK_IN_WSL",
+                    "Z_SCOPE_LLM_BASE_URL",
+                    "Z_SCOPE_LLM_MODEL",
+                    "Z_SCOPE_API_KEY",
+                    "Z_SCOPE_DEVELOPER_MODE",
+                    "Z_SCOPE_RUNTIME_SPEC",
+                    "Z_SCOPE_BENCHMARK_WORK_ROOT/p",
                 ]
+                existing = environment.get("WSLENV", "")
+                environment["WSLENV"] = ":".join([item for item in [existing, *forwarded] if item])
                 environment["Z_SCOPE_BENCHMARK_IN_WSL"] = "1"
-                # Never inherit an arbitrary pre-existing WSLENV: it could
-                # re-enable a secret or identity variable that pilot mode
-                # intentionally removed from the forwarding contract.
-                environment["WSLENV"] = ":".join(dict.fromkeys(forwarded))
+                environment["WSLENV"] += ":Z_SCOPE_BENCHMARK_IN_WSL"
                 completed = subprocess.run(_wsl_argv(arguments), env=environment, check=False)
                 raise SystemExit(completed.returncode)
             payload = run_benchmark(
@@ -195,29 +132,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 output=args.output,
                 dry_run=args.dry_run,
                 scan_depth=args.scan_depth,
+                work_directory=args.work_directory,
             )
-        public_payload = (
-            _public_run_payload(
-                payload,
-                mode=args.mode,
-                dry_run=bool(args.dry_run),
-            )
-            if args.command == "run"
-            else payload
-        )
-        print(json.dumps(public_payload, ensure_ascii=False, indent=2))
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     except BenchmarkError as exc:
-        if getattr(args, "command", "") == "run" and getattr(args, "mode", "") == "pilot":
-            allowed = set(FAILURE_CLASS_TO_STAGE)
-            public_failure = exc.failure_class
-            if public_failure not in allowed:
-                public_failure = "internal_failure"
-            stage = FAILURE_CLASS_TO_STAGE[public_failure]
-            print(
-                f"stage={stage}; class={public_failure}:1; count=1",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
         parser.error(str(exc))
 
 

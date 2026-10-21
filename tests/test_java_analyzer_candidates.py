@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.java_rules import JavaRuleCandidateGenerator
 from zscope.orchestration.specs import SpecRegistry
+from zscope.orchestration.subagents import SubAgentOrchestrator
 
 
 class FakeCodeIndex:
@@ -373,6 +374,12 @@ class FakeSpecRegistry:
     def __init__(self) -> None:
         self.skills = {name: FakeSkill(name) for name in self.names}
 
+    def skills_for_agent(self, agent_name: str, extra=None):
+        assert agent_name == "vulnerability_analyzer"
+        names = list(self.names)
+        names.extend(extra or [])
+        return [self.skills[name] for name in names]
+
     def get_skill(self, name: str):
         return self.skills.get(name)
 
@@ -391,12 +398,14 @@ class FakeFullJavaSpecRegistry(FakeSpecRegistry):
     ]
 
 
-def test_java_project_filters_candidate_skills_to_java_family() -> None:
+def test_java_project_filters_vulnerability_skills_to_java_family() -> None:
     analyzer = object.__new__(Analyzer)
     analyzer.config = SimpleNamespace(project=SimpleNamespace(language="java"))
     analyzer.spec_registry = FakeSpecRegistry()
 
-    selection = analyzer._candidate_first_skill_selection([])
+    selection = analyzer._select_vulnerability_skills_for_config(
+        SimpleNamespace(task="general security audit", skills=None)
+    )
 
     assert selection.restricted is False
     assert selection.skills == ["java_injection", "java_web_security"]
@@ -407,7 +416,9 @@ def test_java_security_task_can_activate_all_java_skills() -> None:
     analyzer.config = SimpleNamespace(project=SimpleNamespace(language="java"))
     analyzer.spec_registry = FakeFullJavaSpecRegistry()
 
-    selection = analyzer._candidate_first_skill_selection([])
+    selection = analyzer._select_vulnerability_skills_for_config(
+        SimpleNamespace(task="Java security audit", skills=None)
+    )
 
     assert selection.skills == [
         "java_injection",
@@ -420,12 +431,12 @@ def test_java_security_task_can_activate_all_java_skills() -> None:
     ]
 
 
-def test_java_empty_task_activates_every_language_scoped_analysis_skill() -> None:
+def test_java_empty_task_activates_every_language_scoped_vulnerability_skill() -> None:
     analyzer = object.__new__(Analyzer)
     analyzer.config = SimpleNamespace(project=SimpleNamespace(language="java"))
     analyzer.spec_registry = SpecRegistry()
 
-    selection = analyzer._candidate_first_skill_selection([])
+    selection = analyzer._candidate_first_skill_selection(SimpleNamespace(skills=[]))
 
     assert selection.restricted is False
     assert selection.skills == [
@@ -439,12 +450,14 @@ def test_java_empty_task_activates_every_language_scoped_analysis_skill() -> Non
     ]
 
 
-def test_c_project_filters_out_java_analysis_skills() -> None:
+def test_c_project_filters_out_java_vulnerability_skills() -> None:
     analyzer = object.__new__(Analyzer)
     analyzer.config = SimpleNamespace(project=SimpleNamespace(language="c_cpp"))
     analyzer.spec_registry = FakeSpecRegistry()
 
-    selection = analyzer._candidate_first_skill_selection([])
+    selection = analyzer._select_vulnerability_skills_for_config(
+        SimpleNamespace(task="general security audit", skills=None)
+    )
 
     assert selection.restricted is False
     assert selection.skills == ["bounds_and_integer", "resource_lifecycle"]
@@ -731,3 +744,44 @@ def test_java_runtime_normalization_has_no_benchmark_coordinate_literals() -> No
     text = "\n".join(path.read_text(encoding="utf-8") for path in runtime_files)
 
     assert not any(marker in text for marker in forbidden)
+
+
+def test_java_subagent_planner_uses_java_active_source_rules() -> None:
+    code = """
+1 | @DeleteMapping("/users/{id}")
+2 | public void deleteUser(@PathVariable String id, HttpServletRequest request) {
+3 |   String token = request.getHeader("Authorization");
+4 |   userRepository.deleteById(id);
+5 |   Runtime.getRuntime().exec(id);
+6 |   Object value = new ObjectInputStream(stream).readObject();
+7 |   Cipher.getInstance("DES/ECB/PKCS5Padding");
+8 |   byte[] body = request.getInputStream().readAllBytes();
+9 |   static HashMap cache = new HashMap();
+10 | }
+"""
+
+    tickets = SubAgentOrchestrator(None, []).plan_candidates(
+        "com.zscope.web.UserController.deleteUser:void(java.lang.String)",
+        code,
+        allowed_skills=[
+            "java_injection",
+            "java_web_security",
+            "java_deserialization",
+            "java_authz",
+            "java_crypto",
+            "java_resource_lifecycle",
+            "java_concurrency",
+        ],
+    )
+
+    skills = {ticket.skill for ticket in tickets}
+    assert {
+        "java_injection",
+        "java_web_security",
+        "java_deserialization",
+        "java_authz",
+        "java_crypto",
+        "java_resource_lifecycle",
+        "java_concurrency",
+    } <= skills
+    assert all(ticket.source == "java_active_source_rule" for ticket in tickets)
