@@ -7769,7 +7769,7 @@
       "ASTRA-STOP-COVERAGE-UX-R21"
     ]
   ],
-  "updated_at": "2026-10-21T07:07:39.888943+08:00",
+  "updated_at": "2026-10-21T14:29:09.272662+08:00",
   "source_baseline": {
     "captured_at": "2026-10-14T10:01:34.017668+08:00",
     "source_manifest_sha256": "41d9c25a0e259457164b68191ed6d797b5d7e1e5a8b748b501fd79df37deabd1",
@@ -7783,9 +7783,9 @@
     "policy": "not a pending user-action blocker; do not resume/redispatch/operate old blocked rounds; inspect only existing permitted artifacts for dependencies without implementation authorization"
   },
   "current_accepted_stage": {
-    "verified_at": "2026-10-21T07:07:39.888943+08:00",
-    "finished_at": "2026-10-20T22:37:59.869468+00:00",
-    "passed": 2566,
+    "verified_at": "2026-10-21T14:29:09.272662+08:00",
+    "finished_at": "2026-10-21T06:27:34.717147+00:00",
+    "passed": 2567,
     "failed": 0,
     "errors": 0,
     "skipped": 0,
@@ -7974,7 +7974,7 @@
         "started_at": null,
         "finished_at": null,
         "returncode": 0,
-        "seconds": 4742.2,
+        "seconds": 4689.8,
         "log": "artifacts/coordinator-r40-20261019/root-command-0.log"
       },
       {
@@ -7992,7 +7992,7 @@
         "started_at": null,
         "finished_at": null,
         "returncode": 0,
-        "seconds": 30.2,
+        "seconds": 26.1,
         "log": "artifacts/coordinator-r40-20261019/root-command-1.log"
       },
       {
@@ -8005,7 +8005,7 @@
         "started_at": null,
         "finished_at": null,
         "returncode": 0,
-        "seconds": 23.3,
+        "seconds": 9.8,
         "log": "artifacts/coordinator-r40-20261019/root-command-2.log"
       },
       {
@@ -8018,7 +8018,7 @@
         "started_at": null,
         "finished_at": null,
         "returncode": 0,
-        "seconds": 11.5,
+        "seconds": 12.7,
         "log": "artifacts/coordinator-r40-20261019/root-command-3.log"
       },
       {
@@ -8141,7 +8141,7 @@
         "started_at": null,
         "finished_at": null,
         "returncode": 0,
-        "seconds": 2.7,
+        "seconds": 2.1,
         "log": "artifacts/coordinator-r40-20261019/root-command-4.log"
       },
       {
@@ -8152,12 +8152,12 @@
         "started_at": null,
         "finished_at": null,
         "returncode": 0,
-        "seconds": 0.3,
+        "seconds": 0.2,
         "log": "artifacts/coordinator-r40-20261019/root-command-5.log"
       }
     ],
     "pytest_file_count": 171,
-    "bound_input_files": 91,
+    "bound_input_files": 97,
     "source_evidence": "artifacts/coordinator-r40-root-20261019/source-evidence.json",
     "current_bytes_match": true,
     "is_current_root": true,
@@ -8219,7 +8219,7 @@
       "native_sha256": "2f71ea9417c9d3d06a2a57d113b1414e7400bc4cefb77b87b578039df6238fe9",
       "native_ldd_has_no_missing_dependencies": true,
       "temporary_mount": [
-        "/tmp/zscope-root-r40-bu0ey7z8",
+        "/tmp/zscope-root-r40-1_3gvcd0",
         "ext4"
       ],
       "passed": true,
@@ -8234,9 +8234,35 @@
     ],
     "launchers_independently_reviewed": true,
     "approved_by": "user",
-    "approved_at": "2026-10-21T07:07:40.651451+08:00",
+    "approved_at": "2026-10-21T14:29:09.585893+08:00",
     "approval_quote": "批准Root更新、诊断ZCode Bridge派发失败原因并修复、ACP使用确认使用volcengine/deepseek-v4.1-flash、SVF/Saber + KnowledgeDB 生产者侧完全没有 build_context 身份：解决这个问题、第三TU问题由你接手，不要交给codex",
     "supersedes": "artifacts/coordinator-r23-ui-projection-union-20261016/review.json",
+    "increments_after_r40": [
+      {
+        "name": "dependabot-runtime-pins",
+        "changed": [
+          "requirements/release/py313.txt",
+          "requirements/constraints/py313.txt",
+          "requirements/portable/py313-cpp.txt",
+          "requirements/portable/py313-java.txt",
+          "requirements/README.md",
+          "tests/test_release_contract.py"
+        ],
+        "evidence": "artifacts/dependabot-20261021/",
+        "summary": "urllib3 2.7.0->2.8.0 (CVE-2026-97687/97688/97689) and certifi 2026.7.22->2026.10.19 (GHSA-6q48-6c7w-9gw2) in all four locks; black 25.11.0 advisories deferred with the reachability evidence recorded in requirements/README.md",
+        "not_verified": "no portable build or smoke was run against the new pins, and the gate interpreter still differs from the release lock (see artifacts/dependabot-20261021/env-vs-lock.json)"
+      },
+      {
+        "name": "job-runtime-output-race",
+        "changed": [
+          "zscope/retrieval/indexing_identity.py",
+          "tests/test_scan_jobs.py"
+        ],
+        "evidence": "artifacts/dependabot-20261021/REPORT.md",
+        "summary": "the first full gate run after the re-pins failed in test_instance_coverage_native_owner_http because declare() and current() called samefile() on SQLite -wal/-shm files that can vanish mid-check (FileNotFoundError aborted the scan); both now compare through _same_entry(), which treats a vanished entry as 'not the same file'",
+        "not_verified": "the race was found once in an 80-minute run and could not be reproduced by re-running the case in isolation; the regression test forces the stat failure instead of reproducing the timing"
+      }
+    ],
     "verification_scope": {
       "suite": "the R23 Root command set (same 6 commands, same launcher environment)",
       "intake": "artifacts/coordinator-r40-20261019/intake-verify.json",
@@ -8281,7 +8307,7 @@
     "previous_glm_failure_counts_and_threshold_preserved": true,
     "model_preference_is_not_permission_to_retry_platform_block": true
   },
-  "current_root_status": "RootR40 accepted by direct user approval: R39 Stage intake plus this round's fixes, one complete green run of the R23 command set (171 files, 6/6 commands), every R23 junit case preserved; prior R23 receipt retained under prior_accepted_stage_r23. The dsh ACP route is verified by one read-only smoke turn (task_0798a155e5, observed model deepseek/volcengine/deepseek-v4.1-flash). Still unverified: independent launcher/UI/projection review, a ZCode cross-review that reproduces runs (only a read-only code review exists), formal benchmark, portable smoke, per-variant SVF, and the fully structural heartbeat-starvation fix.",
+  "current_root_status": "RootR40 accepted by direct user approval: R39 Stage intake plus this round's fixes, one complete green run of the R23 command set (171 files, 6/6 commands), every R23 junit case preserved; prior R23 receipt retained under prior_accepted_stage_r23, and the dependency re-pins that followed the R40 commit re-ran the same command set green on the resulting tree (increments_after_r40). The dsh ACP route is verified by one read-only smoke turn (task_0798a155e5, observed model deepseek/volcengine/deepseek-v4.1-flash). Still unverified: independent launcher/UI/projection review, a ZCode cross-review that reproduces runs (only a read-only code review exists), formal benchmark, portable smoke, per-variant SVF, and the fully structural heartbeat-starvation fix.",
   "next_module_tasks": [
     {
       "id": "S01-INSTANCE-SEMANTICS-MIN-R23",
