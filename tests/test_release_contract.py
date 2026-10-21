@@ -19,6 +19,37 @@ from scripts.verify_release_assets import verify_release_assets
 
 ROOT = Path(__file__).resolve().parents[1]
 
+SHIPPED_LOCKS = (
+    "requirements/release/py313.txt",
+    "requirements/constraints/py313.txt",
+    "requirements/portable/py313-cpp.txt",
+    "requirements/portable/py313-java.txt",
+)
+# Runtime packages that shipped in every artifact and therefore have to be fixed in
+# every lock at once. The minimum is where the advisory range ends:
+# urllib3 CVE-2026-97687/97688/97689 and certifi GHSA-6q48-6c7w-9gw2.
+SECURITY_FLOORS = {"urllib3": (2, 8, 0), "certifi": (2026, 10, 19)}
+
+
+def _locked_versions(lock: Path) -> dict[str, str]:
+    """Read `name==version` pins, including CRLF-generated locks."""
+    pins: dict[str, str] = {}
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^([A-Za-z0-9_.\-]+)==([^\\\s]+)", line.strip())
+        if match:
+            pins[match.group(1).lower()] = match.group(2)
+    return pins
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts = []
+    for chunk in value.split("."):
+        digits = re.match(r"\d+", chunk)
+        if not digits:
+            break
+        parts.append(int(digits.group(0)))
+    return tuple(parts)
+
 
 def _sqlite_sql_literals(path: Path) -> list[str]:
     """Return SQL-looking literals without importing the inspected module."""
@@ -192,6 +223,26 @@ def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> Non
     java = (ROOT / "requirements/portable/py313-java.txt").read_text(encoding="utf-8")
     assert "cpgqls-client==" not in cpp and "websockets==" not in cpp
     assert "cpgqls-client==" in java and "websockets==" in java
+
+
+def test_every_lock_pins_the_same_security_fixed_runtime_versions() -> None:
+    """A fixed advisory must be fixed in every lock, not only in the one that reported it.
+
+    `urllib3` and `certifi` are transitive (requests / httpx / openai) yet they ship in
+    the release bundle and in both portable archives, so a bump in one lock leaves the
+    other artifacts exposed. The floors are the first releases outside the advisory
+    ranges; this test fails if a future regeneration resolves back below them.
+    """
+
+    pins = {name: _locked_versions(ROOT / name) for name in SHIPPED_LOCKS}
+    for package, floor in SECURITY_FLOORS.items():
+        found = {name: table.get(package) for name, table in pins.items()}
+        assert all(found.values()), f"{package} missing from a lock: {found}"
+        assert len(set(found.values())) == 1, f"{package} versions disagree: {found}"
+        pinned = next(iter(found.values()))
+        assert (
+            _version_tuple(pinned) >= floor
+        ), f"{package} {pinned} is below the fixed floor {floor}"
 
 
 def test_joern_client_is_java_optional_not_base_dependency() -> None:
