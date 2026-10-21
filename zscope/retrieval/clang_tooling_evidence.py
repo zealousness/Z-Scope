@@ -231,6 +231,7 @@ class ClangToolingEvidenceProvider:
     def _summarize_function_decl(cls, node: Dict[str, Any]) -> Dict[str, Any]:
         var_decls: List[Dict[str, Any]] = []
         call_exprs: List[Dict[str, Any]] = []
+        call_assignments: List[Dict[str, Any]] = []
         binary_ops: List[Dict[str, Any]] = []
         unary_ops: List[Dict[str, Any]] = []
         return_count = 0
@@ -245,16 +246,41 @@ class ClangToolingEvidenceProvider:
                         "line": cls._loc_line(child),
                     }
                 )
+                # ``ssize_t n = read(...)`` binds the call result to a named
+                # local; record which call produced the declared value.
+                target_name = str(child.get("name") or "")
+                if target_name:
+                    for nested in cls._walk_ast(child):
+                        if isinstance(nested, dict) and nested.get("kind") == "CallExpr":
+                            call_assignments.append(
+                                {"target": target_name, **cls._call_expr_summary(nested)}
+                            )
+                            break
             elif kind == "CallExpr":
                 call_exprs.append(cls._call_expr_summary(child))
             elif kind == "BinaryOperator":
+                opcode = str(child.get("opcode") or "")
                 binary_ops.append(
                     {
-                        "opcode": str(child.get("opcode") or ""),
+                        "opcode": opcode,
                         "line": cls._loc_line(child),
                         "type": cls._qual_type(child),
                     }
                 )
+                raw_inner = child.get("inner")
+                inner: List[Any] = raw_inner if isinstance(raw_inner, list) else []
+                if opcode == "=" and len(inner) >= 2:
+                    # ``zone->addr = _safe_malloc(16)`` stores the call result
+                    # into a member; the member path is what later facts must
+                    # match, not the base object name.
+                    targets = cls._assignment_target_texts(inner[0])
+                    if targets:
+                        for nested in cls._walk_ast(inner[1]):
+                            if isinstance(nested, dict) and nested.get("kind") == "CallExpr":
+                                call_assignments.append(
+                                    {"target": targets[0], **cls._call_expr_summary(nested)}
+                                )
+                                break
             elif kind == "UnaryOperator":
                 unary_ops.append(
                     {
@@ -274,6 +300,7 @@ class ClangToolingEvidenceProvider:
             "storage_class": str(node.get("storageClass") or ""),
             "var_decls": var_decls[:32],
             "call_exprs": call_exprs[:32],
+            "call_assignments": call_assignments[:32],
             "binary_ops": binary_ops[:32],
             "unary_ops": unary_ops[:32],
             "matcher_facts": cls._ast_matcher_facts(call_exprs, binary_ops, unary_ops),
@@ -510,6 +537,50 @@ class ClangToolingEvidenceProvider:
             if ref_name and ref_name not in refs:
                 refs.append(ref_name)
         return refs[:8]
+
+    @classmethod
+    def _assignment_target_texts(cls, lhs: Any) -> List[str]:
+        """Render an assignment target as its access path, members included.
+
+        ``_decl_refs_in_node`` returns declaration names only, so a member store
+        such as ``zone->addr = _safe_malloc(...)`` yields the bare ``zone`` and
+        never matches the full member expression the CFG text carries.  Render
+        the structural path (``zone->addr``) first and keep the plain
+        declaration names as fallbacks.
+        """
+
+        targets: List[str] = []
+
+        def render(node: Any) -> str:
+            if not isinstance(node, dict):
+                return ""
+            kind = str(node.get("kind") or "")
+            raw_inner = node.get("inner")
+            inner = raw_inner if isinstance(raw_inner, list) else []
+            if kind == "MemberExpr":
+                member = str(node.get("name") or "")
+                base = next((item for item in inner if isinstance(item, dict)), {})
+                base_text = render(base)
+                if not member:
+                    return base_text
+                arrow = "->" if node.get("isArrow") else "."
+                return f"{base_text}{arrow}{member}" if base_text else member
+            if kind == "DeclRefExpr":
+                referenced = node.get("referencedDecl")
+                if isinstance(referenced, dict):
+                    return str(referenced.get("name") or "")
+                return str(node.get("name") or "")
+            if kind in {"ImplicitCastExpr", "ParenExpr", "ArraySubscriptExpr"}:
+                return render(next((item for item in inner if isinstance(item, dict)), {}))
+            return ""
+
+        structural = render(lhs)
+        if structural:
+            targets.append(structural)
+        for ref in cls._decl_refs_in_node(lhs):
+            if ref not in targets:
+                targets.append(ref)
+        return targets[:8]
 
     @staticmethod
     def _qual_type(node: Dict[str, Any]) -> str:

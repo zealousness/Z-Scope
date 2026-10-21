@@ -202,6 +202,19 @@ def compact_clang_tooling_evidence(tooling_evidence: Dict[str, Any]) -> Dict[str
             "line": target.get("line"),
             "type": target.get("type"),
             "matcher_facts": target.get("matcher_facts", [])[:16],
+            # Which call produced which value: a member store such as
+            # ``zone->addr = _safe_malloc(16)`` only means something to the
+            # validator when the target keeps its full access path.
+            "call_assignments": [
+                {
+                    "target": call.get("target"),
+                    "callee": call.get("callee"),
+                    "line": call.get("line"),
+                    "result_type": call.get("result_type"),
+                }
+                for call in (target.get("call_assignments") or [])[:8]
+                if isinstance(call, dict)
+            ],
         },
         "cfg_summary": {
             "parse_ok": cfg_summary.get("parse_ok"),
