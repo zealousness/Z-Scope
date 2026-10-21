@@ -1830,3 +1830,47 @@ def test_hook_persist_pending_bounds_items_and_records_event(tmp_path, monkeypat
     assert payload["source"] == "test_queue"
     events = service.events(job["job_id"], 0).payload["events"]
     assert any(event["kind"] == "pending_persisted" for event in events)
+
+
+def test_job_runtime_output_identity_survives_a_file_vanishing_mid_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A SQLite side file can disappear between the existence check and the stat.
+
+    ``declare()`` compares every declared output against the job's protected inputs
+    with ``samefile()``. SQLite creates and removes ``-wal``/``-shm`` beside the job
+    database while the scan runs, so the check used to raise
+    ``FileNotFoundError: .../jobs.db-wal`` and abort the scan
+    (``test_instance_coverage_native_owner_http`` caught it inside an 80-minute run).
+    A vanished entry is simply not the same file as anything.
+    """
+
+    from zscope.retrieval import indexing_identity
+
+    root = tmp_path / "run"
+    root.mkdir()
+    protected = root / "jobs.db"
+    protected.write_text("db", encoding="utf-8")
+    wal = root / "jobs.db-wal"
+    wal.write_text("wal", encoding="utf-8")
+
+    raw = {path: state for path, (state, _) in indexing_identity._search_membership([root]).items()}
+    view = indexing_identity._RuntimeNamespaceView(raw, (), (protected,), ())
+
+    # A real overlap is still refused before anything touches disk.
+    with pytest.raises(ValueError, match="job_runtime_output_input_overlap"):
+        view.declare(protected)
+
+    real_samefile = Path.samefile
+
+    def vanish(self: Path, other: Path, *, _real=real_samefile):
+        if self.name.endswith("-wal") or self.name.endswith("-shm"):
+            raise FileNotFoundError(self)
+        return _real(self, other)
+
+    monkeypatch.setattr(Path, "samefile", vanish)
+    view.declare(wal)  # used to raise FileNotFoundError
+    assert wal in view.files
+    # ``current()`` walks the same comparison over every declared output and must
+    # not raise either: the raw namespace is untouched, so the recorded proof holds.
+    assert view.current(view.raw) is True

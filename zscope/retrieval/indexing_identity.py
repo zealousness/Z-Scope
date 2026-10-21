@@ -747,6 +747,22 @@ def _physical_chain(path: Path) -> tuple[tuple[str, int, int, int, int, str], ..
     return tuple(result)
 
 
+def _same_entry(left: Path, right: Path) -> bool:
+    """Whether two paths name one entry, tolerating files removed mid-comparison.
+
+    The job runtime declares its own SQLite files as outputs while SQLite creates
+    and removes ``-wal``/``-shm`` beside them, so a ``samefile()`` call can lose
+    either side between the existence check and the stat. An entry that vanished
+    during the comparison is not the same file as anything; raising here used to
+    abort the whole scan (``FileNotFoundError: .../jobs.db-wal``).
+    """
+
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
 class _RuntimeNamespaceView:
     """Immutable raw baseline plus individually proved added output names."""
 
@@ -794,7 +810,7 @@ class _RuntimeNamespaceView:
         for protected in self.protected:
             if path == protected or path.resolve() == protected.resolve():
                 raise ValueError("job_runtime_output_input_overlap")
-            if path.exists() and protected.exists() and path.samefile(protected):
+            if _same_entry(path, protected):
                 raise ValueError("job_runtime_output_input_overlap")
         if path in self.candidates:
             raise ValueError("job_runtime_output_lookup_conflict")
@@ -846,12 +862,16 @@ class _RuntimeNamespaceView:
                 return False
             if output.exists() and (output.is_dir() != (output in self.directories)):
                 return False
-            if output.exists() and output.stat().st_uid != os.geteuid():
-                return False
-            if any(
-                output.exists() and path.exists() and output.samefile(path)
-                for path in self.protected
-            ):
+            if output.exists():
+                try:
+                    owner = output.stat().st_uid
+                except OSError:
+                    # Removed between the existence check and the stat: the
+                    # recorded proof no longer describes what is on disk.
+                    return False
+                if owner != os.geteuid():
+                    return False
+            if any(_same_entry(output, path) for path in self.protected):
                 return False
         observations = (
             (
