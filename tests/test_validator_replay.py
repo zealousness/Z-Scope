@@ -408,7 +408,11 @@ def test_arm_b_repair_and_arm_d_investigation_are_bounded() -> None:
     )
     assert seen_b == ["direct", "format_repair"]
     assert repaired["complete"] is True
-    assert repaired["groups"][0]["protocol_valid"] is False
+    assert repaired["groups"][0]["protocol_valid"] is True
+    assert repaired["groups"][0]["protocol_errors"] == []
+    assert repaired["groups"][0]["calls"][0]["protocol_errors"] == [
+        "executor result violates ValidatorResult v3"
+    ]
 
     seen_d = []
     investigation_turn = 0

@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from semantics_fixtures import reviewed_control_plane_project
 
 from zscope.orchestration.jobs import identity
 from zscope.orchestration.jobs.fingerprint import compute_input_fingerprint, diff_components
@@ -56,8 +57,6 @@ llms:
     api_key: "dummy-key"
 project:
   language: c_cpp
-  root: "{root}"
-  source_root: src
 scan:
   depth: fast
 indexing:
@@ -85,6 +84,7 @@ def make_project(tmp_path: Path, *, name: str = "project") -> Path:
     (project / "src" / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
     config_text = CONFIG_TEMPLATE.replace("{root}", str(project))
     (project / "zscope.yaml").write_text(config_text, encoding="utf-8")
+    reviewed_control_plane_project(project / "zscope.yaml")
     return project
 
 
@@ -95,13 +95,14 @@ def make_build_project(tmp_path: Path, *, name: str = "buildproject") -> Path:
     config = project / "zscope.yaml"
     config.write_text(
         config.read_text(encoding="utf-8").replace(
-            "  source_root: src\n",
-            "  source_root: src\n  compile_commands_path: build/compile_commands.json\n",
+            "  language: c_cpp\n",
+            "  language: c_cpp\n  compile_commands_path: build/compile_commands.json\n",
         ),
         encoding="utf-8",
     )
     (project / "build").mkdir()
     (project / "build" / "compile_commands.json").write_text("[]\n", encoding="utf-8")
+    reviewed_control_plane_project(config)
     return project
 
 
@@ -1025,6 +1026,7 @@ def test_resume_after_input_change_revokes_previous_binding(tmp_path):
     (project / "src" / "main.c").write_text("int main(void) { return 42; }\n", encoding="utf-8")
     # A reconnecting client holds no in-process fingerprint cache.
     reconnected = make_service(project)
+    reviewed_control_plane_project(project / "zscope.yaml")
     response = reconnected.resume(
         job["job_id"], base_revision=cancelled["revision"], request_id="req-ic-resume"
     )
@@ -1050,6 +1052,7 @@ def test_same_instance_resume_detects_source_change_without_scan_depth(tmp_path)
     assert job["input_revision"]
     cancelled = force_status(store_for(project), job["job_id"], "cancelled")
     (project / "src" / "main.c").write_text("int main(void) { return 42; }\n", encoding="utf-8")
+    reviewed_control_plane_project(project / "zscope.yaml")
     response = service.resume(
         job["job_id"], base_revision=cancelled["revision"], request_id="req-f4-src-r"
     )
@@ -1071,6 +1074,7 @@ def test_same_instance_resume_detects_header_change(tmp_path):
     job = start_job(service, request_id="req-f4-hdr")
     cancelled = force_status(store_for(project), job["job_id"], "cancelled")
     (project / "src" / "util.h").write_text("#define UTIL_LIMIT 8\n", encoding="utf-8")
+    reviewed_control_plane_project(project / "zscope.yaml")
     response = service.resume(
         job["job_id"], base_revision=cancelled["revision"], request_id="req-f4-hdr-r"
     )
@@ -1092,6 +1096,7 @@ def test_same_instance_resume_detects_build_input_change(tmp_path):
         ),
         encoding="utf-8",
     )
+    reviewed_control_plane_project(project / "zscope.yaml")
     response = service.resume(
         job["job_id"], base_revision=cancelled["revision"], request_id="req-f4-build-r"
     )
@@ -1129,6 +1134,7 @@ def test_same_instance_start_after_source_change_binds_fresh_input(tmp_path):
     first = start_job(service, request_id="req-f4-start-a")
     force_status(store_for(project), first["job_id"], "cancelled")
     (project / "src" / "main.c").write_text("int main(void) { return 7; }\n", encoding="utf-8")
+    reviewed_control_plane_project(project / "zscope.yaml")
     second = start_job(service, request_id="req-f4-start-b")
     assert second["input_revision"] != first["input_revision"]
 

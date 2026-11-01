@@ -575,8 +575,6 @@ def test_config_loader_accepts_absolute_entry_discovery_search_root(tmp_path):
                     }
                 },
                 "project": {
-                    "root": str(project_root),
-                    "source_root": ".",
                     "language": "c_cpp",
                     "entry_discovery": {
                         "enabled": True,
@@ -645,7 +643,9 @@ def test_discovery_keeps_same_name_functions_from_different_files(tmp_path):
     assert all(candidate.signature for candidate in handles)
 
 
-def test_discovery_filters_implementations_outside_active_translation_units(tmp_path):
+def test_discovery_filters_implementations_outside_active_translation_units(
+    tmp_path, monkeypatch
+):
     src = tmp_path / "src"
     build = tmp_path / "build"
     src.mkdir()
@@ -680,6 +680,13 @@ def test_discovery_filters_implementations_outside_active_translation_units(tmp_
         compile_commands_path=compile_commands,
         source_root=tmp_path,
     )
+    original_get_impl = code_index.get_function_impl
+
+    def get_active_impl_only(name, *args, **kwargs):
+        assert "platform_windows.c" not in str(kwargs.get("file_path") or "")
+        return original_get_impl(name, *args, **kwargs)
+
+    monkeypatch.setattr(code_index, "get_function_impl", get_active_impl_only)
 
     try:
         result = EntryDiscovery(

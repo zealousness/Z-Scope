@@ -387,7 +387,7 @@ def interfaces(profile):
     # Exercise actual public servers against the already indexed sample. Their
     # initialization uses the selected backend and must not require an LLM.
     project = WORK if profile == "cpp" else WORK / "java-project"
-    config = WORK / "zscope.yaml"
+    config = project / "zscope.yaml"
     data = {
         "config_version": 2,
         "llms": {
@@ -398,9 +398,7 @@ def interfaces(profile):
             }
         },
         "project": {
-            "root": str(project),
             "language": "c_cpp" if profile == "cpp" else "java",
-            "source_root": ".",
         },
         "indexing": {"backend": "clang" if profile == "cpp" else "java_source"},
     }

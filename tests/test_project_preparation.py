@@ -31,7 +31,7 @@ def test_cli_and_web_share_the_same_profile_without_exposing_model_credentials(
     document = _config(project)
     document["project"]["compile_commands_path"] = "compile_commands.json"
     document["llms"]["default"]["api_key"] = "preparation-secret"
-    path = _write(tmp_path, document)
+    path = _write(project, document)
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     web = ConfigService(path).prepare_project()
     cli = CliRunner().invoke(main, ["prepare", "--config", str(path), "--json"])

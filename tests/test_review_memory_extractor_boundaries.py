@@ -15,7 +15,14 @@ class FakeLLM:
         return {"choices": [{"message": {"content": json.dumps(self.payload)}}]}
 
 
-def test_llm_cannot_add_evidence_reference():
+def test_llm_cannot_add_evidence_reference(monkeypatch):
+    from zscope.agents.review_memory.agent import ReviewMemoryAgent
+    from zscope.framework.base import AgentResponse
+
+    # Exercise the extractor's independent defense after the Agent boundary.
+    monkeypatch.setattr(ReviewMemoryAgent, "run", lambda *_: AgentResponse(
+        success=True, data={"evidence_refs": ["forged"]}
+    ))
     record = {
         "review_id": "r",
         "project_id": "p",

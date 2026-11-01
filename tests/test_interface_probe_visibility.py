@@ -99,6 +99,31 @@ def test_probe_stats_skip_reasons(monkeypatch) -> None:
     assert analyzer._interface_probe_stats["classified"] == 1
 
 
+def test_cpp_normal_scan_with_semantics_never_calls_interface_probe(monkeypatch) -> None:
+    analyzer = _probe_analyzer()
+    analyzer.config = SimpleNamespace(
+        project=SimpleNamespace(
+            language="c_cpp", semantics_file="zscope.semantics.yaml", agents=[]
+        ),
+        analysis=SimpleNamespace(
+            llm_interface_inference=True, llm_interface_inference_budget=50
+        ),
+        scan=SimpleNamespace(llm_profiles=SimpleNamespace(analysis="default")),
+    )
+    analyzer.user_config = SimpleNamespace(get_external_function=lambda name: False)
+    analyzer.llm_clients = {"default": object()}
+    monkeypatch.setattr(
+        Analyzer,
+        "_scan_role_llm_client",
+        lambda self, role: (_ for _ in ()).throw(AssertionError("unexpected LLM probe")),
+    )
+
+    snapshot: Dict[str, Any] = {}
+    assert analyzer._maybe_inject_interface_role("project_alloc", snapshot, {}) == {}
+    assert analyzer._interface_probe_stats["probed"] == 0
+    assert analyzer._interface_probe_stats["skipped_project_semantics_authority"] == 1
+
+
 def test_run_manifest_carries_interface_probe_block() -> None:
     probe = {
         "probed": 3,

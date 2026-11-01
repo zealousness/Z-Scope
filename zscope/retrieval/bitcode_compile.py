@@ -52,6 +52,11 @@ def dependency_flags(arguments: List[str], depfile: Path) -> List[str]:
     return result + ["-MD", "-MF", str(depfile)]
 
 
+def _file_version(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 def compile_tu(builder: Any, command: Dict[str, Any], ordinal: int) -> None:
     identity = command_identity(command, builder.compile_commands_path.parent)
     source, directory = Path(identity["source"]), Path(identity["directory"])
@@ -116,6 +121,7 @@ def compile_tu(builder: Any, command: Dict[str, Any], ordinal: int) -> None:
             "direct": direct,
             "argument_policy": [POLICY_VERSION, POLICY_DIGEST],
             "argument_adapter": ADAPTER_DIGEST,
+            "source_validation": 1,
         }
     )
     # Stable context names survive compile-database reordering. The scope module
@@ -141,8 +147,9 @@ def compile_tu(builder: Any, command: Dict[str, Any], ordinal: int) -> None:
     arguments.append("-v")
     metrics: Dict[str, Any] = {}
     started = time.time_ns()
-    source_hash = file_digest(source)
     try:
+        source_version = _file_version(source)
+        source_hash = file_digest(source)
         deadline = time.monotonic() + builder.timeout if builder.timeout is not None else None
         environment = dict(builder._env, LC_ALL="C", LANG="C")
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -266,8 +273,14 @@ def compile_tu(builder: Any, command: Dict[str, Any], ordinal: int) -> None:
             paths = parse_depfile(depfile, directory)
             dependencies = dependency_snapshot(paths)
             complete = str(source) in dependencies and dependencies_current(dependencies)
-            if source_hash != file_digest(source) or any(
-                p.stat().st_mtime_ns > started for p in paths
+            # Filesystem timestamps can be ahead of the process clock. For the
+            # source we have a precompile identity: compare it directly, also
+            # detecting same-content rewrites that restore the old mtime.
+            # Headers discovered only after compilation retain the time guard.
+            if (
+                source_hash != file_digest(source)
+                or source_version != _file_version(source)
+                or any(p != source and p.stat().st_mtime_ns > started for p in paths)
             ):
                 status("failed", "dependency_changed_during_compile", metrics=metrics)
                 return

@@ -78,7 +78,12 @@ def test_v31_identity_uses_structured_obligation_not_detector_or_wrapper() -> No
             "path": {"function": "parse_packet(size_t)", "complete_in_function": True},
             "source": {"expression": "len", "file": "src/parser.c", "line": 38},
             "sink": {"operation": "memcpy(dst, src, len)", "file": "src/parser.c", "line": 42},
-            "ast_cfg": {"events": [{"kind": "header_length", "line": 38}, {"kind": "header_length_copy", "line": 42}]},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "header_length", "line": 38},
+                    {"kind": "header_length_copy", "line": 42},
+                ]
+            },
         },
     }
     first = {**base, "rule": "regex_copy_rule", "evidence_pack": dict(base["evidence_pack"])}
@@ -145,4 +150,112 @@ def test_partial_fact_slice_is_only_shadow_promotion_ineligible() -> None:
     attach_decision_facts(issue)
 
     assert issue["candidate_promotion_eligible"] is False
-    assert issue["candidate_promotion_reason"] == "missing_required_decision_facts"
+    assert issue["candidate_promotion_reason"] == "validation_obligation_profile_missing"
+
+
+def test_heap_thread_argument_owner_events_form_complete_positive_proof() -> None:
+    issue = {
+        "project_id": "demo",
+        "revision": "rev-1",
+        "rule": "clang_cfg_heap_thread_argument_owner_not_released",
+        "category": "memory_leak",
+        "function": "launch_workers",
+        "source": "thread_ids",
+        "sink": "pthread_create(..., &thread_ids[i])",
+        "evidence_pack": {
+            "dependency_code_hash": "code-thread-owner",
+            "path": {"function": "launch_workers", "complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "heap_thread_arg_owner", "line": 10, "variable": "thread_ids"},
+                    {"kind": "thread_arg_escape", "line": 14, "variable": "thread_ids"},
+                ]
+            },
+        },
+    }
+
+    attach_decision_facts(issue)
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+
+    assert proof is not None
+    assert proof.proof_kind == "thread_argument_owner_without_release"
+
+
+def test_complete_local_cleanup_forms_counterproof_for_false_leak() -> None:
+    issue = {
+        "project_id": "demo",
+        "revision": "rev-1",
+        "rule": "clang_cfg_log_error_path_allocation_not_released",
+        "category": "memory_leak",
+        "function": "prepare_label",
+        "source": "label_cache",
+        "sink": "return 0",
+        "code_snippet": "\n".join(
+            [
+                "10 | int prepare_label(void) {",
+                "11 |   char *label_cache = malloc(32);",
+                "12 |   if (!label_cache)",
+                "13 |     return -1;",
+                "14 |   SAFE_FREE(label_cache);",
+                "15 |   return 0;",
+                "16 | }",
+            ]
+        ),
+        "evidence_pack": {
+            "dependency_code_hash": "code-cleanup",
+            "path": {"function": "prepare_label", "complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "acquire", "line": 11, "variable": "label_cache"},
+                    {"kind": "release", "line": 14, "variable": "label_cache"},
+                    {"kind": "exit", "line": 15},
+                ]
+            },
+        },
+    }
+
+    attach_decision_facts(issue)
+    proof = deterministic_decision_proof(issue, outcome="reject")
+
+    assert proof is not None
+    assert proof.proof_kind == "ownership_cleanup_complete"
+
+
+def test_local_cleanup_counterproof_rejects_live_early_return() -> None:
+    issue = {
+        "project_id": "demo",
+        "revision": "rev-1",
+        "rule": "error_path_allocation_not_released",
+        "category": "memory_leak",
+        "function": "prepare_label",
+        "source": "label_cache",
+        "sink": "return 0",
+        "code_snippet": "\n".join(
+            [
+                "10 | int prepare_label(int fail) {",
+                "11 |   char *label_cache = malloc(32);",
+                "12 |   if (!label_cache)",
+                "13 |     return -1;",
+                "14 |   if (fail)",
+                "15 |     return -2;",
+                "16 |   SAFE_FREE(label_cache);",
+                "17 |   return 0;",
+                "18 | }",
+            ]
+        ),
+        "evidence_pack": {
+            "dependency_code_hash": "code-live-return",
+            "path": {"function": "prepare_label", "complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "acquire", "line": 11, "variable": "label_cache"},
+                    {"kind": "release", "line": 16, "variable": "label_cache"},
+                    {"kind": "exit", "line": 17},
+                ]
+            },
+        },
+    }
+
+    attach_decision_facts(issue)
+
+    assert deterministic_decision_proof(issue, outcome="reject") is None

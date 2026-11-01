@@ -2,6 +2,7 @@
 
 import json
 import logging
+from ..common.cancellation import CancellationError
 import time
 from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
@@ -252,6 +253,8 @@ class ToolsRuntime:
                 start=start,
             )
             return result
+        except CancellationError:
+            raise
         except Exception as exc:
             logger.error("Tool execution error: %s", exc, exc_info=True)
             return tool_result(
@@ -283,6 +286,8 @@ class ToolsRuntime:
         requested_end = arguments.get("end_line")
         if requested_start is None or requested_end is None:
             return None
+        if int(requested_end) - int(requested_start) + 1 > int(arguments.get("max_lines", 200)):
+            return None
         identity = arguments.get("symbol_id") or arguments.get("file_path")
         for previous_args, previous_result in reversed(self._read_code_cache):
             previous_identity = previous_args.get("symbol_id") or previous_args.get("file_path")
@@ -291,6 +296,9 @@ class ToolsRuntime:
             if (
                 identity != previous_identity
                 or not isinstance(source, dict)
+                # A truncated result carries continuation and coverage state for
+                # its original request. Re-execute to derive those for this one.
+                or source.get("truncated")
                 or int(source.get("start_line") or 0) > int(requested_start)
                 or int(source.get("end_line") or 0) < int(requested_end)
             ):
@@ -338,6 +346,18 @@ class ToolsRuntime:
                     continue
                 while values and len(json.dumps(result, ensure_ascii=False, default=str)) > limit:
                     values.pop()
+                if not values:
+                    # The first item itself cannot fit. An unchanged offset
+                    # would make every continuation repeat this empty page.
+                    return tool_result(
+                        status="partial",
+                        data=None,
+                        providers=list(result.get("coverage", {}).get("providers") or []),
+                        missing=[*list(result.get("coverage", {}).get("missing") or []), "result_size_limit"],
+                        coverage_details={"truncated": True, "max_result_chars": limit},
+                        warnings=["The first result item exceeds the tool result size limit."],
+                        next_actions=["Narrow the query; this item cannot be retrieved by pagination."],
+                    )
                 page = result.get("page")
                 if isinstance(page, dict):
                     page["returned"] = len(values)
@@ -359,8 +379,14 @@ class ToolsRuntime:
                 if isinstance(definition, dict):
                     definition["complete"] = False
                 if not lines:
-                    result.setdefault("warnings", []).append(
-                        "The first requested source line exceeds the tool result size limit."
+                    return tool_result(
+                        status="partial",
+                        data=None,
+                        providers=list(result.get("coverage", {}).get("providers") or []),
+                        missing=[*list(result.get("coverage", {}).get("missing") or []), "result_size_limit"],
+                        coverage_details={"truncated": True, "max_result_chars": limit},
+                        warnings=["The first requested source line exceeds the tool result size limit."],
+                        next_actions=["Read a different source range; this line cannot fit in a tool result."],
                     )
             snapshot = data.get("snapshot")
             if isinstance(snapshot, dict) and snapshot.get("data") is not None:

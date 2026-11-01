@@ -5,6 +5,7 @@ covers:
   - zscope/web
   - zscope/mcp
 sources:
+  - zscope/web/semantics_service.py
   - zscope/reporting/assembler.py
   - zscope/reporting/schema.py
   - zscope/reporting/json_io.py
@@ -14,6 +15,9 @@ sources:
   - zscope/reporting/sarif_exporter.py
   - zscope/web/server.py
   - zscope/web/services.py
+  - zscope/web/projects.py
+  - zscope/web/scan_jobs_service.py
+  - zscope/orchestration/jobs/schedules.py
   - zscope/web/review_reports.py
   - zscope/reporting/issue_markdown.py
   - zscope/mcp/server.py
@@ -22,12 +26,15 @@ sources:
   - zscope/mcp/http_server.py
   - zscope/mcp/security.py
 tests:
+  - tests/test_semantics_ui.py
   - tests/test_report_assembler.py
   - tests/test_shared_read_cache.py
   - tests/test_report_schema_v2.py
   - tests/test_sarif_exporter.py
   - tests/test_web_dashboard_server.py
   - tests/test_config_editor_http.py
+  - tests/test_web_projects.py
+  - tests/test_scan_schedules.py
   - tests/test_project_preparation.py
   - tests/test_issue_markdown.py
   - tests/test_report_views.py
@@ -56,6 +63,12 @@ evidence references or source identity.
 
 # 接口与报告
 
+## 项目原语 Web 接口
+
+一级“项目原语”与概览、扫描、设置中的引导共用 `SemanticsService`。所有 `/api/semantics` 请求沿用 `X-ZScope-Project` 的已选 YAML 身份隔离；Java 不适用。读取包含状态、document、分页 entries/entry、精确 symbols 和登记 evidence；写入包含 declare/primitive、validate/save/draft、review/complete、tasks/cancel 与单向 migrate。保存携带文档版本，条目审阅同时携带 row_version 和 evidence_version；整批正式校验通过才原子写入，冲突返回 409 并保留本地草稿。
+
+源码只从绑定工程的登记条目读取，证据限于工程登记的语义证据目录。历史证据可阅读，失效证据不能确认当前条目。发现任务不生成漏洞报告，也不能借用报告写入权限。原 C/C++ 工作簿执行语义写入返回迁移提示；问题复核和业务回答仍走独立报告绑定链路。
+
 运行 manifest 记录 `validation_policy_version`；缺失或不匹配的历史报告不能直接跳过重扫。Validator 缓存 v10 撤销旧的义务丢失/仅按评分晋升路径，历史文件本身保持可读。这是结果复用身份检查，不增加用户操作步骤。
 
 候选 v3.5 的 `build_context_id` 保留在 Ledger 和报告终态中。普通/语义去重、finding root、exact-sink root 与同站点聚合均按构建隔离：相同源码位置的不同编译实例不得合并成一个主发现，未知实例也不并入已知实例。同一构建内仍合并重复证据。人工误报反馈只影响其构建 baseline；不能通过位置 suppression 绕过构建范围。
@@ -72,6 +85,7 @@ evidence references or source identity.
 - Review 实验报告保留检查范围、编译事实身份、检查器结果与证明、复核封套、checkpoint 引用、父子候选关系和条件构建触发条件。`rejection_refuted_unconfirmed` 仅作为人工优先级信号；条件风险计入 review，不能由当前构建的安全结论覆盖。旧报告缺少这些字段时不获得新拒绝权限。
 - 批量 Markdown 报告必须从与 JSON 相同的扫描级最终投影渲染；入口级结果仅作中间 provenance，不能覆盖共享 Validator 队列完成后的 confirmed/needs_review 终态。单入口 `ScanSessionResult` 同时返回 JSON 与 Markdown 报告路径（带 task id 时使用对应文件名）。
 - 报告同时输出 effective scan depth、持久 rollout stage/enrollment/semantic-discovery mode、实际 token usage、按 agent/stage 的 usage、finish reason、补证转换、Security Semantic Map 路径/coverage、主动发现单元/独占发现和未覆盖区域。
+- C/C++ fast 的 `zscope.fast-static-scan.v1` 同时输出 packaged catalog 版本和 active/neutral/unsupported 完整性、项目 YAML 摘要、primitive/derived/pending/stale 数量、逐 BuildContext 授权/拒绝、pointer/dispatcher 精度、confirmed contract 的规则消费者及未分类系统调用。正常扫描不得在报告生成过程中触发原语 discovery 或修改 YAML。
 - 当前 Web `/api/jobs` 与 Linux MCP 作业工具复用 `ScanJobService`；MCP `zscope.scan.run` 要求 `request_id`，可选 `scan_depth`/绝对 `stop_at`，`zscope.scan.status` 使用 `job_id`。list/events/result/cancel/resume 由 `mcp/jobs_adapter.py` 适配同源服务，取消和恢复核对 `base_revision`/`request_id`，事件使用 `after_seq`。创建时保存配置的 `execution.stop_at` 若已过期，两个入口都返回 `stop_window_closed`（400）而不是接受一个开局即停的作业；显式 `stop_at` 请求按原语义处理。边界在定位 store 前拒绝显式 null、类型错误及未知字段，默认 ToolPolicy 未启用 strict_schema 时也保持此行为。read_only/candidate_blind 不创建该服务。MCP result 经 `reporting/job_result_projection.py` 读取本轮不可变报告快照并复用轻量 finding/acceptance 投影；在信封读取前后和快照加载后核对 job/run/input/report 绑定，变动时有限重试或返回 `attempt_changed`，相同字节不代表相同 run。外层 `report_id` 仍为快照字节摘要，内层为复核 scope 身份；仅当完整逻辑报告与保存配置所定位的当前报告相等时共享 scope，否则保持历史快照 scope。无报告、丢失、篡改、损坏或未测 coverage 不伪装为空且完整。旧 `/api/scan` 内存状态不具持久作业身份。MCP 只读资源保留，接口不接受任意命令、环境、cwd 或输出路径。
 - Web `GET /api/wiki/status`、`GET /api/wiki/query` 与 MCP `zscope.wiki.status`、`zscope.wiki.query` 复用 `zscope/wiki/control.py`；它们只能读取当前配置锁定的项目 Wiki/source context，不接受 project root、state root、build 或 rollback 参数。
 - Wiki status 使用固定 bounded metadata projection，不返回绝对路径、页面正文或内部异常；query 参数在 project discovery 前校验，损坏/过期 Wiki 只触发带 reason 的 direct-source fallback。
@@ -91,7 +105,7 @@ evidence references or source identity.
 - 离线目录读写需浏览器授权；不支持时选择 Markdown/ZIP 并下载修改包。只保存修改过的文件，保存前比较磁盘内容，失败保留草稿。单 Markdown 上限 16 MiB，导入总正文上限 128 MiB、最多 10000 条；超限报错，不截断复核内容。
 - MCP stdio/HTTP server 复用工具与资源 provider；远程 HTTP 额外经过 token、allowlist 和绑定地址校验。
 - MCP `zscope.config.prepare` 工具（空参数对象）与 `zscope://config/preparation` 资源复用正式 `v3_preparation.prepare_saved_config`，返回与 CLI/Web 相同的已保存配置准备投影，包括 v3 字段 wiring 与 start capability。provider 按正式 loader 的顺序先展开用户主目录，再固定绝对配置路径；每次请求重读该路径，default profile 自动创建的懒作业 adapter 也复用同一路径，不在构造时启动 service；不接受客户端另选配置、target 或执行参数。default/read_only 的列举和访问仍与 ToolPolicy 取交集；candidate_blind 不披露或开放该工具、资源。准备不启动索引、模型或扫描，不验证工具运行与模型连通性；MCP 启动仍先组合单 target 配置，已构造 provider 可检查后来保存的多目标文档，但多目标执行仍拒绝。
-- MCP 启动 profile 为 default/read_only/candidate_blind，与 ToolPolicy 在列举和执行两端取交集，不扩展 Config v2。只读工厂跳过后端、迁移、用户工作簿和扫描服务；盲调查额外拒绝 findings、报告、任意 SQL 和结论资源。stdio 支持换行 JSON 和旧 Content-Length，协议输出与 stderr 日志隔离；只读请求按序有界调度并接入请求级协作取消。接入示例与缓存限制见 [只读 MCP](../mcp-read-only.md)。
+- MCP 启动 profile 为 default/read_only/candidate_blind，与 ToolPolicy 在列举和执行两端取交集。只读工厂跳过后端、迁移、项目语义写入和扫描服务；盲调查额外拒绝 findings、报告、任意 SQL 和结论资源。stdio 支持换行 JSON 和旧 Content-Length，协议输出与 stderr 日志隔离；只读请求按序有界调度并接入请求级协作取消。接入示例与缓存限制见 [只读 MCP](../mcp-read-only.md)。
 - MCP `zscope.knowledge.query` 按页返回：`offset` 起始、`has_more` 标记是否还有剩余行；工具结果超过 `max_result_chars` 硬上限时保留头部 preview 和截断元数据，而不是整体替换为空桩。
 - Web/MCP 扫描请求接受 `scan_depth`，响应回显 effective depth 与 usage 摘要；CLI/YAML/API 最终都走同一严格配置校验。
 
@@ -105,8 +119,10 @@ evidence references or source identity.
 - 报告组装与最终注释完成后只发布一次，原子替换并同步文件和目录；序列化失败保留旧报告。旁路 `*.timings.json` 记录对象表、序列化和落盘耗时，不为补计时重写报告。`zscope-report export --input report.json --output report.legacy.json --format legacy-json` 完整展开旧格式。
 - 检查点使用 `zscope.review-checkpoint.v2`：候选状态、运行参数与完整证据通过内容引用保存，`evidence/objects.sqlite3` 事务提交对象后再发布引用。历史 v1 仍可读取，历史产物不原地迁移。备份检查点需保留整个 evidence 目录。
 - SARIF location、rule、level、code flow 和 partial fingerprint 必须来自结构化 finding，不能从展示文本猜测。
+  导出优先使用显式文件与行号，正确解析带 Windows 盘符或可选列号的历史 location；文件 URI 对空格、`#`、`%`、`?` 等字符编码，避免变成 URI 片段或查询参数。
 - Web 保存反馈必须通过统一 config/review store，不能创建第二套状态语义。
 - MCP 工具必须经过 ToolPolicy；远程非 loopback 绑定必须要求认证 token 和客户端 allowlist。
+  HTTP MCP 空批次返回 JSON-RPC invalid request，不能按无响应通知接受。Dashboard POST/DELETE 在进入业务服务前拒绝非法或负数 Content-Length、损坏 JSON/编码及非对象 JSON。
 - API 和日志不得泄露 LLM key、Bearer token、敏感源码范围或用户配置秘密。
 - Dashboard 不能依赖外部 CDN、在线字体或运行时安装前端工具；新增 Tailwind 类后同步生成的 CSS。
 - Wiki 控制面必须保持只读；query 的 subject 数量、候选相对路径、文档扫描上限和 context token 上限必须在进入 source index 前校验。
@@ -181,6 +197,32 @@ result 的外层 report_id 是绑定报告原始字节摘要；嵌套 findings �
 Web jobs result 也复用 `project_job_result` 的同轮绑定核对；它保留 Web 已选择的当前报告文件（包括单入口 `report.json`）作为复核 scope，仅在完整逻辑报告相等时共享。MCP 默认从保存配置定位项目当前批量报告；这不是新增客户端可传入的文件路径参数。HTTP/SQLite/owner 与同 hash 真实 resume 的回归使用明确受控报告，不代表真实项目扫描效果、大报告性能或整个 U01/U02 完成。
 
 ## 编译实例结果视图
+
+### 首轮 WebUI 导航与呈现（2026-10-23）
+
+Dashboard 默认进入项目概览，以扫描任务、问题工作台、覆盖与诊断、项目设置作为其余一级入口。准备与历史仍复用现有持久作业服务；问题默认读取 `with_needs_review` 并按严重度排列，已排除项可以显式筛选。逐实例与覆盖信息移至诊断页，系统验收、人工复核、业务前提回答与处置保持原有独立语义和保存接口。
+
+`dashboard_navigation.js` 只管理展示、过滤与 hash 定位，不增加 HTTP API 或配置 schema。问题链接绑定报告 scope 与 issue；任务快照链接分别携带 job/run/input、外层 artifact 摘要和内层 report scope，不能混用两种报告身份。恢复时复用原始加载与绑定检查；失效链接阻止展示可编辑的当前结果，需用户显式回到当前报告。当前报告列表刷新只在同 report、issue、BuildContext 范围内保留复核草稿，不向另一构建复制；业务回答和处置继续使用各自版本检查。
+
+结构化配置编辑以载入时的表单为比较基线；未改动的可选字段、环境变量引用及命名模型 profile 保持原值，包括省略的 `semantics_file`。显式编辑语义路径或从 Java 切换到 C/C++ 时才写入相应字段，切换到 Java 时移除 C/C++ 专属字段。
+
+新建扫描统一由模式选择与单个启动按钮发起，显式停止时间同样应用于快速检查。Java、多目标、未保存配置与后台 capabilities 的原门禁保持。重新尝试仍创建新 run，不继承旧截止窗口。未知工作量与覆盖保持未测量，已记录缺口数不宣称完整覆盖。
+
+`dashboard_redesign.css` 提供本地自有样式；新模块进入静态资源摘要锁。桌面问题页采用列表与详情两栏，低于 1100px 切换列表/详情，手机使用抽屉导航。原报告 Markdown、离线导入导出与业务模型能力保留。`docs/webui-redesign/` 的原型、匹配截图、录屏和取舍清单使用显式合成数据，与真实 HTTP/SQLite 的回归证据分开记录。
+
+### 工程选择与时间计划（2026-10-24）
+
+`zscope --web`（保留 `--dashboard` 别名）可以不传配置，先进入最近工程、执行机目录浏览与创建向导。`ProjectLibrary` 的 registry 是执行用户的 `~/.zscope/web/projects.json`，只记录配置路径、工程身份与最近打开时间，不另存模型或密钥。`/api/projects`、`/api/projects/browse` 与打开／创建接口只负责定位、校验和创建 YAML；browse 展示服务器实际运行机器上的目录，不能误称为浏览器本地上传或本机文件授权。创建只接受现有工程目录和工程内相对编译数据库路径，以独占创建写入 YAML，不覆盖旧文件。
+
+选择工程后，业务请求通过 `X-ZScope-Project` 绑定 registry 中的明确工程，响应与写入仍属该工程的配置、反馈与作业服务；不依赖服务器全局“当前工程”切换其他标签页。缺失、未知、失效或符号链接重定向的身份拒绝请求，不能自动借用另一工程。配置密钥不写 registry 或导航链接；配置保存仍使用既有 parser、草稿与空密码保留语义。
+
+公共 v2/v3 都以 YAML 父目录为唯一工程根，配置不再接受独立 `project.root` / `source_root`。v3 preset 与扫描深度统一为 `fast|balanced|deep`，Java 仅 fast；旧预设必须显式迁移。配置中的工程内相对路径可随工程迁移，但绝对编译数据库、链接记录及 native 收据要在目标执行机重建；历史报告可读不代表缓存获得新机器上的当前证据权限。
+
+`GET/POST /api/schedules` 和 `POST /api/schedules/cancel` 增加当前已选 YAML 作用域内的持久时间计划，不接受请求另传配置或执行命令。开始可立即或带时区绝对时间，结束可直到完成或绝对总截止；每日可附 `{timezone,start,end}` 窗口，支持跨午夜。计划状态与 `job_status` 分开；每日计划默认循环，只有后台真实作业完成才终止后续窗口，窗口结束、零问题或未知覆盖不能触发前端“完成”。总截止先到用 expired；关闭网页继续，关闭 WSL／主机或休眠时不能计算，重开原工程可唤起持久计划。
+
+执行仍由 `ScanJobService` 与独立 owner 负责，日历协调器只在有效窗口保留／启动动作；下一窗口同 job 使用新 run、owner token 和未来截止，旧窗口不继承。启动与消费前核对实际输入，外部 rearm 或源码／构建变化阻止自动接管。请求幂等、计划版本、取消竞争和本轮 job/run/input 身份共同约束操作；默认取消同时请求停止仍匹配的当前运行，显式 `stop_running=false` 只撤未来窗口。续作只承诺复用经核对的可恢复状态，不承诺精确仅剩余队列。日历／后台细节见[执行与编排](execution-orchestration.md)。
+
+问题工作台保留首轮已接入能力，本轮仍待用户取舍，没有作为本轮重新设计完成。追加原型 `docs/webui-redesign/followup.html` 与实际产品、历史对照截图分别标注；原型不发 API 或执行扫描。2026-10-24 的真实 native 双宏 fixture 已通过 ScanSession → detached owner → SQLite → HTTP → 桌面／手机链路，证据在 `artifacts/ui-redesign-validation/py313/native-current/`；它不等于全工程扫描、模型效果或正式 benchmark 验收。历史失败记录保留于首轮交付文档，本轮结果见 [FOLLOWUP-VALIDATION](../webui-redesign/FOLLOWUP-VALIDATION.md)。
 
 Dashboard 从当前报告投影中的 `metadata.entry_instances` 展示精确 BuildContext 与 native USR 对应的实例结果；作业结果始终来自同轮绑定快照，不能借当前报告补齐旧任务的数据。轻量投影保留固定的实例与 `metadata.job` 字段，展示元数据不替代外层 job/run/input/report 绑定权限。
 

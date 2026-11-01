@@ -22,6 +22,7 @@ MERGE_ATTRS = (
     "send_sinks",
     "recv_sources",
     "format_sinks",
+    "command_sinks",
     "callback_registrars",
     "ownership_transfers",
 )
@@ -44,6 +45,7 @@ class LocalPatternSemantics:
     send_sinks: Dict[str, List[str]] = field(default_factory=dict)
     recv_sources: Dict[str, List[str]] = field(default_factory=dict)
     format_sinks: Dict[str, List[str]] = field(default_factory=dict)
+    command_sinks: Dict[str, List[str]] = field(default_factory=dict)
     callback_registrars: Dict[str, List[str]] = field(default_factory=dict)
     ownership_transfers: Dict[str, List[str]] = field(default_factory=dict)
     contracts: ContractRegistry = field(default_factory=ContractRegistry)
@@ -62,6 +64,7 @@ class LocalPatternSemantics:
             "send_sink": self.send_sinks,
             "recv_source": self.recv_sources,
             "format_sink": self.format_sinks,
+            "command_sink": self.command_sinks,
             "callback_register": self.callback_registrars,
             "ownership_transfer": self.ownership_transfers,
         }.get(category)
@@ -99,6 +102,13 @@ class LocalPatternSemantics:
         if source and source not in sources:
             sources.append(source)
         if not known:
+            if source == DEFAULT_SEMANTICS_SOURCE:
+                from .c_linux_catalog import VERIFIED_STANDARD_ABI
+
+                # A lexical role list does not describe a typed API effect.
+                # Do not recreate a legacy default when merging precise catalogs.
+                if clean in VERIFIED_STANDARD_ABI:
+                    return
             from .contracts import ApiContract
 
             contract = ApiContract.from_row(
@@ -197,6 +207,7 @@ CATEGORY_BY_ATTR = {
     "send_sinks": "send_sink",
     "recv_sources": "recv_source",
     "format_sinks": "format_sink",
+    "command_sinks": "command_sink",
     "callback_registrars": "callback_register",
     "ownership_transfers": "ownership_transfer",
 }
@@ -214,6 +225,7 @@ _CATEGORY_ATTRS = {
     "send_sink": "send_sinks",
     "recv_source": "recv_sources",
     "format_sink": "format_sinks",
+    "command_sink": "command_sinks",
     "callback_register": "callback_registrars",
     "ownership_transfer": "ownership_transfers",
 }
@@ -256,6 +268,8 @@ def classify_api_name(name: str) -> str:
         return "io_release"
     if "printf" in lower or last_token_is(tokens, {"log", "print", "syslog"}):
         return "format_sink"
+    if lower in {"system", "popen"} or lower.startswith(("exec", "posix_spawn")):
+        return "command_sink"
     if (
         last_token_is(tokens, {"register", "subscribe", "hook", "install"})
         and "unregister" not in lower

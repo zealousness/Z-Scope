@@ -237,14 +237,20 @@ class CancellationToken:
 
     def wait(self, timeout: float) -> bool:
         """Wait interruptibly; return True when cancellation became observable."""
-        if self.is_cancelled():
-            return True
-        bounded = max(0.0, float(timeout))
-        remaining = self.remaining_seconds()
-        if remaining is not None:
-            bounded = min(bounded, remaining)
-        self._event.wait(bounded)
-        return self.is_cancelled()
+        wait_until = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            if self.is_cancelled():
+                return True
+            bounded = wait_until - time.monotonic()
+            remaining = self.remaining_seconds()
+            if remaining is not None:
+                bounded = min(bounded, remaining)
+            if bounded <= 0.0:
+                return self.is_cancelled()
+            # Ancestors (including specialized parents) own independent
+            # events, and an existing deadline can tighten while we wait.
+            # Re-read their public state without retaining child references.
+            self._event.wait(min(bounded, 0.05))
 
     def state(self) -> CancellationState:
         if (

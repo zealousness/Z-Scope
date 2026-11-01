@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 
 import pytest
 
@@ -43,3 +44,39 @@ def test_bound_token_is_scoped() -> None:
         assert current_cancellation_token() is token
 
     assert current_cancellation_token() is None
+
+
+@pytest.mark.parametrize("change", ["cancel_parent", "tighten_parent", "tighten_self"])
+def test_wait_observes_cancellation_changes_while_sleeping(change, monkeypatch) -> None:
+    parent = CancellationToken()
+    token = parent.child()
+    entered_wait = threading.Event()
+    completed = threading.Event()
+    results = []
+    original_wait = token._event.wait
+
+    def observe_wait(timeout):
+        entered_wait.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(token._event, "wait", observe_wait)
+
+    def wait_for_cancel():
+        results.append(token.wait(5.0))
+        completed.set()
+
+    worker = threading.Thread(target=wait_for_cancel, daemon=True)
+    worker.start()
+    try:
+        assert entered_wait.wait(1.0)
+        if change == "cancel_parent":
+            parent.cancel("stopped")
+        else:
+            target = token if change == "tighten_self" else parent
+            target.tighten_deadline(time.monotonic() + 0.01, reason="stopped")
+        assert completed.wait(1.0)
+        assert results == [True]
+        assert token.reason == "stopped"
+    finally:
+        token.cancel("test_cleanup")
+        worker.join(1.0)

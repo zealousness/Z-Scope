@@ -562,6 +562,7 @@ class ReportAssembler:
         terminal_statuses = {
             "confirmed",
             "rejected_with_proof",
+            "rejected_with_evidence",
             "needs_review",
             "deferred_budget",
             "engine_failed",

@@ -121,7 +121,7 @@ def main():
     index = CodeIndex(
         project_root=config.project.project_root,
         compile_commands_path=config.project.compile_commands_path,
-        source_root=str(config.project.source_root),
+        source_root=str(config.project.project_root),
         indexing_config=config.indexing,
     )
     snapshots = SnapshotStore.from_config(config)
@@ -139,6 +139,8 @@ def main():
         timeout=cfg.timeout,
         max_retries=cfg.max_retries,
         max_tokens=cfg.max_tokens,
+        context_window=cfg.context_window,
+        model_context_windows=cfg.model_context_windows,
     )
     runner = ValidationRunner(
         config=config,

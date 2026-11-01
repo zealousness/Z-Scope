@@ -279,6 +279,7 @@ class Analyzer:
         instance_scope: Optional[InstanceScope] = None,
         instance_semantics_snapshot: Optional["InstanceSemanticsSnapshot"] = None,
         instance_semantics_current: Optional[Callable[["InstanceSemanticsSnapshot"], bool]] = None,
+        skip_candidate_discovery: bool = False,
     ):
         self.config = config
         self.semantic_result = semantic_result
@@ -316,10 +317,17 @@ class Analyzer:
         # Analyzer still validates locally, preserving the existing public
         # facade and avoiding an incomplete one-entry report.
         self.defer_validation_to_scan = bool(defer_validation_to_scan)
+        # A scoped C/C++ fast batch may already have completed the canonical
+        # project-level static pass before entry workflows fan out.  Entry
+        # analyzers still build their exact report/coverage context, but must
+        # not execute the same local, graph and backend collectors again.
+        # This is an internal orchestration flag; it is deliberately absent
+        # from the public YAML surface.
+        self.skip_candidate_discovery = bool(skip_candidate_discovery)
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
             config.project.compile_commands_path,
-            source_root=config.project.source_root,
+            source_root=config.project.project_root,
             indexing_config=config.indexing,
             priority_functions=(
                 [config.project.entry_function] if config.project.entry_function else None
@@ -426,6 +434,8 @@ class Analyzer:
                     max_retries=llm_cfg.max_retries,
                     retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                     max_tokens=llm_cfg.max_tokens,
+                    context_window=llm_cfg.context_window,
+                    model_context_windows=llm_cfg.model_context_windows,
                     base_url_rate_limit_per_minute=getattr(
                         llm_cfg, "base_url_rate_limit_per_minute", 0
                     ),
@@ -612,7 +622,7 @@ class Analyzer:
             # this optional inspection projection is predeclared unsupported.
             "unsupported_stages": {"persist": "scoped_raw_knowledge_db_unavailable"},
             "excluded_capabilities": {
-                "semantic_modeling": "instance_scoped_builtin_manual_advisory_no_inferred",
+                "semantic_modeling": "instance_scoped_builtin_confirmed_project_no_scan_discovery",
                 # The scoped signal accessor can refuse for a particular instance
                 # (no scoped handle, stale rows, a command shared by several
                 # contexts). A refusal is a *declared* exclusion, so the closure
@@ -734,7 +744,7 @@ class Analyzer:
                 ),
                 active=False,
                 reason=(
-                    "instance_scoped_builtin_manual_advisory_no_inferred"
+                    "instance_scoped_builtin_confirmed_project_no_scan_discovery"
                     if getattr(self, "_instance_semantics_snapshot", None) is not None
                     else "instance_scoped_defaults_only"
                 ),
@@ -1055,18 +1065,28 @@ class Analyzer:
                 self.code_index,
                 entry_lookup_query,
                 file_path=entry_file_path,
-                include_context=True,
+                include_context=getattr(self, "instance_scope", None) is None,
             )
             semantic_model_input = hydrate_project_callee_summaries(
                 semantic_model_input,
                 self.code_index,
                 self.snapshot_store,
             )
-            impl_result = self.code_index.get_function_impl(
-                semantic_model_input["index_name"],
-                max_lines=None,
-                file_path=semantic_model_input["file_path"],
-            )
+            try:
+                impl_result = self.code_index.get_function_impl(
+                    semantic_model_input["index_name"],
+                    max_lines=None,
+                    include_context=getattr(self, "instance_scope", None) is None,
+                    file_path=semantic_model_input["file_path"],
+                )
+            except TypeError as exc:
+                if "include_context" not in str(exc):
+                    raise
+                impl_result = self.code_index.get_function_impl(
+                    semantic_model_input["index_name"],
+                    max_lines=None,
+                    file_path=semantic_model_input["file_path"],
+                )
         except SemanticModelInputError as exc:
             return {
                 "error": str(exc),
@@ -1706,6 +1726,39 @@ class Analyzer:
         return 0
 
     def _step_vulnerability_mining(self, state: Dict[str, Any]) -> None:
+        # Test adapters and compatibility callers may construct Analyzer via
+        # ``__new__``.  Candidate discovery remains enabled unless the fast
+        # project planner explicitly set the new opt-out flag.
+        if getattr(self, "skip_candidate_discovery", False):
+            self._require_instance_semantics_current()
+            tracker = getattr(self, "_instance_collection", None)
+            if isinstance(tracker, dict):
+                for stage in tracker.get("selected_stages") or []:
+                    unsupported = (tracker.get("unsupported_stages") or {}).get(stage)
+                    tracker.setdefault("stages", {})[stage] = {
+                        "disposition": "unsupported" if unsupported else "complete",
+                        "reason": unsupported or "fast_project_static_pass_precollected",
+                    }
+            self._require_instance_semantics_current()
+            state["notes"].append(
+                "Candidate discovery was completed by the scoped fast project pass; "
+                "the entry workflow contributes reachability and report context only."
+            )
+            for engine in (
+                "deterministic_local_rules",
+                "clang_ast_cfg",
+                "graph_protocol",
+                "svf_taint_query",
+                "vulnerability_analyzer",
+            ):
+                self._record_engine_capability(
+                    engine,
+                    status="complete",
+                    active=False,
+                    reason="fast_project_static_pass_precollected",
+                    candidate_count=0,
+                )
+            return
         agent_context = state["agent_context"]
         for agent_cfg in self.config.project.agents:
             if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
@@ -1817,6 +1870,13 @@ class Analyzer:
 
     def _run_single_entry_active_discovery(self, state: Dict[str, Any]) -> None:
         """Run the shared map/discovery stage before local validation."""
+
+        # Production discovery belongs to the exact project inventory. The
+        # former navigation-map finder is retained only for offline controls.
+        if not getattr(self, "_legacy_discovery_offline", False):
+            state["active_discovery"] = {"enabled": False, "status": "coordinator_owned",
+                "reason": "hierarchical_contract_discovery_requires_project_inventory"}
+            return
 
         if state.get("active_discovery_attempted"):
             return
@@ -2771,10 +2831,34 @@ class Analyzer:
             ):
                 continue
             visited.add(callee)
+            scoped_body_available = getattr(self.code_index, "has_scoped_function_body", None)
+            if callable(scoped_body_available) and not scoped_body_available(callee):
+                # In instance mode the native call receipt may name a libc
+                # symbol, a declaration-only target, or a function owned by a
+                # different TU.  Those are ordinary out-of-scope edges, not a
+                # failed source query.  Only ask for a body when this exact
+                # BuildContext contains one current native owner receipt.
+                continue
             try:
-                callee_impl = self.code_index.get_function_impl(
-                    callee, max_lines=None, warn_missing=False
-                )
+                try:
+                    callee_impl = self.code_index.get_function_impl(
+                        callee,
+                        max_lines=None,
+                        warn_missing=False,
+                        include_context=getattr(self, "instance_scope", None) is None,
+                    )
+                except TypeError as exc:
+                    # Older third-party/test index adapters predate the
+                    # include_context keyword.  Preserve that compatibility;
+                    # ScopedCodeIndex itself accepts the keyword and therefore
+                    # never takes this fallback.
+                    if "include_context" not in str(exc):
+                        raise
+                    callee_impl = self.code_index.get_function_impl(
+                        callee,
+                        max_lines=None,
+                        warn_missing=False,
+                    )
             except Exception as exc:
                 logger.warning(
                     "Skipping direct callee candidate scan for '%s': %s",
@@ -4781,6 +4865,22 @@ class Analyzer:
         return joern_rule_match_to_candidate(match, entry_func)
 
     def _candidate_backend_profile(self) -> str:
+        if getattr(self, "instance_scope", None) is not None:
+            # The scoped facade deliberately blocks raw backend objects.  Its
+            # configured backend name is scope-neutral and is sufficient to
+            # select the evidence profile without probing ``_backend``.
+            configured = str(getattr(self.code_index, "backend_name", "") or "").lower()
+            if configured == "svf":
+                return "unified"
+            if configured in {
+                "unified",
+                "clang",
+                "joern",
+                "java_unified",
+                "java_source",
+                "regex",
+            }:
+                return configured
         return backend_profile_for_code_index(self.code_index)
 
     def _project_language(self) -> str:
@@ -4958,6 +5058,14 @@ class Analyzer:
                 {
                     "candidate_id": str(issue.get("candidate_id") or issue.get("id") or ""),
                     "candidate_schema_version": envelope.schema_version,
+                    # CandidateRecord.to_dict() deliberately sources the
+                    # compilation identity from ticket evidence.  Keep the
+                    # legacy Analyzer registration adapter aligned with the
+                    # canonical CandidateRegistrar boundary; otherwise a
+                    # correctly scoped graph candidate is projected back out
+                    # with an empty build_context_id at terminalization.
+                    "build_context_id": envelope.build_context_id,
+                    "identity_build_context_id": envelope.build_context_id,
                     "candidate_uid": envelope.candidate_uid,
                     "occurrence_uid": envelope.occurrence_uid,
                     "history_key": envelope.history_key,
@@ -5151,6 +5259,10 @@ class Analyzer:
         return self._local_pattern_semantics
 
     def _get_knowledge_db(self) -> Optional[Any]:
+        if getattr(self, "instance_scope", None) is not None:
+            # KnowledgeDB is a project-wide projection.  Scoped analysis reads
+            # backend evidence only through get_instance_backend_signals().
+            return None
         backend = getattr(self.code_index, "_backend", None)
         if backend is None:
             return None
@@ -6111,7 +6223,7 @@ class Analyzer:
                 getattr(self.config.project, "project_id", "")
                 or self.config.project.project_root.name
             ),
-            "source_root": str(self.config.project.source_root),
+            "source_root": str(self.config.project.project_root),
             "commit_sha": self._git_commit_sha(self.config.project.project_root),
             "config_hash": self._config_hash(),
             "model_manifest_hash": self._model_manifest_hash(),
@@ -6579,7 +6691,7 @@ class Analyzer:
             ),
             "project": {
                 "project_root": str(getattr(self.config.project, "project_root", "") or ""),
-                "source_root": str(getattr(self.config.project, "source_root", "") or ""),
+                "source_root": str(getattr(self.config.project, "project_root", "") or ""),
                 "entry_function": str(getattr(self.config.project, "entry_function", "") or ""),
                 "entry_file_path": str(getattr(self.config.project, "entry_file_path", "") or ""),
                 "entry_signature": str(getattr(self.config.project, "entry_signature", "") or ""),
@@ -6611,6 +6723,8 @@ class Analyzer:
                 "base_urls": getattr(config, "base_urls", []),
                 "models": getattr(config, "models", []),
                 "max_tokens": getattr(config, "max_tokens", None),
+                "context_window": getattr(config, "context_window", None),
+                "model_context_windows": getattr(config, "model_context_windows", {}),
                 "supports_structured_output": getattr(
                     config,
                     "supports_structured_output",
@@ -7265,14 +7379,32 @@ class Analyzer:
         snapshot: Dict[str, Any],
         impl: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """LLM-classify an unknown lightweight wrapper and stamp its role.
+        """Legacy snapshot probe for configurations without project semantics.
 
-        The stamped ``role`` field is consumed by
-        ``semantics_from_snapshots`` (this scan and future ones), so the cost
-        is paid once per function and the result feeds rule-facing semantics.
+        C/C++ scans with ``project.semantics_file`` always return before the
+        model seam: executable project roles may only come from the separate
+        discovery/review workflow.  This compatibility branch remains for
+        Java and historical configurations that have no YAML authority.
         """
 
         if getattr(self, "semantic_result", None) is not None:
+            return snapshot
+        if (
+            getattr(self.config.project, "language", "") != "java"
+            and getattr(self.config.project, "semantics_file", None) is not None
+        ):
+            # Project-interface discovery is an explicit pre-scan command.
+            # Normal fast/balanced/deep scans consume only confirmed YAML
+            # contracts and must never mint an executable role through an LLM
+            # snapshot probe.
+            self._interface_probe_stats["skipped_project_semantics_authority"] = (
+                int(
+                    self._interface_probe_stats.get(
+                        "skipped_project_semantics_authority", 0
+                    )
+                )
+                + 1
+            )
             return snapshot
         analysis_cfg = self.config.analysis
         if not bool(getattr(analysis_cfg, "llm_interface_inference", True)):
@@ -8543,7 +8675,7 @@ class Analyzer:
         if raw.is_absolute():
             candidates.append(raw)
         for root_value in (
-            getattr(self.config.project, "source_root", ""),
+            getattr(self.config.project, "project_root", ""),
             getattr(self.config.project, "project_root", ""),
             ".",
         ):
@@ -8594,7 +8726,7 @@ class Analyzer:
                     self._java_project_file_rule_emitted = True
                     return [dict(issue) for issue in self._java_project_file_rule_cache]
         source_root = Path(
-            getattr(self.config.project, "source_root", "")
+            getattr(self.config.project, "project_root", "")
             or getattr(self.config.project, "project_root", ".")
         )
         if not source_root.exists():

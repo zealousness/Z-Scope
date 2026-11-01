@@ -120,6 +120,28 @@ def test_background_promoted_and_concurrent_waiters_share_one_task(indexed):
         service.close()
 
 
+def test_background_drain_forms_stable_native_fact_barrier(indexed):
+    calls = []
+
+    def run(engine, row, checkpoint):
+        calls.append(row["name"])
+        checkpoint()
+        return []
+
+    service = scheduler(indexed, run)
+    try:
+        report = service.drain_background(timeout_seconds=3)
+        assert report["functions"] == {
+            "pending": 0,
+            "in_progress": 0,
+            "current": 3,
+            "failed": 0,
+        }
+        assert sorted(calls) == ["first", "second", "third"]
+    finally:
+        service.close()
+
+
 def test_other_function_preempts_at_rpc_boundary_and_resumes(indexed):
     started, rpc_done = threading.Event(), threading.Event()
     order = []
@@ -304,9 +326,12 @@ def test_purging_tu_removes_function_tasks_and_rejects_late_result(indexed):
     db.commit()
     assert state.claim(db, first["id"], "generation", "old")
     db.purge_tu_data(1)
-    assert db._conn.execute(
-        "SELECT 1 FROM function_type_ref_state WHERE function_id=?", (first["id"],)
-    ).fetchone() is None
+    assert (
+        db._conn.execute(
+            "SELECT 1 FROM function_type_ref_state WHERE function_id=?", (first["id"],)
+        ).fetchone()
+        is None
+    )
     assert not state.finish(db, first["id"], "generation", "old", [])
     assert record(indexed, "second") is not None
 

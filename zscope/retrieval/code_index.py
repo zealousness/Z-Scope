@@ -471,6 +471,16 @@ class CodeIndex:
             raise RuntimeError("configured unified backend failed SVF enrichment")
         return ok
 
+    def settle_native_facts(self, *, timeout_seconds: float = 300.0) -> Dict[str, Any]:
+        """Reach a stable native fact boundary before exact receipt freezing."""
+
+        backend = getattr(self._backend, "_clang", None) or self._backend
+        settle = getattr(backend, "settle_type_references", None)
+        if not callable(settle):
+            return {"status": "not_supported"}
+        value = settle(timeout_seconds=timeout_seconds)
+        return dict(value) if isinstance(value, dict) else {"status": "complete"}
+
     def capability_status(self) -> Dict[str, Dict[str, Any]]:
         """Return truthful configured/active engine health for report schema v2."""
         self._refresh_capability_status()
@@ -1497,7 +1507,14 @@ class CodeIndex:
         key = key.lower() if os.name == "nt" else key
         try:
             stat = path.stat()
-            return f"{key}|{stat.st_mtime_ns}|{stat.st_size}"
+            # Editors and checkout tools can preserve mtime while replacing a
+            # file, and same-size edits can restore it explicitly. Include the
+            # change time and physical file identity so neither operation can
+            # reuse cached source (or a cached function body) from the old file.
+            return (
+                f"{key}|{stat.st_dev}|{stat.st_ino}|{stat.st_ctime_ns}"
+                f"|{stat.st_mtime_ns}|{stat.st_size}"
+            )
         except OSError:
             return f"{key}|missing"
 
@@ -5353,8 +5370,7 @@ class _JobRuntimeOutputs:
     def require_current(self) -> None:
         if not self._active or not self.native_current():
             raise ValueError("job_runtime_output_native_membership_not_current")
-        for snapshot in self._semantics.snapshots.values():
-            self._semantics.require(snapshot.scope)
+        self._semantics.require_all()
 
     @contextmanager
     def writer(self) -> Iterator[None]:

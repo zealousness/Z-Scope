@@ -1,6 +1,6 @@
 # Z-SCOPE C/C++ 配置 v3。复制为目标项目的 zscope.yaml 后修改。
-# v3 是当前唯一用户配置入口：project.root 相对本配置文件所在目录解析，
-# 其余项目路径相对解析后的 root，同一份文件从任意工作目录加载到同一工程。
+# 本 YAML 所在目录就是唯一工程根，不允许 project.root/source_root。
+# 所有项目相对路径基于该目录，从任意工作目录加载都指向同一工程。
 # 所有字符串支持 ${VAR} 环境变量展开；字段合法性以 zscope-config validate 为准。
 config_version: 3
 
@@ -15,16 +15,16 @@ llms:
 
 project:
   language: c_cpp # 只能是 c_cpp 或 java
-  root: . # 相对本配置文件所在目录解析（v3 语义）；绝对路径也接受
   platform: linux_user # 当前仅接受 linux_user；平台专属行为尚未接线
+  semantics_file: zscope.semantics.yaml # 唯一人工维护的项目原语/接口语义；扫描前须完成 discovery 与复核
   targets:
     # 每个构建目标保留自身身份；当前执行链一次只消费一个目标：
     # 多目标文档可以保存、校验和准备，但启动扫描会被明确拒绝。
     - id: main
-      compile_commands: build/compile_commands.json # 相对 project.root；C/C++ 必填
+      compile_commands: build/compile_commands.json # 相对本 YAML 所在目录；C/C++ 必填
 
 scan:
-  preset: overnight # quick=快速档；overnight=夜间档。临时内部映射 quick->fast、overnight->deep，不启用实验。
+  preset: deep # fast=快速；balanced=均衡；deep=深度，不启用实验。
   # focus: [memory, resources, async_lifecycle] # 已校验保留；尚未驱动 Skill 领域选择
   # reproduction: auto # 声明复现意图；不启用内部动态复现实验
 

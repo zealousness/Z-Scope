@@ -8,7 +8,7 @@ import pytest
 from test_wrapper_contract_compiler import context, publish
 from zscope.config.user_config_store import UserConfigStore
 from zscope.semantics.contract_compiler import compile_snapshot, derive_contracts, validate_contract
-from zscope.semantics.contract_conditions import compare, predicates_overlap
+from zscope.semantics.contract_conditions import compare, evaluate, predicates_overlap
 from zscope.semantics.contracts import (
     ApiContract,
     CONTRACT_COMPILER_VERSION,
@@ -18,6 +18,25 @@ from zscope.semantics.contracts import (
     contract_rows,
 )
 from zscope.semantics.inference import LocalPatternSemanticBuilder
+
+
+def test_address_operand_never_uses_the_stored_pointer_value():
+    condition = compare({"kind": "argument", "index": 0}, "==", None)
+    assert evaluate(condition, ["&p"], facts={"p": None}) == "unknown"
+    assert evaluate(condition, ["&p"], facts={"p": object()}) == "unknown"
+
+
+def test_address_comparison_requires_exact_caller_identity():
+    condition = {
+        "op": "compare",
+        "left": {"kind": "argument", "index": 0},
+        "operator": "==",
+        "right": {"kind": "argument", "index": 1},
+    }
+    assert evaluate(condition, ["&p", "&p"]) == "unknown"
+    address = object()
+    assert evaluate(condition, ["&p", "&p"], facts={"&p": address}) == "applies"
+    assert evaluate(condition, ["&p", "&q"], facts={"&p": address}) == "unknown"
 
 
 def handoff(**changes):

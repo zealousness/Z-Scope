@@ -16,7 +16,7 @@ def _public_config(tmp_path: Path) -> dict:
         "llms": {
             "default": {"base_urls": ["http://localhost/v1"], "models": ["fake"], "api_key": "fake"}
         },
-        "project": {"root": str(tmp_path), "language": "c_cpp"},
+        "project": {"language": "c_cpp"},
         "scan": {},
         "indexing": {"backend": "regex"},
         "concurrency": {

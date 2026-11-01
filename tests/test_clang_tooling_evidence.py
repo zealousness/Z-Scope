@@ -1,7 +1,93 @@
 import json
 
-from zscope.core.candidates.adapters import compact_clang_tooling_evidence
+from zscope.core.candidates.adapters import (
+    clang_native_matcher_candidates_from_program_facts,
+    compact_clang_tooling_evidence,
+)
 from zscope.retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
+from zscope.semantics.defaults import default_local_pattern_semantics
+from zscope.semantics.models import LocalPatternSemantics
+
+
+def _native_release_event(line: int, resource_usr: str, *, callee_usr: str = "c:@F@free"):
+    return {
+        "event_id": f"release:{line}",
+        "event_kind": "call",
+        "location": {"file": "demo.c", "line": line, "column": 5, "offset": line * 10},
+        "callee": {
+            "name": "free",
+            "usr": callee_usr,
+            "referenced_usr": callee_usr,
+            "canonical_signature": "void (void *)",
+        },
+        "arguments": ["item"],
+        "argument_objects": [
+            {
+                "name": "item",
+                "qualified_name": "item",
+                "usr": resource_usr,
+                "referenced_usr": resource_usr,
+            }
+        ],
+    }
+
+
+def test_native_matcher_uses_current_contract_and_exact_object_identity_for_double_free() -> None:
+    facts = {
+        "functions": [
+            {
+                "events": [
+                    _native_release_event(12, "c:demo.c@item"),
+                    _native_release_event(18, "c:demo.c@item"),
+                ]
+            }
+        ]
+    }
+
+    issues = clang_native_matcher_candidates_from_program_facts(
+        "demo", "demo.c", facts, default_local_pattern_semantics()
+    )
+
+    assert [issue["rule"] for issue in issues] == [
+        "clang_ast_same_argument_released_twice"
+    ]
+    issue = issues[0]
+    assert issue["candidate_source"] == "clang_native_fact"
+    assert issue["validation_required"] is True
+    fact = issue["evidence_pack"]["clang_matcher_fact"]
+    assert fact["resource_usr"] == "c:demo.c@item"
+    assert fact["first_release_line"] == 12
+    assert fact["second_release_line"] == 18
+
+
+def test_native_matcher_rejects_unconfigured_same_name_release_and_distinct_objects() -> None:
+    same_object = {
+        "functions": [
+            {
+                "events": [
+                    _native_release_event(12, "c:demo.c@item"),
+                    _native_release_event(18, "c:demo.c@item"),
+                ]
+            }
+        ]
+    }
+    assert not clang_native_matcher_candidates_from_program_facts(
+        "demo", "demo.c", same_object, LocalPatternSemantics()
+    )
+
+    distinct = {
+        "functions": [
+            {
+                "events": [
+                    _native_release_event(12, "c:demo.c@left"),
+                    _native_release_event(18, "c:demo.c@right"),
+                ]
+            }
+        ]
+    }
+    assert not clang_native_matcher_candidates_from_program_facts(
+        "demo", "demo.c", distinct, default_local_pattern_semantics()
+    )
 
 
 def test_clang_tooling_evidence_prepares_ast_and_cfg_commands(tmp_path) -> None:

@@ -63,7 +63,7 @@ def _document(root: Path, version: int = 3) -> dict:
         return {
             "config_version": 2,
             "llms": llms,
-            "project": {"root": str(root), "source_root": ".", "language": "c_cpp"},
+            "project": {"language": "c_cpp"},
             "scan": {"task": ""},
             "indexing": {"backend": "regex"},
             "concurrency": {
@@ -80,12 +80,11 @@ def _document(root: Path, version: int = 3) -> dict:
         "config_version": 3,
         "llms": llms,
         "project": {
-            "root": str(root),
             "language": "c_cpp",
             "platform": "linux_user",
             "targets": [{"id": "first", "compile_commands": "first.json"}],
         },
-        "scan": {"preset": "quick", "focus": ["memory"], "reproduction": "auto"},
+        "scan": {"preset": "fast", "focus": ["memory"], "reproduction": "auto"},
         "execution": {"timezone": "UTC", "stop_at": "08:00", "max_workers": 4},
     }
 

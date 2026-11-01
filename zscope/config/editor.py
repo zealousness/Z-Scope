@@ -17,8 +17,8 @@ composing execution — so a multi-target document can be legally edited and
 saved while the single-target execution chain still refuses to run it.  A v2
 candidate (and any invalid version) keeps the existing loader gate through
 ``ConfigLoader.load``.  The candidate is always materialized as a temporary
-file in the same directory first, because v3 anchors ``project.root`` to the
-configuration file directory; validation failure raises before any replace,
+file in the same directory first, because both versions use the
+configuration file directory as their only project root; validation failure raises before any replace,
 so the saved file is never overwritten with an invalid document.
 """
 
@@ -33,8 +33,8 @@ from typing import Any, Dict, Iterator, Mapping
 import yaml
 
 from .config import ConfigLoader
-from .v2 import PUBLIC_CONFIG_VERSION_V3, load_yaml_unique
-from .v3 import parse_user_config_v3
+from .v2 import ENV_PATTERN, PUBLIC_CONFIG_VERSION_V3, load_yaml_unique
+from .v3 import parse_user_config_v3, parse_user_config_v3_document
 
 STRUCTURED_DOCUMENT_HEADER = (
     "# Z-SCOPE 配置文件\n"
@@ -68,7 +68,33 @@ def read_structured_document(config_path: Path | str) -> Dict[str, Any]:
     }
 
 
-def validate_document_file(path: Path) -> None:
+def _available_environment(document: Any) -> tuple[Any, Dict[str, list[str]]]:
+    """Resolve available variables for validation, retaining missing references."""
+    unresolved: Dict[str, list[str]] = {}
+
+    def expand(value: Any, path: str) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: expand(item, f"{path}.{key}" if path else key) for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [expand(item, f"{path}[{index}]") for index, item in enumerate(value)]
+        if not isinstance(value, str):
+            return value
+
+        def replace(match: Any) -> str:
+            name = match.group(1) or match.group(2)
+            if name in os.environ:
+                return os.environ[name]
+            unresolved.setdefault(path, []).append(name)
+            return str(match.group(0))
+
+        return ENV_PATTERN.sub(replace, value)
+
+    return expand(document, ""), unresolved
+
+
+def validate_document_file(path: Path, *, expand_environment: bool = True) -> None:
     """Validate one on-disk document; v3 parses the formal model only.
 
     v3 documents go through ``parse_user_config_v3``, which validates the
@@ -80,25 +106,42 @@ def validate_document_file(path: Path) -> None:
 
     raw = load_yaml_unique(path)
     if raw.get("config_version") == PUBLIC_CONFIG_VERSION_V3:
-        parse_user_config_v3(str(path))
+        if expand_environment:
+            parse_user_config_v3(str(path))
+        else:
+            available, unresolved = _available_environment(raw)
+            try:
+                parse_user_config_v3_document(Path(path), available)
+            except ValueError as error:
+                for field, names in unresolved.items():
+                    if field in str(error) and "removed:" not in str(error):
+                        raise ValueError(
+                            f"{error}; cannot structurally validate {field} while "
+                            f"environment variable(s) are unset: {', '.join(sorted(set(names)))}"
+                        ) from error
+                raise
         return
     ConfigLoader.load(str(path))
 
 
-def validate_document_text(text: str, *, config_dir: Path | str) -> None:
+def validate_document_text(
+    text: str, *, config_dir: Path | str, expand_environment: bool = True
+) -> None:
     """Validate candidate text as if it were saved in ``config_dir``.
 
     The candidate is materialized in ``config_dir`` itself because v3
-    anchors ``project.root`` to the configuration file directory; nothing is
+    uses the configuration file directory as its only project root; nothing is
     written to the real configuration file.
     """
 
     with _candidate_file(config_dir) as temporary:
         _write_text(temporary, text)
-        validate_document_file(temporary)
+        validate_document_file(temporary, expand_environment=expand_environment)
 
 
-def save_document_text(config_path: Path | str, text: str) -> Dict[str, Any]:
+def save_document_text(
+    config_path: Path | str, text: str, *, expand_environment: bool = True
+) -> Dict[str, Any]:
     """Atomically replace the saved configuration with validated text.
 
     Validation failure raises before the replace, leaving the saved file and
@@ -107,14 +150,18 @@ def save_document_text(config_path: Path | str, text: str) -> Dict[str, Any]:
 
     path = Path(config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _candidate_file(path.parent, name=path.name) as temporary:
+    from .semantics_workflow import project_activity
+
+    with project_activity(path.parent, wait_seconds=0.5), _candidate_file(path.parent, name=path.name) as temporary:
         _write_text(temporary, text)
-        validate_document_file(temporary)
+        validate_document_file(temporary, expand_environment=expand_environment)
         os.replace(temporary, path)
     return {"success": True, "path": str(path)}
 
 
-def save_document_data(config_path: Path | str, document: Mapping[str, Any]) -> None:
+def save_document_data(
+    config_path: Path | str, document: Mapping[str, Any], *, expand_environment: bool = True
+) -> None:
     """Serialize and save a structured document, preserving its raw values.
 
     The document is dumped verbatim (no normalization, no environment
@@ -123,7 +170,9 @@ def save_document_data(config_path: Path | str, document: Mapping[str, Any]) -> 
     """
 
     text = yaml.safe_dump(dict(document), allow_unicode=True, sort_keys=False)
-    save_document_text(config_path, STRUCTURED_DOCUMENT_HEADER + text)
+    save_document_text(
+        config_path, STRUCTURED_DOCUMENT_HEADER + text, expand_environment=expand_environment
+    )
 
 
 def _write_text(path: Path, text: str) -> None:

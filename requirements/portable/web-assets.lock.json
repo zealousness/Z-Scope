@@ -222,7 +222,7 @@
   },
   "first_party": {
     "index.html": {
-      "sha256": "c01d9ffab38ee5a8b52ae040b8c2c5ee8fa078d3b10e296a1126d7d620f9eda9",
+      "sha256": "2d41b30ec98fab07c7fc03a9c3ea00f26b3fcb93091e2c85c2528a5266af67d4",
       "license": "MIT"
     },
     "report_view.js": {
@@ -241,16 +241,40 @@
       "sha256": "554009551f76265cd3f096cded04e8fa5d06254f33d83883a604f1cb96320637",
       "license": "MIT"
     },
+    "dashboard_config.js": {
+      "sha256": "b0f7110099196491d92805d2525a63c9ae47b3f7254310a61bd720dd6792b4bc",
+      "license": "MIT"
+    },
     "dashboard_workbench.js": {
-      "sha256": "5e74f8fc1ae35bc8a661cffc0446893a250391fd4e6e23d70e81895e1754dbdc",
+      "sha256": "8661b05f930428c049f46052e64d5ed868753d1eae9da3bbc44b236d524573ef",
       "license": "MIT"
     },
     "dashboard_workbench.css": {
       "sha256": "88f6a8eddf8b89bf89a2ce27b281e8385ff509d15553e2ff98be066663822384",
       "license": "MIT"
     },
-    "dashboard_config.js": {
-      "sha256": "dd9dbc8e20d614048af3b5aa8e218166930e4ad726efd235aa2aaed276dd0f12",
+    "dashboard_navigation.js": {
+      "sha256": "6dff748a5972c459b7453e2bc093e9b03d27e50f7a1a15ba3833ba0f6ea81c62",
+      "license": "MIT"
+    },
+    "dashboard_redesign.css": {
+      "sha256": "3d2aaae50203febd1a6fa3407b621b346947e0d66a597d1ee0a640326827e3d0",
+      "license": "MIT"
+    },
+    "dashboard_projects.js": {
+      "sha256": "80fe0aeeb418c9c5db96f9c474b8660a7acec0a0227dc9b7c26644a987903350",
+      "license": "MIT"
+    },
+    "dashboard_schedules.js": {
+      "sha256": "d07ff4a359a5471d060bcc86a968aa14974f627738d8c3f3e6635490b9bdf854",
+      "license": "MIT"
+    },
+    "dashboard_semantics.js": {
+      "sha256": "522f7fe46ab5e74edfa9cfc273960e4e29d00a6bebf1c0b6a943929039ab88ab",
+      "license": "MIT"
+    },
+    "dashboard_semantics.css": {
+      "sha256": "37dacca2e241c78b1273cbe34525ace799fe320fb2f89cfcf91a8f234cf47056",
       "license": "MIT"
     }
   }

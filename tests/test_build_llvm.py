@@ -322,7 +322,9 @@ def test_bitcode_build_compiles_multiple_tus_before_single_link(
     result = _build_once(source_root, compile_commands, output_dir)
 
     assert result["default"].exists()
-    assert Counter(calls) == Counter({"clang": 6, "llvm-link": 1})
+    assert Counter(call for call in calls if call != "llvm-nm") == Counter(
+        {"clang": 6, "llvm-link": 1}
+    )
     assert BitcodeBuilder._build_worker_count(100) <= 8
 
 
@@ -526,6 +528,115 @@ def test_entry_cluster_links_directly_without_exclusive_pool_variants(
 
     assert sorted(result) == ["entry_cluster_1"]
     assert list(output_dir.glob("merged_entry_cluster_1_*.bc"))
+
+
+def test_link_deduplicates_identical_same_source_variants_but_keeps_identities(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from zscope.retrieval.indexing_runtime import MeasuredProcess
+
+    source_root = tmp_path / "project"
+    source_root.mkdir()
+    source = source_root / "shared.c"
+    source.write_text("int shared(void) { return 1; }\n", encoding="utf-8")
+    compile_commands = tmp_path / "compile_commands.json"
+    compile_commands.write_text("[]", encoding="utf-8")
+    output_dir = tmp_path / ".zscope_bc"
+    output_dir.mkdir()
+    first = output_dir / "first.bc"
+    second = output_dir / "second.bc"
+    first.write_bytes(b"identical-bitcode")
+    second.write_bytes(b"identical-bitcode")
+    commands: list[list[str]] = []
+
+    def fake_run_process(command, **_kwargs):
+        commands.append([str(value) for value in command])
+        output = Path(command[command.index("-o") + 1])
+        output.write_bytes(b"merged")
+        return MeasuredProcess(0, "", "", {})
+
+    monkeypatch.setattr("zscope.retrieval.build_llvm.run_process", fake_run_process)
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=output_dir,
+        llvm_link_path="llvm-link",
+    )
+    builder._manifest = {
+        "version": builder._MANIFEST_VERSION,
+        "bitcode": {
+            str(first.resolve()): {
+                "command": {"source": str(source), "output": "one.o"}
+            },
+            str(second.resolve()): {
+                "command": {"source": str(source), "output": "two.o"}
+            },
+        },
+    }
+    builder._bc_to_src = {
+        first.resolve(): source.resolve(),
+        second.resolve(): source.resolve(),
+    }
+
+    merged = builder._link_all([first, second], "same_source")
+
+    assert merged is not None
+    linked_inputs = commands[0][commands[0].index("-o") + 2 :]
+    assert linked_inputs == [str(first.resolve())]
+    assert builder._group_inputs["same_source"] == [first.resolve(), second.resolve()]
+    identities = builder.group_tu_identities("same_source")
+    assert len(identities["command_ids"]) == 2
+    assert identities["variant_sources"] == {str(source.resolve()): 2}
+    linked = builder._manifest["linked"]["same_source"]
+    assert linked["inputs"] == [str(first.resolve()), str(second.resolve())]
+    assert linked["physical_inputs"] == [str(first.resolve())]
+    assert linked["identical_source_variant_aliases"] == [
+        {
+            "source": str(source.resolve()),
+            "representative_bc": str(first.resolve()),
+            "alias_bc": str(second.resolve()),
+            "bitcode_sha256": hashlib.sha256(b"identical-bitcode").hexdigest(),
+        }
+    ]
+
+
+def test_link_does_not_collapse_different_bitcode_or_different_sources(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "project"
+    source_root.mkdir()
+    source_a = source_root / "a.c"
+    source_b = source_root / "b.c"
+    source_a.write_text("int a(void) { return 1; }\n", encoding="utf-8")
+    source_b.write_text("int b(void) { return 1; }\n", encoding="utf-8")
+    compile_commands = tmp_path / "compile_commands.json"
+    compile_commands.write_text("[]", encoding="utf-8")
+    output_dir = tmp_path / ".zscope_bc"
+    output_dir.mkdir()
+    first = output_dir / "first.bc"
+    changed = output_dir / "changed.bc"
+    other_source = output_dir / "other-source.bc"
+    first.write_bytes(b"same-bytes")
+    changed.write_bytes(b"different-bytes")
+    other_source.write_bytes(b"same-bytes")
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=output_dir,
+    )
+    builder._bc_to_src = {
+        first.resolve(): source_a.resolve(),
+        changed.resolve(): source_a.resolve(),
+        other_source.resolve(): source_b.resolve(),
+    }
+
+    physical, aliases = builder._deduplicate_identical_source_variants(
+        [first, changed, other_source]
+    )
+
+    assert physical == [first.resolve(), changed.resolve(), other_source.resolve()]
+    assert aliases == []
 
 
 def test_entry_cluster_layout_reused_when_fingerprint_unchanged(

@@ -44,6 +44,7 @@ from .specs import SpecRegistry, WorkflowStep
 from .workflow_executor import WorkflowExecutor, WorkflowStepHandler
 from ..rules.extensions import preflight_rules
 from ..benchmarking.discovery_ablation import DiscoveryAblationRuntimeOverride
+from .active_discovery import resolve_discovery_profile
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +110,10 @@ class ScanSessionRunner:
         self.diff_base = diff_base
         self.diff_head = diff_head or "HEAD"
         self.diff_repo_root = (
-            Path(diff_repo_root).resolve() if diff_repo_root else config.project.source_root
+            Path(diff_repo_root).resolve() if diff_repo_root else config.project.project_root
         )
         self.diff_paths = [str(path).strip() for path in (diff_paths or []) if str(path).strip()]
-        self.diff_scope_name = (
-            config.project.source_root.name or config.project.project_root.name or "default"
-        )
+        self.diff_scope_name = config.project.project_root.name or "default"
         self.emit = emit or (lambda message: None)
         normalized_exit_policy = str(exit_policy or "review").lower()
         if normalized_exit_policy not in EXIT_POLICIES:
@@ -148,6 +147,21 @@ class ScanSessionRunner:
         self.batch_executor.validate(self._selected_workflow_steps())
 
     def run(self) -> ScanSessionResult:
+        from ..config.semantics_workflow import project_activity
+
+        with project_activity(self.config.project.project_root):
+            return self._run_locked()
+
+    def _run_locked(self) -> ScanSessionResult:
+        if str(getattr(self.config.project, "language", "")) != "java":
+            from ..config.project_semantics import require_project_semantics_ready
+
+            readiness = require_project_semantics_ready(self.config)
+            self.emit(
+                "Project semantics ready: "
+                f"confirmed={readiness.confirmed}, rejected={readiness.rejected}, "
+                f"digest={readiness.digest[:12]}"
+            )
         state = self._create_state()
         try:
             self._plan_diff_impact_entries(state)
@@ -255,7 +269,7 @@ class ScanSessionRunner:
             max_functions=discovery_cfg.max_functions,
             interface_files=discovery_cfg.interface_files or None,
             project_root=self.config.project.project_root,
-            source_root=self.config.project.source_root,
+            source_root=self.config.project.project_root,
             search_root=discovery_cfg.search_root,
         )
         discovery_result = discovery.discover(max_candidates=discovery_cfg.max_entries)
@@ -766,7 +780,7 @@ class ScanSessionRunner:
             state["code_index"] = CodeIndex(
                 self.config.project.project_root,
                 self.config.project.compile_commands_path,
-                source_root=self.config.project.source_root,
+                source_root=self.config.project.project_root,
                 indexing_config=self.config.indexing,
                 priority_functions=priority_functions,
                 include_paths=self.config.project.include_paths,
@@ -807,7 +821,31 @@ class ScanSessionRunner:
         if not entry_names and self.config.project.entry_function:
             entry_names = [self.config.project.entry_function]
         if entry_names:
-            code_index.run_svf(svf_entries)
+            try:
+                code_index.run_svf(svf_entries)
+            except RuntimeError as exc:
+                # Fast owns a complete project-local deterministic pass even when
+                # cross-TU SVF cannot be formed safely.  Preserve that useful scan
+                # while the code index capability ledger keeps the SVF failure as a
+                # formal-readiness blocker.  Balanced/deep retain their existing
+                # all-required-backends behavior.
+                if str(getattr(self.config.scan, "depth", "fast") or "fast") != "fast":
+                    raise
+                failure = {
+                    "status": "failed",
+                    "reason": type(exc).__name__,
+                    "detail": str(exc),
+                }
+                state["svf_enrichment"] = failure
+                logger.error(
+                    "Fast scan continuing with project-local deterministic analysis "
+                    "after SVF enrichment failed: %s",
+                    exc,
+                )
+                self.emit(
+                    "SVF enrichment failed; fast will continue with local static analysis "
+                    "and report the backend/link coverage gap."
+                )
 
     def _run_batch(
         self,
@@ -829,7 +867,7 @@ class ScanSessionRunner:
             state["code_index"] = CodeIndex(
                 self.config.project.project_root,
                 self.config.project.compile_commands_path,
-                source_root=self.config.project.source_root,
+                source_root=self.config.project.project_root,
                 indexing_config=self.config.indexing,
                 priority_functions=entry_names,
                 include_paths=self.config.project.include_paths,
@@ -1157,6 +1195,11 @@ class ScanSessionRunner:
         run_dir = self._instance_run_dir(context)
         queue_path = run_dir / f"{WORK_QUEUE_FILENAME}.{uuid.uuid4().hex}"
         code_index = self._ensure_code_index(state, defer_svf=True)
+        if (
+            self.config.project.language != "java"
+            and resolve_discovery_profile(self.config).name == "fast"
+        ):
+            code_index.settle_native_facts()
         if batch:
             report_paths = [
                 self._report_path("zscope_batch_report", suffix) for suffix in (".json", ".md")
@@ -1746,6 +1789,7 @@ class ScanSessionRunner:
                 terminal = {
                     "confirmed",
                     "rejected_with_proof",
+                    "rejected_with_evidence",
                     "deduplicated_alias",
                     "shadow_observation",
                 }
@@ -1765,7 +1809,10 @@ class ScanSessionRunner:
         seen = set()
         for entry in entries:
             entry_key = ParallelAnalyzer._entry_result_key(entry)
-            if entry_key in results:
+            scoped_suffix = f"::{entry_key}"
+            if entry_key in results or any(
+                str(result_key).endswith(scoped_suffix) for result_key in results
+            ):
                 continue
             name = entry.function_name
             if name in seen:

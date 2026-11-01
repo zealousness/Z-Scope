@@ -46,7 +46,7 @@ def main() -> None:
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     backend = ClangBackend(frontend="batch")
-    backend._source_path = Path(config.project.source_root).resolve()
+    backend._source_path = Path(config.project.project_root).resolve()
     backend._compile_commands_path = str(config.project.compile_commands_path)
     backend._include_paths = list(getattr(config.project, "include_paths", []))
     backend._exclude_paths = list(getattr(config.project, "exclude_paths", []))

@@ -189,12 +189,29 @@ public:
           }
           unsigned nestedCalls = 0;
           nestedCalls = appendNestedCallEvents(events, stmt, block->getBlockID(), ordinal, cleanup);
+          bool directNestedCallTransfer = false;
+          if (const auto *declaration = dyn_cast<DeclStmt>(stmt)) {
+            const VarDecl *initialized = nullptr;
+            for (const auto *declared : declaration->decls()) {
+              const auto *var = dyn_cast<VarDecl>(declared);
+              if (!var || !var->hasInit()) continue;
+              if (initialized) {
+                initialized = nullptr;
+                break;
+              }
+              initialized = var;
+            }
+            directNestedCallTransfer = initialized &&
+              isa<CallExpr>(initialized->getInit()->IgnoreParenImpCasts());
+          } else if (const auto *assignment = dyn_cast<BinaryOperator>(stmt)) {
+            directNestedCallTransfer = assignment->isAssignmentOp() &&
+              isa<CallExpr>(assignment->getRHS()->IgnoreParenImpCasts());
+          }
           // A nested call already represents the value transfer into the
-          // declaration/assignment target. Emitting the wrapper as another
-          // defining event would overwrite that call-result identity and make
-          // argument-to-result propagation look like a direct must-flow.
+          // declaration/assignment target only when the call is the entire
+          // RHS. A call embedded in a larger expression needs the outer event.
           if (nestedCalls && (kind == "declaration_initializer" || kind == "assignment" ||
-                              kind == "compound_assignment"))
+                              kind == "compound_assignment") && directNestedCallTransfer)
             continue;
           std::string eventId = std::to_string(block->getBlockID()) + ":" + std::to_string(ordinal);
           const auto *constant = dyn_cast<Expr>(stmt);
@@ -249,7 +266,7 @@ public:
       {"return_integer_bits", decl->getReturnType()->isIntegerType()
         ? static_cast<int64_t>(state.context->getTypeSize(decl->getReturnType())) : 0},
       {"return_integer_unsigned", decl->getReturnType()->isUnsignedIntegerType()},
-      {"target_values", state.targetValues()}, {"fact_version", "zscope.program-events.v5"},
+      {"target_values", state.targetValues()}, {"fact_version", "zscope.program-events.v7"},
       {"resource_protocol_facts_version", "zscope.resource-protocol-facts.v1"},
       {"lifecycle_value_facts_version", "zscope.lifecycle-value-facts.v1"},
       {"pthread_storage_facts_version", "zscope.pthread-storage.v1"},
@@ -296,8 +313,13 @@ private:
   class CallCollector : public RecursiveASTVisitor<CallCollector> {
   public:
     std::vector<const CallExpr *> calls;
+    std::vector<const AtomicExpr *> atomics;
     bool VisitCallExpr(CallExpr *expr) {
       calls.push_back(expr);
+      return true;
+    }
+    bool VisitAtomicExpr(AtomicExpr *expr) {
+      atomics.push_back(expr);
       return true;
     }
   };
@@ -349,6 +371,48 @@ private:
         {"pthread_timed_wait", timedWait(call)}});
       ++emitted;
     }
+    // Clang represents __atomic_* and __sync_* builtins as AtomicExpr rather
+    // than CallExpr.  Preserve them as exact compiler-intrinsic events so
+    // instance consumers do not need to authorize reserved operations from
+    // source spelling alone.
+    for (const auto *atomic : collector.atomics) {
+      const std::string name = atomic->getOpAsString().str();
+      Array argumentObjects, argumentExpressions, argumentUses, defs, uses;
+      std::string operation = name + "(";
+      for (unsigned index = 0; index < atomic->getNumSubExprs(); ++index) {
+        const auto *argument = atomic->getSubExprs()[index];
+        if (index) operation += ", ";
+        operation += expression(argument);
+        argumentObjects.push_back(objectIdentity(argument));
+        argumentExpressions.push_back(expression(argument));
+        Array oneArgumentUses;
+        appendValues(oneArgumentUses, argument);
+        argumentUses.push_back(std::move(oneArgumentUses));
+        appendValues(uses, argument);
+      }
+      operation += ")";
+      auto result = acquisitionIdentity(atomic);
+      if (!result.empty()) defs.push_back(std::move(result));
+      std::string eventId = std::to_string(blockId) + ":" + std::to_string(ordinal);
+      Object calleeIdentity{{"name", name}, {"qualified_name", name},
+        {"usr", "c:@F@" + name}, {"referenced_usr", "c:@F@" + name},
+        {"canonical_signature", atomic->getType().getCanonicalType().getAsString()},
+        {"external_linkage", true}, {"has_definition", false},
+        {"is_system_header", false}, {"compiler_intrinsic", true}};
+      events.push_back(Object{{"event_id", eventId}, {"event_kind", "compiler_intrinsic"},
+        {"resource_family", ""}, {"block", blockId}, {"ordinal", ordinal++},
+        {"location", state.location(atomic->getBeginLoc()).json()},
+        {"end", state.location(atomic->getEndLoc()).json()}, {"ast_kind", "AtomicExpr"},
+        {"expression", state.text(atomic->getSourceRange())}, {"operation", operation},
+        {"object", Object{}}, {"callee", std::move(calleeIdentity)},
+        {"arguments", std::move(argumentExpressions)}, {"return_value", ""},
+        {"assignment_target", ""}, {"assignment_value", ""},
+        {"argument_objects", std::move(argumentObjects)},
+        {"argument_uses", std::move(argumentUses)}, {"defs", std::move(defs)},
+        {"uses", std::move(uses)}, {"macro_expansion", atomic->getBeginLoc().isMacroID()},
+        {"pthread_cleanup", cleanup.marker(atomic)}, {"pthread_timed_wait", Object{}}});
+      ++emitted;
+    }
     return emitted;
   }
   Object valueIdentity(const ValueDecl *decl, const Expr *expr) const {
@@ -392,9 +456,17 @@ private:
     result["volatile_or_atomic"] = type.isVolatileQualified() || type->isAtomicType() ||
       (type->isPointerType() && (type->getPointeeType().isVolatileQualified() ||
         type->getPointeeType()->isAtomicType()));
-    result["integer_bits"] = type->isIntegerType()
+    // Anonymous enums declared inside a class template have an integer-like,
+    // dependent type before instantiation.  Asking ASTContext for their
+    // concrete layout recurses through the unresolved enum type and may
+    // crash libclang.  A dependent or incomplete value has no build-bound
+    // width to publish, so retain the identity while reporting the layout as
+    // unknown (zero bits) until a concrete instantiation is observed.
+    const bool concreteInteger = type->isIntegerType() &&
+      !type->isDependentType() && !type->isIncompleteType();
+    result["integer_bits"] = concreteInteger
       ? static_cast<int64_t>(state.context->getTypeSize(type)) : 0;
-    result["integer_unsigned"] = type->isUnsignedIntegerType();
+    result["integer_unsigned"] = concreteInteger && type->isUnsignedIntegerType();
     result["floating_value"] = type->isRealFloatingType();
     result["expression"] = expr ? expression(expr) : decl->getNameAsString();
     if (expr) {

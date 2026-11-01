@@ -14,20 +14,32 @@ from ..common.portable import bundled_executable
 
 
 def svf_environment(bin_directory: str) -> Dict[str, str]:
+    """Return a process-local environment for the selected SVF installation.
+
+    Source installs commonly leave ``svf_bin_dir`` empty and select ``wpa``
+    from PATH.  Resolve that executable before deriving library roots so a
+    stale LD_LIBRARY_PATH cannot pair one SVF driver with another install's
+    libSvf/LLVM libraries.  Portable builds keep LLVM in a sibling ``llvm18``
+    prefix, while development builds conventionally use ``llvm-*``.
+    """
     env = os.environ.copy()
     if os.name == "posix":
         paths = env.get("PATH", "").split(os.pathsep)
         env["PATH"] = os.pathsep.join(
             paths + [path for path in ("/usr/bin", "/usr/local/bin") if path not in paths]
         )
-    if bin_directory:
-        directory = Path(bin_directory).resolve()
-        bundled = bundled_executable(str(directory / "wpa"))
-        if bundled is not None:
-            directory = bundled.parent
+    selected = (
+        str(Path(bin_directory) / "wpa")
+        if bin_directory
+        else shutil.which("wpa", path=env.get("PATH"))
+    )
+    if selected:
+        bundled = bundled_executable(selected)
+        executable = bundled or Path(selected).resolve()
+        directory = executable.parent
         libraries = [directory.parent / "lib"]
         if bundled is None:
-            for pattern in ("llvm-*/lib", "llvm-*.obj/lib"):
+            for pattern in ("llvm18/lib", "llvm-*/lib", "llvm-*.obj/lib", "llvm*/lib"):
                 libraries.extend(sorted(directory.parent.parent.glob(pattern)))
         paths = list(dict.fromkeys(str(path.resolve()) for path in libraries if path.is_dir()))
         if paths:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import re
-from typing import Any, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,128 @@ _TOKEN = re.compile(
     r"|(?P<directive>^[ \t]*\#(?:[^\n]*\\\n)*[^\n]*)",
     re.MULTILINE,
 )
+
+
+def strip_comments_preserve_literals(code: str) -> str:
+    """Remove comments without changing coordinates or string literals.
+
+    Java rules need string contents for sink matching, while comments must never
+    satisfy either a sink or a guard.  Reusing the lexer here keeps the two
+    behaviours separate and preserves physical line/column coordinates.
+    """
+
+    chars = list(str(code or ""))
+    for match in _TOKEN.finditer(str(code or "")):
+        if match.group("comment") is None:
+            continue
+        for index in range(match.start(), match.end()):
+            if chars[index] != "\n":
+                chars[index] = " "
+    return "".join(chars)
+
+
+def _if_condition_and_tail(text: str) -> tuple[str, str] | None:
+    match = re.search(r"\bif\s*\(", str(text or ""))
+    if not match:
+        return None
+    opening = str(text).find("(", match.start())
+    depth = 0
+    for index in range(opening, len(str(text))):
+        char = str(text)[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return str(text)[opening + 1 : index], str(text)[index + 1 :].strip()
+    return None
+
+
+def _is_terminal_statement(text: str) -> bool:
+    candidate = str(text or "").lstrip("{} \t")
+    return bool(
+        re.match(r"(?:return|throw|goto|break|continue)\b", candidate)
+        or re.match(r"(?:abort|exit|_Exit)\s*\(", candidate)
+    )
+
+
+def has_terminating_guard(
+    lines: Sequence[Any],
+    sink_index: int,
+    condition_matches: Callable[[str], bool],
+    *,
+    lookback: int = 12,
+) -> bool:
+    """Return true only for a matching guard whose rejected branch terminates.
+
+    This is deliberately a conservative source-level fallback.  It recognizes
+    the common ``if (bad) return/throw`` forms but does not infer safety from a
+    comparison, a log call, or a comment alone.  Native CFG evidence remains
+    available to the downstream validator for more complex control flow.
+    """
+
+    begin = max(0, int(sink_index) - max(1, int(lookback)))
+    end = min(len(lines), int(sink_index))
+    for position in range(begin, end):
+        parsed = _if_condition_and_tail(getattr(lines[position], "text", ""))
+        if parsed is None:
+            continue
+        condition, tail = parsed
+        if not condition_matches(condition):
+            continue
+        if _is_terminal_statement(tail):
+            return True
+        # For both braced and one-line-following forms, accept only an
+        # immediately terminal first statement.  A preceding log/check call is
+        # not proof that the unsafe path is blocked.
+        next_position = position + 1
+        while next_position < end:
+            following = str(getattr(lines[next_position], "text", "") or "").strip()
+            if following in {"", "{"}:
+                next_position += 1
+                continue
+            if following.startswith("}"):
+                break
+            if _is_terminal_statement(following):
+                return True
+            break
+    return False
+
+
+def null_rejection_condition(condition: str, variable: str) -> bool:
+    escaped = re.escape(str(variable or ""))
+    text = str(condition or "")
+    return bool(
+        re.search(rf"!\s*\b{escaped}\b", text)
+        or re.search(rf"\b{escaped}\b\s*==\s*(?:NULL|nullptr|0)\b", text)
+        or re.search(rf"\b(?:NULL|nullptr|0)\s*==\s*{escaped}\b", text)
+    )
+
+
+def overflow_rejection_condition(condition: str, operands: Iterable[str]) -> bool:
+    names = [str(item).strip() for item in operands if str(item).strip()]
+    text = str(condition or "")
+    if len(names) < 2:
+        return False
+    left, right = names[0], names[1]
+    escaped_left, escaped_right = re.escape(left), re.escape(right)
+    maximum = r"(?:SIZE_MAX|UINT(?:8|16|32|64)?_MAX|UINT_MAX|INT_MAX)"
+    multiplication = (
+        rf"\b{escaped_left}\b\s*>\s*{maximum}\s*/\s*\b{escaped_right}\b",
+        rf"\b{escaped_right}\b\s*>\s*{maximum}\s*/\s*\b{escaped_left}\b",
+    )
+    addition = (
+        rf"\b{escaped_left}\b\s*>\s*{maximum}\s*-\s*\b{escaped_right}\b",
+        rf"\b{escaped_right}\b\s*>\s*{maximum}\s*-\s*\b{escaped_left}\b",
+    )
+    if any(re.search(pattern, text) for pattern in (*multiplication, *addition)):
+        return True
+    builtin = re.search(r"\b__builtin_(?:add|mul)_overflow\s*\((?P<args>[^)]*)\)", text)
+    return bool(
+        builtin
+        and re.search(rf"\b{escaped_left}\b", builtin.group("args"))
+        and re.search(rf"\b{escaped_right}\b", builtin.group("args"))
+    )
 
 
 def source_events(code: str) -> list[SourceEvent]:

@@ -59,6 +59,8 @@ LLM_PROFILE_KEYS = (
     "base_url_rate_limit_per_minute",
     "base_url_max_concurrent_requests",
     "max_tokens",
+    "context_window",
+    "model_context_windows",
     "timeout",
     "max_retries",
     "retry_until_available",
@@ -620,6 +622,24 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
             )
         max_retries = profile.get("max_retries", 2)
         max_retries = _non_negative_int(max_retries, f"{profile_path}.max_retries")
+        context_window = _positive_int(
+            profile.get("context_window", LLMConfig().context_window),
+            f"{profile_path}.context_window",
+        )
+        windows = _mapping(
+            profile.get("model_context_windows", {}),
+            f"{profile_path}.model_context_windows",
+            required=True,
+        )
+        model_context_windows = {}
+        for model_name, window in windows.items():
+            if not isinstance(model_name, str) or not model_name.strip():
+                raise ValueError(
+                    f"{profile_path}.model_context_windows requires non-empty model names"
+                )
+            model_context_windows[model_name] = _positive_int(
+                window, f"{profile_path}.model_context_windows.{model_name}"
+            )
 
         result[name] = LLMConfig(
             api_key=api_key,
@@ -628,7 +648,11 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
             base_url_rate_limit_per_minute=rate_limit,
             base_url_max_concurrent_requests=endpoint_limit,
             models=models,
-            max_tokens=_positive_int(profile.get("max_tokens", 4096), f"{profile_path}.max_tokens"),
+            max_tokens=_positive_int(
+                profile.get("max_tokens", LLMConfig().max_tokens), f"{profile_path}.max_tokens"
+            ),
+            context_window=context_window,
+            model_context_windows=model_context_windows,
             timeout=_positive_number_or_none(
                 profile.get("timeout", 120), f"{profile_path}.timeout"
             ),
@@ -667,14 +691,25 @@ def _wiki_document_patterns(value: Any, path: str) -> List[str]:
     return patterns
 
 
-def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
+def reject_legacy_project_roots(data: Mapping[str, Any]) -> None:
+    """Reject removed roots even when their values would happen to be equivalent."""
+    removed = [f"project.{key}" for key in ("root", "source_root") if key in data]
+    if removed:
+        raise ValueError(
+            ", ".join(removed) + " removed: the YAML file directory is the only project root. "
+            "Move/migrate the configuration into the intended project directory with "
+            "'zscope-config migrate --input OLD --output PROJECT/zscope.yaml'; "
+            "do not just remove these keys from a configuration stored elsewhere."
+        )
+
+
+def _parse_project(raw: Any, *, language: str, config_path: Path) -> ProjectConfig:
     data = _mapping(raw, "project", required=True)
+    reject_legacy_project_roots(data)
     _check_keys(
         data,
         {
             "id",
-            "root",
-            "source_root",
             "language",
             "entry_function",
             "entry_file_path",
@@ -685,16 +720,13 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
             "exclude_paths",
             "compile_commands_path",
             "user_config_file",
+            "semantics_file",
             "wiki",
             "review_memory",
         },
         "project",
     )
-    root = _string(data.get("root"), "project.root")
-    # 相对 project.root 保持既有约定：基于加载进程的当前工作目录解析（子进程继承
-    # 同一 CWD，因此 CLI / Web 仪表盘 / MCP 对同一份配置得到一致的工程路径）。
-    root_path = Path(root)
-    source_root = _string(data.get("source_root", "."), "project.source_root")
+    root_path = config_path.resolve().parent
     compile_commands = data.get("compile_commands_path")
     if language == "java" and compile_commands is not None:
         raise ValueError("project.compile_commands_path is not valid for Java")
@@ -811,7 +843,6 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
 
     project = ProjectConfig(
         project_root=root_path,
-        source_root=Path(source_root),
         project_id=_string(data.get("id", ""), "project.id", allow_empty=True),
         language=language,
         entry_function=(
@@ -835,6 +866,7 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
             else None
         ),
         compile_commands_path=Path(compile_commands) if compile_commands else None,
+        semantics_file=(Path(_string(data["semantics_file"], "project.semantics_file")) if data.get("semantics_file") is not None else None),
         user_config_file=(
             Path(_string(data["user_config_file"], "project.user_config_file"))
             if data.get("user_config_file") is not None
@@ -848,11 +880,11 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
     )
     if project.entry_discovery.search_root:
         try:
-            # search_root 必须位于 source_root 之下（相对路径同样基于 source_root 解析）。
-            project.entry_discovery.search_root.relative_to(project.source_root)
+            # search_root 必须位于唯一 project_root 之下。
+            project.entry_discovery.search_root.relative_to(project.project_root)
         except ValueError as exc:
             raise ValueError(
-                "project.entry_discovery.search_root must be inside project.source_root"
+                "project.entry_discovery.search_root must be inside the configuration directory"
             ) from exc
     return project
 
@@ -1119,7 +1151,11 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
         knowledge_db_path=runtime.knowledge_db_path,
         clang_frontend=_string(clang.get("frontend", "auto"), "indexing.clang.frontend"),
         clang_indexer_path=_string(
-            tools["clang_indexer"] if "clang_indexer" in tools else default_tool("zscope-clang-indexer"),
+            (
+                tools["clang_indexer"]
+                if "clang_indexer" in tools
+                else default_tool("zscope-clang-indexer")
+            ),
             "indexing.tools.clang_indexer",
         ),
         clangd_path=_string(
@@ -1128,7 +1164,8 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
         ),
         svf_bin_dir=_string(
             tools["svf_bin_dir"] if "svf_bin_dir" in tools else default_svf_directory(),
-            "indexing.tools.svf_bin_dir", allow_empty=True
+            "indexing.tools.svf_bin_dir",
+            allow_empty=True,
         ),
         gclang_path=_string(
             tools["gclang"] if "gclang" in tools else default_tool("gclang"),
@@ -1199,7 +1236,11 @@ def _anchor_runtime_paths(
             configured_user_file = project.project_root / configured_user_file
         configured_user_file = configured_user_file.resolve()
         project.user_config_file = configured_user_file
-    runtime.analysis.user_config_db = str(configured_user_file)
+    runtime.analysis.user_config_db = str(
+        project.semantics_file
+        if project.language == "c_cpp" and project.semantics_file is not None
+        else configured_user_file
+    )
 
 
 def _agents_from_runtime(runtime: RuntimeSpec, scan: ScanConfig) -> List[AgentConfig]:
@@ -1249,13 +1290,15 @@ def load_user_config_v2(config_path: Optional[str] = None) -> EffectiveConfig:
 
     runtime = load_runtime_spec()
     llms = _parse_llms(raw.get("llms"))
-    project = _parse_project(raw.get("project"), language=language)
+    project = _parse_project(raw.get("project"), language=language, config_path=path)
     scan = _parse_scan(raw.get("scan"), llms, language=language)
     concurrency = _parse_concurrency(raw.get("concurrency"), language=language)
     indexing = _parse_indexing(raw.get("indexing"), language=language, runtime=runtime)
     indexing.max_clangd_threads = concurrency.index_workers
     rules = _parse_rules(raw.get("rules"))
     _anchor_runtime_paths(runtime, project, indexing)
+    if project.language == "c_cpp" and project.semantics_file is not None:
+        runtime.analysis.user_config_db = str(project.semantics_file)
     project.agents = _agents_from_runtime(runtime, scan)
 
     # Materialize the public DTO before composition.  This makes the public
@@ -1281,4 +1324,5 @@ def load_user_config_v2(config_path: Optional[str] = None) -> EffectiveConfig:
         rules=rules,
         runtime_provenance=runtime.provenance,
         user_config_version=PUBLIC_CONFIG_VERSION,
+        config_path=path,
     )

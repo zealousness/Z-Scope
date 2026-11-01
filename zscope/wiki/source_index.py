@@ -1,7 +1,7 @@
 """Deterministic SQLite index for accepted Markdown source documents.
 
 The source index is deliberately independent from the compiled Wiki database.
-It can be rebuilt from ``project.root`` at any time and is therefore the last
+It can be rebuilt from the YAML directory at any time and is therefore the last
 resort used by the Validator when a Wiki revision or the Compiler is not
 available.  Querying this module never calls an LLM and returns only bounded
 excerpts of the original Markdown sections.

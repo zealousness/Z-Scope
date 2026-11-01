@@ -26,8 +26,6 @@ def _config(root: Path, *, state_dir: str = "var/wiki") -> dict:
         },
         "project": {
             "id": "configured-project",
-            "root": str(root),
-            "source_root": ".",
             "language": "c_cpp",
             "entry_discovery": {
                 "enabled": True,
@@ -100,7 +98,7 @@ def test_wiki_cli_config_closes_overrides_limits_and_query_budget(
         "A generated local note.\n",
         encoding="utf-8",
     )
-    config_path = tmp_path / "zscope.json"
+    config_path = root / "zscope.json"
     config_path.write_text(json.dumps(_config(root)), encoding="utf-8")
     runner = CliRunner()
 
@@ -138,7 +136,7 @@ def test_wiki_cli_custom_state_dir_does_not_change_its_own_manifest(
     root = tmp_path / "project"
     shutil.copytree(FIXTURE, root, symlinks=True)
     shutil.rmtree(root / ".zscope_knowledge")
-    config_path = tmp_path / "zscope.json"
+    config_path = root / "zscope.json"
     config_path.write_text(json.dumps(_config(root)), encoding="utf-8")
     runner = CliRunner()
 
@@ -155,7 +153,7 @@ def test_wiki_cli_root_and_config_conflict_fails_closed(tmp_path: Path) -> None:
     other = tmp_path / "other"
     root.mkdir()
     other.mkdir()
-    config_path = tmp_path / "zscope.json"
+    config_path = root / "zscope.json"
     config_path.write_text(json.dumps(_config(root)), encoding="utf-8")
 
     result = CliRunner().invoke(
@@ -164,7 +162,7 @@ def test_wiki_cli_root_and_config_conflict_fails_closed(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 2
-    assert "conflicts with project.root" in result.output
+    assert "conflicts with the YAML directory" in result.output
     assert not (root / "var").exists()
     assert not (other / "var").exists()
 

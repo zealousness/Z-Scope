@@ -384,6 +384,74 @@ def test_cache_environment_separates_runner_scopes():
     assert alt._validation_environment_fingerprint != unscoped._validation_environment_fingerprint
 
 
+def test_cache_environment_is_stable_across_entry_usrs_in_same_build():
+    first = _make_runner(ScopeRecordingAgent(), build="BASE")
+    second = _make_runner(ScopeRecordingAgent(), build="BASE")
+    second._instance_scope = InstanceScope(
+        build_context_id="BASE",
+        usr="c:@F@other_entry",
+        identity="BASE:c:@F@other_entry",
+        source="other.c",
+        function_names=("other_entry",),
+    )
+    second._instance_semantics_digest = "different-entry-semantics"
+    second._validation_environment_fingerprint = (
+        second._build_validation_environment_fingerprint()
+    )
+
+    assert (
+        first._validation_environment_fingerprint
+        == second._validation_environment_fingerprint
+    )
+
+
+def test_cache_environment_uses_declarative_tool_policy_not_runtime_state():
+    from zscope.tools.policy import ToolPolicy, deny_sensitive_paths_hook
+
+    first_policy = ToolPolicy(
+        allowed_tools={"flow_query", "get_function"},
+        denied_tools={"run_command"},
+        strict_schema=True,
+        pre_hooks=[deny_sensitive_paths_hook],
+        audit_log_path="audit/tools.jsonl",
+    )
+    second_policy = ToolPolicy(
+        allowed_tools={"get_function", "flow_query"},
+        denied_tools={"run_command"},
+        strict_schema=True,
+        pre_hooks=[deny_sensitive_paths_hook],
+        audit_log_path="audit/tools.jsonl",
+    )
+    # These are mutable runtime details and deliberately differ between the
+    # independently constructed policies.
+    first_policy.audit_events.append(object())
+
+    first = _make_runner(ScopeRecordingAgent(), build="BASE")
+    second = _make_runner(ScopeRecordingAgent(), build="BASE")
+    first.tool_policy_for_agent = lambda agent_name: first_policy
+    second.tool_policy_for_agent = lambda agent_name: second_policy
+    first._validation_environment_fingerprint = (
+        first._build_validation_environment_fingerprint()
+    )
+    second._validation_environment_fingerprint = (
+        second._build_validation_environment_fingerprint()
+    )
+
+    assert (
+        first._validation_environment_fingerprint
+        == second._validation_environment_fingerprint
+    )
+
+    second_policy.allowed_tools = {"get_function"}
+    second._validation_environment_fingerprint = (
+        second._build_validation_environment_fingerprint()
+    )
+    assert (
+        first._validation_environment_fingerprint
+        != second._validation_environment_fingerprint
+    )
+
+
 def test_validator_cache_never_reuses_a_result_across_scopes():
     shared_cache_agent_calls: list[str] = []
     from zscope.core.validation.runner import ValidationResultCache

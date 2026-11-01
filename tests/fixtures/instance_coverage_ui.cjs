@@ -59,30 +59,41 @@ async function browser() {
     assert.equal(created.status(),202,await created.text());
     const id = (await created.json()).job.job_id;
     let job;
-    for (let i=0;i<180;i++) {
+    // Real native receipt revalidation includes tool/dependency digests at
+    // checkpoint boundaries; allow it to finish rather than inspecting an
+    // active checkpoint as though it were a terminal report failure.
+    for (let i=0;i<360;i++) {
       job=(await (await page.request.get(`${base}/api/jobs/detail?job_id=${id}`)).json()).job;
       if (!['queued','running','stopping'].includes(job.status)) break;
       await new Promise(resolve=>setTimeout(resolve,500));
     }
+    assert.ok(!['queued','running','stopping'].includes(job.status),JSON.stringify(job));
     assert.ok(job.report.available, JSON.stringify(job));
     const envelope=await (await page.request.get(`${base}/api/jobs/result?job_id=${id}`)).json();
     assert.equal(envelope.binding.run_id,job.run_id);
     const plan=envelope.findings.report.metadata.entry_instances;
     assert.ok(plan, 'Bound lightweight report must expose instance metadata');
     assert.equal(plan.instance_analysis.analyzed_instances,2);
-    assert.equal(plan.scan_coverage_complete,false);
+    assert.equal(plan.scan_coverage_complete,true);
+    assert.equal(plan.instance_analysis.instance_scope_complete,true);
+    assert.equal(plan.instance_analysis.consumer_scope_complete,true);
+    // Selected-instance execution can complete while whole-build/link coverage
+    // remains explicitly incomplete. Never conflate those two measurements.
+    assert.equal(envelope.findings.coverage.build_coverage.scan_complete,false);
     const gaps=envelope.findings.coverage.gaps;
-    assert.ok(gaps.some(gap=>gap.kind==='entry_instance_coverage_incomplete'));
+    assert.ok(!gaps.some(gap=>gap.kind==='entry_instance_coverage_incomplete'));
     assert.ok(!gaps.some(gap=>gap.kind==='entry_instance_analysis_unwired')); 
     assert.deepEqual(plan.instance_analysis.instances.map(row=>row.candidate_count).sort(),[0,1]);
     fs.writeFileSync(`${output}/http-result.json`,JSON.stringify(envelope,null,2));
     await page.goto(base,{waitUntil:'networkidle'});
     await page.evaluate(async id => {const state=Alpine.$data(document.querySelector('[x-data]')); await state.loadJob(id); await state.openJobResult();},id);
+    await page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'覆盖与诊断',exact:true}).click();
     const panel=page.locator('section[aria-labelledby="wb-instance-title"]');
     await panel.waitFor({state:'visible'});
     assert.match(await panel.innerText(),/本实例未产生候选/);
     assert.match(await panel.innerText(),/double_free/);
-    assert.match(await panel.innerText(),/不完整/);
+    assert.match(await panel.innerText(),/完整/);
+    assert.match(await page.locator('body').innerText(),/构建扫描覆盖\s*覆盖不完整/);
     assert.doesNotMatch(await page.locator('body').innerText(),/逐编译实例的分析与验证尚未接入/);
     for (const [label,field] of [['本轮实际执行','executed_instances'],['本轮复用结果','cached_instances']]) {
       const value=envelope.findings.report.metadata.job?.[field];

@@ -55,6 +55,10 @@ def test_policy_v1_is_the_single_v4_formal_v3_contract(tmp_path: Path) -> None:
     assert policy.range_gates["median_confirmed_tp"] == (">=", 111.0)
     assert policy.range_gates["median_tokens"] == ("<=", 10_000_000.0)
     assert policy.range_gates["per_run_tokens"] == ("<=", 12_000_000.0)
+    assert policy.range_depth_gates["fast"]["confirmed_precision"] == (">=", 0.9)
+    assert policy.range_depth_gates["fast"]["confirmed_count"] == (">=", 1.0)
+    assert policy.range_depth_gates["balanced"] == {}
+    assert policy.range_depth_gates["deep"] == {}
     assert policy.sealed_delta_gates["sealed_confirmed_recall_delta_pp"] == (
         ">=",
         3.0,
@@ -320,6 +324,29 @@ def test_candidate_funnel_keeps_units_and_group_attribution_explicit() -> None:
     assert attribution["transition_counts"]["V1->terminal:decision_complete"] == 1
     assert attribution["drop_reason"]["decision_complete"] == 1
     assert funnel["contract"]["linear_conversion_rates_valid"] is False
+
+
+def test_candidate_funnel_prefers_scan_level_raw_count_over_report_view_count() -> None:
+    report = {
+        "summary": {
+            "validation_performance": {"scan_level_raw_occurrence_count": 93},
+        },
+        # These projections contain only reportable/review findings and are
+        # not the scan-level pre-dedup occurrence population.
+        "run_manifest": {"raw_occurrence_count": 68},
+        "needs_review_governance": {"raw_occurrence_count": 62},
+        "candidate_terminal_states": [],
+        "issues": [],
+    }
+
+    raw = candidate_funnel(report)["stages"]["raw_occurrences"]
+
+    assert raw == {
+        "count": 93,
+        "available": True,
+        "unit": "occurrence",
+        "source": "scan_level_raw_occurrence_count",
+    }
 
 
 def test_candidate_funnel_reads_production_v0_summary_and_excludes_prevalidation_deferrals() -> (

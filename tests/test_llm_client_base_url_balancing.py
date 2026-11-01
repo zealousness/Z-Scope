@@ -111,6 +111,32 @@ def test_streaming_requests_explicitly_request_terminal_provider_usage(monkeypat
     assert payloads[0]["stream_options"] == {"include_usage": True}
 
 
+def test_request_local_thinking_control_is_forwarded_without_becoming_a_default(
+    monkeypatch,
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://usage.example/v1",
+        models=["unit-model"],
+    )
+    payloads = []
+
+    def fake_post(_url, **kwargs):
+        payloads.append(kwargs["json"])
+        return _FakeResponse()
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+
+    client.chat_completion(
+        [{"role": "user", "content": "return json"}],
+        thinking={"type": "disabled"},
+    )
+    client.chat_completion([{"role": "user", "content": "analyze"}])
+
+    assert payloads[0]["thinking"] == {"type": "disabled"}
+    assert "thinking" not in payloads[1]
+
+
 def test_llm_client_falls_back_to_another_base_url_after_rate_limit(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
@@ -897,8 +923,6 @@ def test_config_loader_parses_multiple_llm_base_urls(tmp_path) -> None:
                     }
                 },
                 "project": {
-                    "root": str(tmp_path),
-                    "source_root": ".",
                     "language": "c_cpp",
                 },
                 "scan": {"task": ""},
@@ -944,6 +968,49 @@ class _SseResponse:
         pass
 
 
+def test_streamed_function_name_fragments_preserve_numeric_tool_order():
+    client = LLMClient(api_key="test", base_url="http://example.invalid/v1", models=["unit"])
+    chunks = []
+    for index in range(12):
+        for name, arguments, call_id in (("read_", '{"q":', "call_"), ("code", '"x"}', str(index))):
+            chunks.append(
+                "data: " + json.dumps({
+                    "choices": [{"delta": {"tool_calls": [{
+                        "index": index,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": arguments},
+                    }]}}]
+                })
+            )
+    chunks.append('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}')
+    try:
+        message, finish = client._assemble_chat_response(_SseResponse(chunks))
+        assert finish == "tool_calls"
+        assert [call["id"] for call in message["tool_calls"]] == [f"call_{i}" for i in range(12)]
+        for call in message["tool_calls"]:
+            assert "index" not in call
+            assert call["function"] == {"name": "read_code", "arguments": '{"q":"x"}'}
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("line", [b": ping", b"event: keepalive"])
+def test_idle_stream_guard_covers_nonempty_invalid_chunks(monkeypatch, line):
+    clock = iter([0.0, 0.5, 2.0])
+    monkeypatch.setattr(llm_client_module.time, "monotonic", lambda: next(clock))
+    response = _SseResponse([line, line])
+    with pytest.raises(TimeoutError, match="valid JSON chunk"):
+        list(LLMClient._iter_chat_chunks(response, max_idle_valid_chunk_seconds=1.0))
+
+
+def test_valid_stream_chunks_reset_idle_guard(monkeypatch):
+    clock = iter([0.0, 0.5, 0.5, 1.25, 1.25, 2.0])
+    monkeypatch.setattr(llm_client_module.time, "monotonic", lambda: next(clock))
+    response = _SseResponse([b'data: {"choices": []}', b'data: {"choices": []}', b"data: [DONE]"])
+    assert len(list(LLMClient._iter_chat_chunks(response, max_idle_valid_chunk_seconds=1.0))) == 2
+
+
 def test_assembly_raises_on_stream_without_payload_or_finish_reason() -> None:
     # A stream that ends without any content, reasoning, tool call, or
     # finish_reason chunk is a truncated stream and must surface as a
@@ -973,41 +1040,14 @@ def test_assembly_raises_on_usage_only_stream_without_finish_reason() -> None:
         )
 
 
-def test_assembly_tolerates_missing_finish_reason_when_content_present(monkeypatch, caplog) -> None:
-    client = LLMClient(
-        api_key="test",
-        base_url=f"http://no-finish-{uuid.uuid4().hex}.example/v1",
-        models=["unit-model"],
-    )
-
-    with caplog.at_level("WARNING", logger="zscope.framework.llm_client"):
-        message, finish_reason = client._assemble_chat_response(
-            _SseResponse([b'data: {"choices":[{"delta":{"content":"partial"}}]}'])
-        )
-
-    assert message["content"] == "partial"
-    assert finish_reason == "stop"
-    assert any("finish_reason" in record.getMessage() for record in caplog.records)
-
-
-def test_assembly_tolerates_done_marker_without_finish_reason() -> None:
-    client = LLMClient(
-        api_key="test",
-        base_url=f"http://done-marker-{uuid.uuid4().hex}.example/v1",
-        models=["unit-model"],
-    )
-
-    message, finish_reason = client._assemble_chat_response(
-        _SseResponse(
-            [
-                b'data: {"choices":[{"delta":{"content":"ok"}}]}',
-                b"data: [DONE]",
-            ]
-        )
-    )
-
-    assert message["content"] == "ok"
-    assert finish_reason == "stop"
+@pytest.mark.parametrize("done", [False, True])
+def test_assembly_rejects_partial_content_without_finish_reason(done):
+    client = LLMClient(api_key="test", base_url="http://no-finish.invalid/v1", models=["unit-model"])
+    lines = [b'data: {"choices":[{"delta":{"content":"partial"}}]}']
+    if done:
+        lines.append(b"data: [DONE]")
+    with pytest.raises(requests.exceptions.ChunkedEncodingError, match="finish_reason"):
+        client._assemble_chat_response(_SseResponse(lines))
 
 
 def test_chat_completion_retries_after_empty_truncated_stream(

@@ -56,6 +56,8 @@ def test_review_memory_user_content_is_final_tool_only():
 
 def test_llm_cannot_create_new_matchable_feature():
     proposal = extract_with_llm(_record(), FakeLLM({
+        "false_positive_reason": "需要复核当前证据",
+        "counter_conditions": [],
         "trigger_features": [
             {"kind": "fingerprint", "value": "other", "matchable": True},
         ],

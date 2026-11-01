@@ -1,8 +1,237 @@
+import pytest
+
 from semantic_fixtures import configured_test_semantics
 from zscope.core.candidates.regex import (
     RegexCandidateGenerator,
     LocalPatternSemantics,
+    current_compiler_intrinsic_names,
 )
+
+
+def test_current_compiler_intrinsic_requires_exact_native_builtin_identity() -> None:
+    facts = {
+        "functions": [
+            {
+                "events": [
+                    {
+                        "event_kind": "call",
+                        "callee": {
+                            "name": "__builtin_ctzll",
+                            "usr": "c:@F@__builtin_ctzll",
+                            "canonical_signature": "int (unsigned long long)",
+                            "external_linkage": True,
+                            "has_definition": False,
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    assert current_compiler_intrinsic_names(facts) == frozenset({"__builtin_ctzll"})
+
+    facts["functions"][0]["events"][0]["callee"]["has_definition"] = True
+    assert current_compiler_intrinsic_names(facts) == frozenset()
+
+
+def test_restricted_generator_accepts_only_native_proven_compiler_intrinsic() -> None:
+    facts = {
+        "functions": [
+            {
+                "events": [
+                    {
+                        "event_kind": "call",
+                        "callee": {
+                            "name": "__sync_bool_compare_and_swap",
+                            "usr": "c:@F@__sync_bool_compare_and_swap",
+                            "canonical_signature": "_Bool (volatile unsigned int *, unsigned int, unsigned int)",
+                            "external_linkage": True,
+                            "has_definition": False,
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    generator = RegexCandidateGenerator(
+        LocalPatternSemantics(),
+        program_facts_provider=lambda *_args: facts,
+        restrict_to_semantics=True,
+    )
+    generator.program_facts = facts
+    assert generator._semantic_call_allowed(
+        "__sync_bool_compare_and_swap", "standard_operation"
+    )
+
+    generator.program_facts = {}
+    assert not generator._semantic_call_allowed(
+        "__sync_bool_compare_and_swap", "standard_operation"
+    )
+
+
+def _native_call_event(line: int, name: str, signature: str) -> dict:
+    return {
+        "event_kind": "call",
+        "location": {"line": line},
+        "assignment_target": "",
+        "callee": {
+            "name": name,
+            "usr": f"c:@F@{name}",
+            "canonical_signature": signature,
+            "is_system_header": False,
+        },
+    }
+
+
+def test_regex_detects_exact_nonvoid_status_masked_by_later_return() -> None:
+    code = """
+10 | int demo(int value) {
+11 |     update_state(value);
+12 |     return close_state(value);
+13 | }
+"""
+    facts = {
+        "functions": [
+            {
+                "events": [
+                    _native_call_event(11, "update_state", "int (int)"),
+                    _native_call_event(12, "close_state", "int (int)"),
+                ]
+            }
+        ]
+    }
+
+    issues = RegexCandidateGenerator(
+        configured_test_semantics(),
+        program_facts_provider=lambda *_args: facts,
+    ).generate_issues("demo", code, "demo.c")
+
+    issue = next(item for item in issues if item["rule"] == "error_probe_can_return_success")
+    assert issue["defect_class"] == "unchecked_return"
+    assert "int (int)" in issue["positive_evidence"][0]
+
+
+@pytest.mark.parametrize(
+    ("statement", "signature"),
+    [
+        ("(void)update_state(value);", "int (int)"),
+        ("update_state(value);", "void (int)"),
+    ],
+)
+def test_regex_does_not_infer_masked_status_without_unchecked_nonvoid_receipt(
+    statement: str,
+    signature: str,
+) -> None:
+    code = f"""
+10 | int demo(int value) {{
+11 |     {statement}
+12 |     return close_state(value);
+13 | }}
+"""
+    facts = {
+        "functions": [
+            {
+                "events": [
+                    _native_call_event(11, "update_state", signature),
+                    _native_call_event(12, "close_state", "int (int)"),
+                ]
+            }
+        ]
+    }
+
+    issues = RegexCandidateGenerator(
+        configured_test_semantics(),
+        program_facts_provider=lambda *_args: facts,
+    ).generate_issues("demo", code, "demo.c")
+
+    assert not any(item["rule"] == "error_probe_can_return_success" for item in issues)
+
+
+def test_regex_does_not_treat_condition_call_as_discarded_status() -> None:
+    code = """
+10 | bool demo(int value) {
+11 |     if (BeforeFile(value) || GetRestartPoint(value) < 4) {
+12 |         return true;
+13 |     }
+14 |     return false;
+15 | }
+"""
+    facts = {
+        "functions": [
+            {
+                "events": [
+                    _native_call_event(11, "BeforeFile", "_Bool (int)"),
+                    _native_call_event(11, "GetRestartPoint", "unsigned int (int)"),
+                ]
+            }
+        ]
+    }
+
+    issues = RegexCandidateGenerator(
+        configured_test_semantics(), program_facts_provider=lambda *_args: facts
+    ).generate_issues("demo", code, "demo.cc")
+
+    assert not any(item["rule"] == "error_probe_can_return_success" for item in issues)
+
+
+def test_regex_ignores_compile_time_stack_extents_and_comment_operators() -> None:
+    code = """
+10 | void demo(uint64_t value, size_t file_size, int fd) {
+11 |     char first[sizeof(value)];
+12 |     char second[kStackBufferSize];
+13 |     char third[Footer::kEncodedLength];
+14 |     mmap(/*addr=*/nullptr, file_size, PROT_READ, MAP_SHARED, fd, 0);
+15 | }
+"""
+
+    rules = {
+        item["rule"]
+        for item in RegexCandidateGenerator(configured_test_semantics()).generate_issues(
+            "demo", code, "demo.cc"
+        )
+    }
+
+    assert "unbounded_vla_or_stack_array" not in rules
+    assert "inline_allocation_size_overflow" not in rules
+
+
+def test_regex_stale_resource_rules_require_persistent_nonterminal_owner() -> None:
+    code = """
+10 | struct File {
+11 |   ~File() { close(fd_); munmap(mapping_, length_); }
+12 |   int fd_;
+13 |   void *mapping_;
+14 |   size_t length_;
+15 | };
+16 | int cleanup_local(int fd) { close(fd); return 0; }
+"""
+
+    rules = {
+        item["rule"]
+        for item in RegexCandidateGenerator(configured_test_semantics()).generate_issues(
+            "cleanup_local", code, "demo.cc"
+        )
+    }
+
+    assert "fd_closed_without_invalidation" not in rules
+    assert "mapping_unmapped_without_pointer_clear" not in rules
+
+
+def test_regex_sigpipe_rule_requires_peer_descriptor_evidence() -> None:
+    regular = """
+10 | int write_file(int fd, const char *data, size_t size) {
+11 |     return write(fd, data, size);
+12 | }
+"""
+    peer = regular.replace("write_file(int fd", "write_peer(int peer_fd").replace(
+        "write(fd,", "write(peer_fd,"
+    )
+    generator = RegexCandidateGenerator(configured_test_semantics())
+
+    regular_rules = {item["rule"] for item in generator.generate_issues("write_file", regular, "demo.c")}
+    peer_rules = {item["rule"] for item in generator.generate_issues("write_peer", peer, "demo.c")}
+
+    assert "write_without_sigpipe_handling" not in regular_rules
+    assert "write_without_sigpipe_handling" in peer_rules
 
 
 def _classes(code: str) -> set[str]:
@@ -261,6 +490,60 @@ int load(int should_stop) {{
         {("memory_leak", "error_path_allocation_not_released")},
         {("memory_leak", "error_path_allocation_not_released")},
     ]
+
+
+def test_cpp_new_transferred_only_on_success_reports_failed_status_leak() -> None:
+    code = """
+Status DB::Open(const Options& options, DB** dbptr) {
+    *dbptr = nullptr;
+    DBImpl* impl = new DBImpl(options);
+    Status status = impl->Recover();
+    if (status.ok()) {
+        impl->FinishOpen();
+        *dbptr = impl;
+    }
+    return status;
+}
+"""
+
+    issues = RegexCandidateGenerator().generate_issues("DB::Open", code, "db/db_impl.cc")
+    issue = next(
+        item
+        for item in issues
+        if item.get("rule") == "error_path_allocation_not_released"
+    )
+
+    assert issue["defect_class"] == "memory_leak"
+    assert issue["evidence_pack"]["ownership"]["acquire"] == "cxx_new"
+    assert issue["evidence_pack"]["path"]["complete_in_function"] is True
+    assert "failure of status.ok()" in issue["evidence_pack"]["path"]["path_constraints"][0]
+
+
+@pytest.mark.parametrize(
+    "cleanup",
+    [
+        "if (!status.ok()) { delete impl; }",
+        "*dbptr = impl;",
+    ],
+)
+def test_cpp_new_failed_status_leak_requires_an_unrepaired_failure_path(cleanup: str) -> None:
+    code = f"""
+Status DB::Open(const Options& options, DB** dbptr) {{
+    DBImpl* impl = new DBImpl(options);
+    Status status = impl->Recover();
+    if (status.ok()) {{
+        *dbptr = impl;
+    }}
+    {cleanup}
+    return status;
+}}
+"""
+
+    issues = RegexCandidateGenerator().generate_issues("DB::Open", code, "db/db_impl.cc")
+
+    assert not any(
+        item.get("rule") == "error_path_allocation_not_released" for item in issues
+    )
 
 
 def test_ignored_decoded_control_field_is_structural_and_name_invariant() -> None:

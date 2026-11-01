@@ -745,6 +745,23 @@ class EntryDiscovery:
                 continue
             index_name = str(info.get("index_name") or info.get("function_name") or name)
             file_path = str(info.get("file_path") or info.get("file") or "")
+            # Source implementations excluded from the active compile database
+            # must be rejected before requesting their body.  Requesting first
+            # can start clangd extraction for tests or another platform and
+            # contaminate an otherwise strict batch run.  Header definitions
+            # remain eligible because their owning TU is established later by
+            # the exact native instance planner.
+            if (
+                Path(file_path).suffix.lower() in {".c", ".cc", ".cpp", ".cxx"}
+                and not self._is_active_file_path(file_path)
+            ):
+                self._inactive_implementation_identities.add(
+                    (
+                        self._normalize_entry_path(file_path),
+                        FunctionEntry.normalize_signature(info.get("signature") or ""),
+                    )
+                )
+                continue
             impl = self._get_function_impl(index_name, file_path=file_path)
             if not impl:
                 continue
@@ -802,10 +819,9 @@ class EntryDiscovery:
             active.add(self._normalize_entry_path(resolved).casefold())
         return {item for item in active if item}
 
-    def _is_active_implementation(self, impl: Dict[str, Any]) -> bool:
+    def _is_active_file_path(self, raw_file: str) -> bool:
         if not self._active_translation_units:
             return True
-        raw_file = str(impl.get("file") or "")
         normalized = self._normalize_entry_path(raw_file).casefold()
         candidates = {normalized}
         if raw_file:
@@ -817,10 +833,14 @@ class EntryDiscovery:
             except OSError:
                 pass
             candidates.add(FunctionEntry._portable_path_text(source).casefold())
-        if any(candidate in self._active_translation_units for candidate in candidates):
+        return any(candidate in self._active_translation_units for candidate in candidates)
+
+    def _is_active_implementation(self, impl: Dict[str, Any]) -> bool:
+        raw_file = str(impl.get("file") or "")
+        if self._is_active_file_path(raw_file):
             return True
         identity = (
-            normalized,
+            self._normalize_entry_path(raw_file).casefold(),
             FunctionEntry.normalize_signature(impl.get("signature") or ""),
         )
         self._inactive_implementation_identities.add(identity)

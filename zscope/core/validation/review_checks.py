@@ -17,18 +17,18 @@ from typing import Any, Dict, Iterable, Optional
 
 from ...retrieval.validation_facts import CompleteFactStore, digest, walk_ast
 
-CHECKER_VERSION = "zscope.review-checkers.v5"
+CHECKER_VERSION = "zscope.review-checkers.v6"
 RULE_CONTRACT_REVISIONS = {
     "unsynchronized_shared_flag_or_counter": {9, 10},
     "clang_cfg_unsynchronized_shared_flag_or_counter": {9, 10},
-    "clang_cfg_parent_release_without_owned_member_cleanup": {1, 7, 8},
+    "clang_cfg_parent_release_without_owned_member_cleanup": {1, 7, 8, 9},
     "clang_cfg_acquire_without_release_on_exit": {1, 10, 11},
     "clang_cfg_unchecked_insert_after_ownership_handoff": {1, 8, 9},
     "clang_cfg_unbounded_count_indexes_fixed_array": {1, 6, 7, 8},
     "clang_cfg_nonliteral_format_string": {1, 6, 7, 8},
     "clang_cfg_narrowed_allocation_original_length_copy": {1, 6, 7, 8},
     "clang_cfg_return_with_lock_held": {1, 8, 9, 10},
-    "clang_cfg_fd_open_return_without_close": {1, 8, 9, 10},
+    "clang_cfg_fd_open_return_without_close": {1, 8, 9, 10, 11},
     "clang_cfg_allocation_result_used_without_null_check": {1, 6, 7},
 }
 _RECEIPT_KEY = secrets.token_bytes(32)

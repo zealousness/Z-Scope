@@ -159,8 +159,9 @@ def test_read_code_size_limit_preserves_valid_json_and_whole_lines(tmp_path) -> 
     assert result["success"] is True
     assert result["status"] == "partial"
     assert len(json.dumps(result, ensure_ascii=False)) <= 60_000
-    assert result["data"]["source"]["code"] == ""
-    assert result["data"]["source"]["next_start_line"] == 1
+    assert result["data"] is None
+    assert result["page"] is None
+    assert "result_size_limit" in result["coverage"]["missing"]
     assert "exceeds" in " ".join(result["warnings"])
 
 

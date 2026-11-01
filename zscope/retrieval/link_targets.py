@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal, Mapping
 
 from .indexing_identity import (
     atomic_json,
@@ -283,15 +283,10 @@ class LinkedTargets:
                         reason = "link_member_instance_missing_or_ambiguous"
                         break
                     context = matches[0]
-                    excluded = context.get("search_excludes", [])
-                    validator_key = digest_json(excluded)
-                    if validator_key not in validators:
-                        validators[validator_key] = InputValidator(Path(p) for p in excluded)
+                    validator = self._input_validator(context, validators)
                     build = context["build_context_id"]
                     if build not in statuses:
-                        statuses[build] = context_input_status(
-                            context, validator=validators[validator_key]
-                        )
+                        statuses[build] = context_input_status(context, validator=validator)
                     reason = statuses[build]
                     if reason != "current":
                         break
@@ -371,22 +366,67 @@ class LinkedTargets:
         }
         return result
 
-    def current(self, selected: str) -> bool:
+    def _input_validator(
+        self,
+        context: Mapping[str, Any],
+        validators: dict[str, InputValidator],
+    ) -> InputValidator:
+        """Return one validator per live input namespace for this check.
+
+        A scan job has already captured immutable namespace views.  Reusing
+        those views avoids recursively walking every include directory for
+        each link member while retaining the job/run/input fence.  Standalone
+        callers still get a fresh content validator shared only within the
+        current validation pass.
+        """
+
+        runtime = getattr(self.index, "_job_runtime_outputs", None)
+        runtime_factory = getattr(runtime, "validator", None)
+        build = str(context.get("build_context_id") or "")
+        if getattr(runtime, "_active", False) and callable(runtime_factory) and build:
+            key = f"runtime:{build}"
+            if key not in validators:
+                validators[key] = runtime_factory(context)
+            return validators[key]
+
+        excluded = context.get("search_excludes", [])
+        key = f"filesystem:{digest_json(excluded)}"
+        if key not in validators:
+            validators[key] = InputValidator(Path(path) for path in excluded)
+        return validators[key]
+
+    def current_many(self, selected: Iterable[str]) -> bool:
+        """Revalidate several target identities in one shared filesystem pass."""
+
+        required = {str(value) for value in selected if str(value)}
+        if not required:
+            return True
+        validators: dict[str, InputValidator] = {}
+        statuses: dict[str, str] = {}
+        matched: set[str] = set()
+        from .build_context import context_input_status
+
         for target in self.targets:
-            if target["receipt"]["target_id"] != selected:
+            target_id = str(target["receipt"].get("target_id") or "")
+            if target_id not in required:
                 continue
             try:
                 current = json.loads(Path(target["path"]).read_text(encoding="utf-8"))
-                from .build_context import context_input_status
-
-                return (
-                    current == target["receipt"]
-                    and receipt_status(current) == "current"
-                    and all(
-                        context_input_status(self.contexts[b]) == "current"
-                        for b in target["members"]
-                    )
-                )
-            except (OSError, ValueError):
+                if current != target["receipt"] or receipt_status(current) != "current":
+                    return False
+                for build in target["members"]:
+                    context = self.contexts[build]
+                    if build not in statuses:
+                        statuses[build] = context_input_status(
+                            context,
+                            validator=self._input_validator(context, validators),
+                        )
+                    if statuses[build] != "current":
+                        return False
+                matched.add(target_id)
+            except (OSError, ValueError, KeyError, TypeError):
                 return False
-        return False
+        return matched == required
+
+    def current(self, selected: str) -> bool:
+        return self.current_many((selected,))

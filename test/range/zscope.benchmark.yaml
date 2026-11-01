@@ -1,6 +1,6 @@
 # Canonical C/C++ Range benchmark configuration. The runner copies the fixture
-# into an isolated directory and rewrites only project.root/state locations.
-config_version: 2
+# into an isolated directory and rewrites only the single target compile database.
+config_version: 3
 
 llms:
   default:
@@ -14,47 +14,15 @@ llms:
     timeout: 120
 
 project:
-  root: test/range
-  source_root: .
   language: c_cpp
-  compile_commands_path: build/compile_commands.json
-  include_paths: [include, internal, src]
-  exclude_paths: [build]
-  entry_discovery:
-    enabled: true
-    search_root: .
-    interface_files: ["**/*.h"]
-    max_entries: 200
-    max_functions: 1000
+  platform: linux_user
+  semantics_file: zscope.semantics.yaml
+  targets:
+    - id: range
+      compile_commands: build/compile_commands.json
 
 scan:
-  # Empty activates every C/C++-applicable Skill; non-empty text narrows focus.
-  task: ""
+  preset: fast
 
-indexing:
-  backend: unified
-  svf:
-    scope: auto
-    entry_depth: 4
-    max_selected_tus: 200
-    fallback: full
-    groups_file: ""
-    always_include: []
-    exclusive_pools: []
-    shared_pools: []
-    heap_limit_mb: 8192
-    timeout_seconds: 600
-  tools:
-    clangd: clangd
-    gclang: gclang
-    get_bc: get-bc
-    llvm_link: llvm-link
-
-concurrency:
-  entry_workers: 8
-  validator_workers: 8
-  investigator_workers: 8
-  evidence_completion_workers: 4
-  index_workers: 4
-  svf_workers: 4
-  llm_max_inflight: 16
+execution:
+  max_workers: 8

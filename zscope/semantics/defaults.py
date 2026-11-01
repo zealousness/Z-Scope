@@ -28,6 +28,7 @@ _ROLE_TO_CATEGORY = {
     "send_sinks": "send_sink",
     "recv_sources": "recv_source",
     "format_sinks": "format_sink",
+    "command_sinks": "command_sink",
     "callback_registrars": "callback_register",
 }
 
@@ -46,6 +47,10 @@ def default_local_pattern_semantics() -> LocalPatternSemantics:
 
     data = load_default_semantics_data()
     semantics = LocalPatternSemantics()
+    from .c_linux_catalog import active_contracts
+
+    catalog = active_contracts()
+    typed_names = {raw["symbol"]["name"] for raw in catalog}
     aliases = data.get("type_aliases")
     if isinstance(aliases, dict):
         semantics.type_aliases.update(
@@ -60,6 +65,11 @@ def default_local_pattern_semantics() -> LocalPatternSemantics:
         for role_name, category in _ROLE_TO_CATEGORY.items():
             for api in _string_list(roles.get(role_name)):
                 semantics.add_api(category, api, DEFAULT_SEMANTICS_SOURCE)
+                # Legacy name categories select lexical checks; they do not
+                # specify argument identities or effects. The typed catalog is
+                # authoritative for known APIs (e.g. I/O's fd is not a copy dst).
+                if api in typed_names:
+                    continue
                 contract = ApiContract.from_row(
                     {"symbol_name": api, "kind": category, "source": DEFAULT_SEMANTICS_SOURCE}
                 )
@@ -75,9 +85,7 @@ def default_local_pattern_semantics() -> LocalPatternSemantics:
                         source=DEFAULT_SEMANTICS_SOURCE,
                     )
                 )
-    from .standard_api import standard_contracts
-
-    for raw in standard_contracts():
+    for raw in catalog:
         contract = ApiContract.from_row({"contract": raw})
         if contract is None:
             raise ValueError("Invalid built-in API contract: " + raw["symbol"]["name"])
@@ -159,6 +167,8 @@ def _carrier(kind: str) -> str:
         return "return_value"
     if kind == "format_sink":
         return "format_arguments"
+    if kind == "command_sink":
+        return "command_argument"
     if kind == "callback_register":
         return "callback_arguments"
     return "unknown"

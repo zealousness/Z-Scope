@@ -12,6 +12,7 @@ import random
 import re
 import json
 import logging
+import math
 import os
 import ssl
 import statistics
@@ -38,9 +39,27 @@ from typing import (
 
 import requests
 
-from ..common.cancellation import current_cancellation_token
-from ..common.utils import extract_json_blocks
-from .conversation_recorder import ConversationSession, get_conversation_recorder
+from ..common.cancellation import CancellationError, current_cancellation_token
+from .conversation_recorder import (
+    ConversationSession,
+    complete_session_lifecycle,
+    get_conversation_recorder,
+)
+from .cancellable_http import CancellableHTTPAdapter
+from .chat_protocol import (
+    ChatChunkDecoder,
+    ChatProtocolError,
+    ProviderContextError,
+    validate_assistant_message,
+)
+from .context_window import (
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_MAX_TOKENS,
+    ContextWindowExceeded,
+    compact_tool_result,
+    fit_context,
+    validate_context_windows,
+)
 from .llm_usage import (
     LLMUsageAttribution,
     ScanTokenUsageLedger,
@@ -99,13 +118,6 @@ class LLMClient:
     OpenAI-compatible LLM client with model fallback support.
     """
 
-    MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS = 50
-    MODEL_CONTEXT_INLINE_OLD_TOOL_CHARS = 900
-    MODEL_CONTEXT_TOOL_RESULT_SUMMARY_CHARS = 1800
-    MODEL_CONTEXT_SUMMARY_STRING_CHARS = 500
-    MODEL_CONTEXT_SUMMARY_HEAVY_STRING_CHARS = 900
-    MODEL_CONTEXT_SUMMARY_MAX_ITEMS = 8
-    MODEL_CONTEXT_SUMMARY_MAX_KEYS = 18
     LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS = 2.0
     SESSION_POOL_MAXSIZE = 1
     DEFAULT_GLOBAL_MAX_INFLIGHT = 8
@@ -113,46 +125,6 @@ class LLMClient:
     AIMD_DECREASE_FACTOR = 0.5
     TRANSIENT_AUTH_RETRY_LIMIT = 1
     TRANSIENT_AUTH_RETRY_DELAY_SECONDS = 1.0
-    _SUMMARY_PRIORITY_KEYS = (
-        "success",
-        "error",
-        "function_name",
-        "func_name",
-        "name",
-        "file",
-        "file_path",
-        "filename",
-        "location",
-        "line",
-        "line_range",
-        "start_line",
-        "end_line",
-        "signature",
-        "summary",
-        "truncated",
-        "callee",
-        "callees",
-        "caller",
-        "callers",
-        "category",
-        "severity",
-        "confidence",
-        "verdict",
-    )
-    _SUMMARY_HEAVY_KEYS = {
-        "code",
-        "text",
-        "content",
-        "body",
-        "source",
-        "raw",
-        "implementation",
-        "conversation",
-        "messages",
-        "tool_calls",
-        "tool_results",
-        "data",
-    }
 
     def __init__(
         self,
@@ -162,13 +134,15 @@ class LLMClient:
         timeout: Optional[float] = 120.0,
         max_retries: int = 2,
         retry_until_available: bool = False,
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         base_url_rate_limit_per_minute: Optional[int] = None,
         base_url_max_concurrent_requests: Optional[int] = None,
         global_max_concurrent_requests: int = DEFAULT_GLOBAL_MAX_INFLIGHT,
         supports_structured_output: bool = False,
         token_usage_ledger: Optional[ScanTokenUsageLedger] = None,
         llm_ref: str = "",
+        context_window: int = DEFAULT_CONTEXT_WINDOW,
+        model_context_windows: Optional[Mapping[str, int]] = None,
     ):
         """
         Initialize LLM client.
@@ -183,6 +157,10 @@ class LLMClient:
                 failures after ``max_retries`` until the request succeeds or
                 the scan is cancelled.
         """
+        self.model_context_windows = validate_context_windows(
+            context_window, {} if model_context_windows is None else model_context_windows
+        )
+        self.context_window = context_window
         self._closed = False
         self._owned_in_flight = 0
         self._request_threads: Dict[int, int] = {}
@@ -357,9 +335,17 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]],
         response_format: Optional[Dict[str, Any]],
     ) -> int:
-        """Estimate the complete request prompt before the manager adds its safety margin."""
+        """Heuristic for projection/estimated usage, never proof of overflow.
 
-        estimate = cls.estimate_tokens(messages)
+        Count the full wire payload (including schemas), but do not equate UTF-8
+        bytes with tokens. Unknown compatible endpoints have unknown tokenizers;
+        only their actual context rejection authorizes an enforced retry limit.
+        """
+
+        # Include complete wire messages: tool-call IDs/names and structured
+        # content also consume context, not just text and argument strings.
+        rendered_messages = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+        estimate = cls.estimate_tokens([{"content": rendered_messages}])
         protocol_payload: Dict[str, Any] = {}
         if tools:
             protocol_payload["tools"] = tools
@@ -367,7 +353,7 @@ class LLMClient:
             protocol_payload["response_format"] = response_format
         if protocol_payload:
             rendered = json.dumps(protocol_payload, ensure_ascii=False, separators=(",", ":"))
-            estimate += int((len(rendered) + 3) / 3.8)
+            estimate += cls.estimate_tokens([{"content": rendered}])
         # Provider chat templates add role and message framing that is absent
         # from the content-only estimator.
         estimate += 8 * max(1, len(messages))
@@ -441,7 +427,13 @@ class LLMClient:
         return event.to_dict()
 
     @classmethod
-    def _normalized_provider_usage(cls, value: Any) -> Dict[str, Any]:
+    def _normalized_provider_usage(
+        cls,
+        value: Any,
+        *,
+        estimated_prompt_tokens: int = 0,
+        estimated_completion_tokens: int = 0,
+    ) -> Dict[str, Any]:
         """Normalize OpenAI-compatible usage variants without retaining content."""
 
         if not isinstance(value, Mapping):
@@ -450,6 +442,8 @@ class LLMClient:
         def first_number(*values: Any) -> Optional[int]:
             for candidate in values:
                 if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+                    continue
+                if isinstance(candidate, float) and not math.isfinite(candidate):
                     continue
                 return max(0, int(candidate))
             return None
@@ -473,8 +467,9 @@ class LLMClient:
         total = first_number(value.get("total_tokens"))
         if prompt is None and completion is None and total is None:
             return {}
-        prompt = prompt or 0
-        completion = completion or 0
+        estimated = prompt is None or completion is None
+        prompt = estimated_prompt_tokens if prompt is None else prompt
+        completion = estimated_completion_tokens if completion is None else completion
         total = max(prompt + completion, total or 0)
         return {
             "prompt_tokens": prompt,
@@ -490,7 +485,7 @@ class LLMClient:
                 completion_details.get("reasoning_tokens"),
             )
             or 0,
-            "estimated": False,
+            "estimated": estimated,
         }
 
     @staticmethod
@@ -562,7 +557,7 @@ class LLMClient:
     def _new_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update(self._session_headers)
-        adapter = requests.adapters.HTTPAdapter(
+        adapter = CancellableHTTPAdapter(
             pool_connections=self._session_pool_connections,
             pool_maxsize=self._session_pool_maxsize,
             max_retries=0,
@@ -941,6 +936,8 @@ class LLMClient:
     @classmethod
     def _endpoint_overload_reason(cls, error: BaseException) -> Optional[str]:
         """Classify transient endpoint failures that require AIMD load shedding."""
+        if isinstance(error, ChatProtocolError):
+            return None
         pending: List[Any] = [error]
         seen: set[int] = set()
         while pending:
@@ -1138,8 +1135,8 @@ class LLMClient:
                 json.dumps(diag, ensure_ascii=False, default=str),
             )
             logger.warning(
-                "[LLM-4xx-DIAG] provider_body: %s",
-                str(response_body or "")[:1500],
+                "[LLM-4xx-DIAG] provider_error: %s",
+                self._provider_error_summary(status, response_body),
             )
         except Exception:
             logger.warning("[LLM-4xx-DIAG] failed to summarize rejected payload", exc_info=True)
@@ -1266,20 +1263,7 @@ class LLMClient:
         def strict_value(schema: Any, *, optional: bool = False) -> Any:
             if not isinstance(schema, dict):
                 return schema
-            result = {key: strict_value(value) for key, value in schema.items()}
-            schema_type = result.get("type")
-            if optional:
-                if isinstance(schema_type, str):
-                    result["type"] = [schema_type, "null"]
-                elif isinstance(schema_type, list) and "null" not in schema_type:
-                    result["type"] = [*schema_type, "null"]
-                elif schema_type is None:
-                    result["anyOf"] = [
-                        {key: value for key, value in result.items() if key != "anyOf"},
-                        {"type": "null"},
-                    ]
-                if isinstance(result.get("enum"), list) and None not in result["enum"]:
-                    result["enum"] = [*result["enum"], None]
+            result = dict(schema)
             properties = result.get("properties")
             if isinstance(properties, dict):
                 originally_required = set(result.get("required") or [])
@@ -1291,6 +1275,27 @@ class LLMClient:
                 result["additionalProperties"] = False
             if isinstance(result.get("items"), dict):
                 result["items"] = strict_value(result["items"])
+            for keyword in ("oneOf", "anyOf"):
+                variants = result.get(keyword)
+                if isinstance(variants, list):
+                    result[keyword] = [strict_value(variant) for variant in variants]
+            definitions = result.get("$defs")
+            if isinstance(definitions, dict):
+                result["$defs"] = {
+                    name: strict_value(definition) for name, definition in definitions.items()
+                }
+            if optional:
+                schema_type = result.get("type")
+                if schema_type is None or any(key in result for key in ("oneOf", "anyOf", "const")):
+                    # Keep every original restriction on the non-null branch.
+                    # Replacing an existing union silently accepts arbitrary values.
+                    return {"anyOf": [result, {"type": "null"}]}
+                if isinstance(schema_type, str):
+                    result["type"] = [schema_type, "null"]
+                elif isinstance(schema_type, list) and "null" not in schema_type:
+                    result["type"] = [*schema_type, "null"]
+                if isinstance(result.get("enum"), list) and None not in result["enum"]:
+                    result["enum"] = [*result["enum"], None]
             return result
 
         strict_tools: List[Dict[str, Any]] = []
@@ -1320,12 +1325,37 @@ class LLMClient:
             and any(marker in lowered for marker in ("schema", "function", "tool"))
         )
 
+    @classmethod
+    def _provider_error_summary(cls, status: int, body: Any) -> str:
+        """Classify rejected responses without persisting provider-echoed secrets."""
+
+        lowered = str(body or "").lower()
+        if status in {401, 403}:
+            category = "authentication or authorization rejected"
+        elif status == 429:
+            category = "rate limited"
+        elif cls._is_tool_schema_rejection(lowered):
+            category = "tool schema rejected"
+        elif any(
+            value in lowered for value in ("context_length", "context length", "context window")
+        ):
+            category = "context length exceeded"
+        elif "max_tokens" in lowered:
+            category = "max_tokens rejected"
+        elif status >= 500:
+            category = "provider server error"
+        else:
+            category = "request rejected"
+        return f"HTTP {status}: {category}"
+
+    @complete_session_lifecycle
     def chat_completion(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        thinking: Optional[Dict[str, Any]] = None,
         temperature: float = 0.1,
         max_tokens: Optional[int] = None,
         trace_agent: Optional[str] = None,
@@ -1341,6 +1371,8 @@ class LLMClient:
         if token is not None:
             token.raise_if_cancelled()
         last_error = None
+        last_context_error: Optional[ContextWindowExceeded] = None
+        original_messages = messages
         recorder = get_conversation_recorder()
         created_trace_session = False
         if recorder and trace_session is None:
@@ -1375,6 +1407,14 @@ class LLMClient:
                 payload["tool_choice"] = tool_choice if tool_choice is not None else "auto"
             if response_format:
                 payload["response_format"] = response_format
+            if thinking:
+                # Some OpenAI-compatible reasoning providers expose a
+                # request-local thinking switch.  It is intentionally not a
+                # public profile default: callers use it only for bounded
+                # mechanical formatting/repair calls where another long
+                # hidden chain of thought can consume the entire output
+                # allowance before the required terminal JSON is emitted.
+                payload["thinking"] = dict(thinking)
 
             # Force streaming to bypass middle-proxy timeouts (e.g. 504 on 120s limit)
             payload["stream"] = True
@@ -1386,6 +1426,7 @@ class LLMClient:
 
             total_attempts = (self.max_retries + 1) * max(1, len(self._base_url_states))
             attempt = 0
+            context_prompt_limit: Optional[int] = None
             retry_transient = False
             retry_transient_auth = False
             transient_auth_retries_remaining = self.TRANSIENT_AUTH_RETRY_LIMIT
@@ -1396,6 +1437,44 @@ class LLMClient:
             ):
                 retry_transient = False
                 retry_transient_auth = False
+                try:
+                    messages = self._prepare_messages_for_model(
+                        original_messages,
+                        model=model,
+                        tools=request_tool_schemas,
+                        response_format=response_format,
+                        max_tokens=max_tokens,
+                        preserve_reasoning_metadata=True,
+                        input_limit=context_prompt_limit,
+                    )
+                except ContextWindowExceeded as exc:
+                    last_context_error = exc
+                    last_error = str(exc)
+                    self._record_control_event(
+                        trace_session,
+                        trace_iteration or 0,
+                        "context_window_exceeded",
+                        {"model": model, "error": str(exc)},
+                    )
+                    break  # A larger fallback model may fit the same required evidence.
+                payload["messages"] = messages
+                if messages != original_messages:
+                    self._record_control_event(
+                        trace_session,
+                        trace_iteration or 0,
+                        "context_compaction",
+                        {
+                            "model": model,
+                            "context_window": self.model_context_windows.get(
+                                model, self.context_window
+                            ),
+                            "estimated_prompt_tokens": self._estimate_request_prompt_tokens(
+                                messages,
+                                tools=request_tool_schemas,
+                                response_format=response_format,
+                            ),
+                        },
+                    )
                 attempt += 1
                 token = current_cancellation_token()
                 if token is not None:
@@ -1419,7 +1498,7 @@ class LLMClient:
                     )
                     usage_reservation = self._reserve_scan_usage(
                         messages,
-                        tools=tools,
+                        tools=request_tool_schemas,
                         response_format=response_format,
                         max_completion_tokens=requested_max_tokens,
                         model=model,
@@ -1439,7 +1518,9 @@ class LLMClient:
                                 attempt_payload,
                             )
                         )
-                        prompt_tokens = LLMClient.estimate_tokens(messages)
+                        prompt_tokens = self._estimate_request_prompt_tokens(
+                            messages, tools=request_tool_schemas, response_format=response_format
+                        )
                         completion_tokens = LLMClient.estimate_tokens([assembled_message])
                         usage: Dict[str, Any] = {
                             "prompt_tokens": prompt_tokens,
@@ -1447,9 +1528,15 @@ class LLMClient:
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
-                        normalized_provider_usage = self._normalized_provider_usage(provider_usage)
+                        normalized_provider_usage = self._normalized_provider_usage(
+                            provider_usage,
+                            estimated_prompt_tokens=prompt_tokens,
+                            estimated_completion_tokens=completion_tokens,
+                        )
                         if normalized_provider_usage:
                             usage.update(normalized_provider_usage)
+                        prompt_tokens = usage["prompt_tokens"]
+                        completion_tokens = usage["completion_tokens"]
                         duration_seconds = time.monotonic() - request_started
                         self._record_successful_usage(
                             usage,
@@ -1528,7 +1615,9 @@ class LLMClient:
                         )
 
                         # Estimate single API call cost and log prominently
-                        prompt_tokens = LLMClient.estimate_tokens(messages)
+                        prompt_tokens = self._estimate_request_prompt_tokens(
+                            messages, tools=request_tool_schemas, response_format=response_format
+                        )
                         completion_tokens = LLMClient.estimate_tokens([assembled_message])
                         usage = {
                             "prompt_tokens": prompt_tokens,
@@ -1536,9 +1625,15 @@ class LLMClient:
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
-                        normalized_provider_usage = self._normalized_provider_usage(provider_usage)
+                        normalized_provider_usage = self._normalized_provider_usage(
+                            provider_usage,
+                            estimated_prompt_tokens=prompt_tokens,
+                            estimated_completion_tokens=completion_tokens,
+                        )
                         if normalized_provider_usage:
                             usage.update(normalized_provider_usage)
+                        prompt_tokens = usage["prompt_tokens"]
+                        completion_tokens = usage["completion_tokens"]
                         duration_seconds = time.monotonic() - request_started
                         self._record_successful_usage(
                             usage,
@@ -1593,7 +1688,12 @@ class LLMClient:
                             "usage": usage,
                         }
 
-                    error_msg = f"HTTP {response.status_code}: {response.text}"
+                    error_msg = self._provider_error_summary(response.status_code, response.text)
+                    if (
+                        response.status_code == 400
+                        and error_msg == "HTTP 400: context length exceeded"
+                    ):
+                        raise ProviderContextError(error_msg)
                     transient_http_error = (
                         response.status_code >= 500 or response.status_code == 429
                     )
@@ -1719,7 +1819,37 @@ class LLMClient:
                         last_error = error_msg
                         break  # Try next model
 
+                except CancellationError:
+                    raise
                 except Exception as e:
+                    if token is not None:
+                        token.raise_if_cancelled()
+                    if isinstance(e, ProviderContextError):
+                        prompt_size = self._estimate_request_prompt_tokens(
+                            messages, tools=request_tool_schemas, response_format=response_format
+                        )
+                        if context_prompt_limit is None:
+                            context_prompt_limit = max(1, prompt_size // 2)
+                            total_attempts += 1
+                            self._record_control_event(
+                                trace_session,
+                                trace_iteration or 0,
+                                "provider_context_retry",
+                                {"model": model, "input_limit": context_prompt_limit},
+                            )
+                            last_error = str(e)
+                            continue
+                        window = self.model_context_windows.get(model, self.context_window)
+                        last_context_error = ContextWindowExceeded(
+                            window=window,
+                            prompt_tokens=prompt_size,
+                            output_tokens=max_tokens or self.max_tokens,
+                            margin=max(256, (window + 19) // 20),
+                            input_limit=context_prompt_limit,
+                            provider_rejected=True,
+                        )
+                        last_error = str(last_context_error)
+                        break
                     exception_text = str(e)
                     if (
                         exception_text.startswith("HTTP 400:")
@@ -1854,6 +1984,8 @@ class LLMClient:
             )
             logger.info(f"Falling back from model {model}...")
 
+        if last_context_error is not None and last_error == str(last_context_error):
+            raise last_context_error
         raise Exception(f"All models failed. Last error: {last_error}")
 
     def _curl_chat_completion(
@@ -1893,34 +2025,53 @@ class LLMClient:
         command_config_path = self._curl_command_path(config_path, curl_bin)
         command = [curl_bin, "--config", command_config_path]
         try:
-            proc = subprocess.run(
+            with subprocess.Popen(
                 command,
-                input=request_bytes,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=False,
-            )
+            ) as proc:
+                pending_input: Optional[bytes] = request_bytes
+                try:
+                    while True:
+                        if token is not None:
+                            token.raise_if_cancelled()
+                        try:
+                            stdout_bytes, _stderr_bytes = proc.communicate(
+                                input=pending_input, timeout=0.2
+                            )
+                            break
+                        except subprocess.TimeoutExpired:
+                            # communicate retains partially written stdin and
+                            # collected output; only supply input on its first call.
+                            pending_input = None
+                    if token is not None:
+                        token.raise_if_cancelled()
+                except BaseException:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.communicate()
+                    raise
+                returncode = proc.returncode
         finally:
             try:
                 os.unlink(config_path)
             except OSError:
                 logger.debug("Failed to remove temporary curl config", exc_info=True)
-        stdout = proc.stdout.decode("utf-8", errors="replace")
-        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+        stdout = stdout_bytes.decode("utf-8", errors="replace")
         if status_marker not in stdout:
-            detail = stderr or stdout[-500:] or f"curl exited with {proc.returncode}"
-            raise RuntimeError(f"curl transport did not return an HTTP status: {detail}")
+            raise RuntimeError(f"curl transport did not return an HTTP status (exit {returncode})")
         body, raw_status = stdout.rsplit(status_marker, 1)
         try:
             status = int(raw_status.strip()[-3:])
         except ValueError as exc:
-            raise RuntimeError(
-                f"curl transport returned invalid HTTP status: {raw_status!r}"
-            ) from exc
-        if proc.returncode != 0:
-            detail = stderr or body[-500:] or f"curl exited with {proc.returncode}"
-            raise RuntimeError(f"curl transport failed: {detail}")
+            raise RuntimeError("curl transport returned invalid HTTP status") from exc
+        if returncode != 0:
+            raise RuntimeError(f"curl transport failed (exit {returncode})")
         if status != 200:
+            summary = self._provider_error_summary(status, body)
+            if status == 400 and summary == "HTTP 400: context length exceeded":
+                raise ProviderContextError(summary)
             if 400 <= status < 500:
                 # curl_payload has stream_options stripped and stream=False, so
                 # the summary reflects the curl-transport wire shape.
@@ -1931,23 +2082,24 @@ class LLMClient:
                     response_body=body,
                     payload=curl_payload,
                 )
-            raise RuntimeError(f"HTTP {status}: {body[:2000]}")
+            raise RuntimeError(self._provider_error_summary(status, body))
         try:
             data = json.loads(body)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"curl transport returned non-JSON response: {body[:1000]}") from exc
+            raise RuntimeError("curl transport returned non-JSON response") from exc
         choices = data.get("choices") or []
         if not choices:
-            raise RuntimeError(f"curl transport response missing choices: {body[:1000]}")
+            raise RuntimeError("curl transport response missing choices")
         choice = choices[0] if isinstance(choices[0], dict) else {}
         message = choice.get("message") or {}
         if not isinstance(message, dict):
             message = {"role": "assistant", "content": str(message)}
         message.setdefault("role", "assistant")
         message.setdefault("content", "")
-        finish_reason = str(choice.get("finish_reason") or "stop")
+        finish_reason = choice.get("finish_reason")
+        validate_assistant_message(message, finish_reason)
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-        return message, finish_reason, dict(usage)
+        return message, str(finish_reason), dict(usage)
 
     def _write_curl_config(
         self,
@@ -2041,12 +2193,16 @@ class LLMClient:
             max_stream_seconds=stream_deadline,
             max_idle_valid_chunk_seconds=self.timeout,
         ):
+            if "error" in chunk:
+                raise requests.exceptions.ChunkedEncodingError("Provider stream returned an error")
             chunk_usage = chunk.get("usage")
             if isinstance(chunk_usage, dict):
                 provider_usage.update(chunk_usage)
             choices = chunk.get("choices", [])
             if not choices:
                 continue
+            if saw_finish_reason:
+                raise ChatProtocolError("Chat content arrived after the completed turn")
 
             choice = choices[0]
             message_delta = choice.get("delta")
@@ -2074,24 +2230,8 @@ class LLMClient:
                 saw_finish_reason = True
 
         if not saw_finish_reason:
-            if not content_pieces and not tool_calls_map and not reasoning_pieces:
-                # A stream that delivers no content, no tool call, and no
-                # finish_reason chunk ended before the provider framed a
-                # complete response (proxy/provider truncation).  Surface it
-                # as a chunked-encoding failure so the caller's retry and
-                # endpoint-cooldown path treats it like any broken stream
-                # instead of silently returning an empty "stop" response.
-                raise requests.exceptions.ChunkedEncodingError(
-                    "Chat completion stream ended without any content, reasoning, "
-                    "tool calls, or a finish_reason chunk (stream truncated)."
-                )
-            logger.warning(
-                "Chat completion stream ended without a finish_reason chunk; "
-                "treating %d content chars, %d reasoning chars, and %d tool "
-                "calls as a complete response.",
-                sum(len(piece) for piece in content_pieces),
-                sum(len(piece) for piece in reasoning_pieces),
-                len(tool_calls_map),
+            raise requests.exceptions.ChunkedEncodingError(
+                "Chat completion stream ended without a finish_reason (stream truncated)"
             )
 
         assembled_message: Dict[str, Any] = {"role": "assistant"}
@@ -2099,7 +2239,8 @@ class LLMClient:
             assembled_message["content"] = "".join(content_pieces)
         if tool_calls_map:
             assembled_message["tool_calls"] = [
-                tool_calls_map[key] for key in sorted(tool_calls_map.keys(), key=str)
+                {field: value for field, value in tool_calls_map[key].items() if field != "index"}
+                for key in sorted(tool_calls_map.keys())
             ]
             assembled_message.setdefault("content", "")
         else:
@@ -2107,6 +2248,7 @@ class LLMClient:
         if reasoning_pieces:
             assembled_message["reasoning_content"] = "".join(reasoning_pieces)
 
+        validate_assistant_message(assembled_message, finish_reason)
         return assembled_message, finish_reason, provider_usage
 
     @staticmethod
@@ -2116,6 +2258,13 @@ class LLMClient:
         max_stream_seconds: Optional[float] = None,
         max_idle_valid_chunk_seconds: Optional[float] = None,
     ) -> Iterable[Dict[str, Any]]:
+        if "application/json" in getattr(response, "headers", {}).get("Content-Type", ""):
+            data = response.json()
+            if not isinstance(data, dict):
+                raise requests.exceptions.ChunkedEncodingError("Invalid chat JSON response")
+            yield data
+            return
+        decoder = ChatChunkDecoder()
         stream_started_at = time.monotonic()
         last_valid_chunk_at = stream_started_at
         for line in response.iter_lines():
@@ -2125,43 +2274,22 @@ class LLMClient:
             now = time.monotonic()
             if max_stream_seconds is not None and now - stream_started_at > max_stream_seconds:
                 raise TimeoutError(f"Chat completion stream exceeded {max_stream_seconds:.0f}s")
-
-            if not line:
-                if (
-                    max_idle_valid_chunk_seconds is not None
-                    and now - last_valid_chunk_at > max_idle_valid_chunk_seconds
-                ):
-                    raise TimeoutError(
-                        "Chat completion stream did not yield a valid JSON chunk "
-                        f"for {max_idle_valid_chunk_seconds:.0f}s"
-                    )
-                continue
+            if (
+                max_idle_valid_chunk_seconds is not None
+                and now - last_valid_chunk_at > max_idle_valid_chunk_seconds
+            ):
+                raise TimeoutError(
+                    "Chat completion stream did not yield a valid JSON chunk "
+                    f"for {max_idle_valid_chunk_seconds:.0f}s"
+                )
             decoded_line = line.decode("utf-8") if isinstance(line, bytes) else str(line)
-            decoded_line = decoded_line.strip()
-            if not decoded_line:
-                if (
-                    max_idle_valid_chunk_seconds is not None
-                    and now - last_valid_chunk_at > max_idle_valid_chunk_seconds
-                ):
-                    raise TimeoutError(
-                        "Chat completion stream did not yield a valid JSON chunk "
-                        f"for {max_idle_valid_chunk_seconds:.0f}s"
-                    )
-                continue
-            if decoded_line.startswith("data:"):
-                decoded_line = decoded_line[len("data:") :].strip()
-            if decoded_line == "[DONE]":
-                break
-            if not decoded_line.startswith("{"):
-                continue
-            try:
-                chunk = json.loads(decoded_line)
-            except json.JSONDecodeError:
-                logger.debug("Ignoring malformed chat completion line: %s", decoded_line[:200])
-                continue
-            if isinstance(chunk, dict):
+            chunk = decoder.feed(decoded_line)
+            if chunk is not None:
                 last_valid_chunk_at = time.monotonic()
                 yield chunk
+            if decoder.done:
+                return
+        decoder.finish()
 
     @staticmethod
     def _merge_tool_call(
@@ -2170,17 +2298,20 @@ class LLMClient:
         fallback_index: int,
     ) -> None:
         idx = tool_call.get("index", fallback_index)
+        if isinstance(idx, bool) or not isinstance(idx, int) or idx < 0:
+            raise requests.exceptions.ChunkedEncodingError("Invalid streamed tool call index")
         existing = tool_calls_map.setdefault(idx, {})
 
-        for key in ("id", "type", "index"):
-            if tool_call.get(key) is not None:
-                existing[key] = tool_call[key]
+        if tool_call.get("type") is not None:
+            existing["type"] = tool_call["type"]
+        if tool_call.get("id") is not None:
+            existing["id"] = str(existing.get("id", "")) + str(tool_call["id"])
 
         function_delta = tool_call.get("function")
         if isinstance(function_delta, dict):
             function = existing.setdefault("function", {})
             if function_delta.get("name"):
-                function["name"] = function_delta["name"]
+                function["name"] = str(function.get("name", "")) + str(function_delta["name"])
             if function_delta.get("arguments") is not None:
                 function["arguments"] = str(function.get("arguments", "")) + str(
                     function_delta.get("arguments", "")
@@ -2239,89 +2370,65 @@ class LLMClient:
         self,
         conversation: List[Dict[str, Any]],
         *,
-        preserve_reasoning_metadata: bool = False,
+        model: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = None,
+        preserve_reasoning_metadata: bool = True,
+        preserve_latest_reasoning_metadata: bool = False,
+        input_limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        projected = self._project_messages_for_model(
+            conversation,
+            preserve_reasoning_metadata=preserve_reasoning_metadata,
+            preserve_latest_reasoning_metadata=preserve_latest_reasoning_metadata,
+        )
+        selected_model = model or (self.models[0] if self.models else "")
+        window = self.model_context_windows.get(selected_model, self.context_window)
+        fitted = fit_context(
+            projected,
+            window=window,
+            output_tokens=max_tokens or self.max_tokens,
+            estimate=lambda rows: self._estimate_request_prompt_tokens(
+                rows, tools=tools, response_format=response_format
+            ),
+            input_limit=input_limit,
+        )
+        if fitted != projected:
+            logger.info("Projected tool text to fit model context window=%d", window)
+        return fitted
+
+    def _project_messages_for_model(
+        self,
+        conversation: List[Dict[str, Any]],
+        *,
+        preserve_reasoning_metadata: bool = True,
         preserve_latest_reasoning_metadata: bool = False,
     ) -> List[Dict[str, Any]]:
-        """
-        Build the model-facing context without mutating the full transcript.
+        """Apply provider reasoning policy without changing the authoritative transcript.
 
-        Tool results are the main source of context growth in long agent loops.
-        Keep the most recent tool round verbatim so the model can finish the
-        active reasoning step, and compact older large tool results into
-        structured summaries that preserve lookup provenance and key facts.
+        Window enforcement runs at the HTTP boundary, against the selected model
+        and actual wire schemas (including strict conversion and model fallback).
         """
-        keep_tool_ids = self._recent_tool_result_ids_to_keep(conversation)
         latest_assistant_index = next(
             (
-                index
-                for index in range(len(conversation) - 1, -1, -1)
-                if conversation[index].get("role") == "assistant"
+                i
+                for i in range(len(conversation) - 1, -1, -1)
+                if conversation[i].get("role") == "assistant"
             ),
             None,
         )
-        projected: List[Dict[str, Any]] = []
-        compacted_count = 0
-        original_chars = 0
-        compacted_chars = 0
-
+        projected = []
         for index, message in enumerate(conversation):
-            role = message.get("role")
-            projected_message = self._copy_message_for_model(message)
+            copied = self._copy_message_for_model(message)
             if (
-                role == "assistant"
+                message.get("role") == "assistant"
                 and not preserve_reasoning_metadata
                 and not (preserve_latest_reasoning_metadata and index == latest_assistant_index)
             ):
-                # reasoning_content is provider-specific scratchpad text. It is
-                # useful for continuing a truncated model turn, but replaying it
-                # during normal tool rounds is expensive and disrupts prompt caching.
-                projected_message.pop("reasoning_content", None)
-            elif role == "tool":
-                tool_id = str(message.get("tool_call_id") or "")
-                content = projected_message.get("content")
-                content_text = content if isinstance(content, str) else str(content or "")
-                if (
-                    tool_id not in keep_tool_ids
-                    and len(content_text) > self.MODEL_CONTEXT_INLINE_OLD_TOOL_CHARS
-                ):
-                    replacement = self._compact_tool_result_content(content_text, tool_id)
-                    projected_message["content"] = replacement
-                    compacted_count += 1
-                    original_chars += len(content_text)
-                    compacted_chars += len(replacement)
-            projected.append(projected_message)
-
-        if compacted_count:
-            logger.info(
-                "Compacted %d old tool results for model context (%d -> %d chars)",
-                compacted_count,
-                original_chars,
-                compacted_chars,
-            )
+                copied.pop("reasoning_content", None)
+            projected.append(copied)
         return projected
-
-    def _recent_tool_result_ids_to_keep(
-        self,
-        conversation: List[Dict[str, Any]],
-    ) -> set[str]:
-        keep_ids: set[str] = set()
-        rounds_seen = 0
-        for message in reversed(conversation):
-            tool_calls = message.get("tool_calls") or []
-            if message.get("role") != "assistant" or not isinstance(tool_calls, list):
-                continue
-            ids = [
-                str(tool_call.get("id"))
-                for tool_call in tool_calls
-                if isinstance(tool_call, dict) and tool_call.get("id")
-            ]
-            if not ids:
-                continue
-            keep_ids.update(ids)
-            rounds_seen += 1
-            if rounds_seen >= self.MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS:
-                break
-        return keep_ids
 
     @staticmethod
     def _copy_message_for_model(message: Dict[str, Any]) -> Dict[str, Any]:
@@ -2341,75 +2448,7 @@ class LLMClient:
         return copied
 
     def _compact_tool_result_content(self, content: str, tool_call_id: str) -> str:
-        parsed: Any
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            parsed = content
-
-        summary = {
-            "compacted_tool_result": True,
-            "tool_call_id": tool_call_id,
-            "original_chars": len(content),
-            "summary": self._summarize_value(parsed),
-            "instruction": (
-                "The full previous tool output was compacted before this model "
-                "turn. Use the summary unless exact omitted bytes are essential."
-            ),
-        }
-        rendered = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
-        return self._truncate_text(
-            rendered,
-            self.MODEL_CONTEXT_TOOL_RESULT_SUMMARY_CHARS,
-        )
-
-    def _summarize_value(self, value: Any, depth: int = 0, key: str = "") -> Any:
-        if depth >= 4:
-            return self._summarize_leaf(value, key)
-        if isinstance(value, dict):
-            return self._summarize_dict(value, depth)
-        if isinstance(value, list):
-            items = [
-                self._summarize_value(item, depth + 1, key)
-                for item in value[: self.MODEL_CONTEXT_SUMMARY_MAX_ITEMS]
-            ]
-            if len(value) > self.MODEL_CONTEXT_SUMMARY_MAX_ITEMS:
-                items.append({"omitted_items": len(value) - len(items)})
-            return items
-        return self._summarize_leaf(value, key)
-
-    def _summarize_dict(self, value: Dict[Any, Any], depth: int) -> Dict[str, Any]:
-        result: Dict[str, Any] = {}
-        selected_keys: List[Any] = []
-        for priority_key in self._SUMMARY_PRIORITY_KEYS:
-            if priority_key in value:
-                selected_keys.append(priority_key)
-        for key in value:
-            if key not in selected_keys:
-                selected_keys.append(key)
-            if len(selected_keys) >= self.MODEL_CONTEXT_SUMMARY_MAX_KEYS:
-                break
-
-        for raw_key in selected_keys[: self.MODEL_CONTEXT_SUMMARY_MAX_KEYS]:
-            str_key = str(raw_key)
-            result[str_key] = self._summarize_value(value[raw_key], depth + 1, str_key)
-
-        omitted = len(value) - len(selected_keys[: self.MODEL_CONTEXT_SUMMARY_MAX_KEYS])
-        if omitted > 0:
-            result["omitted_keys"] = omitted
-        return result
-
-    def _summarize_leaf(self, value: Any, key: str = "") -> Any:
-        if isinstance(value, str):
-            limit = (
-                self.MODEL_CONTEXT_SUMMARY_HEAVY_STRING_CHARS
-                if key in self._SUMMARY_HEAVY_KEYS
-                else self.MODEL_CONTEXT_SUMMARY_STRING_CHARS
-            )
-            return self._truncate_text(value, limit)
-        if isinstance(value, (int, float, bool)) or value is None:
-            return value
-        return self._truncate_text(str(value), self.MODEL_CONTEXT_SUMMARY_STRING_CHARS)
+        return compact_tool_result(content, tool_call_id)
 
     @staticmethod
     def _truncate_text(value: str, limit: int) -> str:
@@ -2419,6 +2458,7 @@ class LLMClient:
         head = max(0, limit - 48)
         return f"{value[:head]}...[truncated {omitted} chars]"
 
+    @complete_session_lifecycle
     def run_conversation_with_tools(
         self,
         messages: List[Dict[str, Any]],
@@ -2434,7 +2474,7 @@ class LLMClient:
         terminal_tool_required: bool = False,
         max_identical_invalid_terminal_calls: int = 3,
         max_invalid_terminal_calls: int = 5,
-        preserve_reasoning_metadata: bool = False,
+        preserve_reasoning_metadata: bool = True,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -2452,6 +2492,7 @@ class LLMClient:
         low_iteration_threshold = max(3, min(10, max_iterations // 10 or 1))
         last_finish_reason: Optional[str] = None
         last_provider_model: Optional[str] = None
+        context_window_error: Optional[str] = None
         last_message: Dict[str, Any] = {}
         terminal_payload: Optional[Dict[str, Any]] = None
         terminal_tool_valid = False
@@ -2498,6 +2539,9 @@ class LLMClient:
             )
 
         while iterations < max_iterations:
+            token = current_cancellation_token()
+            if token is not None:
+                token.raise_if_cancelled()
             iterations += 1
             remaining_after_this = max_iterations - iterations
             max_iteration_final = iterations >= max_iterations
@@ -2572,7 +2616,7 @@ class LLMClient:
                     },
                 )
 
-            model_conversation = self._prepare_messages_for_model(
+            model_conversation = self._project_messages_for_model(
                 conversation,
                 preserve_reasoning_metadata=preserve_reasoning_metadata,
                 preserve_latest_reasoning_metadata=last_finish_reason == "length",
@@ -2580,7 +2624,7 @@ class LLMClient:
             ctx_tokens = self.estimate_tokens(model_conversation)
             raw_ctx_tokens = self.estimate_tokens(conversation)
             logger.info(
-                "Conversation iteration %s/%s | model context ≈%s tokens (raw ≈%s)",
+                "Conversation iteration %s/%s | pre-window context ≈%s tokens (raw ≈%s)",
                 iterations,
                 max_iterations,
                 f"{ctx_tokens:,}",
@@ -2622,12 +2666,22 @@ class LLMClient:
                 completion_kwargs["max_tokens"] = max_tokens
             if temperature is not None:
                 completion_kwargs["temperature"] = temperature
-            response = self.chat_completion(model_conversation, **completion_kwargs)
+            try:
+                response = self.chat_completion(model_conversation, **completion_kwargs)
+            except ContextWindowExceeded as exc:
+                # Keep all collected evidence and paired messages for the owner;
+                # this is an incomplete investigation, never a terminal verdict.
+                last_finish_reason = "context_window_exceeded"
+                context_window_error = str(exc)
+                break
 
             # Extract assistant message
             choice = response.get("choices", [{}])[0]
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason")
+            validate_assistant_message(message, finish_reason)
+            if token is not None:
+                token.raise_if_cancelled()
             provider_model = response.get("model") or (self.models[0] if self.models else None)
             last_finish_reason = finish_reason
             last_provider_model = provider_model
@@ -2646,11 +2700,7 @@ class LLMClient:
 
             # Some compatible providers return finish_reason=stop even when
             # the message carries tool_calls or XML-style invoke tags.
-            if (
-                finish_reason == "stop"
-                and not message.get("tool_calls")
-                and "<invoke name=" not in str(message.get("content", ""))
-            ):
+            if finish_reason == "stop" and not message.get("tool_calls"):
                 if terminal_tool_required and iterations < max_iterations:
                     conversation.append(
                         {
@@ -2670,7 +2720,7 @@ class LLMClient:
                     continue
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(
-                    self._prepare_messages_for_model(
+                    self._project_messages_for_model(
                         conversation,
                         preserve_reasoning_metadata=preserve_reasoning_metadata,
                     )
@@ -2716,6 +2766,17 @@ class LLMClient:
                 return result_payload
 
             if finish_reason == "length":
+                if message.get("tool_calls"):
+                    # A truncated call is neither executable nor a valid
+                    # assistant/tool exchange to replay to a strict provider.
+                    # Let the owning agent perform its bounded output repair.
+                    self._record_control_event(
+                        trace_session,
+                        iterations,
+                        "truncated_tool_call",
+                        {"finish_reason": "length"},
+                    )
+                    break
                 logger.warning(
                     f"Model {self.models[0] if self.models else 'unknown'} output truncated! Prompting to continue..."
                 )
@@ -2752,7 +2813,7 @@ class LLMClient:
                     {"tool_call_count": len(tool_calls)},
                 )
                 final_tokens = self.estimate_tokens(
-                    self._prepare_messages_for_model(
+                    self._project_messages_for_model(
                         conversation,
                         preserve_reasoning_metadata=preserve_reasoning_metadata,
                     )
@@ -2798,41 +2859,8 @@ class LLMClient:
                     )
                 return result_payload
 
-            # --- XML Fallback (For GLM/Minimax models that emit raw text invoke tags) ---
-            content = message.get("content", "")
-            if not final_iteration and not tool_calls and "<invoke name=" in content:
-                import uuid
-
-                invokes = re.finditer(r'<invoke name="([^"]+)">([\s\S]*?)(?:</invoke>|$)', content)
-                for match in invokes:
-                    xml_func_name = match.group(1)
-                    xml_param_str = match.group(2)
-                    xml_args = {}
-                    for param_match in re.finditer(
-                        r'<parameter name="([^"]+)">([\s\S]*?)(?=(?:</parameter>|<parameter|</invoke>|$))',
-                        xml_param_str,
-                    ):
-                        # Attempt to cast numeric strings to int if applicable, else keep string
-                        xml_val: Any = param_match.group(2).strip()
-                        xml_val = re.sub(r"</.*$", "", str(xml_val), flags=re.DOTALL).strip()
-                        if str(xml_val).isdigit():
-                            xml_val = int(xml_val)
-                        xml_args[param_match.group(1)] = xml_val
-
-                    tool_calls.append(
-                        {
-                            "id": f"call_xml_{uuid.uuid4().hex[:10]}",
-                            "type": "function",
-                            "function": {
-                                "name": xml_func_name,
-                                "arguments": json.dumps(xml_args, ensure_ascii=False),
-                            },
-                        }
-                    )
-                # If we synthetically built tool calls, we should ensure the LLM knows it made them.
-                if tool_calls and "tool_calls" not in message:
-                    message["tool_calls"] = tool_calls
-            # --------------------------------------------------------------------------
+            # Text, including quoted XML examples, is never an executable
+            # protocol envelope. Compatible providers must emit tool_calls.
 
             if not tool_calls:
                 if terminal_tool_required and iterations < max_iterations:
@@ -2854,7 +2882,7 @@ class LLMClient:
                     continue
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(
-                    self._prepare_messages_for_model(
+                    self._project_messages_for_model(
                         conversation,
                         preserve_reasoning_metadata=preserve_reasoning_metadata,
                     )
@@ -2914,11 +2942,16 @@ class LLMClient:
                 mixed_calls = len(terminal_calls) != len(tool_calls)
                 duplicate_calls = len(terminal_calls) > 1
                 for terminal_call in terminal_calls:
+                    if token is not None:
+                        token.raise_if_cancelled()
                     terminal_id = terminal_call.get("id")
                     terminal_function = terminal_call.get("function", {})
                     raw_terminal_args = terminal_function.get("arguments", "{}")
                     try:
                         terminal_args = self._parse_tool_args(raw_terminal_args)
+                        terminal_args = self._restore_portable_tool_args(
+                            str(terminal_tool_name), terminal_args, tools_schema
+                        )
                         terminal_function["arguments"] = json.dumps(
                             terminal_args, ensure_ascii=False
                         )
@@ -2949,6 +2982,8 @@ class LLMClient:
                                 validation = handled
                             else:
                                 validation = {"valid": bool(handled), "payload": terminal_args}
+                        except CancellationError:
+                            raise
                         except Exception as exc:
                             validation = {"valid": False, "error": str(exc)}
 
@@ -2965,7 +3000,7 @@ class LLMClient:
                                 tool_call_id=terminal_id,
                             )
                         final_tokens = self.estimate_tokens(
-                            self._prepare_messages_for_model(
+                            self._project_messages_for_model(
                                 conversation,
                                 preserve_reasoning_metadata=preserve_reasoning_metadata,
                             )
@@ -3071,7 +3106,7 @@ class LLMClient:
                                 "latest_seen": identical_failures[-1],
                             }
                         final_tokens = self.estimate_tokens(
-                            self._prepare_messages_for_model(
+                            self._project_messages_for_model(
                                 conversation,
                                 preserve_reasoning_metadata=preserve_reasoning_metadata,
                             )
@@ -3133,6 +3168,8 @@ class LLMClient:
                 tool_calls = [call for call in tool_calls if call not in terminal_calls]
 
             for tool_call in tool_calls:
+                if token is not None:
+                    token.raise_if_cancelled()
                 tool_id = tool_call.get("id")
                 function = tool_call.get("function", {})
                 func_name = function.get("name")
@@ -3164,8 +3201,6 @@ class LLMClient:
 
                     signature = self._tool_call_signature(func_name, func_args)
                     previous_calls = tool_call_history.get(signature, [])
-                    cached_replayed = any(call.get("cached_replay") for call in previous_calls)
-                    cached_previous_result = self._last_replayable_tool_result(previous_calls)
                     repeat_notice = self._build_repeat_tool_notice(
                         func_name,
                         func_args,
@@ -3188,72 +3223,44 @@ class LLMClient:
                             func_name,
                             func_args,
                         )
-                    elif (
-                        max_identical_tool_calls > 0
-                        and len(previous_calls) >= max_identical_tool_calls
-                    ):
-                        repeated_call_count = len(previous_calls) + 1
-                        if cached_previous_result is not None and not cached_replayed:
-                            result = dict(cached_previous_result)
-                            result["cached_tool_result"] = True
-                            result["repeat_call_warning"] = {
-                                **repeat_notice,
-                                "instruction": (
-                                    "This is a cached replay of the previous successful "
-                                    "tool result for the identical call. Use this content "
-                                    "now; do not request the same tool arguments again."
-                                ),
-                            }
-                            logger.warning(
-                                "Replayed cached result for repeated identical tool call: "
-                                "%s %s (repeat #%d)",
-                                func_name,
-                                func_args,
-                                repeated_call_count,
-                            )
-                        else:
-                            result = {
-                                "success": False,
-                                "error": (
-                                    "Repeated identical tool call blocked by the loop guard. "
-                                    "The previous result was already replayed or unavailable; "
-                                    "produce the best final answer from available evidence."
-                                ),
-                                "repeat_call_guard": True,
-                                **repeat_notice,
-                            }
-                            logger.warning(
-                                "Blocked repeated identical tool call: %s %s (repeat #%d)",
-                                func_name,
-                                func_args,
-                                repeated_call_count,
-                            )
-                            if cached_previous_result is not None:
-                                result = dict(cached_previous_result)
-                                result["cached_tool_result"] = True
-                                result["repeat_call_guard"] = True
-                                result["repeat_call_warning"] = {
-                                    **repeat_notice,
-                                    "instruction": (
-                                        "This repeated tool call is blocked by the loop guard. "
-                                        "The latest tool message replays the previous successful "
-                                        "result. Use this content now and produce the final answer; "
-                                        "tool use will be disabled for the next response."
-                                    ),
-                                }
                     else:
-                        repeated_call_count = 0
-                        set_tool_iteration = getattr(
-                            tool_executor,
-                            "_zscope_set_iteration",
-                            None,
-                        )
+                        set_tool_iteration = getattr(tool_executor, "_zscope_set_iteration", None)
                         if callable(set_tool_iteration):
                             set_tool_iteration(iterations)
+                        if token is not None:
+                            token.raise_if_cancelled()
+                        # Only the executor can revalidate source/build/permission
+                        # identity. Never replay evidence from the loop's history.
                         result = tool_executor(func_name, func_args)
+                        if token is not None:
+                            token.raise_if_cancelled()
+                        previous_result = (
+                            previous_calls[-1].get("result") if previous_calls else None
+                        )
+                        comparable = (
+                            dict(previous_result)
+                            if isinstance(previous_result, dict)
+                            else previous_result
+                        )
+                        if isinstance(comparable, dict):
+                            comparable.pop("repeat_call_warning", None)
+                        if previous_calls and comparable != result:
+                            previous_calls = []
+                            tool_call_history[signature] = []
+                        repeated_call_count = len(previous_calls) + 1
                         if previous_calls and isinstance(result, dict):
                             result = dict(result)
                             result["repeat_call_warning"] = repeat_notice
+                        if (
+                            max_identical_tool_calls > 0
+                            and len(previous_calls) >= max_identical_tool_calls
+                        ):
+                            result = dict(result)
+                            result["repeat_call_guard"] = True
+                            result["repeat_call_warning"] = {
+                                **repeat_notice,
+                                "instruction": "The current result was revalidated. Repeated unchanged calls are now blocked; use other tools or synthesize from current evidence.",
+                            }
 
                     tool_result_message_index = len(conversation) + 1
                     conversation.append(
@@ -3332,6 +3339,8 @@ class LLMClient:
                         if func_name not in loop_guard_tools_triggered_this_iteration:
                             loop_guard_tools_triggered_this_iteration.append(func_name)
 
+                except CancellationError:
+                    raise
                 except Exception as e:
                     logger.error(f"Tool execution failed: {e}")
                     conversation.append(
@@ -3362,7 +3371,7 @@ class LLMClient:
                         "role": "user",
                         "content": (
                             "The loop guard blocked repeated calls and disabled only these tools: "
-                            f"{disabled_names}. Their latest tool messages contain the cached "
+                            f"{disabled_names}. Their latest tool messages contain the revalidated "
                             "results or available evidence. Other tools remain available; use them "
                             "only if needed, then produce the required final answer."
                         ),
@@ -3387,18 +3396,23 @@ class LLMClient:
             logger.debug(f"Last steps: {history_summary}")
 
         final_tokens = self.estimate_tokens(
-            self._prepare_messages_for_model(
+            self._project_messages_for_model(
                 conversation,
                 preserve_reasoning_metadata=preserve_reasoning_metadata,
             )
         )
         logger.info(
-            f"Conversation ended (truncated={iterations >= max_iterations}): {iterations} iterations, final context ≈ {final_tokens:,} tokens"
+            "Conversation ended (truncated=%s): %s iterations, final context ≈ %s tokens",
+            iterations >= max_iterations
+            or last_finish_reason in {"length", "context_window_exceeded"},
+            iterations,
+            f"{final_tokens:,}",
         )
         _record_session_end_traced(
             iterations,
             final_tokens,
-            truncated=iterations >= max_iterations,
+            truncated=iterations >= max_iterations
+            or last_finish_reason in {"length", "context_window_exceeded"},
             finish_reason_value=last_finish_reason,
             terminal_valid=terminal_tool_valid,
         )
@@ -3411,9 +3425,10 @@ class LLMClient:
             "content": self._get_combined_content(conversation),
             "conversation": conversation,
             "iterations": iterations,
-            "truncated": iterations >= max_iterations,
+            "truncated": iterations >= max_iterations
+            or last_finish_reason in {"length", "context_window_exceeded"},
             "context_tokens": final_tokens,
-            "api_call_count": iterations,
+            "api_call_count": iterations - int(context_window_error is not None),
             "cumulative_prompt_tokens": cumulative_prompt_tokens,
             "cumulative_completion_tokens": cumulative_completion_tokens,
             "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
@@ -3428,6 +3443,8 @@ class LLMClient:
             "terminal_tool_call_count": terminal_tool_call_count,
             "terminal_invalid_call_count": terminal_invalid_call_count,
         }
+        if context_window_error is not None:
+            result_payload["context_window_error"] = context_window_error
         if loop_guard_recovery:
             result_payload.update(
                 {
@@ -3601,6 +3618,8 @@ class LLMClient:
         portable contract, so an artificial null must become an omitted field.
         Properties that were nullable in the original contract retain null.
         """
+        from .base import _validate_json_value
+
         parameters: Dict[str, Any] = {}
         for tool in tools_schema:
             function = tool.get("function") if isinstance(tool, dict) else None
@@ -3611,21 +3630,73 @@ class LLMClient:
                 parameters = candidate
             break
 
-        def allows_null(schema: Dict[str, Any]) -> bool:
-            schema_type = schema.get("type")
-            if schema_type == "null":
-                return True
-            if isinstance(schema_type, list) and "null" in schema_type:
-                return True
+        def reference_target(reference: Any) -> Optional[Dict[str, Any]]:
+            if not isinstance(reference, str) or not reference.startswith("#/"):
+                return None
+            target: Any = parameters
+            for part in reference[2:].split("/"):
+                key = part.replace("~1", "/").replace("~0", "~")
+                target = target.get(key) if isinstance(target, dict) else None
+            return target if isinstance(target, dict) else None
+
+        def matches(
+            value: Any,
+            schema: Dict[str, Any],
+            seen: frozenset[tuple[int, int]] = frozenset(),
+        ) -> bool:
+            marker = (id(value), id(schema))
+            if marker in seen:
+                return False
+            seen = seen | {marker}
+            if "$ref" in schema:
+                target = reference_target(schema["$ref"])
+                if target is None or not matches(value, target, seen):
+                    return False
+            # Reuse the ordinary scalar and object-shape constraints, then
+            # validate actual children here so local refs keep their root scope.
+            shallow = {key: item for key, item in schema.items() if key not in ("anyOf", "oneOf")}
+            properties = schema.get("properties")
+            if isinstance(properties, dict):
+                shallow["properties"] = {key: {} for key in properties}
+            if isinstance(schema.get("items"), dict):
+                shallow["items"] = {}
+            if _validate_json_value(shallow, value, "") is not None:
+                return False
+            if isinstance(value, dict) and isinstance(properties, dict):
+                for key, item in value.items():
+                    child_schema = properties.get(key)
+                    if isinstance(child_schema, dict) and not matches(item, child_schema, seen):
+                        return False
+            if isinstance(value, list) and isinstance(schema.get("items"), dict):
+                if any(not matches(item, schema["items"], seen) for item in value):
+                    return False
             for keyword in ("anyOf", "oneOf"):
                 variants = schema.get(keyword)
-                if isinstance(variants, list) and any(
-                    isinstance(variant, dict) and allows_null(variant) for variant in variants
-                ):
-                    return True
-            return False
+                if isinstance(variants, list):
+                    count = sum(
+                        isinstance(variant, dict) and matches(value, variant, seen)
+                        for variant in variants
+                    )
+                    if count == 0 or keyword == "oneOf" and count != 1:
+                        return False
+            return True
 
-        def restore(value: Any, schema: Dict[str, Any]) -> Any:
+        def allows_null(schema: Dict[str, Any]) -> bool:
+            return matches(None, schema)
+
+        def restore(
+            value: Any,
+            schema: Dict[str, Any],
+            seen: frozenset[tuple[int, int]] = frozenset(),
+        ) -> Any:
+            marker = (id(value), id(schema))
+            if marker in seen:
+                return value
+            seen = seen | {marker}
+            if "$ref" in schema:
+                target = reference_target(schema["$ref"])
+                if target is not None:
+                    value = restore(value, target, seen)
             if isinstance(value, dict):
                 properties = schema.get("properties")
                 properties = properties if isinstance(properties, dict) else {}
@@ -3638,12 +3709,29 @@ class LLMClient:
                         continue
                     if item is None and key not in required and not allows_null(property_schema):
                         continue
-                    result[key] = restore(item, property_schema)
-                return result
-            if isinstance(value, list):
+                    result[key] = restore(item, property_schema, seen)
+                value = result
+            elif isinstance(value, list):
                 item_schema = schema.get("items")
                 if isinstance(item_schema, dict):
-                    return [restore(item, item_schema) for item in value]
+                    value = [restore(item, item_schema, seen) for item in value]
+            if matches(value, schema):
+                return value
+            for keyword in ("anyOf", "oneOf"):
+                variants = schema.get(keyword)
+                if not isinstance(variants, list):
+                    continue
+                candidates = []
+                for variant in variants:
+                    if not isinstance(variant, dict):
+                        continue
+                    candidate = restore(value, variant, seen)
+                    if matches(candidate, schema) and candidate not in candidates:
+                        candidates.append(candidate)
+                # Never guess between branches that remove different fields.
+                # Keep the invalid payload for the ordinary validator to explain.
+                if len(candidates) == 1:
+                    return candidates[0]
             return value
 
         restored = restore(arguments, parameters)
@@ -3665,8 +3753,8 @@ class LLMClient:
             "identical_previous_call_count": len(previous_calls),
             "instruction": (
                 "This exact tool call has already appeared in the current conversation. "
-                "Read the earlier tool result at the referenced conversation position "
-                "instead of requesting the same data again."
+                "Use the newly validated result; prior results are historical evidence "
+                "and may no longer describe current inputs."
             ),
         }
         if first:
@@ -3685,30 +3773,26 @@ class LLMClient:
             }
         return notice
 
-    @staticmethod
-    def _last_replayable_tool_result(
-        previous_calls: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        """Return the latest successful previous tool result that can be replayed."""
-        for call in reversed(previous_calls):
-            result = call.get("result")
-            if not isinstance(result, dict):
-                continue
-            if result.get("repeat_call_guard") or result.get("cached_tool_result"):
-                continue
-            if result.get("success") is False:
-                continue
-            return result
-        return None
-
     def _parse_tool_args(self, func_args_str: Any) -> Dict[str, Any]:
         """Parse tool arguments, with fallbacks for slightly malformed JSON."""
+
+        def checked(value: Dict[str, Any]) -> Dict[str, Any]:
+            # Python's JSON decoder accepts NaN/Infinity; they are not JSON
+            # arguments and must not enter a tool or its subsequent transcript.
+            json.dumps(value, allow_nan=False)
+            return value
+
         if isinstance(func_args_str, dict):
-            return cast(Dict[str, Any], func_args_str)
+            return checked(func_args_str)
         if func_args_str is None:
             return {}
+        if not isinstance(func_args_str, str):
+            raise ValueError("Tool arguments must be a JSON object")
         try:
-            return cast(Dict[str, Any], json.loads(str(func_args_str)))
+            parsed_json = json.loads(func_args_str)
+            if not isinstance(parsed_json, dict):
+                raise ValueError("Tool arguments must be a JSON object")
+            return checked(parsed_json)
         except json.JSONDecodeError as exc:
             stripped = func_args_str.strip()
             if not stripped:
@@ -3718,7 +3802,7 @@ class LLMClient:
                 parsed = ast.literal_eval(stripped)
                 if isinstance(parsed, dict):
                     logger.warning("Recovered tool arguments via literal_eval.")
-                    return cast(Dict[str, Any], parsed)
+                    return checked(parsed)
             except (ValueError, SyntaxError):
                 pass
 
@@ -3729,7 +3813,7 @@ class LLMClient:
                         parsed = json.loads(candidate)
                         if isinstance(parsed, dict):
                             logger.warning("Recovered tool arguments via sanitized JSON.")
-                            return cast(Dict[str, Any], parsed)
+                            return checked(parsed)
                     except json.JSONDecodeError:
                         try:
                             parsed = ast.literal_eval(candidate)
@@ -3737,7 +3821,7 @@ class LLMClient:
                                 logger.warning(
                                     "Recovered tool arguments via sanitized literal_eval."
                                 )
-                                return cast(Dict[str, Any], parsed)
+                                return checked(parsed)
                         except (ValueError, SyntaxError):
                             continue
 
@@ -3747,93 +3831,48 @@ class LLMClient:
                     parsed = ast.literal_eval(pythonized)
                     if isinstance(parsed, dict):
                         logger.warning("Recovered tool arguments via pythonized literal_eval.")
-                        return cast(Dict[str, Any], parsed)
+                        return checked(parsed)
                 except (ValueError, SyntaxError):
                     pass
 
-            for json_candidate in extract_json_blocks(str(func_args_str)):
-                if isinstance(json_candidate, dict):
-                    logger.warning("Recovered tool arguments from JSON block.")
-                    return cast(Dict[str, Any], json_candidate)
-
-            fallback = self._extract_tool_args_fallback(stripped)
-            if fallback is not None:
-                logger.warning("Recovered tool arguments via heuristic fallback.")
-                return fallback
-
-            logger.error(
-                "Invalid tool arguments JSON. Raw payload: %s",
-                self._truncate_tool_args_for_log(func_args_str),
-            )
+            logger.error("Invalid tool arguments JSON; no lossless repair was available.")
             raise ValueError(f"Invalid tool arguments JSON: {exc}") from exc
-
-    @staticmethod
-    def _truncate_tool_args_for_log(value: Any, limit: int = 500) -> str:
-        """Return a safely truncated string for logging invalid tool args."""
-        if value is None:
-            return "<empty>"
-        if not isinstance(value, str):
-            value = repr(value)
-        if len(value) <= limit:
-            return str(value)
-        return f"{value[:limit]}…(truncated)"
 
     @staticmethod
     def _sanitize_tool_args(text: str) -> str:
         """Attempt to normalize JSON-like tool argument strings."""
-        sanitized = text.strip()
-        sanitized = re.sub(r",\s*([}\]])", r"\1", sanitized)
-        sanitized = re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*):", r'\1"\2"\3:', sanitized)
-        return sanitized
+        # Match quoted tokens first so syntax repairs never alter source,
+        # search queries, paths, or other literal argument values.
+        pattern = (
+            r"""(?P<string>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+            r"|(?P<trailing>,\s*(?=[}\]]))"
+            r"|(?P<key>(?<=[{,])\s*[A-Za-z_][A-Za-z0-9_]*\s*:)"
+        )
+
+        def repair(match: re.Match[str]) -> str:
+            if match.group("string") is not None:
+                return match.group(0)
+            if match.group("trailing") is not None:
+                return ""
+            return json.dumps(match.group("key")[:-1].strip()) + ":"
+
+        return re.sub(pattern, repair, text.strip())
 
     @staticmethod
     def _pythonize_json_literals(text: str) -> str:
         """Swap JSON literals for Python equivalents for literal_eval."""
-        pythonized = re.sub(r"\bnull\b", "None", text, flags=re.IGNORECASE)
-        pythonized = re.sub(r"\btrue\b", "True", pythonized, flags=re.IGNORECASE)
-        pythonized = re.sub(r"\bfalse\b", "False", pythonized, flags=re.IGNORECASE)
-        return pythonized
-
-    @staticmethod
-    def _extract_tool_args_fallback(text: str) -> Optional[Dict[str, Any]]:
-        """Extract common tool args from malformed JSON-like strings."""
-        if not isinstance(text, str) or "file_path" not in text:
-            return None
-
-        file_match = re.search(r'"file_path"\s*:\s*"([^"]+)"', text)
-        if not file_match:
-            file_match = re.search(r"'file_path'\s*:\s*'([^']+)'", text)
-        if not file_match:
-            return None
-        file_path = file_match.group(1)
-        has_start_line = re.search(r'["\']start_line["\']\s*:', text) is not None
-        has_end_line = re.search(r'["\']end_line["\']\s*:', text) is not None
-
-        def extract_int(key: str) -> Optional[int]:
-            direct = re.search(rf'"{key}"\s*:\s*([0-9]+)', text)
-            if not direct:
-                direct = re.search(rf"'{key}'\s*:\s*([0-9]+)", text)
-            if direct:
-                return int(direct.group(1))
-            token = re.search(rf'"{key}"\s*:\s*([^,\n}}]+)', text)
-            if not token:
-                token = re.search(rf"'{key}'\s*:\s*([^,\n}}]+)", text)
-            if token:
-                digits = re.search(r"\d+", token.group(1))
-                if digits:
-                    return int(digits.group(0))
-            return None
-
-        start_line = extract_int("start_line")
-        end_line = extract_int("end_line")
-
-        if start_line is None and end_line is None:
-            if has_start_line or has_end_line:
-                return {"file_path": file_path, "start_line": None, "end_line": None}
-            return None
-        if start_line is None:
-            start_line = end_line
-        if end_line is None:
-            end_line = start_line
-
-        return {"file_path": file_path, "start_line": start_line, "end_line": end_line}
+        pattern = (
+            r"""(?P<string>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+            r"|(?P<literal>\b(?:null|true|false)\b)"
+        )
+        replacements = {"null": "None", "true": "True", "false": "False"}
+        return re.sub(
+            pattern,
+            lambda match: (
+                match.group(0)
+                if match.group("string") is not None
+                else replacements[match.group("literal").lower()]
+            ),
+            text,
+            flags=re.IGNORECASE,
+        )

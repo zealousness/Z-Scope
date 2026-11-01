@@ -1,4 +1,5 @@
 import hashlib
+from ...common.cancellation import CancellationError
 import json
 import logging
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -13,8 +14,9 @@ from ...common.validator_protocol import (
     VALIDATOR_PROTOCOL_VERSION as VALIDATOR_PROTOCOL_V3,
     VALIDATOR_RESULT_VERSION,
     ValidatorResultV3,
+    normalize_validator_provider_payload_v3,
     parse_validator_result_v3,
-    validator_result_schema_v3,
+    validator_result_provider_schema_v3,
 )
 
 logger = logging.getLogger(__name__)
@@ -231,6 +233,8 @@ class ValidatorAgent(JsonToolAgent):
                         data=repaired,
                         metadata=dict(token_metadata),
                     )
+            except CancellationError:
+                raise
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning(
@@ -269,6 +273,11 @@ class ValidatorAgent(JsonToolAgent):
         )
         catalog = evidence_slice.get("evidence_ref_catalog")
         allowed_refs = list(catalog) if isinstance(catalog, dict) else []
+        allowed_missing_fact_kinds = {
+            str(value).strip().lower()
+            for value in evidence_slice.get("allowed_missing_fact_kinds") or []
+            if str(value).strip()
+        }
         token_metadata: Dict[str, Any] = {
             "context_tokens": 0,
             "cumulative_prompt_tokens": 0,
@@ -298,6 +307,8 @@ class ValidatorAgent(JsonToolAgent):
                 f"validation_cluster_uid={cluster_uid[:120]}; "
                 f"new_fact_count={new_fact_count}"
             ),
+            allowed_missing_fact_kinds=allowed_missing_fact_kinds,
+            allowed_evidence_refs=set(allowed_refs),
         )
         if response is None or result is None:
             self._finalize_slice_metadata(token_metadata)
@@ -308,42 +319,76 @@ class ValidatorAgent(JsonToolAgent):
                 metadata=token_metadata,
             )
         self._merge_v3_response_metadata(token_metadata, response, messages, result)
-
-        if str(result.get("finish_reason") or "") == "length":
-            # The provider output limit truncated the structured result before
-            # the strict schema could complete.  Retry once with a doubled
-            # ceiling so a long-but-valid verdict is not systematically
-            # degraded to uncertain/output_truncated.
-            retry_cap = self._v3_length_retry_max_tokens()
-            token_metadata["validator_length_retry_count"] = 1
-            logger.info(
-                "Validator v3 output truncated by provider limit; retrying once "
-                "with max_tokens=%d (candidate_uid=%s, pass=%s)",
-                retry_cap,
-                candidate_uid[:120],
-                expected_pass,
-            )
-            retry_response, retry_result = self._direct_v3_completion(
-                messages,
-                trace_label=(
-                    f"validator_v3; pass={expected_pass}; call_kind={expected_pass}; "
-                    f"candidate_uid={candidate_uid[:120]}; "
-                    f"validation_cluster_uid={cluster_uid[:120]}; "
-                    f"new_fact_count={new_fact_count}; length_retry=1"
-                ),
-                max_tokens=retry_cap,
-            )
-            if retry_response is not None and retry_result is not None:
-                self._merge_v3_response_metadata(
-                    token_metadata, retry_response, messages, retry_result
-                )
-                response, result = retry_response, retry_result
         parsed = self._extract_v3_result(
             result,
             candidate_uid=candidate_uid,
             cluster_uid=cluster_uid,
             expected_pass=expected_pass,
             allowed_refs=allowed_refs,
+            allowed_missing_fact_kinds=allowed_missing_fact_kinds,
+        )
+        first_finish_reason = str(result.get("finish_reason") or "")
+
+        if parsed is None:
+            # A bounded repair is also required for the provider's malformed
+            # terminal-tool framing.  Normalization stays deliberately strict:
+            # if the first result cannot be normalized and parsed, ask for one
+            # fresh compact result and validate the complete schema/UID/ref set
+            # again.  Never reconstruct missing fields from partial DSML.
+            retry_cap = self._v3_length_retry_max_tokens()
+            first_audit = self._v3_raw_protocol_audit(result, parsed=False)
+            token_metadata["validator_first_attempt_audit"] = first_audit
+            retry_kind = "length" if first_finish_reason == "length" else "protocol"
+            if retry_kind == "length":
+                token_metadata["validator_length_retry_count"] = 1
+                token_metadata["validator_length_first_attempt_audit"] = first_audit
+            else:
+                token_metadata["validator_repair_attempted"] = 1
+            logger.info(
+                "Validator v3 %s repair retry with max_tokens=%d " "(candidate_uid=%s, pass=%s)",
+                retry_kind,
+                retry_cap,
+                candidate_uid[:120],
+                expected_pass,
+            )
+            compact_prompt = self._validator_v3_prompt(
+                evidence_slice,
+                expected_pass,
+                compact=True,
+            )
+            retry_messages = self._messages(input_data, compact_prompt)
+            retry_response, retry_result = self._direct_v3_completion(
+                retry_messages,
+                trace_label=(
+                    f"validator_v3; pass={expected_pass}; call_kind={expected_pass}; "
+                    f"candidate_uid={candidate_uid[:120]}; "
+                    f"validation_cluster_uid={cluster_uid[:120]}; "
+                    f"new_fact_count={new_fact_count}; {retry_kind}_retry=1"
+                ),
+                max_tokens=retry_cap,
+                thinking={"type": "disabled"},
+                allowed_missing_fact_kinds=allowed_missing_fact_kinds,
+                allowed_evidence_refs=set(allowed_refs),
+            )
+            token_metadata["validator_repair_thinking_disabled"] = 1
+            if retry_response is not None and retry_result is not None:
+                self._merge_v3_response_metadata(
+                    token_metadata, retry_response, retry_messages, retry_result
+                )
+                response, result = retry_response, retry_result
+                parsed = self._extract_v3_result(
+                    result,
+                    candidate_uid=candidate_uid,
+                    cluster_uid=cluster_uid,
+                    expected_pass=expected_pass,
+                    allowed_refs=allowed_refs,
+                    allowed_missing_fact_kinds=allowed_missing_fact_kinds,
+                )
+                if retry_kind == "protocol" and parsed is not None:
+                    token_metadata["validator_repair_accepted"] = 1
+        token_metadata["validator_protocol_audit"] = self._v3_raw_protocol_audit(
+            result,
+            parsed=parsed is not None,
         )
         finish_reason = str(result.get("finish_reason") or "")
         if parsed is not None:
@@ -394,15 +439,64 @@ class ValidatorAgent(JsonToolAgent):
         compact: bool = False,
     ) -> str:
         directive = (
-            "Return the smallest valid object; keep reasoning under 600 characters. "
+            "This is the only repair attempt. Return the smallest complete JSON object; "
+            "keep reasoning under 600 characters, include every mandatory field, and do "
+            "not place XML/DSML markup inside any field. "
             if compact
             else ""
         )
+        allowed_missing = ", ".join(
+            str(value)
+            for value in evidence_slice.get("allowed_missing_fact_kinds") or []
+            if str(value)
+        )
+        missing_directive = (
+            "A missing_fact_request is permitted only for one of: "
+            f"{allowed_missing}. If verdict=uncertain and you request one of these "
+            "facts, set stop_reason=missing_fact. "
+            if allowed_missing
+            else (
+                "No missing_fact_request is available for this candidate. Set "
+                "missing_fact_request=null for every verdict. If the evidence is "
+                "insufficient, use verdict=uncertain and stop_reason=no_evidence_gain; "
+                "never use decision_complete for an uncertain verdict. "
+            )
+        )
+        obligation = evidence_slice.get("obligation")
+        obligation = obligation if isinstance(obligation, dict) else {}
+        candidate_uid = str(obligation.get("candidate_uid") or "")
+        cluster_uid = str(obligation.get("validation_cluster_uid") or "")
+        full_shape = {
+            "schema_version": VALIDATOR_RESULT_VERSION,
+            "candidate_uid": candidate_uid,
+            "validation_cluster_uid": cluster_uid,
+            "pass": validation_pass,
+            "verdict": "verified|rejected|uncertain",
+            "reasoning": "简洁的中文裁决理由",
+            "positive_evidence": [],
+            "negative_evidence": [],
+            "evidence_refs": [],
+            "blocking_negative_evidence": False,
+            "missing_fact_request": None,
+            "stop_reason": "decision_complete",
+        }
         return (
             f"Validator v3 pass={validation_pass}. Use only the supplied evidence. "
-            "Every evidence_refs value must be a key in evidence_ref_catalog. Return "
-            "uncertain with at most one missing_fact_request when one supported fact "
-            "would decide the obligation. Do not invent a fact, candidate, or cluster UID. "
+            "Every evidence_refs value must be a key in evidence_ref_catalog. "
+            "For verified or rejected, evidence_refs must include at least one "
+            "readable current decision_fact, path_edge, proof_fact, or "
+            "evidence_delta_fact, together with the refs supporting the source/sink "
+            "path or concrete counter-claim. Return uncertain with at most one "
+            "missing_fact_request only when one supported "
+            "fact would decide the obligation. Do not attach a missing_fact_request "
+            "to a verified or rejected verdict; if you still need a fact, the verdict "
+            "is uncertain. "
+            f"{missing_directive}"
+            "For verified or rejected, set missing_fact_request to null and stop_reason "
+            "to decision_complete. Do not invent a fact, candidate, or cluster UID. "
+            "All fields in this template are mandatory; replace the verdict marker and "
+            "fill the evidence fields, but do not omit keys: "
+            f"{json.dumps(full_shape, ensure_ascii=False, separators=(',', ':'))}. "
             f"{directive}Return exactly one object matching schema_version="
             f"{VALIDATOR_RESULT_VERSION}.\n\n"
             + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
@@ -414,6 +508,9 @@ class ValidatorAgent(JsonToolAgent):
         *,
         trace_label: str,
         max_tokens: Optional[int] = None,
+        thinking: Optional[Dict[str, Any]] = None,
+        allowed_missing_fact_kinds: Optional[set[str]] = None,
+        allowed_evidence_refs: Optional[set[str]] = None,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         chat_completion = getattr(self.llm_client, "chat_completion", None)
         if not callable(chat_completion):
@@ -425,11 +522,18 @@ class ValidatorAgent(JsonToolAgent):
                     max_iterations=1,
                     trace_label=f"{trace_label}; compatibility_adapter=1",
                     additional_tools_schema=[
-                        self._final_json_tool_schema(self._validation_json_output_spec_v3())
+                        self._final_json_tool_schema(
+                            self._validation_json_output_spec_v3(
+                                allowed_missing_fact_kinds=allowed_missing_fact_kinds,
+                                allowed_evidence_refs=allowed_evidence_refs,
+                            )
+                        )
                     ],
                     terminal_tool_name="emit_validator_result_v3",
                     terminal_tool_required=True,
                 )
+            except CancellationError:
+                raise
             except Exception:
                 return None, None
             synthetic_message = legacy.get("message") or {
@@ -453,7 +557,10 @@ class ValidatorAgent(JsonToolAgent):
                 "message": synthetic_message,
             }
 
-        spec = self._validation_json_output_spec_v3()
+        spec = self._validation_json_output_spec_v3(
+            allowed_missing_fact_kinds=allowed_missing_fact_kinds,
+            allowed_evidence_refs=allowed_evidence_refs,
+        )
         response_format = (
             self._json_response_format(spec)
             if bool(getattr(self.llm_client, "supports_structured_output", False))
@@ -472,6 +579,8 @@ class ValidatorAgent(JsonToolAgent):
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if thinking:
+            kwargs["thinking"] = dict(thinking)
         if response_format:
             kwargs["response_format"] = response_format
         else:
@@ -483,6 +592,8 @@ class ValidatorAgent(JsonToolAgent):
             kwargs["tool_choice"] = "required"
         try:
             response = chat_completion(messages, **kwargs)
+        except CancellationError:
+            raise
         except Exception as exc:
             # Provider capability selection is fixed before the call.  A
             # profile that declares native JSON-schema support must not turn a
@@ -543,7 +654,12 @@ class ValidatorAgent(JsonToolAgent):
         cluster_uid: str,
         expected_pass: str,
         allowed_refs: List[str],
+        allowed_missing_fact_kinds: Optional[set[str]] = None,
     ) -> Optional[Dict[str, Any]]:
+        if result.get("finish_reason") == "context_window_exceeded":
+            # Earlier public JSON is not a completed decision when the current
+            # investigation could not present its required evidence to a model.
+            return None
         spec = self._validation_json_output_spec_v3()
         values: List[Any] = list(
             self._final_tool_payloads(result, result.get("conversation", []), spec)
@@ -559,16 +675,74 @@ class ValidatorAgent(JsonToolAgent):
         for text in (value for value in text_sources if value):
             values.extend(extract_json_blocks(text))
         for value in values:
+            normalized = normalize_validator_provider_payload_v3(value)
+            candidate = normalized if normalized is not None else value
             parsed = parse_validator_result_v3(
-                value,
+                candidate,
                 candidate_uid=candidate_uid,
                 validation_cluster_uid=cluster_uid,
                 expected_pass=expected_pass,
                 allowed_evidence_refs=allowed_refs,
             )
             if parsed is not None:
+                request = parsed.missing_fact_request
+                requested_kind = (
+                    str(request.get("fact_kind") or "").strip().lower()
+                    if isinstance(request, dict)
+                    else ""
+                )
+                if requested_kind and (
+                    allowed_missing_fact_kinds is not None
+                    and requested_kind not in allowed_missing_fact_kinds
+                ):
+                    continue
                 return parsed.to_dict()
         return None
+
+    @classmethod
+    def _v3_raw_protocol_audit(
+        cls,
+        result: Dict[str, Any],
+        *,
+        parsed: bool,
+    ) -> Dict[str, Any]:
+        """Keep a bounded raw-protocol trace beside the full conversation log."""
+
+        spec = cls._validation_json_output_spec_v3()
+        values: List[Any] = list(
+            cls._final_tool_payloads(result, result.get("conversation", []), spec)
+        )
+        if not values:
+            for text in (
+                str(result.get("content") or ""),
+                *[
+                    str(message.get("content") or "")
+                    for message in reversed(list(result.get("conversation", [])))
+                    if isinstance(message, dict) and message.get("role") == "assistant"
+                ],
+            ):
+                values.extend(extract_json_blocks(text))
+                if values:
+                    break
+        raw = next((dict(value) for value in values if isinstance(value, dict)), {})
+        normalized = normalize_validator_provider_payload_v3(raw)
+        audited = normalized if normalized is not None else raw
+        return {
+            "parse_status": "parsed" if parsed else "malformed",
+            "raw_verdict": str(audited.get("verdict") or ""),
+            "raw_stop_reason": str(audited.get("stop_reason") or ""),
+            "raw_missing_fact_kind": (
+                str((audited.get("missing_fact_request") or {}).get("fact_kind") or "")
+                if isinstance(audited.get("missing_fact_request"), dict)
+                else ""
+            ),
+            "parsed": parsed,
+            "protocol_error": "" if parsed else "validator_result_v3_schema_or_scope_mismatch",
+            "finish_reason": str(result.get("finish_reason") or ""),
+            "raw_response": raw,
+            "provider_payload_normalized": normalized is not None,
+            "normalized_response": normalized or {},
+        }
 
     @staticmethod
     def _merge_v3_response_metadata(
@@ -608,10 +782,18 @@ class ValidatorAgent(JsonToolAgent):
         ).to_dict()
 
     @classmethod
-    def _validation_json_output_spec_v3(cls) -> JsonOutputSpec:
+    def _validation_json_output_spec_v3(
+        cls,
+        *,
+        allowed_missing_fact_kinds: Optional[set[str]] = None,
+        allowed_evidence_refs: Optional[set[str]] = None,
+    ) -> JsonOutputSpec:
         return JsonOutputSpec(
             type_name="validator_result_v3",
-            schema=validator_result_schema_v3(),
+            schema=validator_result_provider_schema_v3(
+                allowed_missing_fact_kinds=allowed_missing_fact_kinds,
+                allowed_evidence_refs=allowed_evidence_refs,
+            ),
             final_tool_name="emit_validator_result_v3",
             final_tool_description="Emit the strict Z-Scope ValidatorResult v3 object.",
             validator=lambda data: parse_validator_result_v3(data) is not None,
@@ -653,13 +835,16 @@ class ValidatorAgent(JsonToolAgent):
         allowed_refs = set(catalog) if isinstance(catalog, dict) else set()
         decision_facts = evidence_slice.get("decision_facts")
         decision_facts = decision_facts if isinstance(decision_facts, dict) else {}
-        raw_missing = decision_facts.get("missing_fact_kinds")
+        raw_missing = evidence_slice.get("allowed_missing_fact_kinds")
+        candidate_policy_present = isinstance(raw_missing, list)
+        if not candidate_policy_present:
+            raw_missing = decision_facts.get("missing_fact_kinds")
         allowed_fact_kinds = {
             str(value).strip().lower()
             for value in (raw_missing if isinstance(raw_missing, list) else [])
             if str(value).strip()
         }
-        if not allowed_fact_kinds:
+        if not allowed_fact_kinds and not candidate_policy_present:
             allowed_fact_kinds = {
                 "guard_dominance",
                 "caller_contract",
@@ -676,6 +861,15 @@ class ValidatorAgent(JsonToolAgent):
                 "type_layout",
             }
         iteration_limit = max(1, min(50, int(max_iterations or 50)))
+        if input_data.get("autonomous_validation") is True:
+            # Providers remain accelerators, not a limit on the questions a
+            # Validator may resolve from current read-only source evidence.
+            from ...core.validation.evidence_completion import SUPPORTED_FACT_KINDS
+            allowed_fact_kinds |= set(SUPPORTED_FACT_KINDS) | {
+                "counterexample", "uninitialized_on_reachable_path",
+                "overflow_value_reachable", "overflow_reaches_security_sink",
+                "runtime_bound_controllable", "safe_upper_bound_absent",
+            }
         aggregate: Dict[str, Any] = {
             "context_tokens": 0,
             "cumulative_prompt_tokens": 0,
@@ -730,6 +924,15 @@ class ValidatorAgent(JsonToolAgent):
                                 "Evidence-backed fact summary written in Simplified Chinese."
                             ),
                         },
+                        "claim_scope": {
+                            "type": "string",
+                            "enum": ["candidate_premise", "all_paths", "all_accessors"],
+                            "description": "For counterexample facts: whether a concrete premise is refuted or a universal absence/cleanup claim is made.",
+                        },
+                        "subject_uid": {
+                            "type": "string",
+                            "description": "For counterexample facts, copy the exact candidate subject UID; evidence must concern this object.",
+                        },
                     },
                     "required": ["fact_kind", "evidence_refs", "summary"],
                 },
@@ -769,6 +972,20 @@ class ValidatorAgent(JsonToolAgent):
                 "write every free-text field (reasoning, evidence items, fact summaries, "
                 "missing-fact reasons) in Simplified Chinese while keeping file paths, symbols, "
                 "and evidence ref UIDs unchanged.\n\n"
+            )
+        if input_data.get("autonomous_validation") is True:
+            session_directive += (
+                f"Candidate subject UID: {input_data.get('candidate_subject_uid') or 'unknown'}. "
+                "Autonomous candidate investigation: formulate both a concrete defect witness "
+                "and a competing explanation before choosing what to read next. Follow relevant "
+                "callers, callees, object transfers and lifecycle endpoints in the current build. "
+                "Do not wait for a named fact provider. Record each resolved premise with its "
+                "actual tool evidence; assumptions and unresolved contradictions remain uncertain. "
+                "For a rejection, record a counterexample fact with subject_uid and claim_scope refuting THIS obligation, not a "
+                "claim that the whole function is safe. Universal cleanup or protection claims "
+                "also require cleanup_coverage or lockset/happens_before facts covering the "
+                "relevant scope. A snippet, failed search or no observed bug cannot establish "
+                "absence. Keep unrelated root causes as investigation leads.\n\n"
             )
         if review_enabled:
             session_directive += (
@@ -829,12 +1046,21 @@ class ValidatorAgent(JsonToolAgent):
                 summary = str(args.get("summary") or "").strip()
                 if not summary or len(summary) > 1000:
                     return {"success": False, "error": "fact summary is invalid"}
+                subject_uid = str(args.get("subject_uid") or "")
+                if fact_kind == "counterexample" and (
+                    not subject_uid or subject_uid != input_data.get("candidate_subject_uid")
+                    or not input_data.get("candidate_build_context_id")
+                ):
+                    return {"success": False, "error": "counterclaim requires the current exact object and build"}
                 backing = [tool_fact_catalog[ref] for ref in refs]
                 payload = {
                     "cluster": cluster_uid,
                     "fact_kind": fact_kind,
                     "evidence_refs": sorted(refs),
                     "summary": summary,
+                    "claim_scope": str(args.get("claim_scope") or ""),
+                    "subject_uid": subject_uid,
+                    "build_context_id": str(input_data.get("candidate_build_context_id") or ""),
                     "dependency_hashes": sorted(
                         {str(value.get("dependency_code_hash") or "") for value in backing}
                     ),
@@ -849,6 +1075,9 @@ class ValidatorAgent(JsonToolAgent):
                     "fact_uid": fact_uid,
                     "fact_kind": fact_kind,
                     "summary": summary,
+                    "claim_scope": payload["claim_scope"],
+                    "subject_uid": payload["subject_uid"],
+                    "build_context_id": payload["build_context_id"],
                     "evidence_refs": sorted(refs),
                     "producer_engine": "validator_readonly_tool_session",
                     "dependency_code_hash": hashlib.sha256(
@@ -1034,11 +1263,16 @@ class ValidatorAgent(JsonToolAgent):
                 tool_executor=session_executor,
                 preserve_reasoning_metadata=True,
             )
+        except CancellationError:
+            raise
         except Exception as exc:
             logger.warning("Validator V3 investigation failed: %s", exc)
             result = {}
         self._merge_result_metadata(aggregate, result)
-        aggregate["validator_api_call_count"] = int(aggregate.get("iterations", 0) or 0)
+        window_exceeded = result.get("finish_reason") == "context_window_exceeded"
+        if window_exceeded:
+            aggregate["validator_context_window_exceeded"] = True
+            aggregate["finish_reason"] = "context_window_exceeded"
         aggregate["validator_investigation_trajectory_count"] = 1
         aggregate["validator_investigation_facts"] = investigation_facts
         aggregate["validator_tool_fact_catalog"] = tool_fact_catalog
@@ -1061,10 +1295,20 @@ class ValidatorAgent(JsonToolAgent):
             cluster_uid=cluster_uid,
             expected_pass=pass_kind,
             allowed_refs=sorted(allowed_refs),
+            allowed_missing_fact_kinds=allowed_fact_kinds,
+        )
+        aggregate["validator_protocol_audit"] = self._v3_raw_protocol_audit(
+            result,
+            parsed=parsed is not None,
         )
         self._finalize_slice_metadata(aggregate)
+        aggregate["validator_api_call_count"] = int(
+            result.get("api_call_count", aggregate.get("iterations", 0)) or 0
+        )
         if review_enabled:
             parsed = accepted_review.get("decision")
+        if window_exceeded:
+            parsed = None
         if parsed is None:
             return AgentResponse(
                 success=True,
@@ -1073,7 +1317,12 @@ class ValidatorAgent(JsonToolAgent):
                     cluster_uid,
                     pass_kind,
                     stop_reason="investigation_exhausted",
-                    reasoning="Targeted investigation ended without a valid terminal decision.",
+                    reasoning=(
+                        "Required context could not fit the configured model windows; "
+                        "investigation evidence was retained without a terminal decision."
+                        if window_exceeded
+                        else "Targeted investigation ended without a valid terminal decision."
+                    ),
                 ),
                 metadata=aggregate,
             )
@@ -1178,6 +1427,8 @@ class ValidatorAgent(JsonToolAgent):
                 },
                 metadata=dict(token_metadata),
             )
+        except CancellationError:
+            raise
         except Exception as exc:
             self._finalize_slice_metadata(token_metadata)
             return AgentResponse(
@@ -1221,6 +1472,8 @@ class ValidatorAgent(JsonToolAgent):
                 max_iterations=1,
                 trace_label=f"fast_path; finding={str(finding)[:120]}",
             )
+        except CancellationError:
+            raise
         except Exception as exc:
             logger.debug("Validator fast path failed before fallback: %s", exc)
             return None
@@ -1481,6 +1734,8 @@ class ValidatorAgent(JsonToolAgent):
                 data = json.loads(finding)
                 if isinstance(data, dict):
                     return str(data.get("id") or data.get("issue_id") or "unknown")
+            except CancellationError:
+                raise
             except Exception:
                 return "unknown"
         return "unknown"
@@ -1591,6 +1846,8 @@ class ValidatorAgent(JsonToolAgent):
             return None
         try:
             data = json.loads(arguments)
+        except CancellationError:
+            raise
         except Exception:
             return None
         return data if isinstance(data, dict) else None

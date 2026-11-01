@@ -29,6 +29,7 @@ from zscope.config.editor import (
 )
 from zscope.config.v3 import parse_user_config_v3
 from zscope.config.v3_preparation import prepare_saved_config
+from zscope.config.user_config_workbook import SHEET_HEADERS, UserConfigWorkbook
 from zscope.web.services import ConfigService
 
 
@@ -48,14 +49,14 @@ def _v3_document(
             }
         },
         "project": {
-            "root": ".",
             "language": language,
             "platform": "linux_user",
             "targets": targets if targets is not None else [{"id": "main"}],
         },
-        "scan": {"preset": "quick" if language == "java" else "overnight"},
+        "scan": {"preset": "fast" if language == "java" else "deep"},
     }
     if language == "c_cpp" and targets is None:
+        document["project"]["semantics_file"] = "zscope.semantics.yaml"
         document["project"]["targets"] = [
             {"id": "main", "compile_commands": "build/compile_commands.json"}
         ]
@@ -64,7 +65,7 @@ def _v3_document(
     return document
 
 
-def _v2_document(root: str = ".") -> dict:
+def _v2_document() -> dict:
     return {
         "config_version": 2,
         "llms": {
@@ -74,7 +75,7 @@ def _v2_document(root: str = ".") -> dict:
                 "api_key": "dummy-api-key-material",
             }
         },
-        "project": {"root": root, "source_root": ".", "language": "c_cpp"},
+        "project": {"language": "c_cpp"},
         "scan": {"task": ""},
         "indexing": {"backend": "regex"},
         "concurrency": {
@@ -90,6 +91,15 @@ def _v2_document(root: str = ".") -> dict:
 
 
 def _write(root: Path, data: dict, name: str = "zscope.yaml") -> Path:
+    if data.get("project", {}).get("semantics_file"):
+        (root / str(data["project"]["semantics_file"])).write_text(
+            "schema_version: zscope.project-semantics.v1\n"
+            "interfaces: []\n"
+            "dispatchers: []\n"
+            "function_pointer_bindings: []\n"
+            "discovery_receipt: {}\n",
+            encoding="utf-8",
+        )
     path = root / name
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
@@ -168,7 +178,7 @@ def test_cli_prepare_v3_text_output_names_every_target_and_refuses_start(
     assert "目标 1/2 alpha" in output
     assert "目标 2/2 beta" in output
     assert "存在" in output and "缺失" in output
-    assert "预设：overnight" in output and "deep" in output
+    assert "预设：deep" in output and "deep" in output
     assert "已声明未消费" in output
     assert "停止边界：Asia/Taipei 08:00 -> " in output
     assert "启动：不可用" in output
@@ -176,7 +186,7 @@ def test_cli_prepare_v3_text_output_names_every_target_and_refuses_start(
     assert "仅检查本地配置和文件" in output
 
 
-def test_cli_prepare_v3_single_target_is_startable(
+def test_cli_prepare_v3_single_target_requires_initial_semantic_review(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = _materialize_cpp_project(tmp_path / "proj")
@@ -187,7 +197,7 @@ def test_cli_prepare_v3_single_target_is_startable(
 
     assert result.exit_code == 0, result.output
     assert "目标 1/1 main" in result.output
-    assert "启动：当前配置可启动扫描" in result.output
+    assert "project_semantics_not_ready" in result.output
 
 
 def test_cli_prepare_v3_java_has_no_compile_database(
@@ -247,7 +257,7 @@ def test_cli_validate_v3_single_target_reports_execution_and_unconsumed_fields(
 
     assert result.exit_code == 0, result.output
     assert "Valid config v3" in result.output
-    assert "preset=overnight" in result.output
+    assert "preset=deep" in result.output
     assert "Execution: composes into the current single-target chain" in result.output
     declared = [line for line in result.output.splitlines() if "Declared, not yet consumed" in line]
     assert declared
@@ -294,7 +304,13 @@ def test_init_round_trips_from_a_different_working_directory(
     assert result.exit_code == 0, result.output
     raw = yaml.safe_load(output.read_text(encoding="utf-8"))
     assert raw["config_version"] == 3
-    assert raw["project"]["root"] == "."
+    assert "root" not in raw["project"] and "source_root" not in raw["project"]
+    assert raw["project"]["semantics_file"] == "zscope.semantics.yaml"
+    semantics = yaml.safe_load(
+        (project / "zscope.semantics.yaml").read_text(encoding="utf-8")
+    )
+    assert semantics["schema_version"] == "zscope.project-semantics.v1"
+    assert semantics["interfaces"] == []
 
     third = tmp_path / "third"
     third.mkdir()
@@ -316,6 +332,99 @@ def test_init_round_trips_from_a_different_working_directory(
     assert config.user_config_version == 3
 
 
+def test_init_refuses_when_only_the_semantics_target_already_exists(
+    tmp_path: Path,
+) -> None:
+    project = _materialize_cpp_project(tmp_path / "engine")
+    semantics = project / "zscope.semantics.yaml"
+    semantics.write_text("reviewer-owned\n", encoding="utf-8")
+    output = project / "zscope.yaml"
+
+    result = CliRunner().invoke(
+        init_main,
+        ["--project-root", str(project), "--output", str(output), "--no-interactive"],
+    )
+
+    assert result.exit_code != 0
+    assert "refusing to overwrite" in result.output
+    assert not output.exists()
+    assert semantics.read_text(encoding="utf-8") == "reviewer-owned\n"
+
+
+def test_migrate_semantics_preserves_xlsx_and_reports_removed_context(
+    tmp_path: Path,
+) -> None:
+    project = _materialize_cpp_project(tmp_path / "engine")
+    document = _v3_document()
+    document["project"].pop("semantics_file")
+    config = project / "zscope.yaml"
+    config.write_text(
+        yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+    workbook_path = project / "legacy.xlsx"
+    rows = {name: [] for name in SHEET_HEADERS}
+    rows["resource"] = [
+        {
+            "symbol_name": "project_alloc",
+            "kind": "allocator",
+            "symbol_type": "function",
+            "pair": "project_free",
+            "source": "user",
+            "status": "active",
+            "contract": '{"carrier":{"kind":"return"},"resource_family":"heap"}',
+        },
+        {
+            "symbol_name": "project_free",
+            "kind": "deallocator",
+            "symbol_type": "function",
+            "source": "user",
+            "status": "active",
+            "contract": '{"carrier":{"kind":"argument","argument_index":0},"resource_family":"heap"}',
+        },
+    ]
+    rows["module_lifecycle"] = [{"symbol_name": "module_init", "kind": "init"}]
+    rows["function_intents"] = [
+        {"symbol_name": "parse_input", "intents": "untrusted request"}
+    ]
+    UserConfigWorkbook(workbook_path).write_rows(rows)
+    original = workbook_path.read_bytes()
+
+    result = CliRunner().invoke(
+        config_main,
+        [
+            "migrate-semantics",
+            "--config",
+            str(config),
+            "--from-xlsx",
+            str(workbook_path),
+            "--output",
+            "zscope.semantics.yaml",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert workbook_path.read_bytes() == original
+    migrated = yaml.safe_load(
+        (project / "zscope.semantics.yaml").read_text(encoding="utf-8")
+    )
+    assert {row["selector"]["name"] for row in migrated["interfaces"]} == {
+        "project_alloc",
+        "project_free",
+    }
+    assert all(row["status"] == "pending" for row in migrated["interfaces"])
+    assert yaml.safe_load(config.read_text(encoding="utf-8"))["project"][
+        "semantics_file"
+    ] == "zscope.semantics.yaml"
+    report = json.loads(
+        (project / "zscope.semantics.migration-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["source_preserved"] is True
+    assert report["removed"]["module_lifecycle"][0]["symbol_name"] == "module_init"
+    assert report["removed"]["function_intents"][0]["symbol_name"] == "parse_input"
+
+
 def test_init_anchors_root_to_the_config_file_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -335,14 +444,9 @@ def test_init_anchors_root_to_the_config_file_directory(
         ],
     )
 
-    assert result.exit_code == 0, result.output
-    output = project / "conf" / "zscope.yaml"
-    raw = yaml.safe_load(output.read_text(encoding="utf-8"))
-    assert raw["project"]["root"] == ".."
-    monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "http://localhost/v1")
-    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "unit-model")
-    monkeypatch.setenv("Z_SCOPE_API_KEY", "unit-key")
-    assert parse_user_config_v3(str(output)).project.root == project.resolve()
+    assert result.exit_code != 0
+    assert "--output must be directly inside --project-root" in result.output
+    assert not (project / "conf" / "zscope.yaml").exists()
 
 
 def test_init_refuses_a_preset_that_the_language_has_not_opened(tmp_path: Path) -> None:
@@ -359,7 +463,7 @@ def test_init_refuses_a_preset_that_the_language_has_not_opened(tmp_path: Path) 
             "--language",
             "java",
             "--preset",
-            "overnight",
+            "deep",
             "--no-interactive",
         ],
     )
@@ -386,7 +490,7 @@ def test_init_preserves_yaml_sensitive_project_paths(
     project = tmp_path / dirname
     project.mkdir()
     (project / "unit.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    config = tmp_path / "configs" / "zscope.yaml"
+    config = project / "zscope.yaml"
     monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "http://dummy-endpoint.invalid/v1")
     monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "dummy-model-name")
     monkeypatch.setenv("Z_SCOPE_API_KEY", "dummy-api-key-material")
@@ -414,7 +518,7 @@ def test_init_preserves_yaml_sensitive_project_paths(
 
 
 @pytest.mark.parametrize("dirname", ["100", "true", "null"])
-def test_init_keeps_numeric_and_boolean_looking_roots_as_strings(
+def test_init_handles_numeric_and_boolean_looking_project_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dirname: str
 ) -> None:
     # A project directory named 100/true/null sits directly under the config
@@ -423,7 +527,7 @@ def test_init_keeps_numeric_and_boolean_looking_roots_as_strings(
     project = tmp_path / dirname
     project.mkdir()
     (project / "unit.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    config = tmp_path / "zscope.yaml"
+    config = project / "zscope.yaml"
     monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "http://dummy-endpoint.invalid/v1")
     monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "dummy-model-name")
     monkeypatch.setenv("Z_SCOPE_API_KEY", "dummy-api-key-material")
@@ -496,7 +600,7 @@ def test_init_interactive_prompts_preserve_yaml_sensitive_database_paths(
             str(output),
             "--interactive",
         ],
-        input="\n".join(["c_cpp", "main", database, "overnight"]) + "\n",
+        input="\n".join(["c_cpp", "main", database, "deep"]) + "\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -534,22 +638,21 @@ def test_init_round_trips_a_newline_inside_a_target_id(
     assert parse_user_config_v3(str(output)).project.targets[0].id == target_id
 
 
-def test_v3_root_anchors_to_the_config_directory_while_v2_depends_on_the_cwd(
+def test_v2_and_v3_share_the_same_config_directory_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "proj"
     project.mkdir()
-    v2_path = _write(project, _v2_document(root="."), name="zscope_v2.yaml")
+    v2_path = _write(project, _v2_document(), name="zscope_v2.yaml")
     v3_path = _write(project, _v3_document(), name="zscope.yaml")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
 
-    # v2 resolves a relative root against the loading process CWD: the same
-    # file points at a different project from another directory.
+    # Both versions preserve the loaded file directory regardless of CWD.
     v2 = ConfigLoader.load(str(v2_path), read_only=True)
-    assert v2.project.project_root == elsewhere.resolve()
-    # v3 anchors the same spelling to the configuration file directory.
+    assert v2.project.project_root == project.resolve()
+    # The v3 formal model exposes the same computed root.
     assert parse_user_config_v3(str(v3_path)).project.root == project.resolve()
 
 
@@ -628,10 +731,8 @@ def test_editor_invalid_save_never_overwrites_the_saved_file(tmp_path: Path) -> 
 
 
 def test_editor_validates_v3_candidates_in_the_configuration_directory(tmp_path: Path) -> None:
-    # A candidate with a relative root must resolve against the real config
-    # directory, so the same-directory temporary file is load-bearing.
+    # Same-directory candidates preserve the sole project directory.
     document = _v3_document()
-    document["project"]["root"] = "."
     text = yaml.safe_dump(document, sort_keys=False)
 
     validate_document_text(text, config_dir=tmp_path)
@@ -640,7 +741,7 @@ def test_editor_validates_v3_candidates_in_the_configuration_directory(tmp_path:
     elsewhere.mkdir()
     # Wrong on purpose: Java targets must not declare a compile database.
     document["project"]["language"] = "java"
-    document["scan"]["preset"] = "quick"
+    document["scan"]["preset"] = "fast"
     document["project"]["targets"] = [{"id": "main", "compile_commands": "build/db.json"}]
     bad_java = yaml.safe_dump(document, sort_keys=False)
     with pytest.raises(ValueError, match="not valid for Java"):

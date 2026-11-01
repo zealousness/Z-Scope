@@ -41,10 +41,10 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     help="Path to config file (zscope.yaml).",
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
-@click.option("--dashboard", "-d", is_flag=True, help="Launch the web dashboard to view results.")
+@click.option("--web", "--dashboard", "-d", "dashboard", is_flag=True, help="Open the Web project picker; --config is optional.")
 @click.option(
     "--dashboard-host",
-    default="0.0.0.0",
+    default="127.0.0.1",
     show_default=True,
     help="Host/IP to bind for --dashboard.",
 )
@@ -104,7 +104,7 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     "--diff-repo-root",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     default=None,
-    help="Optional git worktree root for diff impact mode. Defaults to project.source_root auto-detection.",
+    help="Optional git worktree root for diff impact mode. Defaults to the YAML directory.",
 )
 @click.option(
     "--diff-path",
@@ -112,10 +112,16 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     help="Limit diff impact mode to changed files under this path. Repeat for multiple paths.",
 )
 @click.option(
+    "--discover-primitives",
+    is_flag=True,
+    default=False,
+    help="Discover project interfaces derived from reviewed C/C++ primitives, write pending YAML rows, then exit.",
+)
+@click.option(
     "--infer-user-config",
     is_flag=True,
     default=False,
-    help="Infer/update the human-editable user_config.xlsx and exit.",
+    help="Deprecated alias for --discover-primitives; writes zscope.semantics.yaml, never XLSX.",
 )
 @click.option(
     "--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio."
@@ -191,6 +197,7 @@ def main(
     diff_head: str,
     diff_repo_root: Optional[Path],
     diff_path: tuple[str, ...],
+    discover_primitives: bool,
     infer_user_config: bool,
     mcp_stdio: bool,
     mcp_profile: str,
@@ -223,6 +230,7 @@ def main(
                 build_cpg,
                 plan_entries,
                 infer_user_config,
+                discover_primitives,
                 resume,
                 maintain,
                 discover_entries,
@@ -258,47 +266,12 @@ def main(
     if dashboard:
         logger.info("Launching dashboard...")
         from ..web.server import run_server
-        from ..config.user_config_store import UserConfigStore
-        from ..snapshots.store import SnapshotStore
-
-        if not config:
-            config = Path("zscope.yaml")
-        if not config.is_file():
-            raise click.ClickException(
-                "configuration not found; pass --config or create ./zscope.yaml"
-            )
-        zscope_config = ConfigLoader.load(str(config), scan_depth=scan_depth)
-        cfg = zscope_config.indexing
-        # 通过 CodeIndex 创建后端，保持统一入口
-        dashboard_code_index = CodeIndex(
-            zscope_config.project.project_root,
-            zscope_config.project.compile_commands_path,
-            source_root=zscope_config.project.source_root,
-            indexing_config=cfg,
-            include_paths=zscope_config.project.include_paths,
-            exclude_paths=zscope_config.project.exclude_paths,
-            wait_for_cpg=False,
-            svf_parallel_workers=(
-                zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
-            ),
-        )
-        db_dir = (
-            Path(zscope_config.analysis.user_config_db)
-            if zscope_config.analysis.user_config_db
-            else Path(zscope_config.analysis.snapshot_dir)
-        )
-        ucs = UserConfigStore(db_dir)
-        snapshot_store = SnapshotStore.from_config(zscope_config)
-
         run_server(
-            code_index=dashboard_code_index,
-            user_config_store=ucs,
-            project_config=zscope_config.project,
-            snapshot_store=snapshot_store,
             config_path=config,
             scan_depth=scan_depth,
             host=dashboard_host,
             port=dashboard_port,
+            project_picker=True,
         )
         sys.exit(0)
 
@@ -376,74 +349,25 @@ def main(
                 sys.exit(1)
             sys.exit(0)
 
-        if infer_user_config:
-            from ..config.user_config_store import UserConfigStore
-            from ..config.function_entry import FunctionEntry
-            from ..core.analysis.analyzer import Analyzer
-
-            click.echo("Building interface contracts with the shared incremental modeling stage...")
-            code_index = CodeIndex(
-                zscope_config.project.project_root,
-                zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
-                indexing_config=zscope_config.indexing,
-                include_paths=zscope_config.project.include_paths,
-                exclude_paths=zscope_config.project.exclude_paths,
-                wait_for_cpg=True,
-                defer_svf=True,
-                svf_parallel_workers=zscope_config.concurrency.svf_workers
-                or zscope_config.concurrency.index_workers,
-            )
-            workbook_path = _resolve_user_config_workbook_path(zscope_config)
-            helper = Analyzer(
-                zscope_config,
-                code_index=code_index,
-                user_config=UserConfigStore(workbook_path),
-                write_root_reports=False,
-            )
-            try:
-                entries = []
-                for name in code_index.list_functions(limit=2_147_483_647):
-                    infos = code_index.find_function_infos(name)
-                    for info in infos:
-                        entries.append(
-                            FunctionEntry(
-                                function_name=str(info.get("function_name") or name),
-                                file_path=str(info.get("file_path") or ""),
-                                signature=str(info.get("signature") or ""),
-                            )
-                        )
-                result = helper.prepare_semantics(entries)
-                from ..orchestration.user_config_inference import infer_user_config_rows
-
-                generated = infer_user_config_rows(
-                    code_index, Path(zscope_config.analysis.snapshot_dir)
+        if discover_primitives or infer_user_config:
+            if infer_user_config:
+                click.echo(
+                    "Warning: --infer-user-config is deprecated; using --discover-primitives "
+                    "and the YAML project-semantics authority.",
+                    err=True,
                 )
-                ancillary = {
-                    sheet: rows
-                    for sheet, rows in generated.items()
-                    if sheet not in {"resource", "lock"}
-                }
-                workbook = UserConfigStore(workbook_path).workbook
-                merge_stats = workbook.merge_generated(ancillary)
-                _write_user_config_infer_report(
-                    workbook_path.with_suffix(".infer_report.md"),
-                    workbook.read_rows(),
-                    {},
-                    {},
-                    merge_stats,
-                    read_warnings=workbook.read_warnings,
+            if discover_primitives and infer_user_config:
+                raise click.UsageError(
+                    "--discover-primitives and its deprecated alias cannot be supplied together"
                 )
-                if result is not None:
-                    click.echo(
-                        f"Modeling: {result.stats.modeled_functions} rebuilt, {result.stats.cache_hit_functions} reused, {result.stats.failed_functions} failed."
-                    )
-                    click.echo(f"Semantic contract version: {result.contract_version}")
-                    click.echo("Coverage: partial" if result.partial else "Coverage: complete")
-                click.echo(f"User config workbook: {workbook_path}")
-            finally:
-                helper.close()
-                code_index.close()
+            from ..orchestration.primitive_preparation import run_preparation
+
+            result = run_preparation(
+                zscope_config, progress=lambda stage, details: click.echo(f"{stage}: {details}")
+            )
+            receipt, merge = result["receipt"], result["merge"]
+            click.echo(f"Primitive discovery complete: {receipt['interface_candidates']} interfaces; {merge}")
+            click.echo(f"Review {result['path']}, then run zscope-config review-semantics --complete.")
             sys.exit(0)
 
         if plan_entries:
@@ -455,7 +379,7 @@ def main(
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
+                source_root=zscope_config.project.project_root,
                 indexing_config=zscope_config.indexing,
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
@@ -473,7 +397,7 @@ def main(
                 max_functions=discovery_cfg.max_functions,
                 interface_files=discovery_cfg.interface_files or None,
                 project_root=zscope_config.project.project_root,
-                source_root=zscope_config.project.source_root,
+                source_root=zscope_config.project.project_root,
                 search_root=discovery_cfg.search_root,
             )
             plan = planner.discover(max_candidates=discovery_cfg.max_entries)
@@ -509,7 +433,7 @@ def main(
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
+                source_root=zscope_config.project.project_root,
                 indexing_config=zscope_config.indexing,
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
@@ -536,7 +460,7 @@ def main(
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
+                source_root=zscope_config.project.project_root,
                 indexing_config=zscope_config.indexing,
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
@@ -573,7 +497,7 @@ def main(
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
+                source_root=zscope_config.project.project_root,
                 indexing_config=zscope_config.indexing,
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
@@ -582,7 +506,7 @@ def main(
                 ),
             )
             adapter = SarifAdapter(
-                source_root=str(zscope_config.project.source_root),
+                source_root=str(zscope_config.project.project_root),
             )
             alerts = adapter.parse(str(sarif))
             click.echo(f"Parsed {len(alerts)} alerts from SARIF")
@@ -614,6 +538,8 @@ def main(
                 max_retries=llm_cfg.max_retries,
                 retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                 max_tokens=llm_cfg.max_tokens,
+                context_window=llm_cfg.context_window,
+                model_context_windows=llm_cfg.model_context_windows,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),
@@ -832,7 +758,7 @@ def main(
             save_sarif_report(
                 report_path,
                 export_sarif,
-                source_root=zscope_config.project.source_root,
+                source_root=zscope_config.project.project_root,
             )
 
         if session_result.is_batch:

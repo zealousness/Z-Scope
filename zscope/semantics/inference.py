@@ -306,6 +306,8 @@ def add_api_for_config_kind(
         semantics.add_api("recv_source", name, source)
     elif normalized == "format_sink":
         semantics.add_api("format_sink", name, source)
+    elif normalized == "command_sink":
+        semantics.add_api("command_sink", name, source)
     elif normalized == "callback_register":
         semantics.add_api("callback_register", name, source)
     elif normalized == "ownership_transfer":
@@ -347,6 +349,7 @@ _SNAPSHOT_VALID_ROLES = frozenset(
         "send_sink",
         "recv_source",
         "format_sink",
+        "command_sink",
         "callback_register",
         "ownership_transfer",
     }

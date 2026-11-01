@@ -17,6 +17,69 @@ from zscope.orchestration import parallel_analyzer as parallel_module
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
 
+def _fast_validation_issue(index: int, defect_class: str, group: str) -> dict:
+    return {
+        "id": f"candidate-{index}",
+        "candidate_id": f"candidate-{index}",
+        "candidate_uid": f"uid-{index}",
+        "defect_class": defect_class,
+        "candidate_priority_group": group,
+        "candidate_source": "clang_ast_cfg",
+        "rule_confidence": 0.8 + (index % 10) / 100,
+        "impact_level": "high",
+        "evidence_pack": {
+            "candidate_source": "clang_ast_cfg",
+            "path": {"complete_in_function": True},
+        },
+    }
+
+
+def test_fast_validation_admission_is_complete_and_deterministic() -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer._uses_scoped_fast_static_pass = lambda: True
+    issues = [
+        _fast_validation_issue(
+            index,
+            "double_free" if index == 118 else "race" if index == 119 else "memory_leak",
+            "exact_sink" if index % 3 == 0 else "semantic_suspicious_point",
+        )
+        for index in range(120)
+    ]
+
+    admitted, deferred, telemetry = analyzer._partition_fast_validation_queue(issues, max_groups=32)
+
+    assert len(admitted) == 120
+    assert deferred == []
+    assert {issue["defect_class"] for issue in admitted} == {
+        "memory_leak",
+        "double_free",
+        "race",
+    }
+    assert telemetry["eligible"] == 120
+    assert telemetry["policy"] == "zscope.fast-validator-decision-ready.v2"
+    assert telemetry["max_groups"] is None
+    assert telemetry["admitted"] == 120
+    assert telemetry["deferred_to_needs_review"] == 0
+    assert [issue["id"] for issue in admitted] == [
+        issue["id"] for issue in analyzer._partition_fast_validation_queue(issues, max_groups=32)[0]
+    ]
+
+
+def test_non_fast_validation_queue_is_not_capped() -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer._uses_scoped_fast_static_pass = lambda: False
+    issues = [
+        _fast_validation_issue(index, "memory_leak", "semantic_suspicious_point")
+        for index in range(40)
+    ]
+
+    admitted, deferred, telemetry = analyzer._partition_fast_validation_queue(issues, max_groups=4)
+
+    assert len(admitted) == 40
+    assert deferred == []
+    assert telemetry["deferred_to_needs_review"] == 0
+
+
 class FakeCodeIndex:
     pass
 
@@ -46,7 +109,6 @@ def _config(
         ),
         project=ProjectConfig(
             project_root=tmp_path,
-            source_root=tmp_path,
             agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
         ),
         concurrency=ConcurrencyConfig(entry_workers=1),

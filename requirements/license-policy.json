@@ -18,6 +18,8 @@
     "pydantic-core": "MIT",
     "pyyaml": "MIT",
     "requests": "Apache-2.0",
+    "ruamel-yaml": "MIT",
+    "ruamel-yaml-clib": "MIT",
     "sniffio": "MIT OR Apache-2.0",
     "tqdm": "MPL-2.0 AND MIT",
     "typing-extensions": "PSF-2.0",

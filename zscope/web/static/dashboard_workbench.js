@@ -22,6 +22,7 @@ window.ZScopeWorkbench = {
   destroy() {
     this.jobDestroyed = true;
     clearTimeout(this.jobTimer);
+    clearInterval(this.scheduleTimer);
     this.jobRequest++; this.jobListRequest++; this.acceptanceRequest++; this.dispositionRequest++;
   },
   scheduleJobPoll() {
@@ -161,11 +162,11 @@ window.ZScopeWorkbench = {
     } catch (error) { if (request === this.jobRequest) this.jobEventsError = error.message; }
   },
   isV3Config() { return !!this.preparation?.version3 || this.structuredConfig?.config_version === 3; },
-  preparationStartAllowed() { return !this.preparation?.version3 || this.preparation.version3.start_capability?.startable === true; },
+  preparationStartAllowed() { return this.preparation?.project_semantics?.ready !== false && (!this.preparation?.version3 || this.preparation.version3.start_capability?.startable === true); },
   canStartJob() { return this.jobsReady && this.jobCapabilities.create === true && !!this.preparation && this.preparationStartAllowed() && !this.configDirty && !this.configSaving && !this.configLoading && !this.preparationLoading && !this.jobBusy && !this.jobCommand; },
-  presetLabel(value) { return ({quick: '快速检查', overnight: '夜间分析', deep: '深入分析'})[value] || value || '未指定'; },
+  presetLabel(value) { return ({fast: '快速', balanced: '均衡', deep: '深度'})[value] || value || '未指定'; },
   declaredFieldLabel(field) { return ({'project.platform': '目标运行平台', 'project.targets': '多个构建目标', 'scan.focus': '扫描重点', 'scan.reproduction': '自动复现', 'execution.max_workers': '最大工作数', 'execution.timezone': '运行时区', 'execution.stop_at': '配置停止时间'})[field] || field; },
-  capabilityReason(reason) { return ({multi_target_execution_unwired: '多目标执行尚未接入。请在配置文件中明确选择一个目标，再重新检查。', project_scan_active: '本工程已有活动作业，可在夜间作业页查看。', cancel_in_progress: '停止请求正在处理。', terminal_state: '本次运行已结束。', job_active: '本次运行尚未结束。', already_completed: '本次运行已完成，可查看结果或新建作业。', invalid_state: '当前作业状态不支持此操作。'})[reason?.code] || reason?.message || '当前操作不可用'; },
+  capabilityReason(reason) { return ({multi_target_execution_unwired: '多目标执行尚未接入。请在配置文件中明确选择一个目标，再重新检查。', project_scan_active: '本工程已有活动作业，可在运行与历史中查看。', cancel_in_progress: '停止请求正在处理。', terminal_state: '本次运行已结束。', job_active: '本次运行尚未结束。', already_completed: '本次运行已完成，可查看结果或新建作业。', invalid_state: '当前作业状态不支持此操作。'})[reason?.code] || reason?.message || '当前操作不可用'; },
   jobErrorText(error) { return ({cancelled: '已按请求停止；请核对保留的结果与未完成范围。', stop_window_reached: '已到本轮停止时间，扫描未完成。', scan_incomplete: '扫描已退出，仍有未完成范围。', scan_failed: '扫描进程执行失败，请查看本次运行产物中的日志。', owner_lost: '执行进程失联，不能认定作业已完成。'})[error?.code] || error?.message || ''; },
   jobEventText(event) {
     if (event.kind === 'job_terminal') return `运行记录已保存：${this.jobStatusText(event.data?.status)}`;
@@ -180,7 +181,7 @@ window.ZScopeWorkbench = {
     if (!this.canStartJob()) return;
     const payload = {request_id: this.workbenchId()};
     if (quick || this.workbenchDepth) payload.scan_depth = quick ? 'fast' : this.workbenchDepth;
-    if (!quick && this.workbenchStopAt) {
+    if (this.workbenchStopAt) {
       const stop = new Date(this.workbenchStopAt);
       if (Number.isNaN(stop.getTime()) || stop.getTime() <= Date.now()) { this.jobActionError = '请选择未来的本轮停止时间。'; return; }
       payload.stop_at = stop.toISOString();

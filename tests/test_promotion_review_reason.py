@@ -26,7 +26,7 @@ def _issue(**overrides):
     return issue
 
 
-def test_uncertain_below_threshold_explains_confidence_gap():
+def test_uncertain_explains_verified_claim_gap_not_confidence_gap():
     pipeline = _pipeline(uncertain_confirm_threshold=0.9)
     issue = _issue()
     val_data = {"verdict": "uncertain", "confidence_score": 0.62, "reasoning": "证据不足"}
@@ -36,11 +36,12 @@ def test_uncertain_below_threshold_explains_confidence_gap():
     assert outcome.memory_status == "needs_review"
     reason = issue["promotion_review_reason"]
     assert "uncertain" in reason
-    assert "0.62" in reason
-    assert "0.90" in reason
+    assert "verified" in reason
+    assert "0.62" not in reason
+    assert "0.90" not in reason
 
 
-def test_uncertain_with_disabled_promotion_channel_names_the_knob():
+def test_uncertain_does_not_advertise_a_score_promotion_knob():
     pipeline = _pipeline()
     issue = _issue()
     val_data = {"verdict": "uncertain", "confidence_score": 0.95, "reasoning": ""}
@@ -48,7 +49,8 @@ def test_uncertain_with_disabled_promotion_channel_names_the_knob():
         issue, val_data, verdict="uncertain", score_data={"final_score": 0.9}
     )
     reason = issue["promotion_review_reason"]
-    assert "validation_uncertain_confirm_threshold" in reason
+    assert "verified" in reason
+    assert "validation_uncertain_confirm_threshold" not in reason
 
 
 def test_uncertain_with_negative_evidence_names_it():
@@ -79,7 +81,7 @@ def test_uncertain_with_missing_facts_names_them():
     assert "caller_contract" in reason
 
 
-def test_verified_low_score_explains_score_gap():
+def test_verified_low_score_explains_evidence_gap_not_score_gap():
     pipeline = _pipeline()
     issue = _issue()
     outcome = pipeline.apply_validator_result(
@@ -95,9 +97,10 @@ def test_verified_low_score_explains_score_gap():
     assert outcome.memory_status == "needs_review"
     reason = issue["promotion_review_reason"]
     assert "verified" in reason
-    assert "0.42" in reason
-    assert "0.60" in reason
-    assert "0.40" in reason
+    assert "类型化验证义务" in reason
+    assert "0.42" not in reason
+    assert "0.60" not in reason
+    assert "0.40" not in reason
 
 
 def test_verified_with_negative_evidence_names_it():
@@ -165,7 +168,8 @@ def test_corrected_category_review_reason():
         corrected_category="use_after_free",
     )
     assert "use_after_free" in reason
-    assert "0.62" in reason
+    assert "类型化义务" in reason
+    assert "0.62" not in reason
 
 
 def test_unvalidated_issue_explains_missing_validator():

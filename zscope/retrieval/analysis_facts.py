@@ -86,6 +86,16 @@ def index_context_key(index: Any) -> tuple[Any, ...]:
             )
         except OSError:
             command_hash = "unavailable:" + str(path)
+    pinned_context = str(getattr(index, "pinned_build_context_id", "") or "")
+    if pinned_context:
+        # A scoped facade must not expose the project-wide backend/KnowledgeDB
+        # merely to build a cache key.  The published index epoch plus the
+        # content-bound BuildContext receipt is the exact instance identity.
+        return (
+            getattr(index, "_index_epoch", 0),
+            command_hash,
+            ("instance", pinned_context),
+        )
     backend = getattr(index, "_backend", None)
     clang = getattr(backend, "_clang", None) or backend
     db = getattr(clang, "_db", None)

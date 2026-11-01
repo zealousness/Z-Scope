@@ -114,7 +114,7 @@ class ZScopeMcpProvider:
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
             config.project.compile_commands_path,
-            source_root=config.project.source_root,
+            source_root=config.project.project_root,
             indexing_config=config.indexing,
             include_paths=config.project.include_paths,
             exclude_paths=config.project.exclude_paths,
@@ -130,7 +130,10 @@ class ZScopeMcpProvider:
         )
         if tools_runtime is None:
             user_config = None
-            configured_user_file = getattr(config.project, "user_config_file", None)
+            configured_user_file = (
+                getattr(config.project, "semantics_file", None)
+                or getattr(config.project, "user_config_file", None)
+            )
             if (
                 profile == "default"
                 and configured_user_file
@@ -856,7 +859,7 @@ class ZScopeMcpProvider:
         return {
             "project": {
                 "root": str(self.config.project.project_root),
-                "source_root": str(self.config.project.source_root),
+                "source_root": str(self.config.project.project_root),
                 "entry_function": self.config.project.entry_function,
                 "entry_functions_list": str(self.config.project.entry_functions_list or ""),
                 "include_paths": [str(p) for p in self.config.project.include_paths],

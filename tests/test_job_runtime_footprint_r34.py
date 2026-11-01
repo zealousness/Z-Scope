@@ -385,15 +385,31 @@ def test_original_namespace_members_cannot_be_removed_by_filter(project, monkeyp
     assert observed["changed"] and observed["after"] == [False, False]
 
 
-def test_old_tool_without_ordinary_lookup_receipt_cannot_authorize_outputs(project):
+def test_old_tool_without_ordinary_lookup_receipt_cannot_authorize_outputs(project, monkeypatch):
     root, _store = project
-    config = _config(root)
-    config.indexing.clang_indexer_path = (
-        "/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer"
-    )
+    original = CodeIndex.get_build_contexts
+    observed = []
+
+    def old_capability(index, file_path=""):
+        rows = original(index, file_path)
+        result = []
+        for row in rows:
+            # Negative fault injection over actual current native receipts,
+            # independent of a developer's mutable tool installation path.
+            assert row["tool"]["capability"].get("include_lookup_version") == 1
+            observed.append(row)
+            copied = dict(row)
+            copied["tool"] = dict(row["tool"])
+            copied["tool"]["capability"] = dict(row["tool"]["capability"])
+            copied["tool"]["capability"].pop("include_lookup_version")
+            result.append(copied)
+        return result
+
+    monkeypatch.setattr(CodeIndex, "get_build_contexts", old_capability)
     before = _files(_run_dir(root))
-    with pytest.raises((ValueError, JobError)):
-        ScanSessionRunner(config, task_id="footprint/old-tool").run()
+    with pytest.raises(ValueError, match="include_lookup_version=1 required; rebuild"):
+        ScanSessionRunner(_config(root), task_id="footprint/old-tool").run()
+    assert observed, "actual native contexts must reach the capability rejection gate"
     assert _files(_run_dir(root)) == before
 
 
@@ -420,12 +436,13 @@ def test_missing_native_lookup_member_cannot_authorize_outputs(project, monkeypa
     assert _files(_run_dir(root)) == before
 
 
-def test_unsupported_include_next_refuses_filter_before_runtime_writes(project, monkeypatch):
+def test_include_next_allows_disjoint_runtime_outputs(project, monkeypatch):
     root, _store = project
     high, _old = _add_lookup(root, "chain.h", source_prefix="#include <chain.h>\n")
     high.mkdir(parents=True)
     (high / "chain.h").write_text("#include_next <chain.h>\n", encoding="utf-8")
-    before = _files(high)
+    header = high / "chain.h"
+    before = _digest(header)
     plans = []
     original = ScanSessionRunner._build_entry_instance_plan
 
@@ -436,10 +453,10 @@ def test_unsupported_include_next_refuses_filter_before_runtime_writes(project, 
         return result
 
     monkeypatch.setattr(ScanSessionRunner, "_build_entry_instance_plan", plan)
-    with pytest.raises((ValueError, JobError)):
-        ScanSessionRunner(_config(root), task_id="footprint/include-next").run()
+    ScanSessionRunner(_config(root), task_id="footprint/include-next").run()
     assert plans
-    assert _files(high) == before
+    assert _digest(header) == before
+    assert (high / "pending.json").is_file()
 
 
 def test_include_next_does_not_downgrade_nonfiltered_legacy_inputs(tmp_path, monkeypatch):
@@ -462,7 +479,8 @@ def test_include_next_does_not_downgrade_nonfiltered_legacy_inputs(tmp_path, mon
                 row = json.loads(raw)[0]
                 assert row["dependencies_complete"] is True
                 if row["tool"]["capability"].get("include_lookup_version") == 1:
-                    assert row["include_lookups"]["complete"] is False
+                    assert row["include_lookups"]["complete"] is True
+                    assert row["include_lookups"]["unsupported_reasons"] == []
                 captured.append(row)
         return context
 
@@ -1073,7 +1091,7 @@ def test_store_sidecar_ordinary_lookup_conflict_precedes_store_connection(
     assert _digest(old) == old_hash and _digest(store.db_path) == database_hash
 
 
-def test_actual_has_include_next_refuses_output_filter_without_global_downgrade(
+def test_actual_has_include_next_allows_disjoint_runtime_outputs(
     project, monkeypatch
 ):
     from zscope.retrieval.build_context import context_input_status
@@ -1095,13 +1113,94 @@ def test_actual_has_include_next_refuses_output_filter_without_global_downgrade(
             assert context_input_status(row) == "current"
             lookup = row.get("include_lookups")
             assert isinstance(lookup, dict)
-            assert lookup["complete"] is False
-            assert any("__has_include_next" in reason for reason in lookup["unsupported_reasons"])
+            assert lookup["complete"] is True
+            assert lookup["unsupported_reasons"] == []
+            assert any(
+                probe.get("operator") == "__has_include_next"
+                for probe in lookup["probe_lookups"]
+            )
             observed.append(row)
         return result
 
     monkeypatch.setattr(ScanSessionRunner, "_build_entry_instance_plan", plan)
-    with pytest.raises(ValueError, match="job_runtime_output_lookup"):
-        ScanSessionRunner(_config(root), task_id="footprint/has-include-next").run()
+    ScanSessionRunner(_config(root), task_id="footprint/has-include-next").run()
     assert len(observed) == 2
-    assert _files(_run_dir(root)) == {}
+    assert (_run_dir(root) / "pending.json").is_file()
+
+
+def test_object_like_has_include_alias_has_exact_native_receipt(project, monkeypatch):
+    from zscope.retrieval.build_context import context_input_status
+
+    root, _store = project
+    _add_lookup(
+        root,
+        "aliased.lookup",
+        source_prefix=(
+            "#define EXACT_HAS_INCLUDE __has_include\n"
+            "#if EXACT_HAS_INCLUDE(<aliased.lookup>)\n"
+            "#define ALIASED_PROBE 1\n"
+            "#endif\n"
+        ),
+    )
+    original_plan = ScanSessionRunner._build_entry_instance_plan
+    observed = []
+
+    def plan(runner, state):
+        result = original_plan(runner, state)
+        for row in state["code_index"].get_build_contexts():
+            assert row["dependencies_complete"] is True
+            assert context_input_status(row) == "current"
+            lookup = row["include_lookups"]
+            probe = next(
+                item for item in lookup["probe_lookups"] if item["name"] == "aliased.lookup"
+            )
+            assert probe["operator"] == "__has_include"
+            assert lookup["complete"] is True
+            assert lookup["unsupported_reasons"] == []
+            observed.append(row)
+        return result
+
+    monkeypatch.setattr(ScanSessionRunner, "_build_entry_instance_plan", plan)
+    ScanSessionRunner(_config(root), task_id="footprint/aliased-has-include").run()
+    assert len(observed) == 2
+
+
+def test_object_like_macro_body_has_include_has_exact_native_receipt(
+    project, monkeypatch
+):
+    from zscope.retrieval.build_context import context_input_status
+
+    root, _store = project
+    _add_lookup(
+        root,
+        "macro-body.lookup",
+        source_prefix=(
+            "#define EXACT_PROBE_RESULT __has_include(<macro-body.lookup>)\n"
+            "#if EXACT_PROBE_RESULT\n"
+            "#define MACRO_BODY_PROBE 1\n"
+            "#endif\n"
+        ),
+    )
+    original_plan = ScanSessionRunner._build_entry_instance_plan
+    observed = []
+
+    def plan(runner, state):
+        result = original_plan(runner, state)
+        for row in state["code_index"].get_build_contexts():
+            assert row["dependencies_complete"] is True
+            assert context_input_status(row) == "current"
+            lookup = row["include_lookups"]
+            probe = next(
+                item
+                for item in lookup["probe_lookups"]
+                if item["name"] == "macro-body.lookup"
+            )
+            assert probe["operator"] == "__has_include"
+            assert lookup["complete"] is True
+            assert lookup["unsupported_reasons"] == []
+            observed.append(row)
+        return result
+
+    monkeypatch.setattr(ScanSessionRunner, "_build_entry_instance_plan", plan)
+    ScanSessionRunner(_config(root), task_id="footprint/macro-body-has-include").run()
+    assert len(observed) == 2

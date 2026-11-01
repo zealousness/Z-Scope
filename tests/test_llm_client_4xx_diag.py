@@ -94,8 +94,26 @@ def test_400_logs_wire_shape_diagnostics(monkeypatch, caplog) -> None:
     assert summary["tools_schema_hash"]
     assert summary["tool_schema_flags"]["type_union"] >= 1
     assert summary["tool_schema_flags"]["additionalProperties_false"] >= 1
-    assert "provider_body" in caplog.text
-    assert "max_tokens must be positive" in caplog.text
+    assert "provider_error" in caplog.text
+    assert "max_tokens rejected" in caplog.text
+    assert "max_tokens must be positive" not in caplog.text
+
+
+def test_http_error_never_persists_provider_echoed_secrets(monkeypatch, caplog) -> None:
+    client = _client()
+    response = _RejectedResponse()
+    response.text = '{"error":"invalid schema; Authorization: Bearer SECRET_KEY; PRIVATE_SOURCE"}'
+    monkeypatch.setattr(
+        client,
+        "_session_for_thread",
+        lambda: type("Session", (), {"post": lambda self, *args, **kwargs: response})(),
+    )
+    with caplog.at_level("WARNING", logger="zscope.framework.llm_client"):
+        with pytest.raises(Exception, match="HTTP 400: tool schema rejected") as failure:
+            client.chat_completion([{"role": "user", "content": "hello"}])
+    for text in (caplog.text, str(failure.value)):
+        assert "SECRET_KEY" not in text
+        assert "PRIVATE_SOURCE" not in text
 
 
 def test_400_diag_reports_json_schema_response_format(monkeypatch, caplog) -> None:

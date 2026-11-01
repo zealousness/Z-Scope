@@ -1,6 +1,13 @@
+import json
+
 import pytest
 
-from scripts.render_trial_metrics import TrialMetricsError, _read_json, render_trial_metrics
+from scripts.render_trial_metrics import (
+    TrialMetricsError,
+    _read_json,
+    _read_jsonl,
+    render_trial_metrics,
+)
 from zscope.reporting.json_io import write_json_atomic
 
 
@@ -34,3 +41,18 @@ def test_trial_metrics_reject_corrupted_shared_report(tmp_path):
 
     with pytest.raises(TrialMetricsError):
         _read_json(path)
+
+
+def test_trial_metrics_jsonl_preserves_unicode_line_separators(tmp_path):
+    path = tmp_path / "conversation.jsonl"
+    rows = [
+        {"event": "exchange", "content": "before\u2028middle\u2029after"},
+        {"event": "session_end", "iterations": 1},
+    ]
+    path.write_text(
+        "\r\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\r\n",
+        encoding="utf-8",
+        newline="",
+    )
+
+    assert _read_jsonl(path) == rows

@@ -662,6 +662,7 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["properties"]["interface_contracts"] = {
                     "send_sink",
                     "recv_source",
                     "format_sink",
+                    "command_sink",
                     "callback_register",
                     "ownership_transfer",
                     "lock_init", "lock_destroy", "lock_state", "lock_wait",

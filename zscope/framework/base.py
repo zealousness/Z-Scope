@@ -4,6 +4,7 @@ Z-Scope Framework Base Classes.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import math
 from typing import Dict, Any, List, Optional, Sequence
 
 _JSON_SCHEMA_TYPES: Dict[str, Any] = {
@@ -24,6 +25,37 @@ def _schema_types(schema_type: Any) -> Sequence[str]:
     return ()
 
 
+def _json_values_equal(left: Any, right: Any) -> bool:
+    """JSON booleans are distinct from numbers, including inside containers."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _json_values_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _json_values_equal(a, b) for a, b in zip(left, right)
+        )
+    return bool(left == right)
+
+
+def _nonfinite_number_error(value: Any, path: str = "") -> Optional[str]:
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"{path or '$'}: must be a finite number"
+    if isinstance(value, dict):
+        children = ((f"{path}.{key}" if path else str(key), item) for key, item in value.items())
+    elif isinstance(value, list):
+        children = ((f"{path}[{index}]", item) for index, item in enumerate(value))
+    else:
+        return None
+    for child_path, child in children:
+        error = _nonfinite_number_error(child, child_path)
+        if error:
+            return error
+    return None
+
+
 def _validate_json_value(schema: Dict[str, Any], value: Any, path: str) -> Optional[str]:
     """Validate the JSON-Schema subset used by tool contracts, recursively."""
     if not isinstance(schema, dict):
@@ -39,11 +71,8 @@ def _validate_json_value(schema: Dict[str, Any], value: Any, path: str) -> Optio
             ]
             if (keyword == "oneOf" and len(matches) != 1) or (keyword == "anyOf" and not matches):
                 return f"{path or '$'}: value does not match {keyword}"
-            return None
 
     schema_types = _schema_types(schema.get("type"))
-    if value is None and "null" in schema_types:
-        return None
     if schema_types:
         valid = False
         for schema_type in schema_types:
@@ -62,8 +91,10 @@ def _validate_json_value(schema: Dict[str, Any], value: Any, path: str) -> Optio
             return f"{path or '$'}: must be {expected_text}"
 
     enum = schema.get("enum")
-    if enum is not None and value not in enum:
+    if enum is not None and not any(_json_values_equal(value, item) for item in enum):
         return f"{path or '$'}: must be one of {list(enum)}"
+    if "const" in schema and not _json_values_equal(value, schema["const"]):
+        return f"{path or '$'}: must equal {schema['const']!r}"
 
     if isinstance(value, str):
         min_length = schema.get("minLength")
@@ -83,6 +114,8 @@ def _validate_json_value(schema: Dict[str, Any], value: Any, path: str) -> Optio
                 return f"{path or '$'}: schema contains an invalid pattern"
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            return f"{path or '$'}: must be a finite number"
         minimum = schema.get("minimum")
         maximum = schema.get("maximum")
         if isinstance(minimum, (int, float)) and value < minimum:
@@ -144,6 +177,9 @@ def validate_function_arguments(
         return "tool schema is missing"
     if not isinstance(arguments, dict):
         return "Tool arguments must be a JSON object"
+    number_error = _nonfinite_number_error(arguments)
+    if number_error:
+        return number_error
 
     if isinstance(schema.get("function"), dict):
         parameters = schema["function"].get("parameters", {})

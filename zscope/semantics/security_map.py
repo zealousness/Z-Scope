@@ -164,6 +164,7 @@ _CONTRACT_EVENT_KINDS = {
     "recv_source": ("input_boundary", "input_origin"),
     "send_sink": ("sensitive_sink", "sensitive_sink"),
     "format_sink": ("sensitive_sink", "sensitive_sink"),
+    "command_sink": ("sensitive_sink", "command_execution"),
 }
 
 

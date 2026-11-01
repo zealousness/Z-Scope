@@ -9,6 +9,19 @@
     "balanced": {"median_tokens": 10000000.0, "per_run_tokens": 12000000.0},
     "deep": {"median_tokens": 30000000.0, "per_run_tokens": 30000000.0}
   },
+  "range_depth_gates": {
+    "fast": {
+      "confirmed_precision": {"operator": ">=", "threshold": 0.9},
+      "confirmed_count": {"operator": ">=", "threshold": 1.0},
+      "fast_static_active": {"operator": ">=", "threshold": 1.0},
+      "fast_static_formal_qualified": {"operator": ">=", "threshold": 1.0},
+      "fast_static_duplicate_local_executions": {"operator": "<=", "threshold": 0.0},
+      "fast_static_unresolved_terminal_count": {"operator": "<=", "threshold": 0.0},
+      "fast_static_backend_degraded": {"operator": "<=", "threshold": 0.0}
+    },
+    "balanced": {},
+    "deep": {}
+  },
   "range_gates": {
     "median_confirmed_tp": {"operator": ">=", "threshold": 111.0},
     "median_tokens": {"operator": "<=", "threshold": 10000000.0},

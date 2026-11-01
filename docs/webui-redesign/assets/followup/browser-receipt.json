@@ -1,0 +1,33 @@
+{
+  "scope": "Actual shipped pages and real HTTP/SQLite over synthetic projects; no scanner/model execution",
+  "browser": "151.0.7922.34",
+  "captured_at": "2026-10-27T04:57:50.304Z",
+  "project_id": "885f16aff2587264a0ebd6d2",
+  "schedule_id": "schedule_d6f48ef0ba9d434fbc09cdb055ee1bb5",
+  "captures": [
+    "picker-1440.png",
+    "picker-390.png",
+    "wizard-1440.png",
+    "wizard-390.png",
+    "settings-1440.png",
+    "settings-390.png",
+    "scans-1440.png",
+    "scans-390.png",
+    "jobs-1440.png",
+    "jobs-390.png"
+  ],
+  "widths_checked": [
+    390,
+    1280,
+    1440,
+    1920
+  ],
+  "checks": [
+    "Java language switches the wizard to fast",
+    "Future SQLite schedule survives refresh and cancels without creating a job",
+    "Explicit picker bypasses the -c initial project; selected B survives refresh",
+    "Switch to a second project then reopen the first from recent projects"
+  ],
+  "page_errors": [],
+  "external_requests": []
+}

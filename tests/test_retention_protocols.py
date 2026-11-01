@@ -38,7 +38,7 @@ def context():
             "build_context_id": "build-a",
             "functions": [
                 {
-                    "fact_version": "zscope.program-events.v5",
+                    "fact_version": "zscope.program-events.v7",
                     "resource_protocol_facts_version": "zscope.resource-protocol-facts.v1",
                     "complete": True,
                     "owner": {"name": "enqueue", "usr": "c:@F@enqueue"},

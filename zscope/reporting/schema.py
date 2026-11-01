@@ -46,6 +46,7 @@ def coalesce_terminal_candidates(
     priority = {
         "deduplicated_alias": 10,
         "rejected_with_proof": 20,
+        "rejected_with_evidence": 20,
         "confirmed": 30,
         "needs_review": 40,
         "deferred_budget": 50,
@@ -229,6 +230,7 @@ def finding_status(
             "engine_failed",
             "interrupted",
             "rejected_with_proof",
+            "rejected_with_evidence",
             "deduplicated_alias",
             "shadow_observation",
         }

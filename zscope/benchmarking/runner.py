@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from uuid import uuid4
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -143,7 +144,11 @@ def _load_json_object(path: Path, *, immutable: bool = False) -> Dict[str, Any]:
 def _allowed_fixture_file(language: str, relative: Path) -> bool:
     parts = relative.parts
     if language == "c_cpp":
-        return relative.as_posix() in {"CMakeLists.txt", "README.md"} or bool(
+        return relative.as_posix() in {
+            "CMakeLists.txt",
+            "README.md",
+            "zscope.semantics.yaml",
+        } or bool(
             parts and parts[0] in {"src", "include", "internal"}
         )
     return relative.as_posix() in {"pom.xml", "README.md"} or bool(parts and parts[0] == "src")
@@ -154,7 +159,9 @@ def _fixture_source_files(source: Path, language: str) -> List[Path]:
 
     roots = ("src", "include", "internal") if language == "c_cpp" else ("src",)
     root_files = (
-        ("CMakeLists.txt", "README.md") if language == "c_cpp" else ("pom.xml", "README.md")
+        ("CMakeLists.txt", "README.md", "zscope.semantics.yaml")
+        if language == "c_cpp"
+        else ("pom.xml", "README.md")
     )
     candidates = [source / name for name in root_files if (source / name).is_file()]
     for name in roots:
@@ -346,33 +353,36 @@ def _write_execution_config(
     project = raw.setdefault("project", {})
     if not isinstance(project, dict):
         raise BenchmarkError("benchmark config project must be an object")
-    project["root"] = scan_root.resolve().as_posix()
-    project["source_root"] = "."
+    if path.parent.resolve() != scan_root.resolve():
+        raise BenchmarkError("execution config must be created in the target project directory")
     scan = raw.setdefault("scan", {})
     if not isinstance(scan, dict):
         raise BenchmarkError("benchmark config scan must be an object")
-    scan["depth"] = scan_depth
-    if spec.language == "java":
-        project["entry_functions_list"] = "entries.json"
+    config_version = raw.get("config_version")
+    if config_version == 3:
+        scan.pop("depth", None)
+        scan["preset"] = scan_depth
+        if spec.language == "java":
+            raise BenchmarkError("Java benchmark execution has not migrated to public config v3")
+        if not project.get("semantics_file"):
+            raise BenchmarkError("C/C++ v3 benchmark config requires project.semantics_file")
+        targets = project.get("targets")
+        if not isinstance(targets, list) or len(targets) != 1 or not isinstance(targets[0], dict):
+            raise BenchmarkError("C/C++ v3 benchmark config requires exactly one target")
+        targets[0]["compile_commands"] = "build/compile_commands.json"
     else:
-        project.pop("entry_functions_list", None)
-        project["compile_commands_path"] = "build/compile_commands.json"
-    path.write_text(
-        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
+        if spec.language != "java":
+            raise BenchmarkError(
+                "C/C++ benchmark config must use public config v3 and project.semantics_file"
+            )
+        project.pop("root", None)
+        project.pop("source_root", None)
+        scan["depth"] = scan_depth
+        project["entry_functions_list"] = "entries.json"
+    # Each run owns a fresh name; never replace an existing user/config file.
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False))
     return raw
-
-
-def _write_container_execution_config(source: Path, destination: Path) -> None:
-    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or not isinstance(raw.get("project"), dict):
-        raise BenchmarkError("benchmark config project must be an object")
-    raw["project"]["root"] = "/zscope-cache/project"
-    destination.write_text(
-        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
 
 
 def _validate_config(path: Path, *, smoke: bool) -> Any:
@@ -515,6 +525,44 @@ def _build_fixture(spec: BenchmarkSpec, scan_root: Path, run_dir: Path) -> float
     )
 
 
+def _range_link_record_argv(
+    *, python: str, project_root: str, compile_commands: str, cmake_link_file: str
+) -> List[str]:
+    """Build a truth-free command that records the actual CMake link target."""
+
+    return [
+        python,
+        "-m",
+        "zscope.cli.link_record",
+        "--project-root",
+        project_root,
+        "--compile-commands",
+        compile_commands,
+        "--cmake-link-file",
+        cmake_link_file,
+    ]
+
+
+def _record_range_link_target(
+    scan_root: Path,
+    run_dir: Path,
+    *,
+    environment: Mapping[str, str],
+) -> float:
+    build = scan_root / "build"
+    return _run_command(
+        _range_link_record_argv(
+            python=sys.executable,
+            project_root=str(scan_root),
+            compile_commands=str(build / "compile_commands.json"),
+            cmake_link_file=str(build / "CMakeFiles/z_scope.dir/link.txt"),
+        ),
+        cwd=build,
+        environment=environment,
+        log_path=run_dir / "link-record.log",
+    )
+
+
 def _run_structural_smoke(spec: BenchmarkSpec, scan_root: Path, run_dir: Path) -> Dict[str, Any]:
     if spec.language == "c_cpp":
         output = run_dir / "deterministic-regression.json"
@@ -594,6 +642,7 @@ def _range_gates_for_depth(scan_depth: str) -> Dict[str, Tuple[str, float]]:
     expectations = DEFAULT_BENCHMARK_POLICY.range_depth_token_expectations[scan_depth]
     gates["median_tokens"] = ("<=", float(expectations["median_tokens"]))
     gates["per_run_tokens"] = ("<=", float(expectations["per_run_tokens"]))
+    gates.update(DEFAULT_BENCHMARK_POLICY.range_depth_gates[scan_depth])
     return gates
 
 
@@ -613,6 +662,8 @@ def _gate_c(score: Dict[str, Any], *, scan_depth: str = "balanced") -> List[str]
         "telemetry_complete_rate": "telemetry_complete_rate",
     }
     depth_gates = _range_gates_for_depth(scan_depth)
+    for metric_name in DEFAULT_BENCHMARK_POLICY.range_depth_gates[scan_depth]:
+        per_run_names[metric_name] = metric_name
     gates = {
         metric_name: depth_gates[gate_name] for gate_name, metric_name in per_run_names.items()
     }
@@ -731,6 +782,7 @@ def score_artifact(report_path: Path, truth_path: Path, output_path: Path) -> Di
     review = views["with_needs_review"]
     manifest = _as_dict(report.get("run_manifest"))
     summary = _as_dict(report.get("summary"))
+    metadata = _as_dict(report.get("metadata"))
     usage = _as_dict(summary.get("llm_usage"))
     attribution = _as_dict(default.get("attribution"))
     rule_catalog = _as_dict(
@@ -785,13 +837,20 @@ def score_artifact(report_path: Path, truth_path: Path, output_path: Path) -> Di
         },
     }
     queue = _as_dict(summary.get("global_validation_queue"))
-    source_kloc = float(
-        _as_dict(report.get("metadata")).get("source_kloc") or manifest.get("source_kloc") or 0.0
-    )
+    source_kloc = float(metadata.get("source_kloc") or manifest.get("source_kloc") or 0.0)
     scan_wall_seconds = summary.get("batch_wall_seconds")
+    fast_static = _as_dict(metadata.get("fast_static_scan") or summary.get("fast_static_scan"))
+    fast_funnel = _as_dict(fast_static.get("candidate_funnel"))
+    backend_health = _as_dict(fast_static.get("backend_health"))
+    fast_validator = _as_dict(fast_static.get("validator"))
+    confirmed_count = int(default.get("true_positives") or 0) + int(
+        default.get("false_positives_raw") or 0
+    )
+    funnel = candidate_funnel(report)
     payload: Dict[str, Any] = {
         **default,
         "confirmed_tp": int(default.get("true_positives") or 0),
+        "confirmed_count": confirmed_count,
         "precision": round(precision, 6),
         "confirmed_recall": confirmed_recall,
         "confirmed_precision": confirmed_precision,
@@ -812,10 +871,24 @@ def score_artifact(report_path: Path, truth_path: Path, output_path: Path) -> Di
         "token_conservation_passed": usage_accounting.get("conservation_passed") is True,
         "telemetry_complete_rate": float(usage_accounting.get("telemetry_complete") is True),
         "explicit_attribution_coverage": float(attribution.get("explicit_coverage") or 0.0),
-        "protocol_anomaly_count": int(summary.get("validator_protocol_exhausted_count") or 0)
+        # The terminal summary counts exhausted protocol retries, while the
+        # fast-static audit counts every malformed terminal response.  They
+        # overlap, so use the larger scanner-owned count rather than hiding
+        # malformed responses or double-counting them.
+        "protocol_anomaly_count": max(
+            int(summary.get("validator_protocol_exhausted_count") or 0),
+            int(fast_validator.get("protocol_anomaly_count") or 0),
+        )
         + len(usage_accounting.get("errors") or []),
         "default_enabled_unqualified_rule_count": default_enabled_unqualified,
         "rule_qualification_telemetry_present": bool(rule_rows and qualification_by_key),
+        "fast_static_active": float(fast_static.get("activated") is True),
+        "fast_static_formal_qualified": float(fast_static.get("formal_qualified") is True),
+        "fast_static_duplicate_local_executions": int(
+            fast_static.get("duplicate_local_executions") or 0
+        ),
+        "fast_static_unresolved_terminal_count": int(fast_funnel.get("unresolved_terminal") or 0),
+        "fast_static_backend_degraded": float(backend_health.get("degraded") is True),
         "actionable_false_discovery_rate": float(
             default.get("actionable_false_discovery_rate") or 0.0
         ),
@@ -841,7 +914,8 @@ def score_artifact(report_path: Path, truth_path: Path, output_path: Path) -> Di
             ),
         },
         "report_views": views,
-        "candidate_funnel": candidate_funnel(report),
+        "candidate_funnel": funnel,
+        "fast_static_scan": fast_static,
         "usage_accounting": usage_accounting,
         "benchmark_policy": DEFAULT_BENCHMARK_POLICY.as_dict(),
     }
@@ -887,6 +961,107 @@ def score_artifact(report_path: Path, truth_path: Path, output_path: Path) -> Di
         arm_a_baseline = manifest.get("validator_arm_a_baseline")
     if isinstance(arm_a_baseline, dict):
         payload["validator_arm_a_baseline"] = dict(arm_a_baseline)
+
+    coverage = _as_dict(default.get("candidate_coverage_audit"))
+    validator_readiness = _as_dict(fast_static.get("validator"))
+    link_coverage = _as_dict(fast_static.get("link_coverage"))
+    semantic_authorization = _as_dict(fast_static.get("semantic_authorization"))
+    truth_candidate_uids = {
+        str(candidate.get("candidate_uid") or "")
+        for row in coverage.get("rows") or []
+        if isinstance(row, dict)
+        for candidate in row.get("candidates") or []
+        if isinstance(candidate, dict) and str(candidate.get("candidate_uid") or "")
+    }
+    rejected_fp_proofs = 0
+    terminal_states = report.get("candidate_terminal_states")
+    for terminal in terminal_states if isinstance(terminal_states, list) else []:
+        if not isinstance(terminal, dict):
+            continue
+        nested = terminal.get("issue")
+        candidate = dict(nested) if isinstance(nested, dict) else {}
+        candidate.update({key: value for key, value in terminal.items() if key != "issue"})
+        disposition = str(
+            candidate.get("candidate_disposition")
+            or candidate.get("policy_disposition")
+            or candidate.get("terminal_disposition")
+            or ""
+        )
+        uid = str(candidate.get("candidate_uid") or "")
+        if disposition == "rejected_with_proof" and uid not in truth_candidate_uids:
+            rejected_fp_proofs += 1
+
+    readiness_checks = {
+        "semantic_candidate_coverage": bool(
+            coverage.get("meets_90_percent_target") is True
+        ),
+        "confirmed_precision": bool(confirmed_count > 0 and confirmed_precision >= 0.90),
+        "protocol_anomalies": int(validator_readiness.get("protocol_anomaly_count") or 0)
+        == 0,
+        "noncritical_truncation_downgrades": int(
+            validator_readiness.get("noncritical_truncation_downgrade_count") or 0
+        )
+        == 0,
+        "empty_fact_references": int(validator_readiness.get("empty_ref_count") or 0) == 0,
+        "provider_no_evidence_gain": int(
+            validator_readiness.get("provider_no_evidence_gain_count") or 0
+        )
+        == 0,
+        "rejected_false_positive_proof": rejected_fp_proofs >= 1,
+        "link_edges_closed": not list(link_coverage.get("unclosed_edges") or []),
+        "link_capabilities_supported": not list(
+            fast_static.get("unsupported_capabilities") or []
+        ),
+        "duplicate_local_executions": int(
+            fast_static.get("duplicate_local_executions") or 0
+        )
+        == 0,
+        "backend_healthy": backend_health.get("degraded") is not True,
+        "queue_drained": payload.get("queue_empty") is True,
+        "terminal_states_resolved": int(fast_funnel.get("unresolved_terminal") or 0) == 0,
+        "default_rules_qualified": bool(
+            rule_rows and qualification_by_key and default_enabled_unqualified == 0
+        ),
+        "wrapper_authorized": int(
+            semantic_authorization.get("wrapper_contracts_authorized") or 0
+        )
+        > 0,
+        "standard_api_identity_accounted": bool(
+            int(semantic_authorization.get("authorized") or 0) > 0
+            and (
+                semantic_authorization.get("rejected_by_reason") is not None
+            )
+        ),
+        "scan_capability_qualified": fast_static.get("formal_qualified") is True,
+    }
+    blockers = sorted(name for name, passed in readiness_checks.items() if not passed)
+    truth_contract = _as_dict(default.get("truth_contract"))
+    external_blockers: List[str] = []
+    if truth_contract.get("formal_eligible") is not True:
+        external_blockers.append("independent_truth_contract_attestation")
+    if not isinstance(arm_a_baseline, dict):
+        external_blockers.append("frozen_arm_a_replay_binding")
+    payload["fast_static_formal_readiness"] = {
+        "schema_version": "zscope.fast-static-formal-readiness.v1",
+        "checks": readiness_checks,
+        "blockers": blockers,
+        "external_blockers": external_blockers,
+        "semantic_candidate_coverage_count": int(
+            coverage.get("semantic_candidate_coverage_count") or 0
+        ),
+        "semantic_candidate_coverage": float(
+            coverage.get("semantic_candidate_coverage") or 0.0
+        ),
+        "required_semantic_candidate_coverage_count": int(
+            coverage.get("required_for_90_percent") or 0
+        ),
+        "confirmed_recall_disclosed_only": confirmed_recall,
+        "rejected_false_positive_proof_count": rejected_fp_proofs,
+        "truth_validator_conflicts": list(coverage.get("truth_validator_conflicts") or []),
+    }
+    payload["fast_static_formal_qualified"] = float(
+        not blockers and not external_blockers
+    )
     _json_dump(output_path, payload)
     return payload
 
@@ -1301,9 +1476,7 @@ def _relative_posix_within(path: Path, root: Path) -> str:
     try:
         return resolved.relative_to(base).as_posix()
     except ValueError as exc:
-        raise BenchmarkError(
-            "scan extra path escapes the scan workspace: " + str(path)
-        ) from exc
+        raise BenchmarkError("scan extra path escapes the scan workspace: " + str(path)) from exc
 
 
 def _archive_scan_extras(
@@ -1327,9 +1500,7 @@ def _archive_scan_extras(
     }
     destination = run_dir / _SCAN_EXTRAS_DIR_NAME
     if destination.exists():
-        raise BenchmarkError(
-            "scan extras archive already exists: " + str(destination)
-        )
+        raise BenchmarkError("scan extras archive already exists: " + str(destination))
     sources: List[Tuple[str, Path, Path]] = [("execution_root", execution_root, Path())]
     for name, root in (extra_roots or {}).items():
         if root is None:
@@ -1342,9 +1513,7 @@ def _archive_scan_extras(
         resolved_root = root.resolve()
         for path in sorted(resolved_root.rglob("*"), key=lambda item: item.as_posix()):
             if path.is_symlink():
-                raise BenchmarkError(
-                    "scan extra must not be a symbolic link: " + str(path)
-                )
+                raise BenchmarkError("scan extra must not be a symbolic link: " + str(path))
             if not path.is_file():
                 continue
             relative = Path(_relative_posix_within(path, resolved_root))
@@ -1468,12 +1637,16 @@ def _archive_report_for_scoring(
     )
     report_ablation = _as_dict(_as_dict(archived_report.get("metadata")).get("benchmark_ablation"))
     report_provenance = _report_provenance(archived_report)
-    detached: Dict[str, Any] = json.loads(json.dumps({
-        "replay_bundle": replay_bundle,
-        "report_has_batch_wall": report_has_batch_wall,
-        "report_ablation": report_ablation,
-        "report_provenance": report_provenance,
-    }))
+    detached: Dict[str, Any] = json.loads(
+        json.dumps(
+            {
+                "replay_bundle": replay_bundle,
+                "report_has_batch_wall": report_has_batch_wall,
+                "report_ablation": report_ablation,
+                "report_provenance": report_provenance,
+            }
+        )
+    )
     return detached
 
 
@@ -1495,13 +1668,15 @@ def _run_trial_in_workspace(
     _json_dump(run_dir / "input-manifest.json", input_manifest)
     execution_root = scan_root
     oci_output: Optional[Path] = None
-    if mode == "formal":
+    if mode == "formal" or spec.language == "c_cpp":
         execution_root = cache / "project"
         shutil.copytree(scan_root, execution_root)
+    if mode == "formal":
         oci_output = workspace / "oci-output"
         oci_output.mkdir()
-    config_path = run_dir / "zscope.execution.yaml"
+    config_path = execution_root / f".zscope-execution-{uuid4().hex}.yaml"
     _write_execution_config(spec, execution_root, config_path, scan_depth=scan_depth)
+    shutil.copyfile(config_path, run_dir / "zscope.execution.yaml")
     effective = _validate_config(config_path, smoke=False)
     effective_analysis = getattr(effective, "analysis", None)
     review_experiment = any(
@@ -1538,24 +1713,23 @@ def _run_trial_in_workspace(
     health: Dict[str, Any]
     if mode == "formal":
         assert oci_output is not None
-        container_config = scan_root / "zscope.execution.yaml"
-        _write_container_execution_config(config_path, container_config)
-        input_manifest = scan_input_manifest(scan_root)
-        _json_dump(run_dir / "input-manifest.json", input_manifest)
+        # Config location defines the project. Both host validation and OCI
+        # execution use the same bytes inside their writable project copy.
+        container_config = f"/zscope-cache/project/{config_path.name}"
         container_python = environment.get("Z_SCOPE_BENCHMARK_OCI_PYTHON", "python3").strip()
         health_argv = [
             container_python,
             "-m",
             "zscope.cli.doctor",
             "--config",
-            "/zscope-input/zscope.execution.yaml",
+            container_config,
         ]
         build_index_argv = [
             container_python,
             "-m",
             "zscope.cli.cli",
             "-c",
-            "/zscope-input/zscope.execution.yaml",
+            container_config,
             "--build-index",
         ]
         scan_argv = [
@@ -1563,7 +1737,7 @@ def _run_trial_in_workspace(
             "-m",
             "zscope.cli.cli",
             "-c",
-            "/zscope-input/zscope.execution.yaml",
+            container_config,
             "--verbose",
         ]
         try:
@@ -1613,6 +1787,28 @@ def _run_trial_in_workspace(
             executor.execute_phase("build", build_argv, log_path=run_dir / "build.log")
             required_phases.append("build")
             build_seconds = time.monotonic() - build_started
+            link_record_result: Optional[Any] = None
+            semantics_result: Optional[Any] = None
+            if spec.language == "c_cpp":
+                link_record_result = executor.execute_phase(
+                    "link-record",
+                    _range_link_record_argv(
+                        python=container_python,
+                        project_root="/zscope-cache/project",
+                        compile_commands="/zscope-cache/project/build/compile_commands.json",
+                        cmake_link_file=(
+                            "/zscope-cache/project/build/CMakeFiles/z_scope.dir/link.txt"
+                        ),
+                    ),
+                    log_path=run_dir / "link-record.log",
+                )
+                required_phases.append("link-record")
+                semantics_result = executor.execute_phase(
+                    "semantics-prepare",
+                    [container_python, "-m", "zscope.benchmarking.semantics", "--config", container_config],
+                    log_path=run_dir / "semantics-prepare.log",
+                )
+                required_phases.append("semantics-prepare")
             health_result = executor.execute_phase(
                 "health", health_argv, log_path=run_dir / "health.log"
             )
@@ -1653,6 +1849,12 @@ def _run_trial_in_workspace(
         }
         phase_seconds = {
             "build": build_seconds,
+            **({"semantics_prepare": semantics_result.seconds} if semantics_result is not None else {}),
+            **(
+                {"link_record": link_record_result.seconds}
+                if link_record_result is not None
+                else {}
+            ),
             "health": health_result.seconds,
             "index": index_result.seconds,
             "scan": scan_result.seconds,
@@ -1676,8 +1878,29 @@ def _run_trial_in_workspace(
             "--build-index",
         ]
         scan_argv = [python, "-m", "zscope.cli.cli", "-c", str(config_path), "--verbose"]
+        if spec.language == "c_cpp":
+            scan_argv.append("--discover-entries")
+        build_seconds = _build_fixture(spec, execution_root, run_dir)
+        link_record_seconds = (
+            _record_range_link_target(
+                execution_root,
+                run_dir,
+                environment=environment,
+            )
+            if spec.language == "c_cpp"
+            else None
+        )
+        semantics_seconds = (
+            _run_command(
+                [python, "-m", "zscope.benchmarking.semantics", "--config", str(config_path)],
+                cwd=execution_root, environment=environment,
+                log_path=run_dir / "semantics-prepare.log",
+            ) if spec.language == "c_cpp" else None
+        )
         phase_seconds = {
-            "build": _build_fixture(spec, execution_root, run_dir),
+            "build": build_seconds,
+            **({"semantics_prepare": semantics_seconds} if semantics_seconds is not None else {}),
+            **({"link_record": link_record_seconds} if link_record_seconds is not None else {}),
             "health": _run_command(
                 health_argv,
                 cwd=execution_root,
@@ -1701,9 +1924,14 @@ def _run_trial_in_workspace(
     _json_dump(run_dir / "tool-health.json", health)
     source_report = _locate_report(execution_root)
     report_path = run_dir / "report.json"
-    _json_dump(run_dir / "archive-state.json", {"stage": "copy_report", "source": str(source_report)})
+    _json_dump(
+        run_dir / "archive-state.json", {"stage": "copy_report", "source": str(source_report)}
+    )
     shutil.copy2(source_report, report_path)
-    _json_dump(run_dir / "archive-state.json", {"stage": "read_report", "bytes": report_path.stat().st_size})
+    _json_dump(
+        run_dir / "archive-state.json",
+        {"stage": "read_report", "bytes": report_path.stat().st_size},
+    )
     archive_summary = _archive_report_for_scoring(
         report_path, execution_root, run_dir, _source_line_metrics(scan_root, spec.language)
     )
@@ -1742,7 +1970,7 @@ def _run_trial_in_workspace(
         workbook = Path(str(published.get("workbook") or ""))
         if workbook.is_file() and not workbook.is_symlink():
             shutil.copy2(workbook, semantic_dir / "user_config.xlsx")
-    if review_experiment or retain_workspace:
+    if review_experiment or retain_workspace or execution_root != scan_root:
         copy_scan_input(scan_root, archived_scan_root, spec.language)
     else:
         restore_scan_input(scan_root, input_manifest)
@@ -1945,7 +2173,15 @@ def _run_trial(
         # A failed/interrupted trial may never reach the publication barrier.
         # Preserve any committed model responses before removing its workspace.
         if not (run_dir / "semantic-publication" / "publication.json").exists():
-            snapshot_root = workspace / "scan-input" / ".zscope_snapshots"
+            runtime_root = workspace / "cache" / "project"
+            if not runtime_root.is_dir():
+                runtime_root = workspace / "scan-input"
+            snapshot_root = runtime_root / ".zscope_snapshots"
+            semantics_root = snapshot_root / "semantics"
+            if semantics_root.is_dir():
+                shutil.copytree(
+                    semantics_root, run_dir / "semantic-preparation", dirs_exist_ok=True
+                )
             committed = list(snapshot_root.glob("*.json")) if snapshot_root.is_dir() else []
             if committed:
                 archive = run_dir / "semantic-publication" / "incomplete"
@@ -2134,10 +2370,17 @@ def _aggregate_range_gate_metrics(
     tp_values = values("confirmed_tp")
     token_values = values("tokens")
     recall_values = values("confirmed_recall")
+    precision_values = values("confirmed_precision")
+    confirmed_count_values = values("confirmed_count")
     fdr_deltas = values("actionable_fdr_delta_vs_arm_a_pp")
     provider_coverage = values("provider_usage_coverage")
     attribution_coverage = values("explicit_attribution_coverage")
     anomaly_counts = values("protocol_anomaly_count")
+    fast_active_values = values("fast_static_active")
+    fast_qualified_values = values("fast_static_formal_qualified")
+    duplicate_values = values("fast_static_duplicate_local_executions")
+    unresolved_values = values("fast_static_unresolved_terminal_count")
+    backend_degraded_values = values("fast_static_backend_degraded")
     expected = len(summaries)
     tp_identity_lists = [row.get("true_positive_truth_ids") for row in metric_rows]
     tp_sets = [
@@ -2155,6 +2398,27 @@ def _aggregate_range_gate_metrics(
             float(statistics.median(token_values)) if len(token_values) == expected else 0.0
         ),
         "per_run_tokens": max(token_values) if len(token_values) == expected else 0.0,
+        "confirmed_precision": (
+            min(precision_values) if len(precision_values) == expected else 0.0
+        ),
+        "confirmed_count": (
+            min(confirmed_count_values) if len(confirmed_count_values) == expected else 0.0
+        ),
+        "fast_static_active": (
+            min(fast_active_values) if len(fast_active_values) == expected else 0.0
+        ),
+        "fast_static_formal_qualified": (
+            min(fast_qualified_values) if len(fast_qualified_values) == expected else 0.0
+        ),
+        "fast_static_duplicate_local_executions": (
+            max(duplicate_values) if len(duplicate_values) == expected else 1.0
+        ),
+        "fast_static_unresolved_terminal_count": (
+            max(unresolved_values) if len(unresolved_values) == expected else 1.0
+        ),
+        "fast_static_backend_degraded": (
+            max(backend_degraded_values) if len(backend_degraded_values) == expected else 1.0
+        ),
         "provider_usage_coverage": (
             min(provider_coverage) if len(provider_coverage) == expected else 0.0
         ),
@@ -2230,7 +2494,11 @@ def benchmark_plan(
         "stages": (
             ["fixture", "config", "truth", "build", "deterministic-structure"]
             if mode == "smoke"
-            else ["copy", "config", "build", "health", "index", "scan", "score", "gate"]
+            else [
+                "copy", "config", "build",
+                *(["link-record", "semantics-prepare"] if language == "c_cpp" else []),
+                "health", "index", "scan", "score", "gate",
+            ]
         ),
     }
 
@@ -2245,6 +2513,15 @@ def run_benchmark(
     scan_depth: str = "fast",
     work_directory: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    if mode == "prepare":
+        from .semantic_runner import run_semantic_benchmark
+
+        if language != "c_cpp" or runs not in {None, 1}:
+            raise BenchmarkError("prepare supports one C/C++ readiness check")
+        return run_semantic_benchmark(
+            output=output or _default_output(language, mode),
+            work_directory=work_directory, scan_depth=scan_depth, dry_run=dry_run,
+        )
     if language not in SPECS:
         raise BenchmarkError(f"unsupported language: {language}")
     if mode not in {"smoke", "trial", "formal"}:
@@ -2291,9 +2568,15 @@ def run_benchmark(
     if mode == "smoke":
         scan_root = destination / "scan-input"
         manifest = copy_scan_input(spec.fixture_root, scan_root, language)
-        config_path = destination / "zscope.execution.yaml"
+        config_path = scan_root / f".zscope-execution-{uuid4().hex}.yaml"
         _write_execution_config(spec, scan_root, config_path, scan_depth=scan_depth)
-        _validate_config(config_path, smoke=True)
+        shutil.copyfile(config_path, destination / "zscope.execution.yaml")
+        try:
+            _validate_config(config_path, smoke=True)
+        finally:
+            # Smoke only validates configuration; retain the archive copy and
+            # remove exactly this invocation's owned file from sealed inputs.
+            config_path.unlink()
         health = _tool_health(
             BenchmarkSpec(language, spec.fixture_relative, spec.required_tools[:1])
         )

@@ -51,6 +51,8 @@ def _llm_client(config: Any) -> LLMClient:
         max_retries=llm_cfg.max_retries,
         retry_until_available=getattr(llm_cfg, "retry_until_available", False),
         max_tokens=llm_cfg.max_tokens,
+        context_window=llm_cfg.context_window,
+        model_context_windows=llm_cfg.model_context_windows,
         global_max_concurrent_requests=config.concurrency.llm_max_inflight,
         supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
         token_usage_ledger=ensure_scan_token_usage_ledger(config),

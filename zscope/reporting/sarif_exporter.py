@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import quote
 
 from ..common.defect_cwe_map import cwe_tokens
 from ..common.issue_identity import canonical_issue_key, stable_issue_fingerprint
@@ -248,12 +249,17 @@ def _code_flows(issue: Dict[str, Any], *, source_root: Optional[Path]) -> List[D
 
 
 def _issue_file_and_line(issue: Dict[str, Any]) -> Tuple[str, int]:
+    file_path = str(issue.get("file_path") or issue.get("file") or "")
+    explicit_line = issue.get("line") or issue.get("start_line")
+    if file_path and explicit_line:
+        return file_path, int(explicit_line)
     location = str(issue.get("location") or issue.get("file") or "")
-    match = re.search(r"(?P<file>[^:\n]+):(?P<line>\d+)", location)
+    match = re.fullmatch(
+        r"(?P<file>[^\n]+?):(?P<line>\d+)(?:-\d+|:\d+)?", location
+    )
     if match:
         return match.group("file"), int(match.group("line"))
-    file_path = str(issue.get("file_path") or issue.get("file") or "")
-    line = int(issue.get("line") or issue.get("start_line") or 1)
+    line = int(explicit_line or 1)
     return file_path, line
 
 
@@ -261,10 +267,10 @@ def _artifact_uri(file_path: str, source_root: Optional[Path]) -> str:
     path = Path(file_path)
     if path.is_absolute() and source_root:
         try:
-            return path.resolve().relative_to(source_root.resolve()).as_posix()
+            return quote(path.resolve().relative_to(source_root.resolve()).as_posix(), safe="/:")
         except ValueError:
             pass
-    return str(file_path).replace("\\", "/")
+    return quote(str(file_path).replace("\\", "/"), safe="/:")
 
 
 def _rule_id(issue: Dict[str, Any]) -> str:

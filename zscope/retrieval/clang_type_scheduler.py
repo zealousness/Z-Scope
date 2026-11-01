@@ -141,6 +141,36 @@ class FunctionTypeScheduler:
                 "type_context_timeout", "Function type context wait exceeded 300 seconds"
             ) from None
 
+    def drain_background(self, *, timeout_seconds: float = WAIT_SECONDS) -> dict[str, Any]:
+        """Wait until the current native type generation is fully published.
+
+        Instance semantics freeze exact native receipts.  Letting the background
+        coordinator publish another function after that point would correctly
+        invalidate those receipts in the middle of a scan.  Fast project scans
+        therefore use this barrier before freezing their semantics manifest.
+        It does not authorize partial output: a tool failure or timeout is a
+        hard error and the caller must not form a formal scan result.
+        """
+
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        with self._condition:
+            while True:
+                counts = state.counts(self.db)
+                if counts.get("pending", 0) == 0 and counts.get("in_progress", 0) == 0:
+                    return dict(self.snapshot(), functions=counts)
+                if self._closing:
+                    raise state.TypeContextUnavailable("backend_closed")
+                if self._global_error is not None:
+                    raise self._global_error
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise state.TypeContextUnavailable(
+                        "type_context_timeout",
+                        "Function type background materialization did not settle before scan",
+                    )
+                self._condition.notify_all()
+                self._condition.wait(min(0.1, remaining))
+
     @contextmanager
     def paused(self) -> Iterator[None]:
         with self._condition:

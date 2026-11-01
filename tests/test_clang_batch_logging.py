@@ -54,6 +54,28 @@ def failed_run(indexer):
     return json.loads((indexer.cache / "latest_run.json").read_text(encoding="utf-8"))
 
 
+def test_cli_report_outputs_are_exact_native_input_exclusions(indexer):
+    from zscope.retrieval.indexing_identity import search_directories_snapshot
+
+    excluded = set(indexer.validation_excludes)
+    reports = {
+        indexer.root / "report.json",
+        indexer.root / "report.md",
+        indexer.root / "zscope_batch_report.json",
+        indexer.root / "zscope_batch_report.md",
+    }
+    assert reports <= excluded
+    assert indexer.root / "zscope_batch_report_custom.json" not in excluded
+    before = search_directories_snapshot([indexer.root], exclude_paths=excluded)
+    for path in reports:
+        path.write_text("generated\n", encoding="utf-8")
+    assert search_directories_snapshot([indexer.root], exclude_paths=excluded) == before
+
+    custom = indexer.root / "zscope_batch_report_custom.json"
+    custom.write_text("not a declared output\n", encoding="utf-8")
+    assert search_directories_snapshot([indexer.root], exclude_paths=excluded) != before
+
+
 def test_many_failures_have_bounded_info_and_samples_but_complete_report(
     indexer, monkeypatch, caplog
 ):

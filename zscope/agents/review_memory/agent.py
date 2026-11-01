@@ -4,7 +4,7 @@ import json
 from typing import Any, Dict
 
 from ..base import JsonOutputSpec, JsonToolAgent
-from ...framework.base import AgentResponse
+from ...framework.base import AgentResponse, validate_function_arguments
 from ...framework.llm_client import LLMClient
 
 
@@ -23,6 +23,8 @@ REVIEW_PATTERN_SCHEMA: Dict[str, Any] = {
 
 
 def _valid_payload(value: Any) -> bool:
+    if validate_function_arguments(REVIEW_PATTERN_SCHEMA, value):
+        return False
     if not isinstance(value, dict):
         return False
     if not isinstance(value.get("false_positive_reason"), str) or len(value["false_positive_reason"]) > 1500:
@@ -58,7 +60,7 @@ class ReviewMemoryAgent(JsonToolAgent):
                 response = self.llm_client.chat_completion(messages, tools=[schema], tool_choice={"type": "function", "function": {"name": "emit_review_pattern"}}, trace_agent="review_memory", trace_label="pattern_extraction")
                 message = ((response.get("choices") or [{}])[0].get("message") or {})
                 calls = message.get("tool_calls") or []
-                if calls:
+                if len(calls) == 1 and calls[0].get("function", {}).get("name") == "emit_review_pattern":
                     try:
                         payload = json.loads(calls[0].get("function", {}).get("arguments", "{}"))
                     except (TypeError, ValueError, json.JSONDecodeError):
@@ -72,7 +74,7 @@ class ReviewMemoryAgent(JsonToolAgent):
                         payload = json.loads(str(message.get("content") or ""))
                     except (TypeError, ValueError, json.JSONDecodeError):
                         payload = None
-                    if isinstance(payload, dict):
+                    if _valid_payload(payload):
                         return AgentResponse(success=True, data=payload, metadata={"legacy_json_compat": True})
                 last_error = "invalid_final_tool_payload"
                 messages.append({"role": "assistant", "content": ""})

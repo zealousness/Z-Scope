@@ -136,7 +136,7 @@ class IncrementalSemanticModeling:
             {
                 "version": 2,
                 "contract_compiler": CONTRACT_COMPILER_VERSION,
-                "program_facts": "zscope.program-events.v5",
+                "program_facts": "zscope.program-events.v7",
                 "schema": schema,
                 "prompt": prompt.read_text(encoding="utf-8"),
                 "model": getattr(llm, "models", None),
@@ -1386,7 +1386,7 @@ class IncrementalSemanticModeling:
                             "id": cfg.project.project_id,
                             "language": cfg.project.language,
                             "root": str(cfg.project.project_root),
-                            "source_root": str(cfg.project.source_root),
+                            "source_root": str(cfg.project.project_root),
                             "excluded_paths": [str(path) for path in cfg.project.exclude_paths],
                             "required_paths": [str(path) for path in required],
                         },
@@ -1481,7 +1481,12 @@ class IncrementalSemanticModeling:
         from .snapshot_candidates import _source_lines
 
         result = copy.deepcopy(snapshot)
-        result["build_context_id"] = context.get("build_context_id", "")
+        # Legacy source-only snapshots may omit an unknown build identity.
+        # Adding an empty field changes their content hash and generation even
+        # though neither the model nor its compilation identity has changed.
+        build_context_id = context.get("build_context_id", "")
+        if build_context_id or "build_context_id" in result:
+            result["build_context_id"] = build_context_id
 
         def indexed_tokens(value: dict[str, Any]) -> tuple[list[str], list[int]]:
             tokens, numbers = [], []

@@ -233,7 +233,7 @@ def compiler_search_directories(stderr: str, directory: Path) -> Optional[List[P
     return None
 
 
-def include_probes_current(receipt: Any) -> bool:
+def include_probes_current(receipt: Any, lookup_receipt: Any = None) -> bool:
     """Check native existence-only lookups without executing stored commands.
 
     Missing receipts retain the old producer's conservative completeness flag.
@@ -248,14 +248,45 @@ def include_probes_current(receipt: Any) -> bool:
     roots, queries = receipt.get("search_directories"), receipt.get("queries")
     if not isinstance(roots, list) or not isinstance(queries, list):
         return False
+    probe_modes: list[Any] | None = None
+    ordered_roots: list[str] | None = None
+    if lookup_receipt is not None:
+        if (
+            not isinstance(lookup_receipt, dict)
+            or lookup_receipt.get("version") != "zscope.include-lookups.v1"
+            or not isinstance(lookup_receipt.get("probe_lookups"), list)
+            or not isinstance(lookup_receipt.get("search_directories"), list)
+        ):
+            return False
+        probe_modes = lookup_receipt["probe_lookups"]
+        if len(probe_modes) != len(queries):
+            return False
+        ordered_roots = []
+        for row in lookup_receipt["search_directories"]:
+            if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+                return False
+            if row["path"]:
+                ordered_roots.append(row["path"])
     try:
         if any(not isinstance(root, str) or not Path(root).is_absolute() for root in roots):
             return False
-        for query in queries:
+        for index, query in enumerate(queries):
             if not isinstance(query, dict) or type(query.get("found")) is not bool:
                 return False
             if type(query.get("angled")) is not bool or not query.get("name"):
                 return False
+            mode = probe_modes[index] if probe_modes is not None else None
+            if mode is not None:
+                fields = ("name", "angled", "including_file", "found", "target_file")
+                if not isinstance(mode, dict) or {field: mode.get(field) for field in fields} != {
+                    field: query.get(field) for field in fields
+                }:
+                    return False
+                if mode.get("operator") not in {
+                    "__has_include",
+                    "__has_include_next",
+                }:
+                    return False
             name = Path(query["name"])
             if query["found"]:
                 target = Path(query.get("target_file", ""))
@@ -265,8 +296,35 @@ def include_probes_current(receipt: Any) -> bool:
                 including = Path(query.get("including_file", ""))
                 if not including.is_absolute():
                     return False
-                candidates = [name] if name.is_absolute() else [Path(r) / name for r in roots]
-                if not query["angled"] and not name.is_absolute():
+                candidate_roots = list(roots)
+                if mode is not None:
+                    operator = mode.get("operator")
+                    if operator == "__has_include_next":
+                        assert ordered_roots is not None
+                        origin = next(
+                            (
+                                offset
+                                for offset, root in enumerate(ordered_roots)
+                                if including.is_relative_to(Path(root))
+                            ),
+                            None,
+                        )
+                        # When the including file was itself found in the search
+                        # list, include-next starts strictly after that entry.
+                        # An unknown origin retains the conservative all-roots
+                        # check used by legacy receipts.
+                        if origin is not None:
+                            candidate_roots = ordered_roots[origin + 1 :]
+                candidates = (
+                    [name]
+                    if name.is_absolute()
+                    else [Path(root) / name for root in candidate_roots]
+                )
+                if (
+                    (mode is None or mode.get("operator") != "__has_include_next")
+                    and not query["angled"]
+                    and not name.is_absolute()
+                ):
                     candidates.append(including.parent / name)
                 for candidate in candidates:
                     try:
@@ -401,7 +459,7 @@ def dependencies_current(snapshot: Any) -> bool:
 
 def parse_depfile(path: Path, directory: Path) -> List[Path]:
     """Parse Make dependencies including escaped spaces, #, :, and continuations."""
-    text = Path(path).read_text(encoding="utf-8").replace("\\\r\n", "").replace("\\\n", "")
+    text = Path(path).read_text(encoding="utf-8").replace("\\\r\n", " ").replace("\\\n", " ")
     # GCC/Clang escape drive colons in Make output; a rule separator is followed
     # by whitespace. Multiple -MP rules are ignored after the first logical line.
     first = text.splitlines()[0] if text.splitlines() else ""
@@ -483,9 +541,13 @@ def _runtime_lookup_candidates(context: Mapping[str, Any]) -> frozenset[Path]:
     capability = context.get("tool", {}).get("capability", {})
     receipt = context.get("include_lookups")
     probes = context.get("include_probes")
+    if capability.get("include_lookup_version") != 1:
+        raise ValueError(
+            "job_runtime_output_lookup_unverifiable: native include_lookup_version=1 required; "
+            "rebuild zscope-clang-indexer from the current sources"
+        )
     if (
-        capability.get("include_lookup_version") != 1
-        or not isinstance(receipt, dict)
+        not isinstance(receipt, dict)
         or receipt.get("version") != "zscope.include-lookups.v1"
         or receipt.get("complete") is not True
         or receipt.get("unsupported_reasons") != []
@@ -516,11 +578,12 @@ def _runtime_lookup_candidates(context: Mapping[str, Any]) -> frozenset[Path]:
     # both actual/configured system-root receipts and the exact physical map.
     # Other releases/layouts keep their original refusal or ResourceDir policy.
     host_sdk = Path("/usr/include/clang/18.1.3/include")
+    physical_sdk = Path("/usr/lib/llvm-18/lib/clang/18/include")
     if (
         capability.get("clang_version") == "18.1.3"
         and any(
             isinstance(row, dict)
-            and row.get("path") == str(host_sdk)
+            and row.get("path") in {str(host_sdk), str(physical_sdk)}
             and row.get("classification") == "system"
             and row.get("framework") is False
             and row.get("header_map") is False
@@ -528,7 +591,13 @@ def _runtime_lookup_candidates(context: Mapping[str, Any]) -> frozenset[Path]:
         )
         and any(
             isinstance(row, dict)
-            and row.get("path") == str(host_sdk)
+            and (
+                row.get("path") == str(host_sdk)
+                or (
+                    row.get("path") == str(physical_sdk)
+                    and str(row.get("spelling") or "").rstrip("/") == str(host_sdk)
+                )
+            )
             and type(row.get("group")) is int
             and row["group"] == 3
             and row.get("framework") is False
@@ -538,7 +607,7 @@ def _runtime_lookup_candidates(context: Mapping[str, Any]) -> frozenset[Path]:
         )
         and host_sdk.is_symlink()
     ):
-        record_sdk_alias(host_sdk, Path("/usr/lib/llvm-18/lib/clang/18/include"))
+        record_sdk_alias(host_sdk, physical_sdk)
     roots: set[Path] = set()
     for row in actual:
         if (
@@ -587,7 +656,10 @@ def _runtime_lookup_candidates(context: Mapping[str, Any]) -> frozenset[Path]:
             including.parent
         )  # Conservative superset includes every real quote-stack location.
     for mode, probe in zip(modes, probes["queries"]):
-        if not isinstance(probe, dict) or mode.get("operator") != "__has_include":
+        if not isinstance(probe, dict) or mode.get("operator") not in {
+            "__has_include",
+            "__has_include_next",
+        }:
             refuse()
         fields = ("name", "angled", "including_file", "found", "target_file")
         if {field: mode.get(field) for field in fields} != {
@@ -617,7 +689,7 @@ def _runtime_lookup_candidates(context: Mapping[str, Any]) -> frozenset[Path]:
         elif row["target_file"]:
             refuse()
     for row in ordinary:
-        if row.get("directive") != "include" or row.get("found") is not True:
+        if row.get("directive") not in {"include", "include_next"} or row.get("found") is not True:
             refuse()
         target = Path(row["target_file"])
         location = row.get("location")
@@ -637,7 +709,13 @@ def _runtime_lookup_candidates(context: Mapping[str, Any]) -> frozenset[Path]:
         lexical = Path(row["target_lexical"])
         if not lexical.is_absolute():
             lexical = Path(command["directory"]) / lexical
-        if Path(os.path.normpath(lexical)) != target:
+        normalized = Path(os.path.normpath(lexical))
+        if normalized != target and not any(
+            normalized.is_relative_to(root)
+            and plain(normalized)
+            and normalized.resolve(strict=True) == target
+            for root in sdk_aliases
+        ):
             refuse()
         if row["search_path"]:
             search = Path(row["search_path"])

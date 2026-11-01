@@ -79,7 +79,7 @@ def _binding_matches(left: Optional[Dict[str, Any]], right: Optional[Dict[str, A
 
 
 def _project_root_for(config_path: Optional[Path | str]) -> Optional[Path]:
-    """Locate the saved config's ``project.root``; no Bridge cwd, no guesses."""
+    """Locate the saved YAML's directory; no Bridge cwd, no guesses."""
 
     if config_path is None:
         return None

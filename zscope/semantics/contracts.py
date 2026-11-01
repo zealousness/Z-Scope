@@ -19,7 +19,11 @@ CONTRACT_SCHEMA_VERSION = "zscope.api-contract.v5"
 # the select chain resolves it (see find/find_for_call/match_call).  Caches
 # keyed on the v25 identity or compiler output cannot authorize records that
 # predate USR precision.
-CONTRACT_COMPILER_VERSION = "zscope.contract-compiler.v26"
+# v27: Address predicates require exact caller address facts; old inference
+# that substituted a slot's stored value cannot authorize derived contracts.
+# v31: A reviewed MAY effect remains possible under a satisfied guard; it
+# cannot discharge obligations through call applicability or transitions.
+CONTRACT_COMPILER_VERSION = "zscope.contract-compiler.v31"
 ROLES = frozenset(
     {
         "allocator",
@@ -34,6 +38,7 @@ ROLES = frozenset(
         "send_sink",
         "recv_source",
         "format_sink",
+        "command_sink",
         "callback_register",
         "ownership_transfer",
         "reference_retention",
@@ -76,6 +81,7 @@ def expand_api_pattern(pattern: str, semantics: Any) -> str:
         "send": "send_sinks",
         "pthread_mutex_lock": "lock_apis",
         "pthread_mutex_unlock": "unlock_apis",
+        "system": "command_sinks",
     }
     if r"\s*\(" not in pattern:
         return pattern
@@ -315,6 +321,15 @@ class ApiContract:
         """
         if not self.source.startswith("inferred"):
             return True
+        if self.source.startswith("inferred:project_semantics:"):
+            return bool(
+                self.verification.get("method") == "source_composition"
+                and self.verification.get("compiler_version") == CONTRACT_COMPILER_VERSION
+                and self.verification.get("source_hash")
+                and self.verification.get("identity_verified") is True
+                and self.verification.get("authority") == "native_current"
+                and self.verification.get("effect_strength") in {"may", "must_under_guard"}
+            )
         return bool(
             self.verification.get("method") in {"source_composition", "source_protocol"}
             and self.verification.get("compiler_version") == CONTRACT_COMPILER_VERSION
@@ -336,7 +351,11 @@ class ApiContract:
             "delegates": self.delegates,
             "resource_domain": asdict(self.resource_domain) if self.resource_domain else None,
             "protocol": self.protocol,
-            "effect_authority": "must_under_guard" if self.effects_trusted else "unverified",
+            "effect_authority": (
+                self.verification.get("effect_strength", "must_under_guard")
+                if self.effects_trusted
+                else "unverified"
+            ),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -364,9 +383,18 @@ class ApiContract:
         source = str(row.get("source") or raw.get("source") or "user")
         symbol_value = raw.get("symbol", {})
         row_defaults = dict(row)
-        if not source.startswith("inferred"):
+        raw_verification = raw.get("verification")
+        verification: Mapping[str, Any] = (
+            raw_verification if isinstance(raw_verification, Mapping) else {}
+        )
+        exact_project_identity = bool(
+            str(source).startswith("project_semantics:")
+            and verification.get("identity_verified") is True
+            and verification.get("authority") == "explicit_user_assumption"
+        )
+        if not source.startswith("inferred") and not exact_project_identity:
             # USR precision is established only by the compiler chain from
-            # verified native facts.  A workbook/source row that spells a USR
+            # verified native facts.  A legacy/advisory row that spells a USR
             # cannot borrow that precision; it stays a name-level identity.
             if isinstance(symbol_value, dict):
                 symbol_value = {k: v for k, v in symbol_value.items() if k != "usr"}
@@ -394,7 +422,7 @@ class ApiContract:
             raw.get("preconditions") or {"op": "true"},
             raw.get("effect_cases") or [],
             raw.get("delegates") or [],
-            raw.get("verification") or {},
+            verification or {},
             raw.get("pair_evidence") or [],
             (
                 ObjectBinding.from_value(raw["resource_domain"])
@@ -434,7 +462,7 @@ class ApiContract:
         if "unknown" in possible or {"applies", "no_effect"} <= possible:
             return "unknown"
         if "applies" in matched and prerequisite == "applies":
-            return "applies"
+            return "unknown" if self.verification.get("effect_strength") == "may" else "applies"
         if "applies" in possible:
             return "unknown"
         return "does_not_apply"
@@ -852,7 +880,10 @@ class ContractRegistry:
                 continue
             for transition in contract.protocol.get("transitions", []):
                 status = evaluate(transition["when"], arguments, returned, known)
-                if not contract.effects_trusted and status != "does_not_apply":
+                if (
+                    not contract.effects_trusted
+                    or contract.verification.get("effect_strength") == "may"
+                ) and status != "does_not_apply":
                     status = "unknown"
                 async_effect = any(
                     a.get("kind")
@@ -910,7 +941,10 @@ class ContractRegistry:
         # identity knowledge anywhere the lookup stays name-level under the
         # registry's ambiguity rules.
         for contract in self.find_for_call(name, usr=current_callee_usr(self, name)):
-            if not contract.effects_trusted:
+            if (
+                not contract.effects_trusted
+                or contract.verification.get("effect_strength") == "may"
+            ):
                 continue
             parts: list[str] = []
             for ref in contract.protocol.get("allocation_extent", []):
@@ -1037,6 +1071,74 @@ class ContractRegistry:
         if any(m.applicability == "applies" for m in matches):
             return "applies"
         if matches and all(m.applicability == "does_not_apply" for m in matches):
+            return "does_not_apply"
+        return "unknown"
+
+    def effect_possibility(
+        self, name: str, role: str, text: str, *, object_name: str = "", acquired: bool = False
+    ) -> str:
+        """Return ``applies``/``possible`` without promoting may-effects to proof.
+
+        Candidate construction needs to know that an exact, trusted operation
+        can occur even when a void wrapper hides the native return status.
+        Proof consumers continue to use :meth:`effect_status`; only current
+        trusted contracts may yield ``possible`` here.
+        """
+
+        arguments = self.call_arguments(name, text)
+        if arguments is None:
+            return "unknown"
+        facts = {re.sub(r"\s+", "", object_name): object()} if acquired and object_name else {}
+        matches = self.match_call(name, role, arguments, facts=facts)
+        matches = [m for m in matches if not object_name or m.object == object_name]
+        if any(m.applicability == "applies" for m in matches):
+            return "applies"
+        if any(m.effects_trusted and m.applicability == "unknown" for m in matches):
+            return "possible"
+        if matches and all(m.applicability == "does_not_apply" for m in matches):
+            return "does_not_apply"
+        return "unknown"
+
+    def release_possibility_in_text(
+        self,
+        acquire: str,
+        release: str,
+        text: str,
+        object_name: str,
+        *,
+        acquired_domain: str = "",
+        acquired_family: str = "",
+        object_resolver: Any = None,
+    ) -> str:
+        arguments = self.call_arguments(release, text)
+        if arguments is None or not self.allows(acquire, release):
+            return "unknown"
+        resolve = object_resolver or (lambda value: value)
+        known = {re.sub(r"\s+", "", object_name): object()} if object_name else {}
+        matches = [
+            match
+            for role in RELEASE_ROLES
+            for match in self.match_call(release, role, arguments, facts=known)
+            if resolve(match.object) == object_name
+            and (
+                not match.resource_family
+                or not acquired_family
+                or match.resource_family == acquired_family
+            )
+            and (
+                (not match.resource_domain and not acquired_domain)
+                or (
+                    match.resource_domain
+                    and acquired_domain
+                    and resolve(match.resource_domain) == acquired_domain
+                )
+            )
+        ]
+        if any(match.applicability == "applies" for match in matches):
+            return "applies"
+        if any(match.effects_trusted and match.applicability == "unknown" for match in matches):
+            return "possible"
+        if matches and all(match.applicability == "does_not_apply" for match in matches):
             return "does_not_apply"
         return "unknown"
 

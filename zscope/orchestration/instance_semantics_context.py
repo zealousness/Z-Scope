@@ -19,6 +19,12 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 from ..config.user_config_workbook import UserConfigWorkbook
+from ..config.project_semantics import (
+    ProjectSemanticsStore,
+    compiled_project_contracts,
+    empty_project_semantics,
+    rebind_project_semantics,
+)
 from ..retrieval import indexing_identity
 from ..retrieval.build_context import context_input_status
 from ..retrieval.code_index import CodeIndex, _JobRuntimeOutputs
@@ -26,6 +32,8 @@ from ..retrieval.instance_index import InstanceScope, ScopedCodeIndex, wrap_scop
 from ..semantics.instance_semantics import (
     FrozenJSON,
     FrozenWorkbookRows,
+    _InstanceInputAdmission,
+    _issue_instance_input_admission,
     InstanceSemanticsSnapshot,
     SemanticsDependencies,
     SemanticsUnavailable,
@@ -33,12 +41,14 @@ from ..semantics.instance_semantics import (
     _HOST_GLIBC_STDLIB,
     _is_sha256_hex,
     _trusted_host_header,
+    authorized_standard_headers_current,
     builtin_semantics_fingerprint,
     build_instance_semantics,
+    compose_linked_automatic_templates,
 )
 
 
-SEMANTICS_POLICY = "builtin_current_manual_advisory_no_inferred.v1"
+SEMANTICS_POLICY = "builtin_current_automatic_native_confirmed_project.v3"
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -107,6 +117,58 @@ def freeze_workbook(path: Path) -> FrozenWorkbookRows:
     )
 
 
+def freeze_project_semantics(
+    path: Path,
+    *,
+    allow_unbound_primitive_proposals: bool = False,
+) -> FrozenWorkbookRows:
+    """Freeze the one YAML authority file without granting pending rows effects."""
+
+    path = Path(path)
+    before = path.read_bytes()
+    store = ProjectSemanticsStore(path)
+    document = store.read(allow_unbound_primitive_proposals=allow_unbound_primitive_proposals)
+    after = path.read_bytes()
+    if before != after:
+        raise ValueError("instance_semantics_project_file_changed_during_freeze")
+    confirmed = [dict(row) for row in document["interfaces"] if row.get("status") == "confirmed"]
+    pairs = store.list_paired_functions(
+        allow_unbound_primitive_proposals=allow_unbound_primitive_proposals
+    )
+    other = [
+        *({"sheet": "dispatcher", **dict(row)} for row in document["dispatchers"]),
+        *(
+            {"sheet": "pointer_targets", **dict(row)}
+            for row in document["function_pointer_bindings"]
+        ),
+    ]
+    return FrozenWorkbookRows(
+        workbook_sha256=hashlib.sha256(before).hexdigest(),
+        external_rows=tuple(FrozenJSON(canonical_bytes(row)) for row in confirmed),
+        paired_rows=tuple(FrozenJSON(canonical_bytes(row)) for row in pairs),
+        other_advisory_rows=tuple(FrozenJSON(canonical_bytes(row)) for row in other),
+        project_document=FrozenJSON(canonical_bytes(document)),
+    )
+
+
+def _freeze_authority(
+    path: Path,
+    *,
+    allow_unbound_primitive_proposals: bool = False,
+) -> FrozenWorkbookRows:
+    # Compatibility for historical unit fixtures and the explicit migration
+    # reader only.  Product scan callers pass ``semantics_path`` and therefore
+    # never execute workbook-backed semantics.
+    return (
+        freeze_workbook(path)
+        if path.suffix.lower() == ".xlsx"
+        else freeze_project_semantics(
+            path,
+            allow_unbound_primitive_proposals=allow_unbound_primitive_proposals,
+        )
+    )
+
+
 def current_dependencies(config: Any) -> SemanticsDependencies:
     from ..semantics import contracts, defaults, standard_api
     from ..rules.catalog import serialize_effective_rules
@@ -161,9 +223,18 @@ def current_dependencies(config: Any) -> SemanticsDependencies:
                     ).hexdigest()
                     for name in (
                         "contracts.py",
+                        "c_linux_catalog.py",
+                        "posix_issue8_manifest.py",
                         "standard_api.py",
                         "defaults.py",
                         "instance_semantics.py",
+                        "automatic.py",
+                        "native_wrappers.py",
+                        "contract_compiler.py",
+                        "contract_review.py",
+                        "contract_conditions.py",
+                        "build_scope.py",
+                        "call_context.py",
                     )
                 },
                 "instance_execution_sources": {
@@ -171,10 +242,16 @@ def current_dependencies(config: Any) -> SemanticsDependencies:
                     for name in (
                         "core/analysis/analyzer.py",
                         "core/validation/runner.py",
+                        "core/validation/claims.py",
+                        "core/validation/pipeline.py",
+                        "agents/validator_agent/agent.py",
+                        "rules/validation_obligations.py",
+                        "orchestration/hierarchical_discovery.py",
                         "core/candidates/pipeline.py",
                         "core/candidates/regex.py",
                         "core/candidates/graph.py",
                         "core/candidates/clang_ast_cfg.py",
+                        "core/candidates/function_facts.py",
                         "core/candidates/cpp_domains/resource_lifecycle.py",
                         "core/candidates/cpp_domains/concurrency_shared_state.py",
                         "core/candidates/cpp_domains/memory_bounds_integer.py",
@@ -201,8 +278,11 @@ def current_dependencies(config: Any) -> SemanticsDependencies:
                         "semantics/models.py",
                         "semantics/contracts.py",
                         "semantics/contract_conditions.py",
+                        "semantics/c_linux_catalog.py",
+                        "semantics/posix_issue8_manifest.py",
                         "semantics/defaults.py",
                         "semantics/standard_api.py",
+                        "config/project_semantics.py",
                         "rules/catalog.py",
                         "rules/implementation.py",
                         "rules/qualification.py",
@@ -322,6 +402,103 @@ def exact_inputs_current(
         return False
 
 
+def _batch_input_admissions(
+    code_index: Any, scopes: Sequence[InstanceScope]
+) -> tuple[dict[str, _InstanceInputAdmission], dict[str, str]]:
+    runtime = code_index._job_runtime_outputs if isinstance(code_index, CodeIndex) else None
+    active = runtime if isinstance(runtime, _JobRuntimeOutputs) and runtime._active else None
+    # A fresh validation snapshot must use the same bound output namespace as
+    # require_current(). Ordinary directory census would mistake this job's
+    # newly registered queue/checkpoint files for changed compiler inputs.
+    with active.binding() if active is not None else nullcontext():
+        return _batch_input_admissions_bound(code_index, scopes, active)
+
+
+def _batch_input_admissions_bound(
+    code_index: Any, scopes: Sequence[InstanceScope], runtime: _JobRuntimeOutputs | None
+) -> tuple[dict[str, _InstanceInputAdmission], dict[str, str]]:
+    """Validate shared build inputs once and exact function identities once.
+
+    A fresh invocation is one admission boundary.  Callers run it before and
+    after snapshot construction; no result is persisted or reused across
+    boundaries.
+    """
+
+    admissions: dict[str, _InstanceInputAdmission] = {}
+    failures: dict[str, str] = {}
+    if runtime is not None and not runtime.native_current():
+        return {}, {scope.identity: "native_inputs_not_current" for scope in scopes}
+    try:
+        contexts = {
+            str(row.get("build_context_id") or ""): dict(row)
+            for row in code_index.get_build_contexts()
+            if isinstance(row, Mapping) and str(row.get("build_context_id") or "")
+        }
+    except Exception:
+        return {}, {scope.identity: "build_context_inventory_unavailable" for scope in scopes}
+
+    validators: dict[str, indexing_identity.InputValidator] = {}
+    build_status: dict[str, str] = {}
+    native_status: dict[str, bool] = {}
+    tool_status: dict[str, bool] = {}
+    for build in sorted({scope.build_context_id for scope in scopes if scope.build_context_id}):
+        context = contexts.get(build)
+        if context is None:
+            build_status[build] = "unknown_build_context"
+            continue
+        excluded = context.get("search_excludes", [])
+        validator_key = indexing_identity.digest_json(excluded)
+        validator = (
+            runtime.validator(context)
+            if runtime is not None
+            else validators.setdefault(
+                validator_key,
+                indexing_identity.InputValidator(Path(path) for path in excluded),
+            )
+        )
+        build_status[build] = context_input_status(context, validator=validator)
+        tool_key = indexing_identity.digest_json(context.get("tool") or {})
+        if tool_key not in tool_status:
+            tool_status[tool_key] = _native_inputs_current(context)
+        native_status[build] = tool_status[tool_key]
+
+    for scope in scopes:
+        context = contexts.get(scope.build_context_id)
+        status = build_status.get(scope.build_context_id, "unknown_build_context")
+        if context is None or status != "current":
+            failures[scope.identity] = f"context_inputs_not_current:{status}"
+            continue
+        if not native_status.get(scope.build_context_id, False):
+            failures[scope.identity] = "native_inputs_not_current"
+            continue
+        try:
+            facts = code_index.get_function_program_facts(
+                scope.usr,
+                scope.source,
+                build_context_id=scope.build_context_id,
+            )
+        except Exception:
+            failures[scope.identity] = "entry_program_facts_unavailable"
+            continue
+        identity = facts.get("function_identity") if isinstance(facts, Mapping) else None
+        if not (
+            isinstance(facts, Mapping)
+            and facts.get("complete") is True
+            and facts.get("build_context_id") == scope.build_context_id
+            and isinstance(identity, Mapping)
+            and identity.get("build_context_id") == scope.build_context_id
+            and identity.get("usr") == scope.usr
+        ):
+            failures[scope.identity] = "entry_identity_unverified"
+            continue
+        admissions[scope.identity] = _issue_instance_input_admission(
+            scope=scope,
+            context=context,
+            program_facts=facts,
+        )
+    return admissions, failures
+
+
 @dataclass(frozen=True)
 class InstanceSemanticsContext:
     config: Any
@@ -333,6 +510,56 @@ class InstanceSemanticsContext:
     scopes: Mapping[str, InstanceScope]
     snapshots: Mapping[str, InstanceSemanticsSnapshot]
     unavailable: Mapping[str, str]
+    effective_project_document: FrozenJSON
+    project_semantics_rebind: Mapping[str, Any]
+
+    def snapshot(self, scope: InstanceScope) -> InstanceSemanticsSnapshot:
+        """Return the frozen value after an enclosing batch currentness gate.
+
+        This performs identity checks only.  Filesystem/native currency is
+        deliberately handled by :meth:`require_all` at batch boundaries so a
+        300-function project does not re-walk the same include namespace for
+        every function and every semantic lookup.
+        """
+
+        snapshot = self.snapshots.get(scope.identity)
+        if snapshot is None:
+            raise ValueError(self.unavailable.get(scope.identity, "instance_semantics_missing"))
+        if snapshot.scope != scope:
+            raise ValueError("instance_semantics_scope_changed")
+        return snapshot
+
+    def is_frozen(self, snapshot: InstanceSemanticsSnapshot) -> bool:
+        return self.snapshots.get(snapshot.scope.identity) is snapshot
+
+    def _link_ids(self) -> set[str]:
+        return {
+            str(link_id)
+            for contract in self.project_semantics_rebind.get("contracts", []) or []
+            if isinstance(contract, Mapping)
+            for link_id in contract.get("link_target_ids", []) or []
+            if str(link_id)
+        } | {
+            str(link_id)
+            for snapshot in self.snapshots.values()
+            for link_id in json.loads(bytes(snapshot.effect_payload))
+            .get("automatic_derivation", {})
+            .get("link_target_ids", [])
+        }
+
+    def _links_current(self) -> bool:
+        link_ids = self._link_ids()
+        if not link_ids:
+            return True
+        linked_factory = getattr(self.code_index, "linked_targets", None)
+        linked = linked_factory() if callable(linked_factory) else None
+        current_links = getattr(linked, "current_many", None)
+        if callable(current_links):
+            return bool(current_links(sorted(link_ids)))
+        current_link = getattr(linked, "current", None)
+        return bool(
+            callable(current_link) and all(current_link(link_id) for link_id in sorted(link_ids))
+        )
 
     def is_current(self, snapshot: InstanceSemanticsSnapshot) -> bool:
         """No caller-supplied booleans or old cached dependency success."""
@@ -340,6 +567,12 @@ class InstanceSemanticsContext:
         if expected is not snapshot:
             return False
         try:
+            # Imported effects depend on definition builds as well as the
+            # caller. Recheck the whole frozen batch, including native tools
+            # and authorized system declarations in those producer builds.
+            if self._link_ids():
+                self.require_all()
+                return True
             runtime = (
                 self.code_index._job_runtime_outputs
                 if isinstance(self.code_index, CodeIndex)
@@ -359,15 +592,119 @@ class InstanceSemanticsContext:
                     return False
                 if current_dependencies(self.config) != self.dependencies:
                     return False
-                if freeze_workbook(self.workbook_path) != self.workbook:
+                if _freeze_authority(self.workbook_path) != self.workbook:
+                    return False
+                if not self._links_current():
                     return False
                 receipt = self.native_input_receipts.get(snapshot.scope.identity)
                 if receipt is None:
                     return False
                 scoped = wrap_scoped_code_index(self.code_index, snapshot.scope)
-                return exact_inputs_current(scoped, snapshot.scope, expected_receipt=receipt)
+                return bool(
+                    exact_inputs_current(scoped, snapshot.scope, expected_receipt=receipt)
+                    and authorized_standard_headers_current(snapshot)
+                )
         except Exception:
             return False
+
+    def require_all(self) -> None:
+        """Revalidate one frozen manifest with shared per-batch input caches.
+
+        Common policy, YAML and link inputs are checked once.  Build input
+        validators are shared for contexts with the same search exclusions;
+        each function still re-reads its exact current native fact identity.
+        A later publication boundary calls this method again with fresh
+        validators, so edits during analysis fail closed.
+        """
+
+        try:
+            runtime = (
+                self.code_index._job_runtime_outputs
+                if isinstance(self.code_index, CodeIndex)
+                else None
+            )
+            fence = (
+                runtime.binding()
+                if isinstance(runtime, _JobRuntimeOutputs) and runtime._active
+                else nullcontext()
+            )
+            with fence:
+                if (
+                    isinstance(runtime, _JobRuntimeOutputs)
+                    and runtime._active
+                    and not runtime.native_current()
+                ):
+                    raise ValueError("instance_semantics_native_membership_changed")
+                if current_dependencies(self.config) != self.dependencies:
+                    raise ValueError("instance_semantics_dependencies_changed")
+                if _freeze_authority(self.workbook_path) != self.workbook:
+                    raise ValueError("instance_semantics_project_file_changed")
+                if not self._links_current():
+                    raise ValueError("instance_semantics_link_inputs_changed")
+
+                contexts = {
+                    str(row.get("build_context_id") or ""): row
+                    for row in self.code_index.get_build_contexts()
+                    if isinstance(row, Mapping) and str(row.get("build_context_id") or "")
+                }
+                validators: dict[str, indexing_identity.InputValidator] = {}
+                context_statuses: dict[str, str] = {}
+                native_statuses: dict[str, bool] = {}
+                header_statuses: dict[bytes, bool] = {}
+                for snapshot in self.snapshots.values():
+                    if not self.is_frozen(snapshot):
+                        raise ValueError("instance_semantics_snapshot_replaced")
+                    scope = snapshot.scope
+                    context = contexts.get(scope.build_context_id)
+                    receipt = self.native_input_receipts.get(scope.identity)
+                    if context is None or receipt != canonical_bytes([context]):
+                        raise ValueError("instance_semantics_native_receipt_changed")
+
+                    build = scope.build_context_id
+                    if build not in native_statuses:
+                        native_statuses[build] = _native_inputs_current(context)
+                    if not native_statuses[build]:
+                        raise ValueError("instance_semantics_native_tool_changed")
+
+                    if build not in context_statuses:
+                        if isinstance(runtime, _JobRuntimeOutputs) and runtime._active:
+                            validator = runtime.validator(context)
+                        else:
+                            excluded = context.get("search_excludes", [])
+                            validator_key = indexing_identity.digest_json(excluded)
+                            validator = validators.setdefault(
+                                validator_key,
+                                indexing_identity.InputValidator(Path(path) for path in excluded),
+                            )
+                        context_statuses[build] = context_input_status(context, validator=validator)
+                    if context_statuses[build] != "current":
+                        raise ValueError("instance_semantics_build_context_changed")
+
+                    facts = self.code_index.get_function_program_facts(
+                        scope.usr,
+                        scope.source,
+                        build_context_id=scope.build_context_id,
+                    )
+                    identity = facts.get("function_identity") if isinstance(facts, dict) else None
+                    if not (
+                        isinstance(facts, dict)
+                        and facts.get("complete") is True
+                        and facts.get("build_context_id") == scope.build_context_id
+                        and isinstance(identity, dict)
+                        and identity.get("build_context_id") == scope.build_context_id
+                        and identity.get("usr") == scope.usr
+                    ):
+                        raise ValueError("instance_semantics_function_identity_changed")
+
+                    header_key = bytes(snapshot.effect_payload)
+                    if header_key not in header_statuses:
+                        header_statuses[header_key] = authorized_standard_headers_current(snapshot)
+                    if not header_statuses[header_key]:
+                        raise ValueError("instance_semantics_standard_headers_changed")
+        except Exception as exc:
+            if isinstance(exc, ValueError) and str(exc) == "instance_semantics_not_current":
+                raise
+            raise ValueError("instance_semantics_not_current") from exc
 
     def require(self, scope: InstanceScope) -> InstanceSemanticsSnapshot:
         snapshot = self.snapshots.get(scope.identity)
@@ -382,31 +719,76 @@ class InstanceSemanticsContext:
 
 
 def freeze_instance_context(
-    *, config: Any, code_index: Any, workbook_path: Path, scopes: Sequence[InstanceScope]
+    *,
+    config: Any,
+    code_index: Any,
+    workbook_path: Path | None = None,
+    semantics_path: Path | None = None,
+    scopes: Sequence[InstanceScope],
+    allow_unbound_primitive_proposals: bool = False,
 ) -> InstanceSemanticsContext:
-    workbook = freeze_workbook(workbook_path)
+    raw_authority_path = semantics_path or workbook_path
+    if raw_authority_path is None:
+        raise ValueError("instance_semantics_project_file_missing")
+    authority_path = Path(raw_authority_path)
+    workbook = _freeze_authority(
+        authority_path,
+        allow_unbound_primitive_proposals=allow_unbound_primitive_proposals,
+    )
     dependencies = current_dependencies(config)
+    original_project_document = json.loads(bytes(workbook.project_document))
+    # Historical unit fixtures still exercise the explicitly non-product XLSX
+    # compatibility reader.  They have no project-semantics authority at all,
+    # so represent that absence with the strict empty v1 document before the
+    # common rebind path.  Product scan callers always pass ``semantics_path``
+    # and cannot use this compatibility branch.
+    if authority_path.suffix.lower() == ".xlsx" and not original_project_document:
+        original_project_document = empty_project_semantics()
+    effective_project_document, project_rebind = rebind_project_semantics(
+        original_project_document,
+        project_root=Path(config.project.project_root),
+        target_id=str(getattr(config.project, "target_id", "") or ""),
+        code_index=code_index,
+        allow_unbound_primitive_proposals=allow_unbound_primitive_proposals,
+    )
+    # Rebind is deliberately capable of producing a safe partial registry.
+    # A missing observed link record revokes contracts for the unclosed caller
+    # BuildContexts while retaining exact same-TU/current-link variants.  The
+    # audit remains ``ready=false`` (and therefore blocks formal qualification),
+    # but it must not invalidate builtin semantics or every local analysis
+    # unit in the scan.
+    contracts_by_build = {
+        build: compiled_project_contracts(
+            effective_project_document,
+            build_context_id=build,
+        )
+        for build in {str(scope.build_context_id) for scope in scopes if scope.build_context_id}
+    }
     snapshots: dict[str, InstanceSemanticsSnapshot] = {}
     native_input_receipts: dict[str, bytes] = {}
     unavailable: dict[str, str] = {}
+    admissions, admission_failures = _batch_input_admissions(code_index, scopes)
+    templates_by_build: dict[str, InstanceSemanticsSnapshot] = {}
     for scope in scopes:
         if scope.identity in snapshots or scope.identity in unavailable:
             raise ValueError("instance_semantics_duplicate_instance_identity")
         scoped = wrap_scoped_code_index(code_index, scope)
-        try:
-            # Freeze the complete receipt, including absent/present members and
-            # all dependency/tool-library keys. A later same-ID record cannot
-            # shed an input that the real factory used to authorize effects.
-            receipt = canonical_bytes(scoped.get_build_contexts(scope.source))
-            if not exact_inputs_current(scoped, scope, expected_receipt=receipt):
-                unavailable[scope.identity] = "instance_semantics_exact_inputs_not_current"
-                continue
-            value = build_instance_semantics(
-                scope=scope, scoped_index=scoped, workbook=workbook, dependencies=dependencies
+        admission = admissions.get(scope.identity)
+        if admission is None:
+            unavailable[scope.identity] = admission_failures.get(
+                scope.identity, "instance_semantics_exact_inputs_not_current"
             )
-            if not exact_inputs_current(scoped, scope, expected_receipt=receipt):
-                unavailable[scope.identity] = "instance_semantics_exact_inputs_not_current"
-                continue
+            continue
+        try:
+            value = build_instance_semantics(
+                scope=scope,
+                scoped_index=scoped,
+                workbook=workbook,
+                dependencies=dependencies,
+                project_contracts_override=contracts_by_build.get(scope.build_context_id, []),
+                _input_admission=admission,
+                _build_template=templates_by_build.get(scope.build_context_id),
+            )
         except Exception:
             unavailable[scope.identity] = "instance_semantics_freeze_unverifiable"
             continue
@@ -414,28 +796,41 @@ def freeze_instance_context(
             unavailable[scope.identity] = value.reason
         else:
             snapshots[scope.identity] = value
-            native_input_receipts[scope.identity] = receipt
+            native_input_receipts[scope.identity] = bytes(admission.context_receipt)
+            templates_by_build.setdefault(scope.build_context_id, value)
+    snapshots = compose_linked_automatic_templates(snapshots, code_index)
     context = InstanceSemanticsContext(
         config=config,
         code_index=code_index,
-        workbook_path=workbook_path,
+        workbook_path=authority_path,
         workbook=workbook,
         dependencies=dependencies,
         native_input_receipts=MappingProxyType(native_input_receipts),
         scopes=MappingProxyType({scope.identity: scope for scope in scopes}),
         snapshots=MappingProxyType(snapshots),
         unavailable=MappingProxyType(unavailable),
+        effective_project_document=FrozenJSON(canonical_bytes(effective_project_document)),
+        project_semantics_rebind=MappingProxyType(project_rebind),
     )
     # A change during construction is a miss, never a partially frozen batch.
-    if freeze_workbook(workbook_path) != workbook or current_dependencies(config) != dependencies:
-        raise ValueError("instance_semantics_dependencies_changed_during_freeze")
-    if any(
-        not exact_inputs_current(
-            wrap_scoped_code_index(code_index, snapshot.scope),
-            snapshot.scope,
-            expected_receipt=native_input_receipts[identity],
+    if (
+        _freeze_authority(
+            authority_path,
+            allow_unbound_primitive_proposals=allow_unbound_primitive_proposals,
         )
-        for identity, snapshot in snapshots.items()
+        != workbook
+        or current_dependencies(config) != dependencies
+    ):
+        raise ValueError("instance_semantics_dependencies_changed_during_freeze")
+    post_admissions, post_failures = _batch_input_admissions(
+        code_index, [snapshot.scope for snapshot in snapshots.values()]
+    )
+    if post_failures or any(
+        identity not in post_admissions
+        or bytes(post_admissions[identity].context_receipt) != native_input_receipts[identity]
+        or bytes(post_admissions[identity].program_facts)
+        != bytes(admissions[identity].program_facts)
+        for identity in snapshots
     ):
         raise ValueError("instance_semantics_exact_inputs_changed_during_freeze")
     runtime = code_index._job_runtime_outputs if isinstance(code_index, CodeIndex) else None
@@ -443,6 +838,8 @@ def freeze_instance_context(
         # All original strict raw/S01 checks have finished before the live
         # factory allowance can be activated under the exact owner binding.
         runtime.activate(context)
-        if any(not context.is_current(snapshot) for snapshot in snapshots.values()):
+        try:
+            context.require_all()
+        except ValueError:
             raise ValueError("instance_semantics_runtime_activation_not_current")
     return context

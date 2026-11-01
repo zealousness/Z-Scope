@@ -43,6 +43,20 @@ def _snapshot(
     }
 
 
+@pytest.mark.parametrize("owner", [None, [], "invalid", 42])
+def test_final_report_rejects_non_object_snapshot_owner(tmp_path, owner) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    snapshot = _snapshot()
+    index_name = snapshot["index_name"]
+    generation = store.save_snapshot(
+        index_name, snapshot, "int handle_request(void) { return 0; }"
+    )
+    assert store.save_final_report(index_name, {"issues": []}, expected_generation=generation)
+    (store.snapshot_dir / generation).write_text(json.dumps(owner), encoding="utf-8")
+
+    assert store.load_final_report(index_name) is None
+
+
 def test_snapshot_lock_uses_index_name() -> None:
     lock_manager = SnapshotLockManager()
     left = "handle_request@src/a/server.c:10-20"

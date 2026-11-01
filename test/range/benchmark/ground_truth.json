@@ -1,8 +1,8 @@
 {
   "benchmark": "zscope-range-service-runtime",
-  "version": 16,
-  "total_vulnerabilities": 139,
-  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 16 adds three independently verified findings from the 20260908 trial review: the externally reachable header-allocation addition overflow, the refcount update after releasing the lookup lock, and the unhandled SIGPIPE path in network send. Existing truth-covered roots, duplicate roots, and explicitly excluded hardening/speculative cases are not added; version 15 corrects the REAL-029 primary source range and adds the concrete ISSUE42-028 signal-record helper anchor without changing the truth count; version 14 adds ISSUE43 stream-journal and lock-cache runtime models for missing C memory, concurrency, and resource CWE coverage; version 13 removes ISSUE42-012/log_level_misuse as a code-style-only case and strengthens issue #41/#42 models with concrete impact chains; version 12 neutralizes benchmark function names, refreshes ISSUE42 to natural runtime API flows, and adds wrapper/evidence anchors for scoring; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite; version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors.",
+  "version": 17,
+  "total_vulnerabilities": 141,
+  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 17 applies an independently reviewed non-GT audit: seven concrete roots are added, three reported findings are confirmed as existing-truth manifestations, speculative contract claims remain unknown or excluded, and five duplicate or unsupported records are retired. It also repairs definite source-anchor drift and rewrites RANGE-048 to the current unlocked-return race; version 16 added three trial-review findings; version 15 corrected the REAL-029 primary source range and added the ISSUE42-028 signal-record helper anchor; version 14 added ISSUE43 runtime models; version 13 removed the code-style-only ISSUE42-012; version 12 refreshed neutral runtime models and scoring anchors.",
   "vulnerabilities": [
     {
       "id": "RANGE-001",
@@ -118,8 +118,8 @@
       "title": "Worker threads increment global shared counter without synchronization",
       "file": "src/main.c",
       "function": "_worker_thread",
-      "line": 82,
-      "end_line": 82,
+      "line": 87,
+      "end_line": 87,
       "severity": "medium",
       "keywords": [
         "g_shared_counter",
@@ -737,9 +737,9 @@
     },
     {
       "id": "RANGE-042",
-      "cwe": "CWE-835",
+      "cwe": "CWE-835/CWE-400",
       "category": "infinite_loop",
-      "title": "Closed pipe node is unlinked with next pointing to itself and can trap later traversal",
+      "title": "Closed pipe node points to itself and traps later traversal, repeatedly amplifying its error log",
       "file": "src/lifecycle.c",
       "function": "_lifecycle_close_pipe",
       "line": 731,
@@ -754,47 +754,10 @@
         "self",
         "while",
         "pipe = pipe->next",
-        "infinite loop"
-      ]
-    },
-    {
-      "id": "RANGE-043",
-      "cwe": "CWE-400",
-      "category": "log_amplification",
-      "title": "Self-referential pipe traversal emits an error log on every loop iteration",
-      "file": "src/lifecycle.c",
-      "function": "_lifecycle_dispatch_pipe_tick",
-      "line": 695,
-      "end_line": 700,
-      "severity": "medium",
-      "keywords": [
+        "infinite loop",
         "LOG_ERROR",
         "diagnostic_marker",
-        "pipe = pipe->next",
-        "self",
         "resource exhaustion"
-      ]
-    },
-    {
-      "id": "RANGE-044",
-      "cwe": "CWE-833",
-      "category": "deadlock",
-      "title": "Timer callback can wait on a pipe control lock held by close while close waits on the scheduler lock",
-      "file": "src/lifecycle.c",
-      "function": "_lifecycle_tick_timer_callback",
-      "line": 738,
-      "end_line": 746,
-      "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_lifecycle_close_pipe",
-      "secondary_line": 721,
-      "secondary_end_line": 723,
-      "severity": "medium",
-      "keywords": [
-        "timer",
-        "ctrl_lock",
-        "g_pipe_scheduler.sched_lock",
-        "wait",
-        "deadlock"
       ]
     },
     {
@@ -875,16 +838,15 @@
       "id": "RANGE-048",
       "cwe": "CWE-362",
       "category": "race",
-      "title": "Shared counter locking is compiled out on non-64-bit builds while the resource remains shared",
+      "title": "Shared counter value is reread after releasing its update lock",
       "file": "src/lifecycle.c",
       "function": "_lifecycle_update_counter_slot",
-      "line": 960,
+      "line": 967,
       "end_line": 972,
       "severity": "medium",
       "keywords": [
-        "COUNTER_SLOT_LOCK",
-        "__x86_64__",
-        "do { } while",
+        "COUNTER_SLOT_UNLOCK",
+        "return",
         "g_lifecycle_counter_slot",
         "race"
       ]
@@ -1253,8 +1215,8 @@
       "title": "Message decoder casts an unaligned packet offset to uint32_t after only a two-byte length check",
       "file": "src/lifecycle.c",
       "function": "_runtime_message_header_probe",
-      "line": 1325,
-      "end_line": 1331,
+      "line": 1333,
+      "end_line": 1339,
       "severity": "high",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1398,8 +1360,8 @@
       "title": "Ready flag is set before the shared node reaches its final initialized state",
       "file": "src/lifecycle.c",
       "function": "_runtime_read_service_flag",
-      "line": 1389,
-      "end_line": 1398,
+      "line": 1400,
+      "end_line": 1409,
       "severity": "critical",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1444,8 +1406,8 @@
       "title": "Peak-stat query allocates a PID statistics buffer and returns copied data without releasing it",
       "file": "src/lifecycle.c",
       "function": "_runtime_query_peak_stats",
-      "line": 1413,
-      "end_line": 1423,
+      "line": 1424,
+      "end_line": 1434,
       "severity": "high",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1467,8 +1429,8 @@
       "title": "Network header receive loop spins on repeated receive failures with no delay or exit path",
       "file": "src/lifecycle.c",
       "function": "_runtime_read_peer_record",
-      "line": 1425,
-      "end_line": 1435,
+      "line": 1436,
+      "end_line": 1446,
       "severity": "high",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1528,8 +1490,8 @@
       "title": "Client cleanup sends a hardcoded role parameter even though the channel role is available",
       "file": "src/lifecycle.c",
       "function": "_runtime_release_channel_role",
-      "line": 1450,
-      "end_line": 1459,
+      "line": 1461,
+      "end_line": 1470,
       "severity": "critical",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1559,8 +1521,8 @@
       "title": "System-call failure leaves local registry state changed instead of restoring the previous value",
       "file": "src/lifecycle.c",
       "function": "_runtime_switch_io_mode",
-      "line": 1461,
-      "end_line": 1469,
+      "line": 1472,
+      "end_line": 1480,
       "severity": "high",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1603,8 +1565,8 @@
       "title": "Reference count is incremented after the lookup lock has been dropped",
       "file": "src/lifecycle.c",
       "function": "_runtime_release_shared_node",
-      "line": 1484,
-      "end_line": 1493,
+      "line": 1495,
+      "end_line": 1504,
       "severity": "critical",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1626,8 +1588,8 @@
       "title": "External callback is invoked while the global registry lock is held",
       "file": "src/lifecycle.c",
       "function": "_runtime_notify_registry_listener",
-      "line": 1495,
-      "end_line": 1504,
+      "line": 1506,
+      "end_line": 1515,
       "severity": "high",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1670,8 +1632,8 @@
       "title": "Metrics resize overwrites the only global pointer with the realloc result",
       "file": "src/lifecycle.c",
       "function": "_runtime_resize_message_buffer",
-      "line": 1519,
-      "end_line": 1526,
+      "line": 1530,
+      "end_line": 1537,
       "severity": "high",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1692,8 +1654,8 @@
       "title": "Negative receive result is cast to size_t and used as a memcpy length",
       "file": "src/lifecycle.c",
       "function": "_runtime_receive_record_payload",
-      "line": 1528,
-      "end_line": 1537,
+      "line": 1539,
+      "end_line": 1548,
       "severity": "critical",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1822,20 +1784,20 @@
       ],
       "secondary_file": "src/lifecycle.c",
       "secondary_function": "_runtime_query_peak_stats",
-      "secondary_line": 1413,
-      "secondary_end_line": 1423,
+      "secondary_line": 1424,
+      "secondary_end_line": 1434,
       "notes": "mode is a signed public API parameter; mode=-2 wraps to UINT32_MAX after mode+1, causing area+1 to wrap in the downstream allocation path before pid_list[0] is written."
     },
     {
       "id": "ISSUE41-001",
-      "cwe": "CWE-190/CWE-131",
+      "cwe": "CWE-682",
       "category": "size_limit_mismatch",
       "title": "Collection label cache uses a fixed byte limit smaller than the stated element-count specification",
       "file": "src/lifecycle.c",
       "function": "_peer_prepare_label_cache",
       "line": 1684,
       "end_line": 1697,
-      "severity": "high",
+      "severity": "medium",
       "tier": "real_project_issue41",
       "weight": 3,
       "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
@@ -2086,7 +2048,7 @@
     },
     {
       "id": "ISSUE41-010",
-      "cwe": "CWE-404",
+      "cwe": "CWE-248",
       "category": "sigpipe_unhandled",
       "title": "Client write to a closed peer can raise SIGPIPE because the C/S send path never masks the signal",
       "file": "src/lifecycle.c",
@@ -2742,54 +2704,6 @@
       ]
     },
     {
-      "id": "ISSUE42-015",
-      "cwe": "CWE-664",
-      "category": "logic_error",
-      "title": "Shared-memory debug traversal repeatedly reacquires arena groups based on ptNoIdx instead of group identity",
-      "file": "src/lifecycle.c",
-      "function": "_runtime_walk_arena_groups",
-      "line": 2488,
-      "end_line": 2502,
-      "severity": "low",
-      "tier": "real_project_issue42",
-      "weight": 3,
-      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
-      "source_model": "VM-013 ShmDbg arena group repeated get",
-      "keywords": [
-        "issue-42",
-        "shm debug",
-        "arena group",
-        "ptNoIdx",
-        "logic error",
-        "td_runtime_apply_shared_memory_event",
-        "td_runtime_configure_pool",
-        "_runtime_apply_pool_plan"
-      ],
-      "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_runtime_apply_pool_plan",
-      "secondary_line": 2923,
-      "secondary_end_line": 2930,
-      "additional_locations": [
-        {
-          "file": "src/main.c",
-          "function": "td_runtime_apply_shared_memory_event",
-          "line": 697,
-          "end_line": 704
-        },
-        {
-          "file": "src/main.c",
-          "function": "td_runtime_configure_pool",
-          "line": 717,
-          "end_line": 719
-        }
-      ],
-      "flow": "runtime_pool_plan_flow",
-      "related_functions": [
-        "td_runtime_configure_pool",
-        "_runtime_apply_pool_plan"
-      ]
-    },
-    {
       "id": "ISSUE42-016",
       "cwe": "CWE-362",
       "category": "global_mode_race",
@@ -2883,47 +2797,6 @@
       "related_functions": [
         "td_runtime_publish_process_state",
         "_runtime_publish_process_record"
-      ]
-    },
-    {
-      "id": "ISSUE42-018",
-      "cwe": "CWE-732",
-      "category": "permission",
-      "title": "NamedPipe shared-memory backing is created with hard-coded product name and overly strict 0660 permissions",
-      "file": "src/lifecycle.c",
-      "function": "_runtime_open_named_segment",
-      "line": 2542,
-      "end_line": 2554,
-      "severity": "medium",
-      "tier": "real_project_issue42",
-      "weight": 3,
-      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
-      "source_model": "VM-016 NamedPipe shared memory permission",
-      "keywords": [
-        "issue-42",
-        "namedpipe",
-        "shared memory",
-        "chmod",
-        "0660",
-        "td_runtime_apply_shared_memory_event",
-        "_runtime_accept_session_frame"
-      ],
-      "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_runtime_accept_session_frame",
-      "secondary_line": 2852,
-      "secondary_end_line": 2880,
-      "additional_locations": [
-        {
-          "file": "src/main.c",
-          "function": "td_runtime_apply_shared_memory_event",
-          "line": 697,
-          "end_line": 704
-        }
-      ],
-      "flow": "runtime_session_frame_flow",
-      "related_functions": [
-        "td_runtime_apply_shared_memory_event",
-        "_runtime_accept_session_frame"
       ]
     },
     {
@@ -4231,26 +4104,6 @@
       ]
     },
     {
-      "id": "ISSUE44-002",
-      "cwe": "CWE-362",
-      "category": "refcount_race",
-      "title": "Reference count is updated after releasing the lookup lock",
-      "file": "src/lifecycle.c",
-      "function": "_lifecycle_ref_put",
-      "line": 197,
-      "end_line": 197,
-      "severity": "high",
-      "tier": "legacy_range",
-      "weight": 1,
-      "keywords": [
-        "ref_count",
-        "unlock",
-        "reference count",
-        "race",
-        "use after free"
-      ]
-    },
-    {
       "id": "ISSUE44-003",
       "cwe": "CWE-248",
       "category": "sigpipe_unhandled",
@@ -4267,6 +4120,204 @@
         "SIGPIPE",
         "peer disconnect",
         "network write"
+      ]
+    },
+    {
+      "id": "ISSUE44-004",
+      "cwe": "CWE-190/CWE-787",
+      "category": "integer_overflow",
+      "title": "Maximum peer request ID wraps task-table capacity and leads to an out-of-bounds slot write",
+      "file": "src/lifecycle.c",
+      "function": "_peer_expand_task_table",
+      "line": 1786,
+      "end_line": 1803,
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_peer_create_task_from_frame",
+      "secondary_line": 1913,
+      "secondary_end_line": 1924,
+      "severity": "high",
+      "tier": "legacy_range",
+      "weight": 1,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_distributed_cs_message",
+          "line": 415,
+          "end_line": 418
+        }
+      ],
+      "keywords": [
+        "request_id",
+        "SIZE_MAX",
+        "new_cap",
+        "integer overflow",
+        "task table",
+        "out-of-bounds"
+      ]
+    },
+    {
+      "id": "ISSUE44-005",
+      "cwe": "CWE-787",
+      "category": "out_of_bounds_write",
+      "title": "Peer message handler receives the declared frame length into a smaller caller output buffer",
+      "file": "src/lifecycle.c",
+      "function": "_peer_process_session_message",
+      "line": 1971,
+      "end_line": 1977,
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_peer_receive_session_frame",
+      "secondary_line": 1722,
+      "secondary_end_line": 1735,
+      "severity": "high",
+      "tier": "legacy_range",
+      "weight": 1,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_distributed_cs_message",
+          "line": 415,
+          "end_line": 418
+        }
+      ],
+      "keywords": [
+        "frame.header.length",
+        "out_len",
+        "response",
+        "receive",
+        "buffer overflow"
+      ]
+    },
+    {
+      "id": "ISSUE44-006",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Repeated reserved-memory mapping overwrites the only handle to the earlier mapping",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_map_reserved_region",
+      "line": 2437,
+      "end_line": 2445,
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_runtime_apply_memory_plan",
+      "secondary_line": 2896,
+      "secondary_end_line": 2905,
+      "severity": "medium",
+      "tier": "legacy_range",
+      "weight": 1,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_configure_memory",
+          "line": 712,
+          "end_line": 715
+        }
+      ],
+      "keywords": [
+        "mmap",
+        "g_runtime_named_pipe.addr",
+        "overwrite",
+        "munmap",
+        "mapping leak"
+      ]
+    },
+    {
+      "id": "ISSUE44-007",
+      "cwe": "CWE-775",
+      "category": "missing_fd_release",
+      "title": "Destroying a connection outside the registry index range does not close its valid descriptor",
+      "file": "src/network.c",
+      "function": "_net_destroy_connection",
+      "line": 142,
+      "end_line": 152,
+      "secondary_file": "src/network.c",
+      "secondary_function": "_net_create_connection",
+      "secondary_line": 123,
+      "secondary_end_line": 139,
+      "severity": "medium",
+      "tier": "legacy_range",
+      "weight": 1,
+      "keywords": [
+        "conn->fd",
+        "1024",
+        "close",
+        "descriptor leak",
+        "registry bound"
+      ]
+    },
+    {
+      "id": "ISSUE44-008",
+      "cwe": "CWE-457/CWE-252",
+      "category": "uninitialized_read",
+      "title": "Fork-and-exec path reads an uninitialized child status when waitpid fails",
+      "file": "src/executor.c",
+      "function": "_executor_fork_and_exec",
+      "line": 257,
+      "end_line": 260,
+      "severity": "medium",
+      "tier": "legacy_range",
+      "weight": 1,
+      "keywords": [
+        "waitpid",
+        "ECHILD",
+        "EINTR",
+        "status",
+        "WIFEXITED",
+        "uninitialized"
+      ]
+    },
+    {
+      "id": "ISSUE44-009",
+      "cwe": "CWE-252",
+      "category": "unchecked_return",
+      "title": "Policy dispatcher masks a failed route operation with an unrelated successful release",
+      "file": "src/lifecycle.c",
+      "function": "_service_dispatch_protocol_message",
+      "line": 1634,
+      "end_line": 1638,
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_runtime_route_by_partition_key",
+      "secondary_line": 1556,
+      "secondary_end_line": 1564,
+      "severity": "medium",
+      "tier": "legacy_range",
+      "weight": 1,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_protocol_message",
+          "line": 410,
+          "end_line": 412
+        }
+      ],
+      "keywords": [
+        "SERVICE_PROTOCOL_MSG_POLICY",
+        "route",
+        "release",
+        "return value",
+        "masked failure"
+      ]
+    },
+    {
+      "id": "ISSUE44-010",
+      "cwe": "CWE-252",
+      "category": "unchecked_return",
+      "title": "Public connection-event wrapper discards watch and dispatch failures and returns close success",
+      "file": "src/main.c",
+      "function": "td_watch_connection_event",
+      "line": 376,
+      "end_line": 379,
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_lifecycle_watch_connection",
+      "secondary_line": 373,
+      "secondary_end_line": 392,
+      "severity": "medium",
+      "tier": "legacy_range",
+      "weight": 1,
+      "keywords": [
+        "watch",
+        "dispatch",
+        "close",
+        "invalid descriptor",
+        "masked failure"
       ]
     }
   ],
@@ -4305,6 +4356,31 @@
       "id": "ISSUE42-012",
       "former_title": "Normal already-initialized states are logged at ERROR level and can pollute alerts",
       "reason": "Retired in benchmark v13 because the fixture modeled code style / observability hygiene rather than a concrete security vulnerability with an exploitable or security-impacting path."
+    },
+    {
+      "id": "RANGE-043",
+      "former_title": "Self-referential pipe traversal emits an error log on every loop iteration",
+      "reason": "Merged into RANGE-042 in benchmark v17. The infinite traversal and repeated logging have the same pipe->next=pipe root and count once."
+    },
+    {
+      "id": "RANGE-044",
+      "former_title": "Timer callback can wait on a pipe control lock held by close while close waits on the scheduler lock",
+      "reason": "Retired in benchmark v17. The timer callback never acquires the scheduler lock and does not form the claimed lock-order cycle; RANGE-041 retains the concrete dispatch/close deadlock."
+    },
+    {
+      "id": "ISSUE42-015",
+      "former_title": "Shared-memory debug traversal repeatedly reacquires arena groups based on ptNoIdx instead of group identity",
+      "reason": "Retired in benchmark v17. For consecutive i, pt_no_idx reaches zero exactly when group_idx advances, and the lookup counter has no security-impacting consumer."
+    },
+    {
+      "id": "ISSUE42-018",
+      "former_title": "NamedPipe shared-memory backing is created with hard-coded product name and overly strict 0660 permissions",
+      "reason": "Retired in benchmark v17. The fixture assigns simulated in-memory fd and permission fields but neither creates a shared-memory object nor applies operating-system permissions."
+    },
+    {
+      "id": "ISSUE44-002",
+      "former_title": "Reference count is updated after releasing the lookup lock",
+      "reason": "Merged into RANGE-021 in benchmark v17, whose primary and secondary anchors already cover both unlocked refcount increment and decrement paths."
     }
   ],
   "tiers": {

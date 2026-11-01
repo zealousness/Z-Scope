@@ -1232,12 +1232,22 @@ def run_validator_replay(
             ):
                 return result
             repair_hash = calls[-1]["raw_result_sha256"] if calls else ""
-            return run_call(
+            repaired = run_call(
                 "format_repair",
                 validation_pass,
                 evidence_delta,
                 repair_of_sha256=repair_hash,
             )
+            if repaired is not None:
+                # The malformed first attempt remains in the per-call audit,
+                # but a successful bounded repair means it is not a terminal
+                # group protocol anomaly.  Identity, usage, mutation, limit,
+                # and repair-attempt errors remain in ``group_errors``.
+                try:
+                    group_errors.remove("executor result violates ValidatorResult v3")
+                except ValueError:
+                    pass
+            return repaired
 
         def run_bounded_investigation(prior: Mapping[str, Any]) -> Dict[str, Any]:
             evidence_slice = copy.deepcopy(initial_evidence_slice)

@@ -54,6 +54,10 @@ def _write_project(tmp_path: Path, *, variants: bool = True) -> Path:
             }
         )
     (tmp_path / "compile_commands.json").write_text(json.dumps(rows), encoding="utf-8")
+    (tmp_path / "entry_functions_list.json").write_text(
+        json.dumps({"functions": [{"function_name": "f", "file_path": "unit.c"}]}),
+        encoding="utf-8",
+    )
     return tmp_path
 
 
@@ -69,6 +73,7 @@ def _config(tmp_path: Path, *, single: bool = True, entry_list: bool = False):
         ZScopeConfig,
     )
     from zscope.rules.extensions import preflight_rules
+    from zscope.config.project_semantics import render_empty_project_semantics
 
     entry_file = tmp_path / "entry_functions_list.json"
     if entry_list:
@@ -76,6 +81,9 @@ def _config(tmp_path: Path, *, single: bool = True, entry_list: bool = False):
             json.dumps({"functions": [{"function_name": "f", "file_path": "unit.c"}]}),
             encoding="utf-8",
         )
+    semantics_file = tmp_path / "zscope.semantics.yaml"
+    if not semantics_file.exists():
+        semantics_file.write_text(render_empty_project_semantics(), encoding="utf-8")
     config = ZScopeConfig(
         llm=LLMConfig(),
         llms={},
@@ -87,24 +95,75 @@ def _config(tmp_path: Path, *, single: bool = True, entry_list: bool = False):
         ),
         analysis=AnalysisConfig(
             snapshot_dir=str(tmp_path / ".zscope_snapshots"),
-            user_config_db=str(tmp_path / ".zscope_user_config"),
+            user_config_db=str(semantics_file),
         ),
         project=ProjectConfig(
             project_root=tmp_path,
-            source_root=tmp_path,
             language="c_cpp",
             include_paths=[str(tmp_path)],
             compile_commands_path=tmp_path / "compile_commands.json",
+            semantics_file=semantics_file,
             agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
             entry_function="f" if single else None,
             entry_file_path="unit.c" if single else None,
             entry_functions_list=entry_file if entry_list else None,
         ),
         concurrency=ConcurrencyConfig(entry_workers=2),
-        rules=RulesConfig(enabled_ids=["clang_cfg_same_object_released_twice"]),
+        # This fixture isolates compile-variant handling for the double-free
+        # detector. The now-stable local leak rule also observes the malloc in
+        # both variants, but its macro-wrapper precision is unrelated to the
+        # instance/job-runtime contract exercised here.
+        rules=RulesConfig(
+            enabled_ids=["clang_cfg_same_object_released_twice"],
+            disabled_ids=["same_function_allocation_not_released"],
+        ),
     )
     preflight_rules(config)
+    if (tmp_path / "compile_commands.json").exists():
+        _prepare_native_semantics(config)
     return config
+
+
+def _prepare_native_semantics(config):
+    """Complete real native onboarding before testing the scan execution path.
+
+    These fixtures test built-in detectors, so explicitly reject discovered
+    custom contracts instead of granting synthetic authority to the scanner.
+    """
+    from zscope.config.project_semantics import ProjectSemanticsStore
+    from zscope.config.semantics_workflow import complete_review, revision
+    from zscope.orchestration.primitive_discovery import discover_project_primitives
+    from zscope.retrieval.code_index import CodeIndex
+
+    store = ProjectSemanticsStore(config.project.semantics_file)
+    document = store.read()
+    if document.get("discovery_receipt", {}).get("human_review"):
+        return
+    document["discovery_receipt"] = {"declaration": "none_known"}
+    store.write(document)
+    index = CodeIndex(
+        config.project.project_root,
+        config.project.compile_commands_path,
+        source_root=config.project.project_root,
+        indexing_config=config.indexing,
+        wait_for_cpg=True,
+        defer_svf=True,
+    )
+    try:
+        discover_project_primitives(config, index)
+    finally:
+        index.close()
+    document = store.read()
+    for collection in ("interfaces", "dispatchers", "function_pointer_bindings"):
+        for row in document[collection]:
+            row.update(status="rejected", review_note="Fixture exercises built-in detectors only.")
+    store.write(document)
+    complete_review(
+        store.path,
+        root=config.project.project_root,
+        config_path=None,
+        expected_revision=revision(store.path),
+    )
 
 
 @pytest.fixture
@@ -152,7 +211,11 @@ def test_single_entry_session_runs_exact_instances(native_symbol_project, monkey
     analysis = _instance_analysis(report)
     assert analysis["analyzed_instances"] == 2
     assert analysis["instance_scope_complete"] is True
-    assert analysis["scan_coverage_complete"] is False
+    assert analysis["scan_coverage_complete"] is True
+    assert analysis["consumer_scope_complete"] is True
+    # Fast now scans every indexed function instance, including variants that
+    # are outside the selected entry's call graph.
+    assert report["metadata"]["build_coverage"]["scan_complete"] is True
 
     per_instance = analysis["instances"]
     assert len(per_instance) == 2

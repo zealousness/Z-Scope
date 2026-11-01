@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, cast
 
@@ -32,6 +33,10 @@ from zscope.reporting.attribution import (
     FINDING_ATTRIBUTION_SCHEMA_VERSION,
     FindingAttribution,
     finding_attribution_mapping_errors,
+)
+from zscope.rules.validation_obligations import (
+    binding_for_rule,
+    profile_for_defect_class,
 )
 
 SCHEMA_VERSION = "zscope.benchmark.v4"
@@ -184,7 +189,10 @@ def build_benchmark_artifact_manifest(
     if not entries_path.is_file():
         entries_path = suite_root / "benchmark" / "deterministic_entries.json"
     benchmark_manifest_path = suite_root / "benchmark" / "manifest.json"
-    selected_config = Path(config_path) if config_path else suite_root / "zscope.benchmark.yaml"
+    config_directory = suite_root / "project" if (suite_root / "project").is_dir() else suite_root
+    selected_config = (
+        Path(config_path) if config_path else config_directory / "zscope.benchmark.yaml"
+    )
     selected_execution_config = (
         Path(execution_config_path) if execution_config_path else selected_config
     )
@@ -281,7 +289,10 @@ def finding_attribution(issue: Dict[str, Any]) -> Dict[str, Any]:
         str(value).strip().lower() for value in (issue.get("evidence_sources") or []) if value
     )
     discovered = set()
-    if any(value in {"semantic_snapshot", "semantic_snapshot_hypothesis", "semantic_modeling"} for value in source_values):
+    if any(
+        value in {"semantic_snapshot", "semantic_snapshot_hypothesis", "semantic_modeling"}
+        for value in source_values
+    ):
         discovered.add("semantic_modeling")
     elif any("llm" in value or "active_audit" in value for value in source_values):
         discovered.add("llm_active_discovery")
@@ -454,6 +465,7 @@ def candidate_funnel(report: Mapping[str, Any]) -> Dict[str, Any]:
 
     raw_occurrences, raw_source = first_numeric(
         (summary, "scan_level_raw_occurrence_count"),
+        (validation_performance, "scan_level_raw_occurrence_count"),
         (manifest, "raw_occurrence_count"),
         (governance, "raw_occurrence_count"),
     )
@@ -935,6 +947,665 @@ def _normalize_cwe(value: Any) -> str:
     return f"CWE-{match.group(1)}" if match else text
 
 
+def _candidate_layer_issues(report: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Return canonical pre-disposition candidates without reading truth."""
+
+    terminal = report.get("candidate_terminal_states")
+    if not isinstance(terminal, list):
+        return []
+    result: List[Dict[str, Any]] = []
+    for item in terminal:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("issue")
+        issue = dict(nested) if isinstance(nested, dict) else {}
+        issue.update({key: value for key, value in item.items() if key != "issue"})
+        result.append(issue)
+    return result
+
+
+def _structured_anchor_matches_without_category(
+    issue: Mapping[str, Any],
+    truth: Mapping[str, Any],
+    line_tolerance: int,
+) -> bool:
+    return _structured_anchor_sets_match(
+        _issue_structured_anchors(dict(issue)),
+        _truth_structured_anchors(dict(truth)),
+        line_tolerance,
+    )
+
+
+def _structured_anchor_sets_match(
+    issue_anchors: Sequence[Mapping[str, Any]],
+    truth_anchors: Sequence[Mapping[str, Any]],
+    line_tolerance: int,
+) -> bool:
+    """Match precomputed anchors without repeatedly walking shared reports."""
+
+    for issue_anchor in issue_anchors:
+        for truth_anchor in truth_anchors:
+            if not _same_source_path(
+                str(issue_anchor.get("file") or ""),
+                str(truth_anchor.get("file") or ""),
+            ):
+                continue
+            if (
+                str(issue_anchor.get("function") or "").lower()
+                != str(truth_anchor.get("function") or "").lower()
+            ):
+                continue
+            truth_start = int(truth_anchor.get("start") or 0)
+            if truth_start <= 1 or _ranges_overlap_with_tolerance(
+                int(issue_anchor.get("start") or 0),
+                int(issue_anchor.get("end") or issue_anchor.get("start") or 0),
+                truth_start,
+                int(truth_anchor.get("end") or truth_start),
+                line_tolerance,
+            ):
+                return True
+    return False
+
+
+@lru_cache(maxsize=None)
+def _expected_cpp_rule_ids(category: str) -> tuple[str, ...]:
+    """Default C/C++ rules that can emit the truth category or its family."""
+
+    from zscope.rules.catalog import RuleCatalog
+
+    normalized = _normalize_category(category)
+    categories = {normalized} if normalized else set()
+    for members in _STRUCTURED_CATEGORY_FAMILIES.values():
+        if normalized in members:
+            categories.update(members)
+
+    def related(defect_class: str) -> bool:
+        defect = _normalize_category(defect_class)
+        if defect in categories:
+            return True
+        # The matcher remains strict; this broader relation is only a planning
+        # observation that points engineers at an existing rule family before
+        # they introduce a new canonical ID.
+        if "race" in normalized and "race" in defect:
+            return True
+        if any(token in normalized for token in ("lock", "deadlock", "wakeup")) and any(
+            token in defect for token in ("lock", "deadlock", "wakeup", "race")
+        ):
+            return True
+        if any(token in normalized for token in ("leak", "cleanup")) and "leak" in defect:
+            return True
+        if "fd" in normalized and any(
+            token in defect for token in ("fd", "resource_leak", "memory_leak")
+        ):
+            return True
+        return False
+
+    return tuple(
+        sorted(
+            descriptor.id
+            for descriptor in RuleCatalog.builtin()
+            if descriptor.language == "c_cpp"
+            and descriptor.default_enabled
+            and related(descriptor.defect_class)
+        )
+    )
+
+
+def _interface_role_checkpoints(category: str) -> List[Dict[str, Any]]:
+    """Semantic call roles worth observing for one defect class.
+
+    These are diagnostic checkpoints, not claims that every finding requires a
+    project wrapper.  A direct builtin operation may satisfy the same role.
+    """
+
+    value = _normalize_category(category)
+    checkpoints: List[Dict[str, Any]] = []
+
+    def add(checkpoint: str, *roles: str) -> None:
+        if roles and not any(row["checkpoint"] == checkpoint for row in checkpoints):
+            checkpoints.append({"checkpoint": checkpoint, "role_options": sorted(set(roles))})
+
+    if any(
+        token in value
+        for token in (
+            "leak",
+            "free",
+            "allocation",
+            "cleanup",
+            "refcount",
+            "expired_pointer",
+            "premature_destroy",
+        )
+    ) or value in {"use_after_free", "invalid_free", "realloc_misuse"}:
+        add("resource_acquisition", "allocator", "calloc", "reallocator", "io_acquire")
+        add("resource_release", "deallocator", "io_release", "ownership_transfer")
+    if "fd" in value or value in {"stale_fd", "sigpipe_unhandled"}:
+        add("handle_acquisition", "io_acquire", "recv_source")
+        add("handle_release_or_state", "io_release", "standard_operation")
+    if any(
+        token in value
+        for token in (
+            "race",
+            "deadlock",
+            "lock",
+            "wakeup",
+            "publication",
+            "shared_state",
+            "toctou",
+        )
+    ):
+        add("lock_acquisition", "lock", "lock_state", "lock_wait")
+        add("lock_release_or_signal", "unlock", "condition_signal", "thread_release")
+    if any(
+        token in value
+        for token in (
+            "bounds",
+            "overflow",
+            "overread",
+            "underread",
+            "underwrite",
+            "out_of_bounds",
+            "off_by_one",
+            "size_limit",
+            "truncation",
+        )
+    ):
+        add("size_or_copy_operation", "copy", "allocator", "calloc", "reallocator")
+    if value == "format_string":
+        add("format_sink", "format_sink")
+    if value == "command_injection":
+        add("command_sink", "command_sink")
+    if "callback" in value or value in {"registration_race", "held_lock_callback"}:
+        add("callback_registration", "callback_register", "thread_create")
+    if any(
+        token in value
+        for token in (
+            "protocol",
+            "state_machine",
+            "semantic_mismatch",
+            "unchecked_return",
+            "version_filtering",
+            "byte_order",
+            "encoding_mismatch",
+            "type_mismatch",
+        )
+    ):
+        add("protocol_operation", "standard_operation", "send_sink", "recv_source")
+    return checkpoints
+
+
+def _truth_gap_observation(
+    *,
+    category: str,
+    classification: str,
+    matching_units: Sequence[Mapping[str, Any]],
+    anchored_candidates: Sequence[tuple[Mapping[str, Any], str]],
+    fast_static: Mapping[str, Any],
+) -> Dict[str, Any]:
+    expected_rule_ids = list(_expected_cpp_rule_ids(category))
+    execution = _as_dict(fast_static.get("rule_execution"))
+    scheduled = set(_as_dict(execution.get("executed_by_rule"))) | set(
+        _as_dict(execution.get("cache_reused_by_rule"))
+    )
+    unit_rules = {
+        str(rule_id)
+        for unit in matching_units
+        for rule_id in unit.get("executed_rule_ids") or []
+        if str(rule_id)
+    }
+    expected_scheduled = sorted(set(expected_rule_ids) & scheduled)
+    expected_on_units = sorted(set(expected_rule_ids) & unit_rules)
+
+    semantic_events = [
+        dict(event)
+        for unit in matching_units
+        for event in unit.get("semantic_contract_events") or []
+        if isinstance(event, Mapping)
+    ]
+    semantic_references = [
+        dict(reference)
+        for unit in matching_units
+        for reference in unit.get("semantic_contract_references") or []
+        if isinstance(reference, Mapping)
+    ]
+    authorization = _as_dict(fast_static.get("semantic_authorization"))
+    matching_builds = {str(unit.get("build_context_id") or "") for unit in matching_units} - {""}
+    authorized = [
+        dict(row)
+        for row in authorization.get("project_authorized_identities") or []
+        if isinstance(row, Mapping) and str(row.get("build_context_id") or "") in matching_builds
+    ]
+    interface_results: List[Dict[str, Any]] = []
+    for checkpoint in _interface_role_checkpoints(category):
+        roles = set(checkpoint["role_options"])
+        observed = [event for event in semantic_events if str(event.get("role") or "") in roles]
+        referenced = [
+            reference
+            for reference in semantic_references
+            if str(reference.get("role") or "") in roles
+        ]
+        available = [row for row in authorized if str(row.get("role") or "") in roles]
+        trusted = [event for event in observed if event.get("effects_trusted") is True]
+        trusted_references = [
+            reference for reference in referenced if reference.get("effects_trusted") is True
+        ]
+        state = (
+            "resolved_at_truth_function"
+            if trusted
+            else (
+                "exact_reference_at_truth_function"
+                if trusted_references
+                else (
+                    "untrusted_or_conditional_at_truth_function"
+                    if observed or referenced
+                    else (
+                        "authorized_in_build_not_observed_at_truth_function"
+                        if available
+                        else "not_observed"
+                    )
+                )
+            )
+        )
+        interface_results.append(
+            {
+                **checkpoint,
+                "state": state,
+                "resolved_interfaces": sorted(
+                    {
+                        str(event.get("project_semantics_id") or event.get("name") or "")
+                        for event in observed
+                        if str(event.get("project_semantics_id") or event.get("name") or "")
+                    }
+                ),
+                "exact_referenced_interfaces": sorted(
+                    {
+                        str(reference.get("project_semantics_id") or reference.get("name") or "")
+                        for reference in referenced
+                        if str(reference.get("project_semantics_id") or reference.get("name") or "")
+                    }
+                ),
+                "authorized_interfaces_in_build": sorted(
+                    {
+                        str(row.get("project_semantics_id") or row.get("name") or "")
+                        for row in available
+                        if str(row.get("project_semantics_id") or row.get("name") or "")
+                    }
+                ),
+            }
+        )
+
+    if not matching_units:
+        first_failed = "function_not_analyzed"
+    elif not expected_rule_ids:
+        first_failed = "no_default_rule_for_truth_category"
+    elif not expected_scheduled:
+        first_failed = "expected_rule_not_scheduled"
+    elif not anchored_candidates:
+        first_failed = "candidate_not_emitted"
+    elif classification == "wrong_mechanism":
+        first_failed = "candidate_mechanism_mismatch"
+    elif classification == "family_only":
+        first_failed = "candidate_family_only"
+    elif classification == "wrong_category":
+        first_failed = "candidate_category_mismatch"
+    elif classification == "cwe_only":
+        first_failed = "candidate_only_matches_cwe"
+    else:
+        first_failed = "covered"
+    suspected_layers = []
+    if any(row["state"] == "not_observed" for row in interface_results):
+        suspected_layers.append("interface_semantics")
+    if first_failed != "covered":
+        suspected_layers.append(first_failed)
+    return {
+        "schema_version": "zscope.post-score-gap-observation.v1",
+        "expected_rule_ids": expected_rule_ids,
+        "expected_rule_ids_scheduled": expected_scheduled,
+        "expected_rule_ids_on_matching_units": expected_on_units,
+        "interface_role_checkpoints": interface_results,
+        "semantic_contract_trace_complete": bool(matching_units)
+        and all(
+            str(unit.get("semantic_contract_trace_status") or "") == "complete"
+            for unit in matching_units
+        ),
+        "first_failed_checkpoint": first_failed,
+        "suspected_gap_layers": sorted(set(suspected_layers)),
+    }
+
+
+def _mechanism_match_reason(
+    candidate: Mapping[str, Any],
+    truth: Mapping[str, Any],
+    category_reason: str,
+) -> tuple[bool, str]:
+    """Require the candidate to describe the truth's actual mechanism.
+
+    Category/CWE overlap is useful retrieval evidence, but it is not semantic
+    coverage when the rule proves a different source/sink relation or omits a
+    required cross-function endpoint.
+    """
+
+    if not category_reason.startswith(("category_exact", "category_family")):
+        return False, "category_not_semantic"
+    rule_id = str(candidate.get("rule_id") or candidate.get("rule") or "")
+    binding = binding_for_rule(rule_id)
+    candidate_profile_id = str(candidate.get("obligation_profile_id") or "")
+    candidate_family = str(candidate.get("obligation_mechanism_family") or "")
+    candidate_roles = {
+        str(value) for value in candidate.get("obligation_required_roles") or [] if str(value)
+    }
+    if binding is not None:
+        # The canonical current binding is the authority.  Embedded candidate
+        # metadata may come from an older obligation-catalog cache even when
+        # the detector rule revision itself has not changed; letting that
+        # stale family win makes the score-only audit disagree with the
+        # runtime that will validate the candidate now.
+        candidate_profile_id = binding.profile.profile_id
+        candidate_family = binding.profile.mechanism_family
+        candidate_roles = set(binding.profile.required_roles)
+    if not candidate_profile_id or not candidate_family:
+        return False, "candidate_obligation_profile_missing"
+
+    truth_category = str(
+        truth.get("category") or truth.get("defect_class") or truth.get("type") or ""
+    )
+    truth_profile = profile_for_defect_class(truth_category)
+    if truth_profile is not None:
+        if candidate_family != truth_profile.mechanism_family:
+            return (
+                False,
+                f"mechanism_family_mismatch:{candidate_family}!={truth_profile.mechanism_family}",
+            )
+        if not {"source", "sink"}.issubset(candidate_roles):
+            return False, "required_source_sink_roles_missing"
+    elif category_reason.startswith("category_family"):
+        return False, "family_match_without_truth_profile"
+
+    # GT auxiliary locations frequently describe public callers or a fixture's
+    # reproduction route.  Requiring every one of them in the candidate made a
+    # complete local invalid-free/lock-path proof look like the wrong mechanism.
+    # Only rule shapes whose asserted mechanism is inherently cross-function
+    # must carry the counterpart endpoint in their own evidence.
+    cross_function_endpoint_rules = {
+        "borrowed_pointer_returned_after_unlock",
+        "clang_cfg_borrowed_pointer_returned_after_unlock",
+        "global_callback_context_borrowed_under_lock",
+        "clang_cfg_global_callback_stores_borrowed_object",
+    }
+    related: set[str] = set()
+    if rule_id in cross_function_endpoint_rules:
+        secondary = str(truth.get("secondary_function") or "").strip()
+        if secondary:
+            related.add(secondary)
+        related.update(
+            str(value).strip()
+            for value in truth.get("related_functions") or []
+            if str(value).strip()
+        )
+    if related:
+        candidate_text = _flatten(candidate).lower()
+        if not any(function.lower() in candidate_text for function in related):
+            return False, "required_related_endpoint_missing"
+    return True, "mechanism_profile_roles_and_endpoints_match"
+
+
+def candidate_coverage_audit(
+    report: Mapping[str, Any],
+    truth_records: Sequence[Mapping[str, Any]],
+    *,
+    line_tolerance: int = 8,
+) -> Dict[str, Any]:
+    """Post-score audit of static candidate coverage.
+
+    This function is called only by the scorer after the scan artifact has
+    been closed.  It therefore cannot influence candidate discovery or LLM
+    validation and preserves the benchmark truth-isolation contract.
+    """
+
+    candidates = _candidate_layer_issues(report)
+    # A closed report can keep large evidence objects behind shared-object
+    # mappings.  Anchor extraction walks those objects, so doing it inside the
+    # GT x candidate loop makes score-only auditing needlessly quadratic in
+    # decoding work.  Materialize the stable structured anchors once per
+    # canonical candidate; truth remains unavailable until this score phase.
+    candidate_anchors = [
+        (candidate, _issue_structured_anchors(candidate)) for candidate in candidates
+    ]
+    metadata = _as_dict(report.get("metadata"))
+    summary = _as_dict(report.get("summary"))
+    fast_static = _as_dict(metadata.get("fast_static_scan") or summary.get("fast_static_scan"))
+    units = [
+        dict(value)
+        for value in fast_static.get("analysis_units") or []
+        if isinstance(value, Mapping)
+    ]
+    rows: List[Dict[str, Any]] = []
+    counts = {
+        "exact_or_family": 0,
+        "mechanism_qualified": 0,
+        "family_only": 0,
+        "wrong_mechanism": 0,
+        "cwe_only": 0,
+        "wrong_category": 0,
+        "no_candidate": 0,
+    }
+    validator_conflicts: List[Dict[str, Any]] = []
+    for index, truth_value in enumerate(truth_records):
+        truth = dict(truth_value)
+        truth_id = str(truth.get("id") or index)
+        truth_anchors = _truth_structured_anchors(truth)
+        anchored: List[tuple[Dict[str, Any], str]] = []
+        for candidate, issue_anchors in candidate_anchors:
+            if not _structured_anchor_sets_match(
+                issue_anchors,
+                truth_anchors,
+                line_tolerance,
+            ):
+                continue
+            reason = _structured_category_match_reason(candidate, truth)
+            anchored.append((candidate, reason))
+        semantic = [
+            (candidate, reason)
+            for candidate, reason in anchored
+            if reason.startswith("category_exact") or reason.startswith("category_family")
+        ]
+        cwe_only = [
+            (candidate, reason) for candidate, reason in anchored if reason.startswith("cwe_exact")
+        ]
+        if semantic:
+            counts["exact_or_family"] += 1
+        mechanism_results = [
+            (candidate, reason, *_mechanism_match_reason(candidate, truth, reason))
+            for candidate, reason in semantic
+        ]
+        mechanism = [
+            (candidate, reason, mechanism_reason)
+            for candidate, reason, qualified, mechanism_reason in mechanism_results
+            if qualified
+        ]
+        if mechanism:
+            classification = "mechanism_qualified"
+            selected = [(candidate, reason) for candidate, reason, _ in mechanism]
+            selected_mechanisms = {
+                str(
+                    candidate.get("candidate_uid")
+                    or candidate.get("candidate_id")
+                    or candidate.get("id")
+                ): mechanism_reason
+                for candidate, _, mechanism_reason in mechanism
+            }
+        elif semantic and all(reason.startswith("category_family") for _, reason in semantic):
+            classification = "family_only"
+            selected = semantic
+            selected_mechanisms = {
+                str(
+                    candidate.get("candidate_uid")
+                    or candidate.get("candidate_id")
+                    or candidate.get("id")
+                ): mechanism_reason
+                for candidate, _, _, mechanism_reason in mechanism_results
+            }
+        elif semantic:
+            classification = "wrong_mechanism"
+            selected = semantic
+            selected_mechanisms = {
+                str(
+                    candidate.get("candidate_uid")
+                    or candidate.get("candidate_id")
+                    or candidate.get("id")
+                ): mechanism_reason
+                for candidate, _, _, mechanism_reason in mechanism_results
+            }
+        elif cwe_only:
+            classification = "cwe_only"
+            selected = cwe_only
+            selected_mechanisms = {}
+        elif anchored:
+            classification = "wrong_category"
+            selected = anchored
+            selected_mechanisms = {}
+        else:
+            classification = "no_candidate"
+            selected = []
+            selected_mechanisms = {}
+        counts[classification] += 1
+
+        matching_units = [
+            unit
+            for unit in units
+            if any(
+                str(unit.get("function") or "").lower() == str(anchor.get("function") or "").lower()
+                and _same_source_path(str(unit.get("file") or ""), str(anchor.get("file") or ""))
+                for anchor in truth_anchors
+            )
+        ]
+        candidate_records = [
+            {
+                "candidate_uid": candidate.get("candidate_uid")
+                or candidate.get("candidate_id")
+                or candidate.get("id"),
+                "analysis_unit_id": candidate.get("analysis_unit_id"),
+                "build_context_id": candidate.get("build_context_id"),
+                "rule_id": candidate.get("rule_id") or candidate.get("rule"),
+                "category_match": reason,
+                "mechanism_match": selected_mechanisms.get(
+                    str(
+                        candidate.get("candidate_uid")
+                        or candidate.get("candidate_id")
+                        or candidate.get("id")
+                    ),
+                    "not_evaluated",
+                ),
+                "obligation_profile_id": candidate.get("obligation_profile_id"),
+                "obligation_mechanism_family": candidate.get("obligation_mechanism_family"),
+                "model_verdict": candidate.get("model_verdict"),
+                "final_disposition": candidate.get("policy_disposition")
+                or candidate.get("terminal_disposition")
+                or candidate.get("candidate_disposition"),
+            }
+            for candidate, reason in selected
+        ]
+        category = str(
+            truth.get("category") or truth.get("defect_class") or truth.get("type") or ""
+        )
+        observation = _truth_gap_observation(
+            category=category,
+            classification=classification,
+            matching_units=matching_units,
+            anchored_candidates=anchored,
+            fast_static=fast_static,
+        )
+        rows.append(
+            {
+                "truth_id": truth_id,
+                "truth_category": category,
+                "truth_file": next(
+                    (
+                        str(anchor.get("file") or "")
+                        for anchor in truth_anchors
+                        if str(anchor.get("file") or "")
+                    ),
+                    "",
+                ),
+                "truth_function": next(
+                    (
+                        str(anchor.get("function") or "")
+                        for anchor in truth_anchors
+                        if str(anchor.get("function") or "")
+                    ),
+                    "",
+                ),
+                "truth_line": next(
+                    (
+                        int(anchor.get("start") or 0)
+                        for anchor in truth_anchors
+                        if int(anchor.get("start") or 0) > 0
+                    ),
+                    0,
+                ),
+                "classification": classification,
+                "function_instance_analyzed": bool(matching_units),
+                "analysis_unit_ids": sorted(
+                    {
+                        str(unit.get("analysis_unit_id") or "")
+                        for unit in matching_units
+                        if str(unit.get("analysis_unit_id") or "")
+                    }
+                ),
+                "candidates": candidate_records,
+                "gap_observation": observation,
+            }
+        )
+        for candidate, reason in semantic or cwe_only:
+            raw_rejected = str(candidate.get("model_verdict") or "").lower() == "rejected"
+            audit_trail = candidate.get("validator_audit_trail")
+            if isinstance(audit_trail, list):
+                raw_rejected = raw_rejected or any(
+                    isinstance(value, Mapping)
+                    and str(value.get("raw_verdict") or "").lower() == "rejected"
+                    for value in audit_trail
+                )
+            if raw_rejected:
+                validator_conflicts.append(
+                    {
+                        "truth_id": truth_id,
+                        "candidate_uid": candidate.get("candidate_uid")
+                        or candidate.get("candidate_id")
+                        or candidate.get("id"),
+                        "category_match": reason,
+                        "final_disposition": candidate.get("policy_disposition")
+                        or candidate.get("terminal_disposition")
+                        or candidate.get("candidate_disposition"),
+                    }
+                )
+
+    total = len(truth_records)
+    semantic_count = counts["mechanism_qualified"]
+    legacy_semantic_count = counts["exact_or_family"]
+    gap_counts: Dict[str, int] = {}
+    for row in rows:
+        checkpoint = str(_as_dict(row.get("gap_observation")).get("first_failed_checkpoint") or "")
+        if checkpoint:
+            gap_counts[checkpoint] = gap_counts.get(checkpoint, 0) + 1
+    return {
+        "schema_version": "zscope.post-score-candidate-coverage.v3",
+        "truth_isolation": "score_only",
+        "ground_truth_count": total,
+        **counts,
+        "semantic_candidate_coverage_count": semantic_count,
+        "semantic_candidate_coverage": round(semantic_count / total, 4) if total else 0.0,
+        "legacy_category_candidate_coverage_count": legacy_semantic_count,
+        "legacy_category_candidate_coverage": (
+            round(legacy_semantic_count / total, 4) if total else 0.0
+        ),
+        "meets_90_percent_target": bool(total and semantic_count >= math.ceil(total * 0.9)),
+        "required_for_90_percent": math.ceil(total * 0.9),
+        "gap_observation_counts": dict(sorted(gap_counts.items())),
+        "rows": rows,
+        "truth_validator_conflicts": validator_conflicts,
+    }
+
+
 def score_report(
     report: Dict[str, Any],
     truth: Dict[str, Any],
@@ -1316,6 +1987,17 @@ def score_report(
             },
         },
     }
+    result["candidate_coverage_audit"] = candidate_coverage_audit(
+        report,
+        vulns,
+        line_tolerance=line_tolerance,
+    )
+    result["semantic_candidate_coverage"] = result["candidate_coverage_audit"][
+        "semantic_candidate_coverage"
+    ]
+    result["semantic_candidate_coverage_count"] = result["candidate_coverage_audit"][
+        "semantic_candidate_coverage_count"
+    ]
     if standard_false_positive_rate is not None:
         # Classical false-positive-rate names are emitted only when the suite
         # provides an explicit safe-unit denominator.  Range has no such units,
@@ -1734,10 +2416,17 @@ _STRUCTURED_CATEGORY_FAMILIES: Dict[str, frozenset[str]] = {
     ),
     "resource_leak": frozenset(
         {
+            # An incomplete cleanup is the same resource-lifecycle mechanism
+            # when the emitted finding identifies the concrete unreleased
+            # allocation/descriptor.  Keep it in the structured family so a
+            # precise memory/fd finding is not downgraded to keyword-only just
+            # because the truth catalog uses the broader cleanup label.
+            "incomplete_cleanup",
             "memory_leak",
             "resource_leak",
             "fd_leak",
             "file_descriptor_leak",
+            "missing_fd_release",
             "optimization_resource_lifecycle",
             "thread_cache_leak",
             "partial_resource_leak",
@@ -1754,6 +2443,13 @@ _STRUCTURED_CATEGORY_FAMILIES: Dict[str, frozenset[str]] = {
             "refcount_race",
             "signal_race",
             "lock_protocol_violation",
+            "unlock_without_lock",
+            "reader_state_race",
+            "check_then_act_race",
+            "registration_race",
+            "slot_race",
+            "shared_memory_race",
+            "key_generation_race",
         }
     ),
     "deadlock": frozenset({"deadlock", "signal_deadlock", "lock_order_deadlock"}),
@@ -1796,6 +2492,15 @@ def _structured_category_match_reason(issue: Mapping[str, Any], truth: Mapping[s
     truth_category = _normalize_category(truth.get("category"))
     if truth_category and truth_category in issue_categories:
         return f"category_exact:{truth_category}"
+    # A domain category/family is stronger evidence than a shared CWE.  Check
+    # it before the CWE fallback so a specialized truth label such as
+    # ``missing_fd_release`` or ``check_then_act_race`` is not downgraded to
+    # CWE-only when the emitted candidate already states the matching
+    # resource/race semantics.
+    if truth_category:
+        for family, members in _STRUCTURED_CATEGORY_FAMILIES.items():
+            if truth_category in members and issue_categories.intersection(members):
+                return f"category_family:{family}"
     evidence_pack = _as_dict(issue.get("evidence_pack"))
     issue_cwes = _cwe_values(
         [
@@ -1809,10 +2514,6 @@ def _structured_category_match_reason(issue: Mapping[str, Any], truth: Mapping[s
     common_cwes = sorted(issue_cwes & truth_cwes)
     if common_cwes:
         return f"cwe_exact:{common_cwes[0]}"
-    if truth_category:
-        for family, members in _STRUCTURED_CATEGORY_FAMILIES.items():
-            if truth_category in members and issue_categories.intersection(members):
-                return f"category_family:{family}"
     return ""
 
 
@@ -2557,9 +3258,14 @@ def _build_release_evidence(report: Mapping[str, Any]) -> Dict[str, Any]:
     benchmark_ablation = _as_dict(metadata.get("benchmark_ablation")) or _as_dict(
         summary.get("benchmark_ablation")
     )
+    fast_static = _as_dict(metadata.get("fast_static_scan") or summary.get("fast_static_scan"))
+    fast_validator = _as_dict(fast_static.get("validator"))
     return {
         "queue_drained": manifest.get("validation_queue_drained") is True,
-        "protocol_anomaly_count": int(summary.get("validator_protocol_exhausted_count") or 0),
+        "protocol_anomaly_count": max(
+            int(summary.get("validator_protocol_exhausted_count") or 0),
+            int(fast_validator.get("protocol_anomaly_count") or 0),
+        ),
         "budget_limited": False,
         "silent_rejection_without_proof_count": silent_rejections,
         "validator_arm": str(manifest.get("validator_experiment_arm") or ""),

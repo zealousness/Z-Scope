@@ -18,7 +18,8 @@ from .lifecycle_paths import LifecyclePaths, Frame, Pointer, Value, Unclosed, co
 from .pthread_cleanup import project_cleanup
 from ....semantics.contracts import ApiContract, digest
 from ....semantics.resource_identity import ObjectRef
-from ....semantics.standard_api import STANDARD_API_VERSION, standard_contracts
+from ....semantics.standard_api import STANDARD_API_VERSION
+from ....semantics.c_linux_catalog import active_contracts
 
 ASYNC_VERSION = "zscope.pthread-delayed-path.v9"
 SYNC_SIGNATURES = {
@@ -58,7 +59,7 @@ EFFECTS = {
 def _implemented_roots() -> dict[str, str]:
     return {
         contract.symbol.name: digest(contract.to_dict())
-        for row in standard_contracts()
+        for row in active_contracts()
         if (contract := ApiContract.from_row({"contract": row})) is not None
         and contract.symbol.name in SIGNATURES
     }

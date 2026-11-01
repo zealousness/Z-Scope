@@ -20,6 +20,61 @@ def write(root, relative, value):
     return p
 
 
+def test_cached_covered_read_respects_new_max_lines(tmp_path):
+    write(tmp_path, "sample.c", "one\ntwo\nthree\nfour\n")
+    rt = runtime(tmp_path)
+    rt.execute_tool("read_code", {"file_path": "sample.c", "start_line": 1, "end_line": 4})
+    result = rt.execute_tool(
+        "read_code",
+        {"file_path": "sample.c", "start_line": 1, "end_line": 3, "max_lines": 1},
+    )
+    assert result["data"]["source"]["code"] == "1 | one\n"
+    assert result["data"]["source"]["next_start_line"] == 2
+    assert result["status"] == "partial"
+
+
+def test_cached_truncated_read_does_not_leak_old_coverage(tmp_path):
+    write(tmp_path, "sample.c", "one\ntwo\nthree\nfour\n")
+    rt = runtime(tmp_path)
+    rt.execute_tool("read_code", {"file_path": "sample.c", "start_line": 1, "max_lines": 2})
+    result = rt.execute_tool(
+        "read_code", {"file_path": "sample.c", "start_line": 1, "end_line": 2}
+    )
+    assert result["status"] == "ok"
+    assert result["data"]["source"]["truncated"] is False
+    assert result["data"]["source"]["next_start_line"] is None
+    assert result["next_actions"] == []
+
+
+def test_oversized_search_item_does_not_offer_nonadvancing_page(tmp_path):
+    from zscope.tools.contracts import page_result, tool_result
+
+    result = ToolsRuntime._enforce_result_limit(
+        tool_result(
+            data={"symbols": [{"name": "x" * 70_000}]},
+            page=page_result(7, 1, 1, 9),
+            providers=["clang"],
+            missing=["index_freshness_unverified"],
+        )
+    )
+    assert result["status"] == "partial"
+    assert result["data"] is None
+    assert result["page"] is None
+    assert "result_size_limit" in result["coverage"]["missing"]
+    assert "index_freshness_unverified" in result["coverage"]["missing"]
+    assert result["coverage"]["providers"] == ["clang"]
+
+
+def test_oversized_source_line_does_not_offer_nonadvancing_range(tmp_path):
+    write(tmp_path, "sample.c", "x" * 70_000 + "\n")
+    result = runtime(tmp_path).execute_tool("read_code", {"file_path": "sample.c", "start_line": 1})
+    assert result["status"] == "partial"
+    assert result["data"] is None
+    assert result["page"] is None
+    assert "result_size_limit" in result["coverage"]["missing"]
+    assert result["coverage"]["providers"] == ["source"]
+
+
 def test_text_files_search_read_without_index(tmp_path, monkeypatch):
     write(tmp_path, "src/中文 file.c", "int candidate_rule;\r\n日志: 错误\r\n")
     write(tmp_path, "config.yaml", "feature_switch: 错误\n")

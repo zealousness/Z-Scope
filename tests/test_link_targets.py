@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import shlex
 import subprocess
 
 import pytest
@@ -235,6 +236,40 @@ def test_cli_records_spaced_paths_and_failed_rebuild_revokes_receipt(tmp_path):
     with pytest.raises(subprocess.CalledProcessError):
         record_link(root, database, command, directory=root)
     assert not list((root / ".zscope-link-targets").glob("*.json"))
+
+
+def test_cli_records_sanitized_cmake_link_file(tmp_path):
+    import sys
+
+    database, command, _ = build_project(tmp_path)
+    build = tmp_path / "build"
+    link_file = build / "CMakeFiles/app.dir/link.txt"
+    link_file.parent.mkdir(parents=True)
+    object_args = [value for value in command if value.endswith(".o")]
+    link_file.write_text(
+        shlex.join([command[0], "-Wall", *object_args, "-o", str(tmp_path / "app"), "-lm"]) + "\n",
+        encoding="utf-8",
+    )
+
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "zscope.cli.link_record",
+            "--project-root",
+            str(tmp_path),
+            "--compile-commands",
+            str(database),
+            "--cmake-link-file",
+            str(link_file),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert run.returncode == 0 and "Recorded" in run.stdout, run.stderr
+    assert list((tmp_path / ".zscope-link-targets").glob("*.json"))
 
 
 @pytest.mark.parametrize("packed", [False, True])

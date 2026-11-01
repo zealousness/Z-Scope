@@ -30,13 +30,13 @@ def _document() -> dict:
             }
         },
         "project": {
-            "root": ".",
             "language": "c_cpp",
             "platform": "linux_user",
+            "semantics_file": "zscope.semantics.yaml",
             "targets": [{"id": "service", "compile_commands": "build/compile_commands.json"}],
         },
         "scan": {
-            "preset": "overnight",
+            "preset": "deep",
             "focus": ["memory", "resources", "async_lifecycle"],
             "reproduction": "auto",
         },
@@ -54,7 +54,7 @@ def _v2_document() -> dict:
                 "api_key": "dummy-api-key-material",
             }
         },
-        "project": {"root": ".", "source_root": ".", "language": "c_cpp"},
+        "project": {"language": "c_cpp"},
         "scan": {"task": ""},
         "indexing": {"backend": "regex"},
         "concurrency": {
@@ -70,6 +70,15 @@ def _v2_document() -> dict:
 
 
 def _write(root: Path, data: dict, name: str = "zscope.yaml") -> Path:
+    if data.get("project", {}).get("semantics_file"):
+        (root / str(data["project"]["semantics_file"])).write_text(
+            "schema_version: zscope.project-semantics.v1\n"
+            "interfaces: []\n"
+            "dispatchers: []\n"
+            "function_pointer_bindings: []\n"
+            "discovery_receipt: {}\n",
+            encoding="utf-8",
+        )
     path = root / name
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
@@ -124,7 +133,6 @@ def test_v2_documents_keep_the_existing_preparation_envelope(tmp_path: Path) -> 
     document = _v2_document()
     # v2 keeps its CWD-relative root semantics; pin an absolute root plus an
     # explicit database so the comparison covers the available-build path.
-    document["project"]["root"] = str(project)
     document["project"]["compile_commands_path"] = "build/compile_commands.json"
     path = _write(project, document)
 
@@ -178,18 +186,19 @@ def test_single_target_adds_version3_fields_to_the_base_envelope(
     assert target["build"]["status"] == "available"
 
     assert version3["preset"] == {
-        "preset": "overnight",
+        "preset": "deep",
         "mapped_depth": "deep",
         "depth_source": "config",
         "mapping_note": version3["preset"]["mapping_note"],
     }
-    assert "temporary internal mapping" in version3["preset"]["mapping_note"]
+    assert "same execution depth" in version3["preset"]["mapping_note"]
     assert version3["focus"] == ["memory", "resources", "async_lifecycle"]
     assert version3["reproduction"] == "auto"
     assert version3["max_workers"] == 4
     assert version3["execution"]["resolved_stop_time"] == "2026-10-15T08:00:00+08:00"
 
-    assert version3["start_capability"] == {"startable": True, "reasons": []}
+    assert version3["start_capability"]["startable"] is False
+    assert "project_semantics_not_ready" in [item["code"] for item in version3["start_capability"]["reasons"]]
     json.dumps(result)
 
 
@@ -262,7 +271,7 @@ def test_multi_target_keeps_every_target_independent_and_refuses_start(
 
     capability = result["version3"]["start_capability"]
     assert capability["startable"] is False
-    assert capability["reasons"][0]["code"] == "multi_target_execution_unwired"
+    assert "multi_target_execution_unwired" in [reason["code"] for reason in capability["reasons"]]
     json.dumps(result)
 
 
@@ -274,8 +283,9 @@ def test_java_target_reports_the_database_as_not_applicable(tmp_path: Path) -> N
     project.mkdir()
     document = _document()
     document["project"]["language"] = "java"
+    document["project"].pop("semantics_file")
     document["project"]["targets"] = [{"id": "app"}]
-    document["scan"]["preset"] = "quick"
+    document["scan"]["preset"] = "fast"
     path = _write(project, document)
 
     result = prepare_saved_config(str(path), now=FIXED_NOW)
@@ -333,8 +343,7 @@ def test_paths_are_stable_across_working_directories(
     config_dir.mkdir()
     project = _materialize_project(tmp_path / "engine")
     document = _document()
-    document["project"]["root"] = "../engine"
-    path = _write(config_dir, document)
+    path = _write(project, document)
 
     elsewhere = tmp_path / "elsewhere-one"
     elsewhere.mkdir()

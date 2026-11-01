@@ -98,7 +98,7 @@ class ExternalFakeOciRuntime:
             self.scanner_name = command[command.index("--name") + 1]
             self.run_argv = command
             self.runtime_environment = dict(kwargs.get("env") or {})
-            self.config_text = (self.scan_input / "zscope.execution.yaml").read_text(
+            self.config_text = (self.scan_input / "project" / "zscope.execution.yaml").read_text(
                 encoding="utf-8"
             )
             self.entries_text = (self.scan_input / "entries.json").read_text(encoding="utf-8")
@@ -220,7 +220,7 @@ def _suite(tmp_path: Path) -> Path:
         json.dumps({"suite": "unit", "entries": 1, "ground_truth": 0}),
         encoding="utf-8",
     )
-    (suite / "zscope.benchmark.yaml").write_text(
+    (project / "zscope.benchmark.yaml").write_text(
         "config_version: 2\n"
         "llms:\n"
         "  default:\n"
@@ -228,8 +228,6 @@ def _suite(tmp_path: Path) -> Path:
         '    models: ["host-model"]\n'
         "    api_key: host-key\n"
         "project:\n"
-        f'  root: "{project.as_posix()}"\n'
-        "  source_root: .\n"
         "  language: c_cpp\n"
         '  entry_functions_list: "../benchmark/entries.json"\n'
         "  compile_commands_path: compile_commands.json\n"
@@ -338,7 +336,8 @@ def test_external_formal_executes_real_rootless_oci_contract_then_scores_on_host
     assert all("ground_truth" not in row["path"].lower() for row in scan_manifest["files"])
     assert (run_dir / "isolation.json").is_file()
     assert not (suite / "project" / "zscope_batch_report.json").exists()
-    assert "/zscope-cache/project" in fake.config_text
+    assert "/zscope-cache/project/zscope.execution.yaml" in fake.run_argv
+    assert "root:" not in fake.config_text and "source_root:" not in fake.config_text
     assert "/zscope-input/entries.json" in fake.config_text
     assert "${Z_SCOPE_LLM_BASE_URL}" in fake.config_text
     assert suite.as_posix() not in fake.config_text

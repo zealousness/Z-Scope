@@ -108,7 +108,8 @@ def test_root_config_and_runtime_agent_boundaries_are_explicit() -> None:
     assert "-c/--config" in text
     assert "`./zscope.yaml`" in text
     assert "不是其他目标项目的全局配置入口" in text
-    assert "`project.root` 的相对路径按进程工作目录解析" in text
+    assert "YAML 所在目录为唯一工程根" in text
+    assert "不再接受公共 `project.root` 或 `source_root` 字段" in text
     assert "`zscope/agents/*/AGENT.md`" in text
     assert "产品运行时" in text
     assert not (ROOT / "AGENT.md").exists(), "Use the standard root name AGENTS.md only"

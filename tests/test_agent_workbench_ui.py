@@ -56,7 +56,11 @@ def test_workbench_v3_config_editor_real_http(tmp_path, monkeypatch):
             "zscope/web/static/index.html",
             "zscope/web/static/dashboard_config.js",
             "zscope/web/static/dashboard_workbench.js",
+            "zscope/web/static/dashboard_projects.js",
+            "zscope/web/static/dashboard_schedules.js",
             "zscope/web/static/dashboard_workbench.css",
+            "zscope/web/static/dashboard_navigation.js",
+            "zscope/web/static/dashboard_redesign.css",
             "zscope/web/services.py",
             "zscope/web/server.py",
             "zscope/config/v3.py",
@@ -216,8 +220,12 @@ def test_workbench_browser_real_http_and_contract_fixture(tmp_path, monkeypatch)
     source_paths = [
         "zscope/web/static/index.html",
         "zscope/web/static/dashboard_workbench.js",
+        "zscope/web/static/dashboard_projects.js",
+        "zscope/web/static/dashboard_schedules.js",
         "zscope/web/static/dashboard_config.js",
         "zscope/web/static/dashboard_workbench.css",
+        "zscope/web/static/dashboard_navigation.js",
+        "zscope/web/static/dashboard_redesign.css",
         "zscope/web/static/dashboard_reports.js",
         "zscope/web/static/report_view.js",
         "zscope/web/server.py",
@@ -341,8 +349,12 @@ def test_workbench_browser_v3_and_real_owner(tmp_path, monkeypatch, scenario):
             "zscope/config/v3_preparation.py",
             "zscope/web/static/index.html",
             "zscope/web/static/dashboard_workbench.js",
+            "zscope/web/static/dashboard_projects.js",
+            "zscope/web/static/dashboard_schedules.js",
             "zscope/web/static/dashboard_config.js",
             "zscope/web/static/dashboard_workbench.css",
+            "zscope/web/static/dashboard_navigation.js",
+            "zscope/web/static/dashboard_redesign.css",
             "tests/test_agent_workbench_ui.py",
             "tests/fixtures/agent_workbench_ui.cjs",
         )
@@ -405,6 +417,7 @@ def _serve_real_jobs_fixture():
     from zscope.orchestration.jobs.service import ScanJobService
     from zscope.web import server, services
     from zscope.web.scan_jobs_service import ScanJobsHttpService
+    from zscope.orchestration.jobs.schedules import ScanScheduleService
 
     config, scanner, port, portfile = sys.argv[2:6]
     project = Path(config).parent
@@ -417,6 +430,18 @@ def _serve_real_jobs_fixture():
     server._config_service = services.ConfigService(Path(config))
     server._report_feedback_service = feedback
     server._scan_jobs_http_service = ScanJobsHttpService(Path(config), feedback, engine=engine)
+    # Exercise the real schedule state machine with the same controlled scanner
+    # command builder. Independent production coordinator ownership is covered
+    # by schedule service tests; restarting this helper recreates its tick loop.
+    schedules = ScanScheduleService(config, engine=engine, spawn_daemon=False)
+    server._scan_jobs_http_service._schedule_engine = schedules
+
+    def tick_schedules():
+        while True:
+            schedules.tick()
+            time.sleep(0.2)
+
+    threading.Thread(target=tick_schedules, daemon=True).start()
     httpd = ThreadingHTTPServer(("127.0.0.1", int(port)), server.ZScopeHandler)
     Path(portfile).write_text(str(httpd.server_port), encoding="utf-8")
     httpd.serve_forever()

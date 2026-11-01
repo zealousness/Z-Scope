@@ -577,7 +577,7 @@ def _oracle_config(store_root: Path, project_root: Path) -> ZScopeConfig:
             max_premodel_callees=10,
             trivial_function_max_lines=0,
         ),
-        project=ProjectConfig(project_root=project_root, source_root=project_root),
+        project=ProjectConfig(project_root=project_root),
         concurrency=ConcurrencyConfig(),
     )
 

@@ -28,6 +28,12 @@ FIRST_PARTY = (
     "dashboard_config.js",
     "dashboard_workbench.js",
     "dashboard_workbench.css",
+    "dashboard_navigation.js",
+    "dashboard_redesign.css",
+    "dashboard_projects.js",
+    "dashboard_schedules.js",
+    "dashboard_semantics.js",
+    "dashboard_semantics.css",
 )
 SOURCES = {
     "tailwind-cli": (

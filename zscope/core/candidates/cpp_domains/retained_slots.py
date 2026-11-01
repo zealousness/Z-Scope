@@ -46,7 +46,7 @@ def retained_slot_teardown(
     body = bodies[0]
     if (
         not body.get("complete")
-        or body.get("fact_version") != "zscope.program-events.v5"
+        or body.get("fact_version") != "zscope.program-events.v7"
         or body.get("resource_protocol_facts_version") != "zscope.resource-protocol-facts.v1"
         or body.get("owner", {}).get("name") != name
         or not body.get("owner", {}).get("usr")

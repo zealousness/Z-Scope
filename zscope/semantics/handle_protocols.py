@@ -35,7 +35,7 @@ def verify_handle_contract(
     body, name = bodies[0], str(context.get("func_name") or "")
     if (
         not body.get("complete")
-        or body.get("fact_version") != "zscope.program-events.v5"
+        or body.get("fact_version") != "zscope.program-events.v7"
         or body.get("resource_protocol_facts_version") != "zscope.resource-protocol-facts.v1"
         or body.get("lifecycle_value_facts_version") != "zscope.lifecycle-value-facts.v1"
         or body.get("owner", {}).get("name") != name

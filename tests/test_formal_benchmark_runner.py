@@ -70,6 +70,19 @@ def _passing_run_score() -> dict:
     }
 
 
+def _passing_fast_run_score() -> dict:
+    return {
+        **_passing_run_score(),
+        "confirmed_precision": 0.9,
+        "confirmed_count": 1,
+        "fast_static_active": 1.0,
+        "fast_static_formal_qualified": 1.0,
+        "fast_static_duplicate_local_executions": 0,
+        "fast_static_unresolved_terminal_count": 0,
+        "fast_static_backend_degraded": 0.0,
+    }
+
+
 def test_cpp_gate_evaluates_balanced_twelve_million_cost_expectation() -> None:
     score = _passing_run_score()
     score["tokens"] = 12_000_001
@@ -94,6 +107,31 @@ def test_cpp_gate_rejects_default_enabled_unqualified_rules() -> None:
     assert _gate_c(score) == ["default-enabled deterministic rules are not externally qualified"]
 
 
+def test_fast_gate_requires_nonempty_confirmed_view_at_ninety_percent_precision() -> None:
+    score = _passing_fast_run_score()
+
+    assert _gate_c(score, scan_depth="fast") == []
+
+    score["confirmed_count"] = 0
+    score["confirmed_precision"] = 0.0
+    failures = _gate_c(score, scan_depth="fast")
+    assert "confirmed_precision=0.0 < 0.9" in failures
+    assert "confirmed_count=0.0 < 1.0" in failures
+
+
+def test_fast_gate_fails_closed_on_static_coverage_or_terminal_gaps() -> None:
+    score = _passing_fast_run_score()
+    score["fast_static_formal_qualified"] = 0.0
+    score["fast_static_unresolved_terminal_count"] = 1
+    score["fast_static_backend_degraded"] = 1.0
+
+    failures = _gate_c(score, scan_depth="fast")
+
+    assert "fast_static_formal_qualified=0.0 < 1.0" in failures
+    assert "fast_static_unresolved_terminal_count=1.0 > 0.0" in failures
+    assert "fast_static_backend_degraded=1.0 > 0.0" in failures
+
+
 def test_range_aggregate_executes_all_locked_policy_gates() -> None:
     summaries = [
         {
@@ -102,6 +140,13 @@ def test_range_aggregate_executes_all_locked_policy_gates() -> None:
                 "confirmed_tp": 112,
                 "tokens": 9_000_000 + run,
                 "confirmed_recall": 0.82,
+                "confirmed_precision": 0.91 + run / 1000,
+                "confirmed_count": 120,
+                "fast_static_active": 1.0,
+                "fast_static_formal_qualified": 1.0,
+                "fast_static_duplicate_local_executions": 0,
+                "fast_static_unresolved_terminal_count": 0,
+                "fast_static_backend_degraded": 0.0,
                 "actionable_fdr_delta_vs_arm_a_pp": 0.5,
                 "provider_usage_coverage": 1.0,
                 "explicit_attribution_coverage": 1.0,
@@ -121,6 +166,8 @@ def test_range_aggregate_executes_all_locked_policy_gates() -> None:
     assert actuals["true_positive_jaccard"] == 1.0
     assert actuals["queue_drained_rate"] == 1.0
     assert actuals["telemetry_complete_rate"] == 1.0
+    assert actuals["confirmed_precision"] == 0.91
+    assert actuals["fast_static_formal_qualified"] == 1.0
 
 
 def test_range_aggregate_fails_closed_without_arm_a_delta() -> None:

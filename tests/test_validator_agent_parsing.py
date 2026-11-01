@@ -312,6 +312,7 @@ def test_validator_agent_repairs_prose_without_json() -> None:
                                     "issue_id": "ISSUE_7",
                                     "verdict": "uncertain",
                                     "reasoning": "Evidence is incomplete.",
+                                        "blocking_negative_evidence": False,
                                     "missing_context": ["callee lifetime contract"],
                                 }
                             ),
@@ -388,6 +389,7 @@ def test_validator_agent_repairs_with_final_emit_tool_call() -> None:
                                                 "issue_id": "ISSUE_8",
                                                 "verdict": "rejected",
                                                 "reasoning": "Guard rejects the path.",
+                                                "blocking_negative_evidence": True,
                                                 "negative_evidence": ["len is checked"],
                                             }
                                         ),

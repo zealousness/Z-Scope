@@ -437,7 +437,7 @@ def _v5_facts(events, *, edges=(), scope="ctx-1", complete=True):
                 "kind": "program_function",
                 "owner": {"name": "main"},
                 "complete": True,
-                "fact_version": "zscope.program-events.v5",
+                "fact_version": "zscope.program-events.v7",
                 "events": list(events),
                 "cfg_edges": list(edges),
             }

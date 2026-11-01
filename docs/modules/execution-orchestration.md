@@ -5,6 +5,8 @@ covers:
   - zscope/orchestration
   - zscope/workflows
 sources:
+  - zscope/orchestration/primitive_preparation.py
+  - zscope/orchestration/primitive_tasks.py
   - scripts/balanced_rollout_operator.py
   - zscope/cli/cli.py
   - zscope/cli/link_record.py
@@ -15,6 +17,9 @@ sources:
   - zscope/orchestration/entry_instances.py
   - zscope/orchestration/jobs/session_scheduler.py
   - zscope/orchestration/jobs/scan_work.py
+  - zscope/orchestration/jobs/schedules.py
+  - zscope/orchestration/jobs/schedule_runner.py
+  - scripts/night_watchman.py
   - zscope/orchestration/semantic_modeling.py
   - zscope/orchestration/snapshot_candidates.py
   - zscope/orchestration/snapshot_observations.py
@@ -28,6 +33,7 @@ sources:
   - zscope/orchestration/workflow_executor.py
   - zscope/workflows/default.yaml
 tests:
+  - tests/test_semantics_workflow.py
   - tests/test_job_queue_receipts.py
   - tests/test_balanced_rollout_operator.py
   - tests/test_cli_output.py
@@ -39,12 +45,15 @@ tests:
   - tests/test_job_session_scheduler.py
   - tests/test_scan_session_instances.py
   - tests/test_scan_session_jobs.py
+  - tests/test_scan_schedules.py
   - tests/test_scan_checkpoint_resume.py
   - tests/test_job_bound_completion.py
   - tests/test_signal_callback_entries.py
   - tests/test_incremental_semantic_modeling.py
   - tests/test_wiki_workflow.py
   - tests/test_active_discovery.py
+  - tests/test_parallel_shared_semantics.py
+  - tests/test_mode_static_foundation.py
   - tests/test_investigation_evidence.py
   - tests/test_bounded_investigation.py
   - tests/test_investigation_runtime.py
@@ -58,6 +67,20 @@ tests:
 ---
 
 # 执行与编排
+
+## 项目原语准备任务
+
+`primitive_preparation.py` 是 CLI `--discover-primitives` 与 Web 的公共执行入口，复用 `primitive_discovery.py` 的推导算法。inventory 模式只准备 native 接口目录，不调用模型；discovery 模式绑定根原语、发现包装/宏/指针/dispatcher、进行建议性模型初审，最后在输入与文档版本不变时原子合并。native 不完整不发布；模型失败保留确定性待审项。
+
+目标的返回类型与可观察返回值分开校验：void 目标不得引用返回值或借用被调者状态；可变参数的省略号不抹去固定参数类型。效果对象范围不限制守卫读取源码中的 global.NAME。返回结构的独立分配成员属于额外所有权输出，不能在删除初始化 copy 时一并丢弃。直接调用形式的宏若不能替换输入守卫，可在既有三次上限内请求有源码依据的等价返回守卫；不猜 sizeof 或具体返回常量，无法闭合的宏映射单独记录为 macro_guard_gaps。
+
+`primitive_contract_proposals.py` 在 native 包装器路径之外补充函数级源码契约提案。计划由当前精确调用和真实链接组构建，模型只描述指定目标函数，被调者仅提供证据；没有候选、含 may 或复杂边界不再被旧 advisory 流程遗漏。每个单位有源代码容量/调用深度边界及明确覆盖诊断。v14 每次只裁决一个函数，压缩重复源码/根契约和派生元数据；先低成本生成，有正向结果或结构错误时进行第二次源码反证复核。简单完整证据使用普通复核；调用图不完整、多节点/多分支组合、成员对象、多条款、依赖返回/全局状态的 no_effect 及 native 偏移冲突启用推理，不因 may 降低复杂证据的复核；仍有结构错误时允许第三次低成本修正。首轮合法空结果不作否定证明。纯字符串读取、普通赋值和转发不产生泛化 standard_operation；锁初始化/销毁与获取/释放分开。完全相同的规范化契约在程序侧去重，原始响应仍完整保留；不同守卫或强度不得被此去重合并。回调类型错误反馈明确区分被保存的函数指针与接收它的容器，并列出当前 native 签名中的函数指针参数。修正请求携带原始输出和逐条错误，按当前 native callable 签名校验对象类型。守卫内的 may/must 与守卫外的 no_effect/unknown 独立判断；数据 sink 跟踪复制后的内容，不仅看目的变量名。一条失败不丢弃同函数其他可独立校验的提案；部分结果保存为 partial，拒绝项仍使模型评测不完整。替换 native 待审项只限相同对象效果及精确构建实例，不丢弃其他效果或编译变体。新提案始终 pending，不能自动确认、不能成为自动释放配对或 dispatcher 的证明根；不同构建的不同命题不能合并成共享 variants。源码与证据变化仍由既有发布前当前性检查拒绝。原 advisory 只处理未经过提案阶段的候选，避免对新提案重复调用同一点评流程。模型输入明确列出该目标的参数/返回根，并带入当前构建收据绑定的宏调用形式；内置根条件仅作无损紧凑展示，完整契约留在程序侧核对。宏候选不会因为同一函数还有一条绑定到内部常量的不可映射效果而丢弃唯一可映射效果；仍有多条不同可映射命题时保持未闭合。跨 TU 宏委托只沿真实链接组内唯一实现及实际调用的精确 USR 传播，派生宏保留调用方的 BuildContext。
+
+`primitive_object_evidence.py` 为提案提供 native 偏移反证：参数/局部变量 USR、赋值链和真实根调用实参共同识别内部释放地址与可能向对象之前写入的地址；不能把这些对象抹为参数根，即使强度是 may。它不是完整路径证明或 Validator。copy 与 recv_source 分别枚举，局部缓冲传递不会消除调用者对象的数据来源；描述符经过局部成员仍保留 io_release。copy/receive 的 must 要求实际写入而非零字节调用。原始响应、复核模式和 provider usage 保留供全量质量与成本比较。
+
+`primitive_tasks.py` 在工程 `.zscope_snapshots/semantics/` 保存独立 SQLite 任务、事件游标和登记结果。任务有 request_id 幂等、PID/启动时钟/boot ID 核验、取消及有界终止，关闭页面不停止后台进程。重开可检测进程丢失；不保证主机重启后自动继续任务。任务只接受 inventory/discovery，不接受客户端命令或输出路径。
+
+扫描会话、原语执行、配置和语义发布共用 `project_activity` Linux 进程锁；准备任务与扫描不能同时执行。作业创建/恢复、计划创建及实际启动均检查共享语义就绪；失效计划显示阻塞原因，不能借用旧完成状态。普通只读准备通过只读任务快照识别活动进程，不生成或修改任务数据库。
 
 ## 职责与非职责
 
@@ -75,11 +98,15 @@ tests:
 - C/C++ 既有非实例分析路径在入口与索引/Wiki 就绪后，先对可达并集进行增量语义建模、合并并重读 user_config，再启动规则；直接 Analyzer、单入口、批量、diff、resume、maintain 共用此阶段。独立建模池以 `llm_max_inflight` 为上限，复用 modeling profile 和全局/endpoint 限流，不受 entry_workers 限制。依赖完成即调度父函数，递归组件冻结上一轮契约并最多迭代 RuntimeSpec 的 `semantic_model_max_rounds`（默认 3）轮，失败或未收敛标为 partial；取消仍传播中断。
 - 建模任务先尝试由已验证 callee 或人工契约静态生成透明封装快照；无法确定的底层资源协议仍进入 LLM 发现和实现校验。静态快照与模型快照共用依赖调度、发布屏障和缓存；释放端提议可驱动不可达对应接口的补建。普通重扫输入不变时不调用模型也不改写工作簿。
 - 模型请求归因包含稳定符号 `audit_unit_uid` 和 `semantic_modeling_attempt_N`，可与发布快照及 `.attempts.json` 中成功/失败的尝试记录关联；位置移动不改变符号 UID。旧用量事件缺少符号身份时，只能按阶段汇总，不能把线程活动次数当成逐符号 token 成本。
-- 批量任务经 scheduler/parallel analyzer 分发。确定性候选完成后，balanced/deep 在全局验证之前依次构建 Security Semantic Map、规划 coverage gap、登记主动发现 hypothesis；所有候选通过 CandidateRegistrar 登记并统一冻结 Ledger，最后按 validation cluster 验证和装配报告。默认快照怀疑点只作为已有候选的验证背景；内部条件观察 shadow 在盲调查完成后、冻结前登记，单入口保持相同阶段顺序。
+- 批量任务经 scheduler/parallel analyzer 分发。C/C++ 三档共用精确 BuildContext/USR 静态清单：fast 静态验证，balanced 增加自主 Validator，deep 在全局验证队列冻结前核对实例当前性并执行分层契约发现；所有候选通过 CandidateRegistrar 登记，最后按 validation cluster 验证和装配报告。Security Semantic Map / coverage-gap planner 的旧盲发现仅保留为显式离线对照。非实例批量路径缺少精确静态清单时保留发现不可用缺口，不回退旧导航发现；该路径的内部快照观察 shadow 仍在冻结前登记，不能补成已完成的发现覆盖。默认快照怀疑点只作为已有候选的验证背景。
 - `semantic_snapshot_candidate_mode` 仅为 RuntimeSpec 的 `off|shadow` 实验项。shadow schema 单独收集具有对象或 source/sink、源码位置、违反性质、成立条件和缺失事实的条件观察；当前发布会话绑定及源码校验通过后才生成未确认义务。旧 JSON、模糊说明、过期版本或无入口路径不能获得登记资格。观察独立归因为建模来源，走统一裁决但不晋升默认结果；不得进入 candidate-blind 初始提示。
 - `semantic_model_demand_mode` 同样默认 `off`，shadow planner 在候选生成前读取调用图和建模上下文，记录选择、推迟、未知以及依赖闭包。类型化缺口和 D03 覆盖键只补充需求，不能作为唯一需求来源。shadow 不跳过原调度、不改变 SCC、单任务所有权或发布屏障；计划与实际执行分开进入报告，未知和推迟不缓存为安全，也不声称节省调用或 tokens。
 
 ## 必须保持的不变量
+
+deep 分层契约发现的模型投影由 `hierarchical_context.py` 管理。完整 native facts、BuildContext、依赖和 include 查询收据仍保存在 admitted inventory、候选 evidence pack 与完整缓存依赖中；模型先接收源码、精确 USR/构建身份、事实完整性及覆盖缺口，大字段以带 SHA-256 的 JSON pointer 引用展示，通过 `read_semantic_evidence` 分页读取。引用不代表已经读过，也不授予证明权限；每次读取前后以及发布前仍检查当前性。相同事件不在顶层与函数体中双份发送，初始调用边限于当前组合的相关边；子摘要责任在继承表中只发送一次。工具参数枚举当前组合允许读取的精确单位；源码已经给齐的叶函数不再展示只能重复读取自身的工具。范围外调用边仍保留，但被调者实现依赖明确保持未知，交由有对应成员的上层组合调查，不能将拒绝读取解释为安全。投影版本参与缓存身份，原始记录变化仍失效，不能用压缩后的内容替代证据摘要。
+
+单个调查单位达到 RuntimeSpec 期限时记录 `unit_deadline_exceeded`，不缓存部分摘要、不提交未完成候选，继续其他单位；父级取消仍向上传播。父组合收到缺失子摘要的明确诊断。中断调用成本继续保存在扫描 usage ledger，分层摘要的 `tokens_complete=false` 表示其局部求和不完整，完整成本与 provider 覆盖率必须读取总账。
 
 - 动态调查证据由 `InvestigationSession` 登记，绑定项目、源码、构建范围、工具、策略和模型输入身份；读取前后重新验证源码及 artifact。模型只能请求获准取证，不能自签引用或 proof。缺少构建身份时仅形成源码观察，may/partial 不提升为完整证明。
 - 扩展调查范围保存在独立清单，原 AuditUnit 和 Ledger 身份不变。动态报告通过同一 CandidateRegistrar 进入未确认义务；其进程内引用不写入旧 AuditUnit 报告缓存，持久化 JSON 不能恢复授权。工具和语义刷新权限继续受只读边界约束。
@@ -103,6 +130,20 @@ tests:
 - 启用 Wiki 时，每个 scan session 只能编译并固定一次 `ProjectKnowledgeService`；所有入口和 scan-level Validator 共享该只读实例，入口 Analyzer 不得再次编译或提前关闭它，session 结束后统一释放。
 - `fast` 不运行语义补全或主动发现；它们未启用时不能误标 partial。balanced/deep 中已启用阶段因预算跳过审计单元时必须保存已得结果、标记 `completeness=partial`，CLI 退出码为 2。
 - scan-wide token manager 必须在配置生效边界创建一次并注入所有入口、Agent 和 LLM profile，不能为并行入口各建一份预算。
+
+## 持久扫描时间计划
+
+`ScanScheduleService` 在所选 YAML 父目录的 `.zscope_jobs/schedules-<配置路径摘要>.db` 保存计划，`schedule_runner` 是独立于 Web 页面的 Linux 后台协调进程。计划始终绑定创建时的 YAML；切换 Web 工程不会停止原工程后台，切换回同一配置即可管理。协调进程用文件锁保证同一配置只有一个持有者，用 PID、Linux start ticks 与 boot ID 核对存活身份。关闭浏览器或 Web 服务后，已启动协调进程和扫描 owner 继续；主机休眠期间不能计算，重启后需重新打开工具，由 list/create 恢复后台。它不是操作系统开机自启动任务。
+
+Web 请求由 `ScanJobsHttpService` 提供 `/api/schedules` GET/POST 与 `/api/schedules/cancel` POST。创建参数是 `request_id`、`scan_depth: fast|balanced|deep`、可空带时区绝对 `start_at`、`end_mode: complete|deadline`、可空绝对 `stop_at`、可空 `daily_window: {timezone,start,end}`（每日边界为 `HH:MM`，时区为 IANA 名称）。空开始时间表示现在；每日窗口若尚未开始则等待下一窗口。`complete` 明确不继承配置的旧停止时间；`deadline` 是整个计划的绝对截止，单次实际窗口取每日结束与总截止的较早者。跨午夜窗口受支持，结束边界不包含在窗口内；夏令时缺失时刻按时区规则前移到有效时刻，重复边界采用第一次出现，不制造两次相同窗口。这里的时间由用户指定，不核验任何模型提供方的计费或优惠政策。
+
+计划状态 `waiting/running/completed/expired/cancelled/blocked` 与真实作业的 `job_status` 分开。只有作业真实 `completed` 才把计划标完成；到总截止但扫描未完成用 `expired`，覆盖和剩余工作仍以作业为准。每日窗口结束由既有 owner 和调度 stop token 停止新工作并有界收尾，不承诺截止瞬间进程已退出。只有前一尝试终止才在下一窗口重设未来绝对截止，并用同一 job、新 run、新 owner token 续作；不携带过期窗口，不在同一窗口立即反复失败重试。续作复用已验证的可恢复状态，不等同于保证只执行剩余项。
+
+创建与每次开始/续作都重新核对已有输入 fingerprint，源码、配置、编译或工具输入变化则 `blocked`，要求检查并创建新计划；外部手动 rearm 的 run 也不能被计划接管。标准根报告产物不是源码输入，不因首个窗口生成报告而撤销下一窗口；实际源码和业务输入变化仍撤回。执行兼容性沿用正式 ConfigLoader（多目标、Java 档位等约束），不在计划层偷偷降级。`expected_input_revision` 与 `ignore_config_window` 是内部服务参数，不是公共 YAML 或普通 `/api/jobs` 接收字段。
+
+协调动作先持久保存，再使用 ScanJobService 请求幂等键启动/续作；进程若在收到响应前退出，下次只重放同一保留动作。已过期且未获作业保留的动作不启动。取消需要计划 ID、版本与请求标识；默认 `stop_running=true` 同时请求停止仍匹配 job/run/input 的本轮，显式 false 只撤未来窗口。并发取消优先，不能停止被其他调用方重启或重新绑定的尝试；无法安全停止时保留说明。空闲 tick 不递增可见版本，避免正常轮询引起无意义取消冲突。
+
+`scripts/night_watchman.py` 复用这一服务，而不是自行拉起命令并杀进程。`--config`、`--start`、`--end`、`--timezone`、`--scan-depth` 选择同一日历策略；默认稳定请求标识允许关闭重开观察同一计划，需要新计划时显式换 `--request-id`。Ctrl+C 只退出观察，取消在同工程 WebUI 执行。测试包括合成控制面日历、崩溃重放与取消竞争，以及真实 SQLite/launch/owner 身份和独立协调进程；子扫描器是明确的无模型收据 fixture，不把它作为实际分析效果或付费模型验收。
 
 ## Balanced 持久灰度决策
 

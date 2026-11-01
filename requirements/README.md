@@ -18,6 +18,12 @@ check every installed distribution against `license-policy.json` via
 release dependency therefore requires an explicit policy review in the same
 change.
 
+Project semantics YAML uses `ruamel.yaml` to preserve reviewed document structure.
+Both `ruamel-yaml` and its Linux CPython dependency `ruamel-yaml-clib` must be
+included in the constraints, release and two portable locks, with MIT licenses
+recorded in `license-policy.json`. Keep these pins aligned when updating the YAML
+runtime; a source install alone does not validate an offline bundle.
+
 ## Security pins
 
 `urllib3` and `certifi` are transitive (requests / httpx / openai) but they ship in

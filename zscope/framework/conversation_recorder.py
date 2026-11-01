@@ -32,6 +32,8 @@ Environment knobs:
 from __future__ import annotations
 
 import hashlib
+import contextvars
+from functools import wraps
 import json
 import logging
 import os
@@ -43,11 +45,59 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, ParamSpec, TypeVar
+
+from ..common.cancellation import CancellationError
+from .context_window import ContextWindowExceeded
 
 from .llm_usage import LLMUsageAttribution, escalation_rung_for_call_kind
 
 logger = logging.getLogger(__name__)
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_OWNED_SESSIONS: contextvars.ContextVar[
+    Optional[list[tuple[ConversationRecorder, ConversationSession]]]
+] = contextvars.ContextVar("owned_conversation_sessions", default=None)
+
+
+def complete_session_lifecycle(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Close only sessions created by this call, including every exceptional exit."""
+
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        owned: list[tuple[ConversationRecorder, ConversationSession]] = []
+        marker = _OWNED_SESSIONS.set(owned)
+        reason = "incomplete"
+        try:
+            return function(*args, **kwargs)
+        except CancellationError:
+            reason = "cancelled"
+            raise
+        except ContextWindowExceeded:
+            reason = "context_window_exceeded"
+            raise
+        except BaseException:
+            reason = "error"
+            raise
+        finally:
+            _OWNED_SESSIONS.reset(marker)
+            for recorder, session in owned:
+                state = recorder._state_for(session)
+                if state.ended_at is None:
+                    recorder.record_session_end(
+                        session,
+                        state.iterations or 0,
+                        state.context_tokens or 0,
+                        truncated=True,
+                        finish_reason=reason,
+                        cumulative_prompt_tokens=state.cumulative_prompt_tokens,
+                        cumulative_completion_tokens=state.cumulative_completion_tokens,
+                        terminal_tool_valid=False,
+                    )
+
+    return wrapped
+
 
 CONVERSATION_EVENT_SCHEMA_VERSION = "zscope.conversation-event.v2"
 CONVERSATION_RUN_MANIFEST_SCHEMA_VERSION = "zscope.conversation-run-manifest.v1"
@@ -328,6 +378,9 @@ class ConversationRecorder:
                 started_monotonic=time.monotonic(),
             )
             self._session_states[session.id] = state
+            owned = _OWNED_SESSIONS.get()
+            if owned is not None:
+                owned.append((self, session))
             event: Dict[str, Any] = {
                 "event": "session_start",
                 "session": self._session_dict(session),
@@ -358,6 +411,8 @@ class ConversationRecorder:
     ) -> None:
         with self._locked("record_session_end", session):
             state = self._state_for(session)
+            if state.ended_at is not None:
+                return
             state.ended_at = self._now()
             state.iterations = iterations
             state.context_tokens = context_tokens
@@ -425,6 +480,14 @@ class ConversationRecorder:
     ) -> None:
         with self._locked("record_exchange", session):
             state = self._state_for(session)
+            state.iterations = max(state.iterations or 0, iteration or 1)
+            state.context_tokens = context_tokens
+            state.cumulative_prompt_tokens = (state.cumulative_prompt_tokens or 0) + (
+                prompt_tokens or 0
+            )
+            state.cumulative_completion_tokens = (state.cumulative_completion_tokens or 0) + (
+                completion_tokens or 0
+            )
             event: Dict[str, Any] = {
                 "event": "exchange",
                 "session": self._session_dict(session),
@@ -801,15 +864,9 @@ class ConversationRecorder:
         encoded = text.encode("utf-8")
         if len(encoded) <= byte_limit:
             return text
-        chars = byte_limit
-        while chars > 0:
-            candidate = text[:chars]
-            encoded = candidate.encode("utf-8")
-            if len(encoded) <= byte_limit:
-                return candidate
-            # Scale the estimate down; UTF-8 multi-byte overhead shrinks fast.
-            chars = max(1, int(chars * byte_limit / max(1, len(encoded))))
-        return ""
+        # A cut inside a UTF-8 sequence drops only its incomplete trailing code
+        # point. This also terminates when the first character exceeds the budget.
+        return encoded[:byte_limit].decode("utf-8", errors="ignore")
 
     # ------------------------------------------------------------------
     # Markdown rendering

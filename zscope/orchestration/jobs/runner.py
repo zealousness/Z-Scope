@@ -44,6 +44,7 @@ def write_launch_file(
     report_candidates: List[str],
     stop_at_epoch: Optional[float],
     resolved_stop_time: Optional[str],
+    expected_input_revision: Optional[str] = None,
 ) -> None:
     import json
 
@@ -58,6 +59,8 @@ def write_launch_file(
         "stop_at_epoch": stop_at_epoch,
         "resolved_stop_time": resolved_stop_time,
     }
+    if expected_input_revision is not None:
+        payload["expected_input_revision"] = expected_input_revision
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)

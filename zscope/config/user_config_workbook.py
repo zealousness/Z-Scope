@@ -37,6 +37,7 @@ RESOURCE_KINDS = frozenset(
         "send_sink",
         "recv_source",
         "format_sink",
+        "command_sink",
         "callback_register",
         "ownership_transfer",
         "reference_retention",

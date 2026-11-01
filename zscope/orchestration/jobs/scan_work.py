@@ -116,11 +116,12 @@ def registry_fingerprint() -> Optional[Dict[str, str]]:
     """
 
     from ...semantics import contracts, standard_api
+    from ...semantics.c_linux_catalog import CATALOG_VERSION, active_contracts
 
     compiler = str(getattr(contracts, "CONTRACT_COMPILER_VERSION", "") or "")
     api_version = str(getattr(standard_api, "STANDARD_API_VERSION", "") or "")
     try:
-        standard = standard_api.standard_contracts()
+        standard = list(active_contracts())
     except Exception:
         return None
     if not compiler or not api_version or not isinstance(standard, list) or not standard:
@@ -128,6 +129,7 @@ def registry_fingerprint() -> Optional[Dict[str, str]]:
     return {
         "contract_compiler": compiler,
         "standard_api": api_version,
+        "c_linux_catalog": CATALOG_VERSION,
         "standard_contracts_sha256": hashlib.sha256(
             _canonical_json(standard).encode("utf-8")
         ).hexdigest(),
@@ -211,7 +213,11 @@ def _business_answers_digest(config: Any) -> Optional[str]:
     if not raw:
         return None
     path = Path(str(raw))
-    if path.suffix.lower() == ".xlsx":
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        # Match UserConfigStore's YAML facade; never interpret semantic YAML
+        # as SQLite or fall back to a legacy workbook's unrelated answers.
+        path = path.parent / ".zscope_snapshots" / "user_config.state.db"
+    elif path.suffix.lower() == ".xlsx":
         path = path.with_suffix(".state.db")
     elif path.is_dir() or not path.suffix:
         path = path / "user_config.state.db"
@@ -304,11 +310,11 @@ def compute_plan_fingerprint(
         }
     )
     project = getattr(config, "project", None)
-    workbook_digest: Optional[str] = None
-    workbook_path = getattr(project, "user_config_file", None)
-    if workbook_path:
-        workbook_digest = _file_digest(Path(str(workbook_path)))
-        if workbook_digest is None:
+    project_semantics_digest: Optional[str] = None
+    project_semantics_path = getattr(project, "semantics_file", None)
+    if project_semantics_path:
+        project_semantics_digest = _file_digest(Path(str(project_semantics_path)))
+        if project_semantics_digest is None:
             return None
     answers = _business_answers_digest(config)
     if answers is None:
@@ -327,10 +333,9 @@ def compute_plan_fingerprint(
         "registry": registry,
         "language": str(getattr(project, "language", "") or ""),
         "project_root": str(getattr(project, "project_root", "") or ""),
-        "source_root": str(getattr(project, "source_root", "") or ""),
         "rule_ids": rule_ids,
         "disabled_rule_ids": disabled_ids,
-        "workbook_sha256": workbook_digest,
+        "project_semantics_sha256": project_semantics_digest,
         "business_answers_sha256": answers,
         "entries": entries,
         "instances": sorted(
@@ -371,7 +376,7 @@ def current_recovery_identity(
         raise ValueError("instance_recovery_dependencies_unverifiable")
     dependency = {
         "semantics_dependencies": asdict(context.dependencies),
-        "workbook_sha256": context.workbook.workbook_sha256,
+        "project_semantics_sha256": context.workbook.workbook_sha256,
         "scopes": [scope.to_payload() for _identity, scope in sorted(context.scopes.items())],
     }
     return RecoveryIdentity(

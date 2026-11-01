@@ -617,8 +617,6 @@ def test_config_loader_parses_java_structure_and_signal_options(tmp_path: Path) 
         f"""
 config_version: 2
 project:
-  root: {tmp_path.as_posix()}
-  source_root: .
   language: java
   entry_function: demo.App.run:void()
 llms:
@@ -679,8 +677,6 @@ def test_config_loader_rejects_removed_scan_after_discovery(tmp_path: Path) -> N
         f"""
 config_version: 2
 project:
-  root: {tmp_path.as_posix()}
-  source_root: .
   language: java
   entry_function: demo.App.run:void()
   entry_discovery:
@@ -714,8 +710,6 @@ def test_config_loader_defaults_java_structure_to_auto(tmp_path: Path) -> None:
         f"""
 config_version: 2
 project:
-  root: {tmp_path.as_posix()}
-  source_root: .
   language: java
   entry_function: demo.App.run:void()
 llms:

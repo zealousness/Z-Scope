@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
@@ -196,12 +197,12 @@ class ConfigService:
         return data if isinstance(data, dict) else {}
 
     def save_document(self, data: Dict[str, Any]) -> None:
-        save_document_data(self.path, data)
+        save_document_data(self.path, data, expand_environment=False)
 
     def structured_payload(self) -> Dict[str, Any]:
         # Validate the formal document without forcing multi-target execution.
         if self.path.exists() and self.path.read_text(encoding="utf-8").strip():
-            validate_document_file(self.path)
+            validate_document_file(self.path, expand_environment=False)
         payload = read_structured_document(self.path)
         document = payload["config"]
         multi_target = (
@@ -213,7 +214,10 @@ class ConfigService:
             overrides: Dict[str, Any] = {}
             if self.scan_depth is not None:
                 overrides["scan_depth"] = self.scan_depth
-            effective = ConfigLoader.load(str(self.path), **overrides)
+            try:
+                effective = ConfigLoader.load(str(self.path), **overrides)
+            except (ValueError, TypeError, KeyError) as exc:
+                payload["execution_error"] = str(exc)
         if effective is not None:
             payload["effective_scan"] = {
                 "depth": effective.scan.depth,
@@ -245,7 +249,7 @@ class ConfigService:
         return {"success": True, "path": str(self.path)}
 
     def _validate_and_replace(self, content: str) -> None:
-        save_document_text(self.path, content)
+        save_document_text(self.path, content, expand_environment=False)
 
 
 class RuleService:
@@ -551,9 +555,11 @@ class UserConfigService:
 class CpgService:
     """Dashboard-facing CPG backend status and build operations."""
 
-    def __init__(self, code_index: Any = None, project_config: Any = None):
+    def __init__(self, code_index: Any = None, project_config: Any = None, *, index_factory: Any = None):
         self.code_index = code_index
         self.project_config = project_config
+        self._index_factory = index_factory
+        self._index_lock = threading.Lock()
 
     @property
     def backend(self) -> Any:
@@ -570,6 +576,13 @@ class CpgService:
         return {"status": backend.status(), "error": error}
 
     def build(self) -> tuple[int, Dict[str, Any]]:
+        if self.code_index is None and self._index_factory is not None:
+            with self._index_lock:
+                if self.code_index is None:
+                    try:
+                        self.code_index = self._index_factory()
+                    except (ValueError, OSError, RuntimeError) as exc:
+                        return 400, {"success": False, "error": str(exc)}
         backend = self.backend
         if not backend:
             return 400, {"success": False, "error": "Backend not available"}
@@ -584,12 +597,17 @@ class CpgService:
                 "error": "Current backend does not support async CPG build",
             }
 
-        source_path = str(getattr(self.project_config, "source_root", ""))
         project_root = str(getattr(self.project_config, "project_root", ""))
         compile_commands = getattr(self.project_config, "compile_commands_path", None)
         cc_path = str(compile_commands) if compile_commands else None
-        importer(source_path, project_root, cc_path)
+        importer(project_root, project_root, cc_path)
         return 200, {"success": True, "status": "building"}
+
+    def close(self) -> None:
+        if self.code_index is not None:
+            close = getattr(self.code_index, "close", None)
+            if callable(close):
+                close()
 
 
 class SourceSnippetService:
@@ -601,7 +619,7 @@ class SourceSnippetService:
     def search_roots(self) -> list[Path]:
         roots: list[Path] = []
         if self.project_config:
-            for attr in ("project_root", "source_root"):
+            for attr in ("project_root",):
                 value = getattr(self.project_config, attr, None)
                 if value:
                     roots.append(Path(value))

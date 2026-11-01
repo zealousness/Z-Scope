@@ -148,6 +148,11 @@ _CONFIRMATION_REQUIREMENTS = {
     "use_after_free_path": {"free_before_use", "source_to_sink_complete"},
     "double_release_path": {"first_release", "second_release", "same_object_path"},
     "missing_cleanup_path": {"allocation_reachable", "cleanup_missing"},
+    "thread_argument_owner_without_release": {
+        "owner_allocation",
+        "derived_address_escapes",
+        "owner_release_missing",
+    },
     "race_without_happens_before": {"conflicting_accesses", "no_happens_before"},
     "contract_violation_path": {"caller_contract_violated", "source_to_sink_complete"},
     "deterministic_cfg_obligation_path": {
@@ -165,10 +170,6 @@ _CONFIRMATION_REQUIREMENTS = {
     "async_stack_address_escape": {
         "stack_object_address_escapes",
         "async_lifetime_unbounded",
-    },
-    "container_unlink_without_release": {
-        "container_owner_unlinked",
-        "ownership_not_transferred_or_released",
     },
     "lock_held_on_failure_return": {
         "lock_acquired_before_failure",
@@ -249,6 +250,18 @@ _CONFIRMATION_REQUIREMENTS = {
 # backed by a runner attestation still live in this process.
 _PROCESS_ATTESTED_CONFIRMATION_KINDS = frozenset({"dynamic_witness_candidate_match"})
 
+# These detector rules deliberately emit broad candidates, but their local
+# lexical events do not establish the all-path/value-range obligations needed
+# for a V0 confirmation. Cached or replayed generic CFG proofs therefore have
+# no confirmation authority for the current rule revisions.
+_CFG_CONFIRMATION_REQUIRES_TYPED_REPLAY = frozenset(
+    {
+        "clang_cfg_pointer_may_be_uninitialized_before_use",
+        "clang_cfg_size_addition_without_overflow_guard",
+        "clang_cfg_unbounded_vla_or_stack_array",
+    }
+)
+
 
 def deterministic_decision_proof(
     issue: Mapping[str, Any],
@@ -265,7 +278,10 @@ def deterministic_decision_proof(
     expected = str(outcome or "").lower()
     if issue.get("analysis_scope") == "conditional_source_branch":
         return None
-    if str(issue.get("rule_id") or issue.get("rule") or "") == "zscope.c_cpp.cpp_clang_cfg.object_protocol_path":
+    if (
+        str(issue.get("rule_id") or issue.get("rule") or "")
+        == "zscope.c_cpp.cpp_clang_cfg.object_protocol_path"
+    ):
         from .protocol_assessment import protocol_confirmation
 
         # Serialized generic proofs cannot bypass this rule's business
@@ -289,34 +305,41 @@ def deterministic_decision_proof(
         "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
         "clang_cfg_callback_while_lock_held",
     }
-    if expected == "reject" and (compiler_required or issue.get("review_checked_proofs_enabled") is True):
+    compiler_receipt_required = expected == "reject" and (
+        compiler_required or issue.get("review_checked_proofs_enabled") is True
+    )
+    if compiler_receipt_required:
         from .review_checks import checked_receipt
 
         receipt = checked_receipt(dict(issue))
-        if receipt is None:
-            return None
-        return DecisionProof(
-            outcome="reject", proof_kind="compiler_checked_review_claim",
-            producer_engine=str(receipt["checker_version"]),
-            fact_ids=(str(receipt["fact_store_id"]),),
-            code_hash=str(receipt["candidate_binding"]),
-            assumptions=("bound compiler configuration",),
-            contradiction_or_obligation=str(receipt["reason"]),
-            scope="candidate_obligation_in_current_build", completeness="complete",
-            subject_identity=str(issue.get("candidate_uid") or ""),
-        )
+        if receipt is not None:
+            return DecisionProof(
+                outcome="reject",
+                proof_kind="compiler_checked_review_claim",
+                producer_engine=str(receipt["checker_version"]),
+                fact_ids=(str(receipt["fact_store_id"]),),
+                code_hash=str(receipt["candidate_binding"]),
+                assumptions=("bound compiler configuration",),
+                contradiction_or_obligation=str(receipt["reason"]),
+                scope="candidate_obligation_in_current_build",
+                completeness="complete",
+                subject_identity=str(issue.get("candidate_uid") or ""),
+            )
     requirements = _REJECTION_REQUIREMENTS if expected == "reject" else _CONFIRMATION_REQUIREMENTS
     for proof in _proof_records(issue):
         proof_outcome = str(proof.get("outcome") or proof.get("decision") or "").lower()
         if proof_outcome not in {expected, "rejected" if expected == "reject" else "confirmed"}:
             continue
         kind = str(proof.get("proof_kind") or proof.get("kind") or "").lower()
-        if expected == "confirm" and kind == "deterministic_cfg_obligation_path" and str(
-            issue.get("rule_id") or issue.get("rule") or ""
-        ) == "clang_cfg_nonliteral_format_string":
-            # Historical detector-produced format events were not compiler
-            # operand/data-flow certificates. Keep the evidence, revoke authority.
-            continue
+        if expected == "confirm" and kind == "deterministic_cfg_obligation_path":
+            rule_id = str(issue.get("rule_id") or issue.get("rule") or "")
+            if rule_id == "clang_cfg_nonliteral_format_string" or (
+                rule_id in _CFG_CONFIRMATION_REQUIRES_TYPED_REPLAY
+            ):
+                # Historical detector-produced events were not complete
+                # compiler/data-flow certificates. Keep them as evidence but
+                # require Validator claim replay before promotion.
+                continue
         required = requirements.get(kind)
         if not required:
             continue
@@ -333,6 +356,17 @@ def deterministic_decision_proof(
         facts = _fact_names(proof)
         if not required.issubset(facts):
             continue
+        engine = str(proof.get("producer_engine") or proof.get("engine") or "").lower()
+        if compiler_receipt_required and not (
+            kind == "ownership_cleanup_complete"
+            and engine == "decision_fact_graph_v1"
+            and {
+                "cleanup_all_paths",
+                "allocation_failure_return_has_no_resource",
+                "release_before_live_exit",
+            }.issubset(facts)
+        ):
+            continue
         if not _complete(proof) or not _has_fact_ids(proof) or not _has_code_hash(proof, issue):
             continue
         if kind in _PROCESS_ATTESTED_CONFIRMATION_KINDS:
@@ -340,7 +374,6 @@ def deterministic_decision_proof(
 
             if not dynamic_witness_proof_is_live(proof, issue):
                 continue
-        engine = str(proof.get("producer_engine") or proof.get("engine") or "").lower()
         if not engine or engine in {"llm", "validator", "model"}:
             continue
         return DecisionProof(

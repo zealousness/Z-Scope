@@ -181,7 +181,15 @@ def _cluster_by_sink_line(
     return clusters
 
 
-def _aggregation_sort_key(item: Mapping[str, Any]) -> Tuple[str, str, str, str]:
+def _aggregation_sort_key(item: Mapping[str, Any]) -> Tuple[str, str, str, str, str]:
+    # A review observation may share the exact sink site with a confirmed
+    # finding.  It can contribute labels and evidence, but must never become
+    # the display primary and demote the confirmed result into an alias.
+    disposition = (
+        "0"
+        if str(item.get("candidate_disposition") or "").lower() == "confirmed"
+        else "1"
+    )
     proof = item.get("decision_proof")
     proof_complete = (
         "0"
@@ -190,6 +198,7 @@ def _aggregation_sort_key(item: Mapping[str, Any]) -> Tuple[str, str, str, str]:
     )
     severity = str(item.get("impact_level") or item.get("default_severity") or "medium").lower()
     return (
+        disposition,
         proof_complete,
         _SEVERITY_RANK.get(severity, "9"),
         str(item.get("validation_cluster_uid") or ""),

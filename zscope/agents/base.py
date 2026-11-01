@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from zscope.common.cancellation import CancellationError
+
 import json
 import logging
 import time
@@ -9,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
 from ..common.utils import extract_json_blocks
-from ..framework.base import AgentResponse, BaseAgent
+from ..framework.base import AgentResponse, BaseAgent, validate_function_arguments
 from ..framework.llm_client import LLMClient
 from ..tools.policy import ToolPolicy
 from ..tools.contracts import ContractTool, invalid_request, tool_result
@@ -190,7 +192,7 @@ class ToolCallingAgent(BaseAgent):
         terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_required: bool = False,
         tool_executor: Optional[Callable[[str, Any], Dict[str, Any]]] = None,
-        preserve_reasoning_metadata: bool = False,
+        preserve_reasoning_metadata: bool = True,
     ) -> Dict[str, Any]:
         tools_schema = list(self.tools_schema)
         if additional_tools_schema:
@@ -313,6 +315,8 @@ class JsonToolAgent(ToolCallingAgent):
                         "error": (
                             f"Invalid {json_output_spec.type_name} payload; follow the supplied "
                             "schema and call the terminal tool again. "
+                            + (validate_function_arguments(json_output_spec.schema, payload) or "")
+                            + " "
                             + (
                                 json_output_spec.validation_error()
                                 if json_output_spec.validation_error
@@ -338,6 +342,16 @@ class JsonToolAgent(ToolCallingAgent):
             content = str(result.get("content") or "")
             conversation = result.get("conversation", [])
             ctx_tokens = int(result.get("context_tokens", 0) or 0)
+
+            if result.get("finish_reason") == "context_window_exceeded":
+                metadata = self._json_result_metadata(result, json_output_spec)
+                metadata["reason"] = "context_window_exceeded"
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error=str(result.get("context_window_error") or "context_window_exceeded"),
+                    metadata=metadata,
+                )
 
             if result.get("terminal_loop_guard_triggered"):
                 metadata = self._json_result_metadata(result, json_output_spec)
@@ -560,6 +574,8 @@ class JsonToolAgent(ToolCallingAgent):
                 data={},
                 error=f"Failed to parse {parse_label}. See logs for full content.",
             )
+        except CancellationError:
+            raise
         except Exception as exc:
             return AgentResponse(success=False, data={}, error=str(exc))
 
@@ -581,7 +597,10 @@ class JsonToolAgent(ToolCallingAgent):
             )
             if parsed is not None:
                 return parsed
-        return extractor(content, result, list(conversation))
+        extracted = extractor(content, result, list(conversation))
+        if json_output_spec:
+            return self._coerce_payload_for_spec(extracted, json_output_spec)
+        return extracted
 
     def _extract_structured_json_payload(
         self,
@@ -603,7 +622,9 @@ class JsonToolAgent(ToolCallingAgent):
 
     @staticmethod
     def _coerce_payload_for_spec(data: Any, json_output_spec: JsonOutputSpec) -> Any:
-        if json_output_spec.validator(data):
+        if json_output_spec.validator(data) and not validate_function_arguments(
+            json_output_spec.schema, data
+        ):
             return data
         if isinstance(data, dict):
             for key in json_output_spec.nested_keys:
@@ -611,7 +632,9 @@ class JsonToolAgent(ToolCallingAgent):
                 if key not in data:
                     continue
                 nested = data[key]
-                if json_output_spec.validator(nested):
+                if json_output_spec.validator(nested) and not validate_function_arguments(
+                    json_output_spec.schema, nested
+                ):
                     return nested
         return None
 
@@ -648,6 +671,8 @@ class JsonToolAgent(ToolCallingAgent):
             return None
         try:
             data = json.loads(arguments)
+        except CancellationError:
+            raise
         except Exception:
             return None
         return data if isinstance(data, dict) else None
@@ -1011,6 +1036,8 @@ class JsonToolAgent(ToolCallingAgent):
                 trace_label=trace_label,
                 trace_iteration=trace_iteration,
             )
+        except CancellationError:
+            raise
         except Exception as exc:
             if not response_format:
                 logger.warning(
@@ -1036,6 +1063,8 @@ class JsonToolAgent(ToolCallingAgent):
                     trace_label=f"{trace_label}; structured_fallback=tool",
                     trace_iteration=trace_iteration,
                 )
+            except CancellationError:
+                raise
             except Exception as fallback_exc:
                 logger.warning(
                     "JSON repair call failed for %s after structured fallback: %s; fallback_error=%s",
@@ -1061,6 +1090,25 @@ class JsonToolAgent(ToolCallingAgent):
             "last_assistant_preview": result.get("last_assistant_preview")
             or str(result.get("content") or "")[:500],
         }
+        candidates = list(JsonToolAgent._final_tool_payloads(
+            result, result.get("conversation") or [], json_output_spec
+        ))
+        for text in JsonToolAgent._text_sources(
+            str(result.get("content") or ""), result, []
+        ):
+            candidates.extend(extract_json_blocks(text))
+        if candidates:
+            candidate = candidates[0]
+            if isinstance(candidate, dict):
+                for key in json_output_spec.nested_keys:
+                    if key in candidate:
+                        candidate = candidate[key]
+                        break
+            diagnostics["schema_error"] = validate_function_arguments(
+                json_output_spec.schema, candidate
+            )
+        if json_output_spec.validation_error:
+            diagnostics["validation_error"] = json_output_spec.validation_error()
         return (
             f"Final JSON repair for {parse_label}. The prior answer did not produce "
             f"a usable {json_output_spec.type_name} payload. Do not ask for tools or "
@@ -1068,7 +1116,7 @@ class JsonToolAgent(ToolCallingAgent):
             "to produce exactly one final payload.\n\n"
             f"Diagnostics:\n{json.dumps(diagnostics, ensure_ascii=False, indent=2)}\n\n"
             f"Return by calling {json_output_spec.final_tool_name}, or return exactly "
-            f"one JSON object with type={json_output_spec.type_name}."
+            "one JSON object matching the supplied schema exactly."
         )
 
     @staticmethod

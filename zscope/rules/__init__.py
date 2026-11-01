@@ -20,6 +20,16 @@ from .qualification_evidence import (
     QualificationEvidenceSummary,
     load_qualification_evidence,
 )
+from .validation_obligations import (
+    VALIDATION_OBLIGATION_CATALOG_VERSION,
+    ValidationObligationBinding,
+    ValidationObligationProfile,
+    attach_obligation_binding,
+    binding_for_issue,
+    binding_for_rule,
+    builtin_obligation_coverage,
+    profile_for_defect_class,
+)
 
 __all__ = [
     "Candidate",
@@ -40,4 +50,12 @@ __all__ = [
     "serialize_effective_rules",
     "qualification_rows",
     "load_qualification_evidence",
+    "VALIDATION_OBLIGATION_CATALOG_VERSION",
+    "ValidationObligationBinding",
+    "ValidationObligationProfile",
+    "attach_obligation_binding",
+    "binding_for_issue",
+    "binding_for_rule",
+    "builtin_obligation_coverage",
+    "profile_for_defect_class",
 ]

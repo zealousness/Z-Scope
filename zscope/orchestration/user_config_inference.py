@@ -161,6 +161,7 @@ _RESOURCE_SHEET_KINDS = frozenset(
         "send_sink",
         "recv_source",
         "format_sink",
+        "command_sink",
         "callback_register",
     }
 )
@@ -1274,6 +1275,7 @@ def _role_has_api_action_shape(name: str, role: str) -> bool:
         "send_sink": ("send", "write", "emit", "transmit"),
         "recv_source": ("recv", "read", "receive", "input"),
         "format_sink": ("log", "print", "format", "printf"),
+        "command_sink": ("system", "exec", "spawn", "command"),
         "callback_register": ("register", "subscribe", "hook", "install"),
     }
     return any(_has_action_token(name, action) for action in actions_by_role.get(role, ()))

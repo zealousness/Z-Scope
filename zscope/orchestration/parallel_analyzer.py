@@ -13,7 +13,19 @@ import time
 import uuid
 from copy import copy, deepcopy
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 from dataclasses import dataclass, field, replace
 
 if TYPE_CHECKING:
@@ -31,9 +43,22 @@ from ..config.function_entry import FunctionEntry
 from ..config.user_config_store import UserConfigStore
 from ..core.candidates.evidence import SemanticOverlayCompiler
 from ..core.candidates.decision_facts import DecisionFactGraphCache
+from ..core.candidates.function_facts import (
+    FunctionFactSummary,
+    function_source_fragment,
+    numbered_source_fragment,
+)
 from ..core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
-from ..core.analysis.analyzer import Analyzer
+from ..core.candidates.regex import RegexCandidateGenerator
+from ..core.candidates.graph import GraphCandidateGenerator
+from ..core.candidates.adapters import (
+    clang_native_matcher_candidates_from_program_facts,
+    dedupe_rule_candidates,
+    merge_unified_evidence_candidates,
+)
+from ..core.analysis.analyzer import Analyzer, DEFAULT_SCAN_STEP_IDS
 from ..core.validation.runner import ValidationResultCache
+from ..rules.validation_obligations import builtin_obligation_coverage
 from ..framework.llm_client import LLMClient
 from ..framework.llm_usage import (
     ensure_scan_token_usage_ledger,
@@ -41,9 +66,14 @@ from ..framework.llm_usage import (
 )
 from ..semantics.inference import LocalPatternSemanticBuilder
 from ..semantics.models import LocalPatternSemantics
+from ..semantics.instance_semantics import (
+    ORIGIN_SYSTEM_RECEIPT,
+    materialize_effect_semantics,
+)
 from ..semantics.security_map import SQLiteSecurityMapStore, ZeroLLMSecurityMapBuilder
 from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
+from ..retrieval.indexing_identity import atomic_json
 from ..retrieval.instance_index import (
     GAP_INSTANCE_NOT_ANALYZED,
     InstanceAnalysisOutcome,
@@ -129,6 +159,9 @@ _ENTRY_EXPOSURE_WEIGHTS = {
 }
 
 _PROJECT_KNOWLEDGE_UNSET = object()
+_FAST_STATIC_CACHE_SCHEMA = "zscope.fast-static-cache.v12"
+_FAST_STATIC_CACHE_DIRECTORY = (".zscope_knowledge", "fast-static", "v12")
+_FAST_STATIC_CACHE_MAX_BYTES = 16 * 1024 * 1024
 
 
 def _unwrapped_coverage_source(code_index: Any) -> Any:
@@ -145,6 +178,12 @@ def _unwrapped_coverage_source(code_index: Any) -> Any:
         if base is not None:
             return base
     return code_index
+
+
+def _integer_or_zero(value: Any) -> int:
+    """Preserve the runtime's permissive metadata coercion with a typed edge."""
+
+    return int(value or 0)
 
 
 def _llm_client_usage_snapshots(
@@ -184,6 +223,131 @@ class _ScanLLMClients(dict[str, LLMClient]):
             return deepcopy(self._initial_usage)
 
 
+def _semantic_contract_observation_rows(events: Iterable[Any]) -> List[Dict[str, Any]]:
+    """Compact exact call-site contract resolutions for post-score diagnosis."""
+
+    rows: Dict[str, Dict[str, Any]] = {}
+    for value in events:
+        if not isinstance(value, Mapping):
+            continue
+        symbol_value = value.get("symbol")
+        symbol = symbol_value if isinstance(symbol_value, Mapping) else {}
+        verification_value = value.get("verification")
+        verification = verification_value if isinstance(verification_value, Mapping) else {}
+        row = {
+            "name": str(symbol.get("name") or ""),
+            "usr": str(symbol.get("usr") or ""),
+            "role": str(value.get("role") or ""),
+            "applicability": str(value.get("applicability") or "unknown"),
+            "effects_trusted": bool(value.get("effects_trusted")),
+            "source": str(value.get("source") or ""),
+            "project_semantics_id": str(verification.get("project_semantics_id") or ""),
+            "build_context_id": str(value.get("build_context_id") or ""),
+            "call_ordinal": int(value.get("call_ordinal") or 0),
+        }
+        identity = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        rows[identity] = row
+    return [rows[key] for key in sorted(rows)]
+
+
+def _semantic_contract_reference_rows(
+    context: Mapping[str, Any], registry: Any
+) -> List[Dict[str, Any]]:
+    """Exact contract-bearing callees referenced by one native function body.
+
+    This is deliberately weaker than :func:`trace_calls`: a current native
+    CallExpr/macro-reference receipt proves that the interface occurs in the
+    function, but it does not prove a path guard or that the effect applies.
+    Keeping the two observations separate lets the post-score audit distinguish
+    an interface-discovery gap from the conservative source parser stopping at
+    a loop or switch without granting execution semantics from a name match.
+    """
+
+    from ..semantics.build_scope import context_build_id, context_symbol_usr
+
+    facts_value = context.get("program_facts")
+    facts = facts_value if isinstance(facts_value, Mapping) else {}
+    if facts.get("complete") is not True or facts.get("reason"):
+        return []
+    build_context_id = context_build_id(context)
+    caller_usr = context_symbol_usr(context)
+    if not build_context_id or not caller_usr:
+        return []
+    scoped = registry.for_context(context)
+    references: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+
+    def add(name: str, usr: str, kind: str, line: Any = 0) -> None:
+        if not name or not usr:
+            return
+        for contract in scoped.find_for_call(name, usr=usr):
+            role = str(contract.role or "")
+            verification = (
+                contract.verification if isinstance(contract.verification, Mapping) else {}
+            )
+            row = {
+                "name": name,
+                "usr": usr,
+                "role": role,
+                "effects_trusted": bool(contract.effects_trusted),
+                "source": str(contract.source or ""),
+                "project_semantics_id": str(verification.get("project_semantics_id") or ""),
+                "build_context_id": build_context_id,
+                "reference_kind": kind,
+                "line": int(line or 0),
+            }
+            references[(usr, role, kind)] = row
+
+    bodies = [
+        body
+        for body in facts.get("functions", []) or []
+        if isinstance(body, Mapping) and body.get("complete") is True
+    ]
+    if len(bodies) == 1:
+        owner_value = bodies[0].get("owner")
+        owner = owner_value if isinstance(owner_value, Mapping) else {}
+        if str(owner.get("usr") or "") == caller_usr:
+            for event in bodies[0].get("events", []) or []:
+                if not isinstance(event, Mapping) or event.get("event_kind") != "call":
+                    continue
+                callee_value = event.get("callee")
+                callee = callee_value if isinstance(callee_value, Mapping) else {}
+                location_value = event.get("location")
+                location = location_value if isinstance(location_value, Mapping) else {}
+                add(
+                    str(callee.get("name") or ""),
+                    str(callee.get("usr") or ""),
+                    "call",
+                    location.get("line"),
+                )
+
+    for value in facts.get("referenced_macros", []) or []:
+        if not isinstance(value, Mapping):
+            continue
+        identity_value = value.get("function_identity")
+        identity = identity_value if isinstance(identity_value, Mapping) else {}
+        if (
+            str(identity.get("usr") or "") != caller_usr
+            or str(identity.get("build_context_id") or "") != build_context_id
+        ):
+            continue
+        add(
+            str(value.get("name") or value.get("qualified_name") or ""),
+            str(value.get("usr") or ""),
+            "macro_reference",
+            value.get("line"),
+        )
+    return [references[key] for key in sorted(references)]
+
+
+def _semantic_contract_trace_status(context: Mapping[str, Any], registry: Any) -> str:
+    """Report whether the path-aware source trace covered the whole body."""
+
+    from ..semantics.contract_compiler import read_source_facts
+
+    facts = read_source_facts(context, registry.for_context(context))
+    return "complete" if facts.complete else "source_parser_incomplete"
+
+
 class _InstanceEntryLookupIndex(ScopedCodeIndex):
     """Translate one verified full entry signature to its native navigation key."""
 
@@ -194,6 +358,7 @@ class _InstanceEntryLookupIndex(ScopedCodeIndex):
         entry: FunctionEntry,
         *,
         semantics_context: Optional["InstanceSemanticsContext"] = None,
+        batch_guarded: bool = False,
     ):
         from ..snapshots.modeling_input import build_semantic_model_input
         from .instance_semantics_context import InstanceSemanticsContext
@@ -204,6 +369,7 @@ class _InstanceEntryLookupIndex(ScopedCodeIndex):
         ):
             raise ValueError("instance_entry_lookup_context_unverifiable")
         self._lookup_semantics_context = semantics_context
+        self._lookup_batch_guarded = bool(batch_guarded)
         self._lookup_signature = ""
         self._lookup_index_name = ""
         self._lookup_function_name = entry.function_name
@@ -361,7 +527,11 @@ class _InstanceEntryLookupIndex(ScopedCodeIndex):
             self.scope.usr,
         }:
             return "source_unavailable"
-        snapshot = context.require(self.scope)
+        snapshot = (
+            context.snapshot(self.scope)
+            if self._lookup_batch_guarded
+            else context.require(self.scope)
+        )
         targets = []
         if self._native_lookup_identity_current():
             for row in self._context_rows(("call",)):
@@ -386,7 +556,10 @@ class _InstanceEntryLookupIndex(ScopedCodeIndex):
                 and semantics.contracts.find(name)
             ):
                 status = "standard_model"
-        context.require(self.scope)
+        if self._lookup_batch_guarded:
+            context.snapshot(self.scope)
+        else:
+            context.require(self.scope)
         return status
 
     def _call_record_conflicts(self, record: Any, name: str, targets: List[Dict[str, Any]]) -> bool:
@@ -630,7 +803,7 @@ class ParallelAnalyzer:
             self.code_index = CodeIndex(
                 config.project.project_root,
                 config.project.compile_commands_path,
-                source_root=config.project.source_root,
+                source_root=config.project.project_root,
                 indexing_config=config.indexing,
                 include_paths=config.project.include_paths,
                 exclude_paths=config.project.exclude_paths,
@@ -663,6 +836,9 @@ class ParallelAnalyzer:
         self._batch_instance_scoped = False
         self._instance_scopes_by_build: Dict[str, List[InstanceScope]] = {}
         self._instance_semantics_context: Optional["InstanceSemanticsContext"] = None
+        self._validation_semantics_snapshots: Dict[str, "InstanceSemanticsSnapshot"] = {}
+        self._validation_semantics_receipts: Dict[str, bytes] = {}
+        self._validation_semantics_fact_receipts: Dict[str, bytes] = {}
         # Only successful admission registers historical work. Keep the exact
         # result object so a later execution at the same key cannot inherit it.
         # This is process-local accounting, never an authority from metadata.
@@ -673,6 +849,15 @@ class ParallelAnalyzer:
         self._global_validation_state: Dict[str, Any] = {}
         self._global_validation_duration_seconds = 0.0
         self._project_fact_pass_state: Dict[str, Any] = {}
+        self._hierarchical_static_inputs: Optional[Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = None
+        self._hierarchical_supplements: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._hierarchical_discovery_result: Dict[str, Any] = {}
+        self._hierarchical_discovery_done = False
+        self._fast_static_scan_state: Dict[str, Any] = {
+            "schema": "zscope.fast-static-scan.v1",
+            "enabled": False,
+            "status": "not_run",
+        }
         self._active_discovery_state: Dict[str, Any] = {
             "enabled": False,
             "profile": resolve_discovery_profile(config).name,
@@ -824,10 +1009,17 @@ class ParallelAnalyzer:
         """Freeze the actual workbook and each exact scope before plan identity."""
         from .instance_semantics_context import freeze_instance_context
 
+        if self._uses_scoped_fast_static_pass():
+            settle = getattr(self.code_index, "settle_native_facts", None)
+            if callable(settle):
+                settled = settle()
+                logger.info("[fast-static] native fact barrier: %s", settled)
         scopes = [
             instance_scope_from_entry_instance(instance)
             for instance in list(getattr(plan, "instances", ()) or ())
         ]
+        if self._uses_scoped_fast_static_pass():
+            scopes = self._extend_fast_project_semantic_scopes(scopes)
         condition = self._lifecycle_condition()
         with condition:
             if getattr(self, "_closed", False):
@@ -839,14 +1031,120 @@ class ParallelAnalyzer:
                 if existing.scopes != {scope.identity: scope for scope in scopes}:
                     raise ValueError("instance_semantics_plan_changed_after_freeze")
                 return existing
+            semantics_path = getattr(self.base_config.project, "semantics_file", None)
+            if semantics_path is None:
+                raise ValueError("project_semantics_file_missing")
             context = freeze_instance_context(
                 config=self.base_config,
                 code_index=self.code_index,
-                workbook_path=self.user_config.workbook.path,
+                semantics_path=Path(semantics_path),
                 scopes=scopes,
             )
             self._instance_semantics_context = context
             return context
+
+    def _extend_fast_project_semantic_scopes(
+        self, scopes: Sequence[InstanceScope]
+    ) -> List[InstanceScope]:
+        """Add one exact native scope for every indexed C/C++ build context.
+
+        Entry planning names only contexts that contain an entry.  Fast static
+        discovery is project-wide, so contexts without an entry still need a
+        current semantics receipt and an analysis representative.  Candidate
+        functions are registered as lightweight scopes by the project pass and
+        receive an exact snapshot only if they reach Validator; freezing every
+        project function here duplicates a BuildContext-sized payload thousands
+        of times.  A context without a complete project-function owner remains
+        an explicit planning gap; it is never filled by a navigation/name guess.
+        """
+
+        result = list(scopes)
+        represented = {scope.build_context_id for scope in result if scope.build_context_id}
+        gaps: List[Dict[str, Any]] = []
+        context_ids: Set[str] = set(represented)
+        contexts_getter = getattr(self.code_index, "get_build_contexts", None)
+        facts_getter = getattr(self.code_index, "get_compilation_facts", None)
+        try:
+            contexts = list(contexts_getter() or []) if callable(contexts_getter) else []
+        except Exception as exc:
+            contexts = []
+            gaps.append(
+                {
+                    "reason": "build_context_inventory_unavailable",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        for context in contexts:
+            if not isinstance(context, dict):
+                continue
+            build_id = str(context.get("build_context_id") or "")
+            if not build_id:
+                gaps.append({"reason": "build_context_identity_missing"})
+                continue
+            context_ids.add(build_id)
+            if build_id in represented:
+                continue
+            if str(context.get("status") or "") != "indexed" or not bool(
+                context.get("dependencies_complete")
+            ):
+                gaps.append(
+                    {
+                        "build_context_id": build_id,
+                        "reason": "build_context_not_currently_indexed",
+                    }
+                )
+                continue
+            try:
+                rows = (
+                    list(facts_getter(build_id, kinds=("program_function",)) or [])
+                    if callable(facts_getter)
+                    else []
+                )
+            except Exception as exc:
+                gaps.append(
+                    {
+                        "build_context_id": build_id,
+                        "reason": "function_inventory_unavailable",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            owners: List[Tuple[str, str, int, str]] = []
+            for row in rows:
+                owner = row.get("owner") if isinstance(row, dict) else None
+                owner = owner if isinstance(owner, dict) else {}
+                usr = str(owner.get("usr") or "")
+                name = str(owner.get("name") or "")
+                source = str(owner.get("file") or context.get("source") or "")
+                try:
+                    line = int(owner.get("line") or 0)
+                except (TypeError, ValueError):
+                    line = 0
+                if usr and name and source and line > 0 and self._source_is_in_project(source):
+                    owners.append((source, usr, line, name))
+            if not owners:
+                gaps.append(
+                    {
+                        "build_context_id": build_id,
+                        "reason": "project_function_receipt_missing",
+                    }
+                )
+                continue
+            source, usr, _line, name = sorted(set(owners))[0]
+            result.append(
+                InstanceScope(
+                    build_context_id=build_id,
+                    usr=usr,
+                    identity=f"{build_id}:{usr}",
+                    source=source,
+                    function_names=(name,),
+                    selected_by="fast_static_project_context",
+                )
+            )
+            represented.add(build_id)
+        self._fast_project_scope_gaps = gaps
+        self._fast_project_build_context_ids = sorted(context_ids)
+        return result
 
     def _instance_semantic_snapshot(self, scope: InstanceScope) -> "InstanceSemanticsSnapshot":
         from .instance_semantics_context import InstanceSemanticsContext
@@ -856,6 +1154,140 @@ class ParallelAnalyzer:
             raise ValueError("instance_semantics_batch_not_frozen")
         return context.require(scope)
 
+    def _frozen_instance_semantic_snapshot(
+        self, scope: InstanceScope
+    ) -> "InstanceSemanticsSnapshot":
+        """Identity-only lookup inside an enclosing ``require_all`` boundary."""
+
+        from .instance_semantics_context import InstanceSemanticsContext
+
+        context = getattr(self, "_instance_semantics_context", None)
+        if not isinstance(context, InstanceSemanticsContext):
+            raise ValueError("instance_semantics_batch_not_frozen")
+        return context.snapshot(scope)
+
+    def _validation_semantic_snapshot(self, scope: InstanceScope) -> "InstanceSemanticsSnapshot":
+        """Return an exact snapshot without freezing the whole project eagerly.
+
+        The initial batch manifest freezes entry scopes plus one build
+        representative.  Project-wide fast discovery can emit a candidate for
+        any other function in that build.  Materialize only those candidate
+        scopes from the already-frozen authority and the build representative's
+        effect template, after issuing a fresh exact native admission before
+        and after construction.  This preserves ``BuildContext + USR`` binding
+        without retaining thousands of heavyweight snapshots.
+        """
+
+        from .instance_semantics_context import (
+            InstanceSemanticsContext,
+            _batch_input_admissions,
+        )
+        from ..config.project_semantics import compiled_project_contracts
+        from ..semantics.instance_semantics import (
+            SemanticsUnavailable,
+            build_instance_semantics,
+        )
+
+        context = getattr(self, "_instance_semantics_context", None)
+        if not isinstance(context, InstanceSemanticsContext):
+            raise ValueError("instance_semantics_batch_not_frozen")
+        try:
+            return context.snapshot(scope)
+        except ValueError as exc:
+            if str(exc) != "instance_semantics_missing":
+                raise
+        cached = self._validation_semantics_snapshots.get(scope.identity)
+        if cached is not None:
+            if cached.scope != scope:
+                raise ValueError("validation_semantics_scope_changed")
+            return cached
+
+        template = next(
+            (
+                snapshot
+                for snapshot in context.snapshots.values()
+                if snapshot.scope.build_context_id == scope.build_context_id
+            ),
+            None,
+        )
+        if template is None:
+            raise ValueError("validation_semantics_build_template_missing")
+        admissions, failures = _batch_input_admissions(self.code_index, [scope])
+        admission = admissions.get(scope.identity)
+        if admission is None:
+            raise ValueError(
+                failures.get(scope.identity, "validation_semantics_exact_input_unavailable")
+            )
+        document = json.loads(bytes(context.effective_project_document))
+        contracts = compiled_project_contracts(
+            document,
+            build_context_id=scope.build_context_id,
+        )
+        value = build_instance_semantics(
+            scope=scope,
+            scoped_index=wrap_scoped_code_index(self.code_index, scope),
+            workbook=context.workbook,
+            dependencies=context.dependencies,
+            project_contracts_override=contracts,
+            _input_admission=admission,
+            _build_template=template,
+        )
+        if isinstance(value, SemanticsUnavailable):
+            raise ValueError(value.reason)
+        post_admissions, post_failures = _batch_input_admissions(self.code_index, [scope])
+        post = post_admissions.get(scope.identity)
+        if post is None:
+            raise ValueError(
+                post_failures.get(scope.identity, "validation_semantics_exact_input_changed")
+            )
+        if bytes(post.context_receipt) != bytes(admission.context_receipt) or bytes(
+            post.program_facts
+        ) != bytes(admission.program_facts):
+            raise ValueError("validation_semantics_exact_input_changed")
+        self._validation_semantics_snapshots[scope.identity] = value
+        self._validation_semantics_receipts[scope.identity] = bytes(admission.context_receipt)
+        self._validation_semantics_fact_receipts[scope.identity] = bytes(admission.program_facts)
+        return value
+
+    def _validation_snapshot_is_frozen(self, snapshot: "InstanceSemanticsSnapshot") -> bool:
+        context = self._instance_semantics_context
+        if context is not None and context.is_frozen(snapshot):
+            return True
+        return self._validation_semantics_snapshots.get(snapshot.scope.identity) is snapshot
+
+    def _require_validation_snapshot_current(
+        self, scope: InstanceScope, snapshot: "InstanceSemanticsSnapshot"
+    ) -> None:
+        """Recheck the exact candidate scope at each Validator boundary."""
+
+        from .instance_semantics_context import _batch_input_admissions
+        from ..semantics.instance_semantics import authorized_standard_headers_current
+
+        context = self._instance_semantics_context
+        if context is not None and context.is_frozen(snapshot):
+            if snapshot.scope != scope:
+                raise ValueError("validation_semantics_scope_changed")
+            return
+        if self._validation_semantics_snapshots.get(scope.identity) is not snapshot:
+            raise ValueError("validation_semantics_snapshot_not_frozen")
+        context_receipt = self._validation_semantics_receipts.get(scope.identity)
+        fact_receipt = self._validation_semantics_fact_receipts.get(scope.identity)
+        admissions, failures = _batch_input_admissions(self.code_index, [scope])
+        current = admissions.get(scope.identity)
+        if current is None:
+            raise ValueError(
+                failures.get(scope.identity, "validation_semantics_exact_input_not_current")
+            )
+        if (
+            context_receipt is None
+            or fact_receipt is None
+            or bytes(current.context_receipt) != context_receipt
+            or bytes(current.program_facts) != fact_receipt
+        ):
+            raise ValueError("validation_semantics_exact_input_not_current")
+        if not authorized_standard_headers_current(snapshot):
+            raise ValueError("validation_semantics_standard_headers_not_current")
+
     def require_current_instance_inputs(self, *, require_complete: bool = True) -> None:
         context = getattr(self, "_instance_semantics_context", None)
         if context is None:
@@ -863,9 +1295,22 @@ class ParallelAnalyzer:
                 raise ValueError("instance_semantics_batch_not_frozen")
             return
         if require_complete and context.unavailable:
+            reasons: Dict[str, int] = {}
+            for reason in context.unavailable.values():
+                reasons[str(reason)] = reasons.get(str(reason), 0) + 1
+            logger.error(
+                "[instance-semantics] incomplete manifest: unavailable=%d reasons=%s samples=%s "
+                "project_rebind_unresolved=%s",
+                len(context.unavailable),
+                reasons,
+                [
+                    {"identity": identity, "reason": reason}
+                    for identity, reason in list(context.unavailable.items())[:10]
+                ],
+                list(context.project_semantics_rebind.get("unresolved", []) or [])[:24],
+            )
             raise ValueError("instance_semantics_incomplete_manifest")
-        for snapshot in context.snapshots.values():
-            context.require(snapshot.scope)
+        context.require_all()
 
     def open_instance_batch(self, plan: Any) -> "InstanceWorkBatch":
         """Acquire the lifetime once and release it on every setup failure."""
@@ -922,6 +1367,15 @@ class ParallelAnalyzer:
         )
         self._global_validation_state = {}
         self._global_validation_duration_seconds = 0.0
+        self._hierarchical_discovery_done = False
+        self._hierarchical_static_inputs = None
+        self._hierarchical_supplements = {}
+        self._hierarchical_discovery_result = {}
+        self._fast_static_scan_state = {
+            "schema": "zscope.fast-static-scan.v1",
+            "enabled": False,
+            "status": "not_run",
+        }
         self._project_fact_pass_state = {
             "enabled": False,
             "status": "skipped",
@@ -937,6 +1391,9 @@ class ParallelAnalyzer:
         }
         self._batch_instance_scoped = True
         self._instance_scopes_by_build = {}
+        self._validation_semantics_snapshots = {}
+        self._validation_semantics_receipts = {}
+        self._validation_semantics_fact_receipts = {}
         for _entry, scope in scoped_entries:
             if scope is None:
                 continue
@@ -948,35 +1405,75 @@ class ParallelAnalyzer:
         )
         batch = InstanceWorkBatch(self, plan=plan, scoped_entries=scoped_entries)
         self._instance_entry_owners = self._current_instance_owner_aliases(batch)
+        if self._uses_scoped_fast_static_pass():
+            self._run_scoped_fast_static_pass(scoped_entries)
         return batch
 
     def _current_instance_entries(
         self, plan: Any
     ) -> List[Tuple[FunctionEntry, Optional[InstanceScope]]]:
-        """Use the same current scoped hydration as the real entry workflow."""
-        from ..snapshots.modeling_input import build_semantic_model_input
+        """Hydrate entries from the exact native owner already admitted.
+
+        Instance planning and the frozen semantics manifest both establish an
+        exact ``(BuildContext, USR)`` identity.  Re-resolving that identity via
+        the navigation/name index made a verified native instance fail merely
+        because clangd omitted a projection (notably some ``extern "C"``
+        definitions).  The owner, callable signature and source below all come
+        from the same current program-facts receipt; name lookup is never used
+        as a second authority boundary.
+        """
 
         entries: List[Tuple[FunctionEntry, Optional[InstanceScope]]] = []
+        self.require_current_instance_inputs()
         for instance in list(getattr(plan, "instances", []) or []):
             scope = instance_scope_from_entry_instance(instance)
             entry = self._instance_entry(instance)
-            self._instance_semantic_snapshot(scope)
+            self._frozen_instance_semantic_snapshot(scope)
             scoped = wrap_scoped_code_index(self.code_index, scope)
-            model = build_semantic_model_input(
-                scoped,
-                entry.lookup_query(),
-                file_path=str(entry.file_path or ""),
-                include_context=False,
+            facts = scoped.get_function_program_facts(
+                scope.usr,
+                scope.source,
+                build_context_id=scope.build_context_id,
             )
-            signature = str(model.get("signature") or "")
-            if not signature or not str(model.get("file_path") or ""):
+            identity = facts.get("function_identity") if isinstance(facts, dict) else None
+            if not (
+                isinstance(facts, dict)
+                and facts.get("complete") is True
+                and isinstance(identity, dict)
+                and str(identity.get("build_context_id") or "") == scope.build_context_id
+                and str(identity.get("usr") or "") == scope.usr
+            ):
                 raise ValueError("instance_current_entry_identity_unverifiable")
+            owners: List[Dict[str, str]] = []
+            for body in facts.get("functions", []) or []:
+                if not isinstance(body, dict):
+                    continue
+                owner = body.get("owner")
+                callable_row = body.get("callable")
+                owner = owner if isinstance(owner, dict) else {}
+                callable_row = callable_row if isinstance(callable_row, dict) else {}
+                if str(owner.get("usr") or "") != scope.usr:
+                    continue
+                record = {
+                    "function_name": str(owner.get("name") or ""),
+                    "file_path": str(owner.get("file") or scope.source or ""),
+                    "signature": str(
+                        callable_row.get("canonical_signature")
+                        or callable_row.get("signature")
+                        or ""
+                    ),
+                }
+                if all(record.values()) and record not in owners:
+                    owners.append(record)
+            if len(owners) != 1:
+                raise ValueError("instance_current_entry_owner_unverifiable")
+            model = owners[0]
             hydrated = self._entry_from_identity_record(
                 entry,
                 {
-                    "function_name": model["func_name"],
+                    "function_name": model["function_name"],
                     "file_path": model["file_path"],
-                    "signature": signature,
+                    "signature": model["signature"],
                 },
                 self.base_config.project.project_root,
             )
@@ -1037,6 +1534,7 @@ class ParallelAnalyzer:
                 self._analyze_single_entry,
                 entry,
                 instance_scope=scope,
+                skip_candidate_discovery=bool(self._fast_static_scan_state.get("activated", False)),
                 priority=self._entry_scheduling_score(entry),
             ): (entry, scope)
             for entry, scope in selected
@@ -1133,7 +1631,7 @@ class ParallelAnalyzer:
                     if scope is not None and scope.identity == identity
                 )
                 assert scope is not None
-                snapshot = context.require(scope)
+                snapshot = context.snapshot(scope)
                 result = batch.results.get(self._scoped_result_key(entry, scope))
                 if result is None or result.error or result.verdict == "error":
                     raise ValueError("instance_collection_result_missing_or_error")
@@ -1225,7 +1723,7 @@ class ParallelAnalyzer:
                 if scope is not None and scope.identity == identity
             )
             assert scope is not None
-            snapshot = self._instance_semantic_snapshot(scope)
+            snapshot = self._frozen_instance_semantic_snapshot(scope)
             result = batch.results.get(self._scoped_result_key(entry, scope))
             tracker = result.instance_collection if result is not None else None
             if (
@@ -1282,7 +1780,7 @@ class ParallelAnalyzer:
             if allowed.get(payload.instance.identity) != payload.instance:
                 raise ValueError("instance_restore_not_in_current_plan")
             scope = context.scopes[payload.instance.identity]
-            snapshot = context.require(scope)
+            snapshot = context.snapshot(scope)
             if payload.identity.semantics_digest != context.manifest_digest():
                 raise ValueError("instance_restore_semantics_manifest_mismatch")
             verified = verify_instance_result(
@@ -1696,6 +2194,15 @@ class ParallelAnalyzer:
         self._global_validation_state = {}
         self._global_validation_duration_seconds = 0.0
         self._project_fact_pass_state = {}
+        self._hierarchical_discovery_done = False
+        self._hierarchical_static_inputs = None
+        self._hierarchical_supplements = {}
+        self._hierarchical_discovery_result = {}
+        self._fast_static_scan_state = {
+            "schema": "zscope.fast-static-scan.v1",
+            "enabled": False,
+            "status": "not_run",
+        }
         self._active_discovery_state = {
             "enabled": False,
             "profile": resolve_discovery_profile(self.base_config).name,
@@ -1715,6 +2222,9 @@ class ParallelAnalyzer:
         instance_scoped = any(scope is not None for _entry, scope in scoped_entries)
         self._batch_instance_scoped = instance_scoped
         self._instance_scopes_by_build = {}
+        self._validation_semantics_snapshots = {}
+        self._validation_semantics_receipts = {}
+        self._validation_semantics_fact_receipts = {}
         for _entry, scope in scoped_entries:
             if scope is None:
                 continue
@@ -1742,6 +2252,8 @@ class ParallelAnalyzer:
                         "status": "skipped",
                         "reason": "instance_scope_isolated",
                     }
+                    if self._uses_scoped_fast_static_pass():
+                        self._run_scoped_fast_static_pass(scoped_entries)
                 elif self.base_config.project.language != "java":
                     if self.semantic_result is None:
                         self._global_modeling_succeeded = self._run_global_modeling(entries)
@@ -1773,6 +2285,9 @@ class ParallelAnalyzer:
                     self._analyze_single_entry,
                     entry,
                     instance_scope=scope,
+                    skip_candidate_discovery=bool(
+                        self._fast_static_scan_state.get("activated", False)
+                    ),
                     priority=self._entry_scheduling_score(entry),
                 ): (entry, scope)
                 for entry, scope in scheduled_entries
@@ -1891,8 +2406,12 @@ class ParallelAnalyzer:
                     self._active_discovery_state["benchmark_ablation"] = (
                         ablation_override.report_metadata()
                     )
-            else:
+            elif ablation_override is not None:
                 self._run_active_discovery(entries, discovery_profile)
+            else:
+                self._active_discovery_state = {"enabled": False,
+                    "profile": discovery_profile.name, "status": "unavailable",
+                    "reason": "hierarchical_discovery_requires_exact_static_inventory"}
 
             if not instance_scoped:
                 self._register_snapshot_shadow_candidates()
@@ -1955,6 +2474,111 @@ class ParallelAnalyzer:
         # per-entry behavior instead of assuming scan-level validation.
         return True
 
+    @staticmethod
+    def _fast_validation_rank_key(issue: Mapping[str, Any]) -> Tuple[Any, ...]:
+        """Deterministic evidence-only ordering for fast Validator admission.
+
+        This is a scheduling policy, never a finding verdict.  It only uses
+        facts already present in the candidate envelope and therefore cannot
+        see benchmark truth.  Exact sinks and structural graph findings lead;
+        broad audit observations trail.  Confidence merely breaks ties inside
+        those evidence classes.
+        """
+
+        pack = issue.get("evidence_pack")
+        evidence = pack if isinstance(pack, Mapping) else {}
+        priority_group = str(
+            issue.get("candidate_priority_group") or evidence.get("candidate_priority_group") or ""
+        )
+        group_order = {
+            "exact_sink": 0,
+            "graph_structural": 1,
+            "semantic_suspicious_point": 2,
+            "generic_audit": 4,
+        }.get(priority_group, 3)
+        source = str(issue.get("candidate_source") or evidence.get("candidate_source") or "")
+        source_order = {
+            "clang_native_fact": 0,
+            "svf_value_flow": 0,
+            "saber_bug": 0,
+            "clang_ast_cfg": 1,
+            "clang_ast_matcher": 1,
+            "graph": 2,
+            "cpp_graph": 2,
+            "regex": 3,
+        }.get(source, 4)
+        path = evidence.get("path")
+        path_complete = bool(isinstance(path, Mapping) and path.get("complete_in_function") is True)
+        validation_class = str(
+            issue.get("validation_budget_class") or evidence.get("validation_budget_class") or ""
+        )
+        budget_penalty = 1 if validation_class in {"generic", "generic_soft_overrun"} else 0
+        impact = str(issue.get("impact_level") or "").lower()
+        impact_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(impact, 2)
+        try:
+            confidence = float(
+                issue.get("rule_confidence")
+                or evidence.get("rule_confidence")
+                or issue.get("confidence")
+                or 0.0
+            )
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return (
+            group_order,
+            budget_penalty,
+            source_order,
+            0 if path_complete else 1,
+            impact_order,
+            -confidence,
+            str(issue.get("candidate_uid") or issue.get("candidate_id") or issue.get("id") or ""),
+        )
+
+    def _partition_fast_validation_queue(
+        self,
+        pending: Sequence[Dict[str, Any]],
+        *,
+        max_groups: Optional[int] = None,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+        """Admit every canonical decision-ready obligation exactly once.
+
+        ``max_groups`` remains a source-compatible argument for third-party
+        callers during this schema revision, but is intentionally ignored.
+        A code-size or category budget must never become a validation coverage
+        boundary in fast.
+        """
+
+        ordered = sorted(list(pending), key=self._fast_validation_rank_key)
+        del max_groups
+        admitted = ordered
+        deferred: List[Dict[str, Any]] = []
+
+        for rank, issue in enumerate(admitted, start=1):
+            issue["fast_validation_admitted"] = True
+            issue["fast_validation_rank"] = rank
+            pack = issue.get("evidence_pack")
+            if isinstance(pack, dict):
+                pack["fast_validation_admitted"] = True
+                pack["fast_validation_rank"] = rank
+
+        admitted_classes: Dict[str, int] = {}
+        deferred_classes: Dict[str, int] = {}
+        for bucket, target in ((admitted, admitted_classes), (deferred, deferred_classes)):
+            for issue in bucket:
+                key = str(issue.get("defect_class") or issue.get("category") or "unknown")
+                target[key] = target.get(key, 0) + 1
+        telemetry = {
+            "policy": "zscope.fast-validator-decision-ready.v2",
+            "eligible": len(ordered),
+            "max_groups": None,
+            "admitted": len(admitted),
+            "decision_ready": len(admitted),
+            "deferred_to_needs_review": len(deferred),
+            "admitted_by_defect_class": admitted_classes,
+            "deferred_by_defect_class": deferred_classes,
+        }
+        return admitted, deferred, telemetry
+
     def _run_scan_validation_queue(self) -> None:
         """Validate each frozen v3 obligation once after all entries discover it.
 
@@ -1969,6 +2593,7 @@ class ParallelAnalyzer:
         instance_scoped = bool(getattr(self, "_batch_instance_scoped", False))
         if instance_scoped:
             self.require_current_instance_inputs()
+            self._run_hierarchical_discovery()
         # Discovery and optional snapshot observations are complete. Seal the ledger before
         # taking the validation snapshot so no late producer can create an
         # obligation after queue construction has begun.
@@ -1995,6 +2620,20 @@ class ParallelAnalyzer:
                     "sink": record.ticket.sink,
                 }
             issue["evidence_pack"] = evidence
+            supplements = getattr(self, "_hierarchical_supplements", {})
+            sink = issue.get("sink")
+            sink = sink if isinstance(sink, dict) else {}
+            build = str(issue.get("build_context_id") or evidence.get("build_context_id") or "")
+            usr = str(issue.get("function_usr") or sink.get("usr") or "")
+            if not usr:
+                exact_scope = str(issue.get("validation_scope_identity") or "")
+                for scope in getattr(self, "_instance_scopes_by_build", {}).get(build, []):
+                    if scope.identity == exact_scope:
+                        usr = scope.usr
+                        break
+            supplement = supplements.get((build, usr))
+            if supplement:
+                evidence["hierarchical_supplement"] = deepcopy(supplement)
             issue.setdefault("code_snippet", record.ticket.context_slice)
             issue.update(
                 {
@@ -2043,6 +2682,40 @@ class ParallelAnalyzer:
             }
             return
 
+        all_pending = list(pending)
+        pending, fast_deferred, fast_admission = self._partition_fast_validation_queue(pending)
+        for issue in fast_deferred:
+            issue["validation_status"] = "needs_review"
+            issue["validation_attempted"] = False
+            issue["needs_review_sub_state"] = "fast_precision_budget_deferred"
+            issue["fast_validation_admitted"] = False
+            issue["fast_validation_policy"] = fast_admission["policy"]
+            issue["fast_validation_max_groups"] = fast_admission["max_groups"]
+            pack = issue.get("evidence_pack")
+            if isinstance(pack, dict):
+                pack["fast_validation_admitted"] = False
+                pack["fast_validation_policy"] = fast_admission["policy"]
+                pack["needs_review_sub_state"] = "fast_precision_budget_deferred"
+            self._candidate_ledger.mark_issue_terminal(
+                issue, disposition="needs_review", status="needs_review"
+            )
+
+        if not pending:
+            empty_state: Dict[str, Any] = {
+                "pending_new_issues": [],
+                "issues": [],
+                "observations": list(fast_deferred),
+                "notes": ["Fast Validator admission deferred every obligation to needs_review."],
+                "validation_queue_drained": True,
+                "fast_validation_admission": fast_admission,
+                "validator_session_count": 0,
+                "validator_api_call_count": 0,
+            }
+            empty_state.update(self._validator_v3_outcome_summary(all_pending))
+            self._global_validation_duration_seconds = 0.0
+            self._global_validation_state = empty_state
+            return
+
         groups: List[Tuple[InstanceScope, List[Dict[str, Any]]]] = []
         ungrouped: List[Dict[str, Any]] = []
         if instance_scoped:
@@ -2072,7 +2745,7 @@ class ParallelAnalyzer:
             "agent_context": {"func_name": "__batch__", "code": ""},
             "pending_new_issues": (groups[0][1] if groups else pending),
             "issues": [],
-            "observations": [],
+            "observations": list(fast_deferred),
             "notes": [],
             "candidate_ledger": self._candidate_ledger,
             "scan_level_raw_occurrence_count": raw_occurrence_count,
@@ -2097,6 +2770,7 @@ class ParallelAnalyzer:
             "multi_turn_outlier_count": 0,
             "snapshot_model_call_count": 0,
             "fact_query_cache_hit_count": 0,
+            "fast_validation_admission": fast_admission,
         }
         started = time.monotonic()
         logger.info(
@@ -2110,18 +2784,25 @@ class ParallelAnalyzer:
             for index, (scope, issues) in enumerate(groups):
                 group_helper = helper if index == 0 else self._instance_validation_helper(scope)
                 assert group_helper is not None
+                group_snapshot = group_helper._instance_semantics_snapshot
+                assert group_snapshot is not None
+                self._require_validation_snapshot_current(scope, group_snapshot)
                 self._bind_ablation_validator_policy(group_helper.validation_runner)
                 state["pending_new_issues"] = list(issues)
                 state["validation_queue_drained"] = False
                 group_helper._require_instance_semantics_current()
                 group_helper.validation_runner.run(state)
                 group_helper._require_instance_semantics_current()
+                self._require_validation_snapshot_current(scope, group_snapshot)
                 all_groups_drained = (
                     all_groups_drained and state.get("validation_queue_drained") is True
                 )
             for issue in ungrouped:
+                issue["validation_status"] = "needs_review"
+                issue["validation_attempted"] = False
+                issue["needs_review_sub_state"] = "exact_validation_scope_unavailable"
                 self._candidate_ledger.mark_issue_terminal(
-                    issue, disposition="needs_review", status="unvalidated"
+                    issue, disposition="needs_review", status="needs_review"
                 )
             if ungrouped:
                 state["notes"].append(
@@ -2131,8 +2812,11 @@ class ParallelAnalyzer:
             state["validation_queue_drained"] = all_groups_drained
         elif instance_scoped:
             for issue in ungrouped:
+                issue["validation_status"] = "needs_review"
+                issue["validation_attempted"] = False
+                issue["needs_review_sub_state"] = "exact_validation_scope_unavailable"
                 self._candidate_ledger.mark_issue_terminal(
-                    issue, disposition="needs_review", status="unvalidated"
+                    issue, disposition="needs_review", status="needs_review"
                 )
                 state["observations"].append(issue)
             state["notes"].append("instance validation gap: no current exact scope for obligations")
@@ -2148,16 +2832,114 @@ class ParallelAnalyzer:
             from .snapshot_candidates import update_snapshot_outcomes
 
             update_snapshot_outcomes(self.semantic_result, self._candidate_ledger)
-        state.update(self._validator_v3_outcome_summary(pending))
+        state.update(self._validator_v3_outcome_summary(all_pending))
         self._global_validation_duration_seconds = max(0.0, time.monotonic() - started)
         self._global_validation_state = state
+        discovery_result = getattr(self, "_hierarchical_discovery_result", {})
+        from .hierarchical_discovery import mode_outcomes
+
+        state["mode_outcomes"] = mode_outcomes(all_pending, discovery_result)
+        if discovery_result:
+            from .hierarchical_discovery import rule_proposals, save_rule_proposals
+
+            proposals = rule_proposals(discovery_result.get("candidates", []), all_pending)
+            proposal_path = Path(self.base_config.analysis.snapshot_dir) / "rule_proposals.json"
+            proposals = save_rule_proposals(proposal_path, proposals)
+            self._active_discovery_state["rule_proposals"] = proposals
+            self._active_discovery_state["rule_proposals_path"] = str(proposal_path)
         logger.info(
             "[validation-queue] end unique_groups=%d confirmed=%d review=%d duration=%.2fs",
-            len(pending),
+            len(all_pending),
             len(state["issues"]),
             len(state["observations"]),
             self._global_validation_duration_seconds,
         )
+
+    def _run_hierarchical_discovery(self) -> None:
+        """Deep's only default discovery path, before sealing the shared ledger."""
+        if resolve_discovery_profile(self.base_config).name != "deep":
+            return
+        if getattr(self, "_hierarchical_discovery_done", False):
+            return
+        from .hierarchical_discovery import HierarchicalDiscovery, build_hierarchy, make_function
+
+        inputs = getattr(self, "_hierarchical_static_inputs", None)
+        if not inputs or not self._fast_static_scan_state.get("activated"):
+            self._active_discovery_state = {"enabled": True, "status": "unavailable",
+                "reason": "current_static_inventory_unavailable", "profile": "deep"}
+            return
+        runtime, links = inputs
+        functions, owners = [], {}
+        for build, data in runtime.items():
+            for scope, impl, _context, _unit_id, facts in data["function_work"]:
+                row = make_function(scope, impl, facts)
+                functions.append(row)
+                owners[(build, scope.usr)] = (scope, data)
+        context = self._instance_semantics_context
+        document = json.loads(bytes(context.effective_project_document)) if context else {}
+        lifecycle = document.get("lifecycle", {"boundaries": [], "lifetimes": []})
+        hierarchy = build_hierarchy(functions, links, lifecycle,
+            max_members=self.base_config.analysis.max_premodel_callees)
+        hierarchy["gaps"].extend(deepcopy(self._fast_static_scan_state.get("planning_gaps", [])))
+        client = self._scan_role_llm_client("analysis")
+        if client is None:
+            self._active_discovery_state = {"enabled": True, "status": "unavailable",
+                "reason": "analysis_client_unavailable", "profile": "deep"}
+            return
+        def current() -> None:
+            self._cancellation_token.raise_if_cancelled()
+            self.require_current_instance_inputs()
+        modeling_client = self._scan_role_llm_client("modeling") or client
+        discovery = HierarchicalDiscovery(client=client,
+            cache_dir=Path(self.base_config.analysis.snapshot_dir) / "hierarchical_contracts",
+            require_current=current,
+            max_iterations=self.base_config.analysis.max_tool_iterations,
+            timeout=self.base_config.analysis.active_investigation_timeout_seconds,
+            model_identity={"analysis": list(getattr(client, "models", []) or []),
+                            "modeling": list(getattr(modeling_client, "models", []) or [])},
+            cancellation_token=self._cancellation_token, modeling_client=modeling_client)
+        result = discovery.run(hierarchy, lifecycle)
+        current()
+        # Preserve supplements as unverified context. The Validator must read
+        # and bind them itself; they cannot close a required native fact kind.
+        self._hierarchical_supplements = {}
+        for row in functions:
+            summary = result["summaries"].get(row["id"])
+            if summary:
+                self._hierarchical_supplements[(row["build_context_id"], row["usr"])] = {
+                    "summary": summary, "input_digest": result["input_digest"],
+                    "compositions": [{"unit": unit, "summary": result["summaries"].get(unit["id"])}
+                        for unit in hierarchy["units"] if row["id"] in unit["members"]
+                        and unit["id"] in result["summaries"]],
+                    "authority": "unverified_context"}
+        static_clusters = {record.validation_cluster_uid for record in self._candidate_ledger.records()}
+        for candidate in result["candidates"]:
+            scope, data = owners[(candidate["build_context_id"], candidate["function_usr"])]
+            candidate["validation_scope_identity"] = scope.identity
+            helper = self._instance_validation_helper(scope)
+            helper._register_candidate_issues({"candidate_ledger": self._candidate_ledger,
+                "entry_identity": data["representative_identity"], "run_id": self.run_id},
+                [candidate], source="hierarchical_discovery")
+            candidate["deep_contribution"] = (
+                "existing_candidate_evidence" if candidate.get("validation_cluster_uid") in static_clusters
+                else "additional_candidate")
+        self._hierarchical_discovery_result = result
+        from .hierarchical_discovery import write_json
+
+        contract_path = Path(self.base_config.analysis.snapshot_dir) / "hierarchical_contracts.json"
+        write_json(contract_path, {"schema_version": result["schema_version"],
+            "input_digest": result["input_digest"], "units": hierarchy["units"],
+            "functions": [{k: f[k] for k in ("id", "usr", "build_context_id", "function", "file")}
+                          for f in functions], "edges": hierarchy["edges"],
+            "summaries": result["summaries"], "gaps": result["gaps"],
+            "authority": "unverified_context"})
+        self._hierarchical_discovery_done = True
+        self._hierarchical_static_inputs = None
+        self._active_discovery_state = {k: v for k, v in result.items() if k not in {"summaries", "candidates"}}
+        self._active_discovery_state.update({"enabled": True, "profile": "deep",
+            "path": "hierarchical_contracts", "candidate_count": len(result["candidates"]),
+            "summary_count": len(result["summaries"]), "duration_seconds": result["elapsed_seconds"]})
+        self._active_discovery_state["contracts_path"] = str(contract_path)
 
     def _base_validation_helper(self) -> Analyzer:
         """The scan-level validation helper for an unscoped batch."""
@@ -2197,7 +2979,7 @@ class ParallelAnalyzer:
         authorize an instance verdict.
         """
 
-        snapshot = self._instance_semantic_snapshot(scope)
+        snapshot = self._validation_semantic_snapshot(scope)
         context = self._instance_semantics_context
         assert context is not None
         return Analyzer(
@@ -2223,7 +3005,13 @@ class ParallelAnalyzer:
             project_knowledge_service=self.project_knowledge_service,
             instance_scope=scope,
             instance_semantics_snapshot=snapshot,
-            instance_semantics_current=context.is_current,
+            # The enclosing project pass and validation queue perform fresh
+            # fail-closed batch currentness checks before and after consuming
+            # candidates.  Candidate annotation only needs to prove that it
+            # still references the exact frozen snapshot; re-reading YAML,
+            # link receipts and include namespaces for every candidate would
+            # turn the one-pass scanner back into entry/candidate-scaled IO.
+            instance_semantics_current=self._validation_snapshot_is_frozen,
         )
 
     def _scope_for_pending_issue(self, issue: Dict[str, Any]) -> Optional[InstanceScope]:
@@ -2233,6 +3021,13 @@ class ParallelAnalyzer:
         if not build_id:
             return None
         scopes = self._instance_scopes_by_build.get(build_id) or []
+        requested_scope = str(issue.get("validation_scope_identity") or "")
+        if requested_scope:
+            matches = [scope for scope in scopes if scope.identity == requested_scope]
+            # The fast project pass writes this field from the frozen
+            # coordinator scope.  A missing or ambiguous identity is never a
+            # request to pick the first build member.
+            return matches[0] if len(matches) == 1 else None
         aliases = getattr(self, "_instance_entry_owners", {})
         cluster = str(issue.get("validation_cluster_uid") or "")
         if not cluster or not aliases:
@@ -2422,6 +3217,2391 @@ class ParallelAnalyzer:
             self._last_global_model_stats = {"error": str(exc)}
             logger.exception("[global-model] failed before entry fan-out.")
             return False
+
+    def _uses_scoped_fast_static_pass(self) -> bool:
+        """All C/C++ modes share the exact-instance static foundation.
+
+        The historical name/report key is retained for report compatibility;
+        depth selects validation and discovery, never static coverage.
+        """
+
+        return bool(
+            self.base_config.project.language != "java"
+            and resolve_discovery_profile(self.base_config).name in {"fast", "balanced", "deep"}
+        )
+
+    @staticmethod
+    def _fast_analysis_unit_id(*parts: str) -> str:
+        material = json.dumps(
+            ["zscope.fast-static-scan.v1", *[str(part or "") for part in parts]],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
+
+    def _fast_static_cache_root(self) -> Tuple[Optional[Path], str]:
+        """Return a project-contained cache root without following symlinks.
+
+        Cache availability is never evidence authority.  An unwritable or
+        redirected cache therefore makes the run cold instead of weakening
+        candidate identity or failing the scan.
+        """
+
+        try:
+            root = Path(self.base_config.project.project_root).resolve()
+            cursor = root
+            for part in _FAST_STATIC_CACHE_DIRECTORY:
+                cursor = cursor / part
+                if cursor.exists() and cursor.is_symlink():
+                    return None, "cache_path_symlink"
+            cursor.mkdir(parents=True, exist_ok=True)
+            resolved = cursor.resolve()
+            resolved.relative_to(root)
+            return resolved, ""
+        except (OSError, RuntimeError, ValueError) as exc:
+            return None, f"cache_root_unavailable:{type(exc).__name__}"
+
+    def _fast_static_cache_identity(
+        self,
+        *,
+        build_context_id: str,
+        function_scope: InstanceScope,
+        wrapper_context: Mapping[str, Any],
+        build_context: Mapping[str, Any],
+        semantic_overlay: Mapping[str, Any],
+    ) -> str:
+        effective = getattr(self.base_config, "effective_rules", None)
+        provenance = getattr(effective, "provenance", None)
+        payload = {
+            "schema": _FAST_STATIC_CACHE_SCHEMA,
+            "build_context_id": build_context_id,
+            "usr": function_scope.usr,
+            "source": function_scope.source,
+            "function": wrapper_context.get("func_name"),
+            "signature": wrapper_context.get("signature"),
+            "start_line": wrapper_context.get("start_line"),
+            "end_line": wrapper_context.get("end_line"),
+            "source_text": wrapper_context.get("code"),
+            # Program facts carry the current AST/CFG/type/macro/native input
+            # receipts.  The context adds compiler, target, dependency and
+            # native tool identity, so a different compile variant cannot hit.
+            "program_facts": wrapper_context.get("program_facts"),
+            "build_context": dict(build_context),
+            "effective_rules_sha256": str(getattr(provenance, "effective_sha256", "") or ""),
+            "runtime_analysis": vars(self.base_config.analysis),
+            # Only the instance materialized overlay is authoritative here;
+            # workbook/model proposals are not allowed into this fast path.
+            "semantic_overlay": dict(semantic_overlay),
+        }
+        material = json.dumps(
+            payload,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
+
+    @staticmethod
+    def _read_fast_static_cache(
+        path: Path,
+        *,
+        cache_key: str,
+        build_context_id: str,
+        unit_kind: str,
+        unit_identity: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        try:
+            if path.is_symlink() or not path.is_file():
+                return None
+            if path.stat().st_size > _FAST_STATIC_CACHE_MAX_BYTES:
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if (
+            payload.get("schema") != _FAST_STATIC_CACHE_SCHEMA
+            or payload.get("cache_key") != cache_key
+            or payload.get("build_context_id") != build_context_id
+            or payload.get("unit_kind") != unit_kind
+            or payload.get("unit_identity") != unit_identity
+        ):
+            return None
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list) or any(
+            not isinstance(candidate, dict) for candidate in candidates
+        ):
+            return None
+        return [deepcopy(candidate) for candidate in candidates]
+
+    @staticmethod
+    def _write_fast_static_cache(
+        path: Path,
+        *,
+        cache_key: str,
+        build_context_id: str,
+        unit_kind: str,
+        unit_identity: str,
+        candidates: Sequence[Mapping[str, Any]],
+    ) -> None:
+        atomic_json(
+            path,
+            {
+                "schema": _FAST_STATIC_CACHE_SCHEMA,
+                "cache_key": cache_key,
+                "build_context_id": build_context_id,
+                "unit_kind": unit_kind,
+                "unit_identity": unit_identity,
+                "candidates": [deepcopy(dict(candidate)) for candidate in candidates],
+            },
+        )
+
+    def _fast_static_graph_cache_identity(
+        self,
+        *,
+        build_context_id: str,
+        build_context: Mapping[str, Any],
+        function_cache_keys: Sequence[str],
+        semantic_overlay: Mapping[str, Any],
+        link_receipts: Sequence[Mapping[str, Any]],
+    ) -> str:
+        effective = getattr(self.base_config, "effective_rules", None)
+        provenance = getattr(effective, "provenance", None)
+        payload = {
+            "schema": _FAST_STATIC_CACHE_SCHEMA,
+            "unit_kind": "graph",
+            "build_context_id": build_context_id,
+            "build_context": dict(build_context),
+            "function_cache_keys": sorted(str(item) for item in function_cache_keys),
+            "semantic_overlay": dict(semantic_overlay),
+            "link_receipts": [dict(item) for item in link_receipts],
+            "effective_rules_sha256": str(getattr(provenance, "effective_sha256", "") or ""),
+            "runtime_analysis": vars(self.base_config.analysis),
+        }
+        material = json.dumps(
+            payload,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
+
+    def _source_is_in_project(self, source: str) -> bool:
+        if not source:
+            return False
+        try:
+            root = Path(self.base_config.project.project_root).resolve()
+            path = Path(source)
+            if not path.is_absolute():
+                path = root / path
+            path.resolve().relative_to(root)
+            return True
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    def _fast_reachability_routes(
+        self,
+        scoped_entries: Sequence[Tuple[FunctionEntry, Optional[InstanceScope]]],
+        function_names: Set[str],
+    ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Dict[str, Any]]]:
+        """Compute entry attribution without using it to drive discovery."""
+
+        routes: Dict[str, List[Dict[str, Any]]] = {}
+        unclosed_edges: List[Dict[str, Any]] = []
+        project_body_cache: Dict[str, bool] = {}
+
+        def has_project_body(function: str, file_hint: str = "") -> bool:
+            if function in project_body_cache:
+                return project_body_cache[function]
+            try:
+                query: Dict[str, Any] = {"max_lines": 1, "warn_missing": False}
+                if file_hint:
+                    query["file_path"] = file_hint
+                impl = self.code_index.get_function_impl(function, **query)
+            except Exception:
+                impl = None
+            result = bool(
+                isinstance(impl, dict)
+                and self._source_is_in_project(str(impl.get("file") or file_hint or ""))
+            )
+            project_body_cache[function] = result
+            return result
+
+        for entry, scope in scoped_entries:
+            if scope is None:
+                continue
+            entry_identity = entry.identity_key(self.base_config.project.project_root)
+            pending: List[Tuple[str, List[str]]] = [(entry.function_name, [entry.function_name])]
+            seen: Set[str] = set()
+            while pending:
+                function, call_path = pending.pop(0)
+                if function in seen:
+                    continue
+                seen.add(function)
+                if function in function_names or has_project_body(function):
+                    routes.setdefault(function, []).append(
+                        {
+                            "entry_identity": entry_identity,
+                            "call_path": list(call_path),
+                        }
+                    )
+                try:
+                    # Navigation is project/link-group scoped.  A TU-scoped
+                    # facade intentionally hides the very cross-TU edges that
+                    # attribution is meant to follow.
+                    callees = self.code_index.get_callees(function, limit=1_000_000)
+                except Exception as exc:
+                    unclosed_edges.append(
+                        {
+                            "entry_identity": entry_identity,
+                            "caller": function,
+                            "callee": "",
+                            "reason": f"callee_query:{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    continue
+                for row in callees or []:
+                    if not isinstance(row, dict):
+                        continue
+                    callee = str(row.get("name") or row.get("callee_name") or "").strip()
+                    if not callee or callee in call_path:
+                        continue
+                    if callee in function_names:
+                        pending.append((callee, [*call_path, callee]))
+                        continue
+                    declared_file = str(row.get("filename") or row.get("file") or "")
+                    if has_project_body(callee, declared_file):
+                        pending.append((callee, [*call_path, callee]))
+                        continue
+                    if declared_file and self._source_is_in_project(declared_file):
+                        unclosed_edges.append(
+                            {
+                                "entry_identity": entry_identity,
+                                "caller": function,
+                                "callee": callee,
+                                "file": declared_file,
+                                "reason": "project_edge_outside_translation_unit",
+                            }
+                        )
+        for values in routes.values():
+            values.sort(key=lambda row: (row["entry_identity"], row["call_path"]))
+        unique_edges = {
+            json.dumps(row, sort_keys=True, ensure_ascii=False): row for row in unclosed_edges
+        }
+        return routes, [unique_edges[key] for key in sorted(unique_edges)]
+
+    def _fast_link_group_sccs(self, function_names: Set[str]) -> List[List[str]]:
+        """Build the current link-group call graph and return stable SCCs."""
+
+        adjacency: Dict[str, Set[str]] = {name: set() for name in function_names}
+        for caller in sorted(function_names):
+            try:
+                rows = self.code_index.get_callees(caller, limit=1_000_000)
+            except Exception:
+                rows = []
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                callee = str(row.get("name") or row.get("callee_name") or "").strip()
+                if callee in function_names:
+                    adjacency[caller].add(callee)
+
+        index = 0
+        indices: Dict[str, int] = {}
+        lowlinks: Dict[str, int] = {}
+        stack: List[str] = []
+        on_stack: Set[str] = set()
+        components: List[List[str]] = []
+
+        def visit(node: str) -> None:
+            nonlocal index
+            indices[node] = index
+            lowlinks[node] = index
+            index += 1
+            stack.append(node)
+            on_stack.add(node)
+            for target in sorted(adjacency[node]):
+                if target not in indices:
+                    visit(target)
+                    lowlinks[node] = min(lowlinks[node], lowlinks[target])
+                elif target in on_stack:
+                    lowlinks[node] = min(lowlinks[node], indices[target])
+            if lowlinks[node] != indices[node]:
+                return
+            component: List[str] = []
+            while stack:
+                current = stack.pop()
+                on_stack.remove(current)
+                component.append(current)
+                if current == node:
+                    break
+            components.append(sorted(component))
+
+        for function in sorted(function_names):
+            if function not in indices:
+                visit(function)
+        return sorted(components, key=lambda values: (values[0] if values else "", len(values)))
+
+    @staticmethod
+    def _project_link_group_semantics(
+        *,
+        target_id: str,
+        member_build_context_ids: Sequence[str],
+        base_semantics: LocalPatternSemantics,
+        semantics_by_build: Sequence[LocalPatternSemantics],
+    ) -> Tuple[LocalPatternSemantics, List[Dict[str, Any]]]:
+        """Compile exact cross-TU effects for one closed native link record.
+
+        A contract's ``build_context_id`` identifies the TU that proved the
+        wrapper implementation; it is not the caller TU.  Within a real link
+        record, an exact native USR can therefore be consumed by another
+        member.  The projection is intentionally local to this graph unit and
+        retains the USR, file and signature.  Unknown identities and contracts
+        from any other build remain unavailable, so this never becomes a
+        name-level or cross-variant grant.
+        """
+
+        members = {str(value) for value in member_build_context_ids if str(value)}
+        projected = deepcopy(base_semantics)
+        source_contracts = [
+            contract
+            for semantics in semantics_by_build
+            for contract in semantics.contracts.contracts
+            if str(contract.symbol.build_context_id or "")
+        ]
+        source_pairs = [
+            pair
+            for semantics in semantics_by_build
+            for pair in semantics.contracts.pairs
+            if str(pair.acquire.build_context_id or "") or str(pair.release.build_context_id or "")
+        ]
+        # Retain the base TU's system/name-level catalog and shadow decisions,
+        # but replace every build-scoped contract with its exact-USR link-local
+        # projection.  Keeping both forms would make the same symbol appear as
+        # two identities while the base BuildContext is bound.
+        projected.contracts.contracts = [
+            contract
+            for contract in projected.contracts.contracts
+            if not str(contract.symbol.build_context_id or "")
+        ]
+        projected.contracts.pairs = [
+            pair
+            for pair in projected.contracts.pairs
+            if not str(pair.acquire.build_context_id or "")
+            and not str(pair.release.build_context_id or "")
+        ]
+        records: List[Dict[str, Any]] = []
+
+        def project_symbol(symbol: Any) -> Any:
+            build_id = str(getattr(symbol, "build_context_id", "") or "")
+            if not build_id:
+                return symbol
+            if build_id not in members or not str(getattr(symbol, "usr", "") or ""):
+                return None
+            return replace(symbol, build_context_id="")
+
+        for contract in source_contracts:
+            symbol = project_symbol(contract.symbol)
+            if symbol is None:
+                continue
+            pair_symbols = []
+            invalid_pair = False
+            for pair_symbol in contract.pairs:
+                value = project_symbol(pair_symbol)
+                if value is None:
+                    invalid_pair = True
+                    break
+                pair_symbols.append(value)
+            if invalid_pair:
+                continue
+            verification = dict(contract.verification or {})
+            original_build = str(contract.symbol.build_context_id or "")
+            if original_build:
+                verification.update(
+                    {
+                        "link_group_projection": "closed_exact_usr",
+                        "link_group_id": target_id,
+                        "definition_build_context_id": original_build,
+                    }
+                )
+            value = replace(
+                contract,
+                symbol=symbol,
+                pairs=tuple(pair_symbols),
+                verification=verification,
+            )
+            projected.contracts.add(value)
+            projected.add_api(contract.role, symbol.name, contract.source)
+            if original_build:
+                records.append(
+                    {
+                        "link_group_id": target_id,
+                        "definition_build_context_id": original_build,
+                        "name": symbol.name,
+                        "usr": symbol.usr,
+                        "role": contract.role,
+                    }
+                )
+
+        for pair in source_pairs:
+            acquire = project_symbol(pair.acquire)
+            release = project_symbol(pair.release)
+            if acquire is None or release is None:
+                continue
+            value = replace(pair, acquire=acquire, release=release)
+            if value not in projected.contracts.pairs:
+                projected.contracts.pairs.append(value)
+        return projected, records
+
+    @staticmethod
+    def _compile_fast_native_wrapper_contracts(
+        *,
+        build_context_id: str,
+        semantics: LocalPatternSemantics,
+        overlay: Dict[str, Any],
+        functions: Sequence[
+            Tuple[
+                InstanceScope,
+                Dict[str, Any],
+                Dict[str, Any],
+                str,
+                FunctionFactSummary,
+            ]
+        ],
+    ) -> Dict[str, Any]:
+        """Publish only current native-proven wrapper effects for this build.
+
+        The existing native wrapper checker is deliberately narrow (direct C
+        heap adapters with complete program facts).  Running it to a fixed
+        point lets wrappers call already-proven wrappers without granting any
+        authority to a name, workbook inference, or model proposal.
+        """
+
+        from ..semantics.contracts import ApiContract, digest
+        from ..semantics.native_wrappers import infer_native_wrapper
+
+        accepted: Set[str] = set()
+        rejected_identities: Dict[str, Dict[str, Any]] = {}
+        authorized_identities: Dict[str, Dict[str, Any]] = {}
+        passes = 0
+        for _ in range(max(1, len(functions))):
+            passes += 1
+            changed = False
+            for scope, _impl, context, unit_id, _fact_summary in functions:
+                try:
+                    inference = infer_native_wrapper(context, semantics.contracts)
+                except Exception as exc:
+                    reason = f"compiler_error:{type(exc).__name__}"
+                    identity = f"{build_context_id}:{scope.usr}"
+                    rejected_identities[identity] = {
+                        "analysis_unit_id": unit_id,
+                        "build_context_id": build_context_id,
+                        "usr": scope.usr,
+                        "function": str(context.get("func_name") or ""),
+                        "file": str(context.get("file_path") or scope.source or ""),
+                        "reasons": [reason],
+                    }
+                    continue
+                if not inference["attempted"]:
+                    continue
+                if inference["reasons"]:
+                    identity = f"{build_context_id}:{scope.usr}"
+                    reasons = sorted({str(value) for value in inference["reasons"] if value})
+                    rejected_identities[identity] = {
+                        "analysis_unit_id": unit_id,
+                        "build_context_id": build_context_id,
+                        "usr": scope.usr,
+                        "function": str(context.get("func_name") or ""),
+                        "file": str(context.get("file_path") or scope.source or ""),
+                        "reasons": reasons,
+                    }
+                native_rows = []
+                for row in inference["contracts"]:
+                    if not isinstance(row, dict):
+                        continue
+                    symbol = row.get("symbol")
+                    if isinstance(symbol, dict) and not symbol.get("usr"):
+                        row = dict(row, symbol={**symbol, "usr": scope.usr})
+                    verification = row.get("verification")
+                    verification = verification if isinstance(verification, dict) else {}
+                    if verification.get("checker") != "native_wrapper_value_flow.v2":
+                        continue
+                    contract = ApiContract.from_row({"contract": row})
+                    if contract is None:
+                        identity = f"{build_context_id}:{scope.usr}"
+                        rejected_identities[identity] = {
+                            "analysis_unit_id": unit_id,
+                            "build_context_id": build_context_id,
+                            "usr": scope.usr,
+                            "function": str(context.get("func_name") or ""),
+                            "file": str(context.get("file_path") or scope.source or ""),
+                            "reasons": ["contract_decode_failed"],
+                        }
+                        continue
+                    evidence = contract.evidence if isinstance(contract.evidence, list) else []
+                    exact_receipt = any(
+                        isinstance(item, dict)
+                        and str(item.get("function_usr") or "") == scope.usr
+                        and str(item.get("build_context_id") or "") == build_context_id
+                        and bool(item.get("native_input_hash"))
+                        for item in evidence
+                    )
+                    if (
+                        contract.symbol.build_context_id != build_context_id
+                        or contract.symbol.usr != scope.usr
+                        or not exact_receipt
+                        or not contract.effects_trusted
+                    ):
+                        identity = f"{build_context_id}:{scope.usr}"
+                        rejected_identities[identity] = {
+                            "analysis_unit_id": unit_id,
+                            "build_context_id": build_context_id,
+                            "usr": scope.usr,
+                            "function": str(context.get("func_name") or ""),
+                            "file": str(context.get("file_path") or scope.source or ""),
+                            "reasons": ["native_receipt_not_exact"],
+                        }
+                        continue
+                    # Structurally equivalent wrappers remain distinct native
+                    # authorities.  For example ``_safe_malloc`` and
+                    # ``_str_dup`` are both allocator contracts, but consumers
+                    # must be authorized against the exact wrapper USR in the
+                    # current BuildContext.
+                    native_rows.append((contract, f"{scope.usr}:{digest(contract.structural())}"))
+                for contract, identity in native_rows:
+                    if identity in accepted:
+                        continue
+                    semantics.contracts.add(contract)
+                    semantics.add_api(contract.role, contract.symbol.name, contract.source)
+                    accepted.add(identity)
+                    wrapper_identity = f"{build_context_id}:{scope.usr}"
+                    authorized_identities[wrapper_identity] = {
+                        "analysis_unit_id": unit_id,
+                        "build_context_id": build_context_id,
+                        "usr": scope.usr,
+                        "function": str(context.get("func_name") or ""),
+                        "file": str(context.get("file_path") or scope.source or ""),
+                        "role": contract.role,
+                    }
+                    rejected_identities.pop(wrapper_identity, None)
+                    changed = True
+            if not changed:
+                break
+        overlay["contract_version"] = semantics.contracts.version
+        overlay["api_contracts"] = [
+            contract.to_dict() for contract in semantics.contracts.contracts
+        ]
+        overlay["api_pairs"] = [pair.to_dict() for pair in semantics.contracts.pairs]
+        rejected_by_reason: Dict[str, int] = {}
+        for record in rejected_identities.values():
+            for reason in record.get("reasons") or []:
+                rejected_by_reason[str(reason)] = rejected_by_reason.get(str(reason), 0) + 1
+        return {
+            "authorized": len(authorized_identities),
+            "authorized_identities": list(authorized_identities.values()),
+            "rejected_by_reason": dict(sorted(rejected_by_reason.items())),
+            "rejected_identities": list(rejected_identities.values()),
+            "fixed_point_passes": passes,
+        }
+
+    def _run_scoped_fast_static_pass(
+        self,
+        scoped_entries: Sequence[Tuple[FunctionEntry, Optional[InstanceScope]]],
+    ) -> None:
+        """Collect C/C++ fast candidates once per exact function instance.
+
+        Discovery is buffered and becomes authoritative only after every local
+        function and graph unit completes.  A real failure therefore falls
+        back atomically to the existing per-entry collectors; successful
+        entry workflows are attribution/report-only and cannot repeat the
+        static work.
+        """
+
+        started = time.monotonic()
+        state: Dict[str, Any] = {
+            "schema": "zscope.fast-static-scan.v1",
+            "cache_schema": _FAST_STATIC_CACHE_SCHEMA,
+            "enabled": True,
+            "activated": False,
+            "status": "running",
+            "unique_function_instances": 0,
+            "local_analysis_executions": 0,
+            "local_engine_executions": {
+                "cpp_clang_cfg": 0,
+                "cpp_regex": 0,
+                "cpp_graph_view": 0,
+                "cpp_clang_matcher": 0,
+                "extension_provider": 0,
+            },
+            "duplicate_local_executions": 0,
+            "unique_graph_units": 0,
+            "graph_analysis_units": 0,
+            "backend_analysis_units": 0,
+            "link_group_graph_units": 0,
+            "link_group_scc_count": 0,
+            "analysis_units": [],
+            "planned_build_contexts": [],
+            "completed_build_contexts": [],
+            "link_coverage": {
+                "observed_targets": [],
+                "covered_build_contexts": [],
+                "uncovered_build_contexts": [],
+                "unclosed_edges": [],
+            },
+            "backend_health": {
+                "degraded": False,
+                "degraded_units": [],
+                "by_build_context": {},
+            },
+            "semantic_authorization": {
+                "authorized": 0,
+                "authorized_identities": [],
+                "rejected_by_reason": {},
+                "rejected_identities": [],
+                "project_contracts_authorized": 0,
+                "project_authorized_identities": [],
+                "by_build_context": {},
+                "wrapper_contracts_authorized": 0,
+                "wrapper_authorized_identities": [],
+                "wrapper_rejected_by_reason": {},
+                "wrapper_rejected_identities": [],
+                "wrapper_fixed_point_passes": 0,
+                "link_group_projected_contracts": 0,
+                "link_group_projected_identities": [],
+            },
+            "candidate_funnel": {
+                "raw": 0,
+                "dedup": 0,
+                "v0": 0,
+                "llm": 0,
+                "confirmed": 0,
+                "rejected": 0,
+                "needs_review": 0,
+            },
+            "cache": {
+                "status": "initializing",
+                "cold_misses": 0,
+                "hot_hits": 0,
+                "local_cold_misses": 0,
+                "local_hot_hits": 0,
+                "graph_cold_misses": 0,
+                "graph_hot_hits": 0,
+                "invalid_entries": 0,
+                "write_failures": 0,
+                "reused_candidate_count": 0,
+            },
+            "rule_execution": {
+                "executed_functions": 0,
+                "executed_by_rule": {},
+                "cache_reused_by_rule": {},
+                "emitted_by_rule": {},
+                "skipped_with_reason": {},
+                "declared_fact_prerequisites": {},
+            },
+            "validation_obligations": builtin_obligation_coverage(),
+            "planning_gaps": [
+                dict(item)
+                for item in (getattr(self, "_fast_project_scope_gaps", []) or [])
+                if isinstance(item, dict)
+            ],
+            "failures": [],
+            "unsupported_capabilities": [],
+            "semantic_catalog": {},
+            "project_semantics": {},
+            "timings_seconds": {},
+        }
+        self._fast_static_scan_state = state
+        effective_rules = self.base_config.effective_rules
+        state["rule_execution"]["declared_fact_prerequisites"] = {
+            rule_state.descriptor.id: list(rule_state.descriptor.required_capabilities)
+            for rule_state in effective_rules.rules
+            if rule_state.state == "enabled"
+        }
+        cache_root, cache_reason = self._fast_static_cache_root()
+        if cache_root is None:
+            state["cache"]["status"] = "unavailable"
+            state["cache"]["reason"] = cache_reason
+        else:
+            state["cache"]["status"] = "enabled"
+        self._cancellation_token.raise_if_cancelled()
+        by_build: Dict[str, List[Tuple[FunctionEntry, InstanceScope]]] = {}
+        for entry, scope in scoped_entries:
+            if scope is not None:
+                by_build.setdefault(scope.build_context_id, []).append((entry, scope))
+        representatives: Dict[str, InstanceScope] = {
+            build_id: rows[0][1] for build_id, rows in by_build.items() if rows
+        }
+        semantics_context = getattr(self, "_instance_semantics_context", None)
+        for scope in list(getattr(semantics_context, "scopes", {}).values()):
+            if isinstance(scope, InstanceScope) and scope.build_context_id:
+                representatives.setdefault(scope.build_context_id, scope)
+                existing = self._instance_scopes_by_build.setdefault(scope.build_context_id, [])
+                if all(item.identity != scope.identity for item in existing):
+                    existing.append(scope)
+        buffered: List[Tuple[Analyzer, Dict[str, Any], List[Dict[str, Any]]]] = []
+        seen_units: Set[str] = set()
+        project_routes: Dict[str, List[Dict[str, Any]]] = {}
+        all_builds = set(getattr(self, "_fast_project_build_context_ids", []) or representatives)
+        state["planned_build_contexts"] = sorted(all_builds)
+
+        # Freeze the two semantic authorities into the scan report before any
+        # candidate is emitted.  The project document is already immutable in
+        # InstanceSemanticsContext; parsing these canonical bytes cannot race a
+        # reviewer edit.  Catalog completeness is an additive gate and never
+        # inferred from the number of call sites seen in this run.
+        from ..config.project_semantics import EFFECT_CONSUMERS, semantics_readiness
+        from ..semantics.c_linux_catalog import catalog_audit, classified_names
+
+        catalog = catalog_audit()
+        state["semantic_catalog"] = {
+            key: deepcopy(value) for key, value in catalog.items() if key != "records"
+        }
+        state["semantic_catalog"].setdefault(
+            "classified_interfaces", len(catalog.get("records") or [])
+        )
+        state["semantic_catalog"]["observed_unclassified_system_interfaces"] = []
+        state["semantic_catalog"]["complete"] = not any(
+            catalog.get(key)
+            for key in (
+                "active_missing_abi",
+                "active_missing_source",
+                "active_missing_consumer",
+                "unaudited",
+            )
+        )
+        catalog_classified_names = classified_names()
+        observed_system_interfaces: Set[str] = set()
+        if semantics_context is not None:
+            project_document = json.loads(bytes(semantics_context.effective_project_document))
+            readiness = semantics_readiness(
+                project_document,
+                project_root=Path(self.base_config.project.project_root),
+            )
+            rebind_audit = dict(semantics_context.project_semantics_rebind)
+            reviewed_contracts: List[Dict[str, Any]] = []
+            for row in project_document.get("interfaces", []) or []:
+                if not isinstance(row, dict) or row.get("status") != "confirmed":
+                    continue
+                reviewed_contracts.append(
+                    {
+                        "id": str(row.get("id") or ""),
+                        "primitive": bool(row.get("primitive")),
+                        "basis": str(row.get("basis") or ""),
+                        "selector": deepcopy(row.get("selector") or {}),
+                        "effects": [
+                            {
+                                "role": str(effect.get("role") or ""),
+                                "consumer_adapters": list(
+                                    EFFECT_CONSUMERS.get(str(effect.get("role") or ""), ())
+                                ),
+                            }
+                            for effect in row.get("effects", []) or []
+                            if isinstance(effect, dict)
+                        ],
+                    }
+                )
+            state["project_semantics"] = {
+                **readiness.to_dict(),
+                "ready": readiness.ready and bool(rebind_audit.get("ready")),
+                "path": str(semantics_context.workbook_path),
+                "sha256": str(semantics_context.workbook.workbook_sha256),
+                "current_rebind": rebind_audit,
+                "confirmed_contracts": reviewed_contracts,
+                "automatic_by_build": {
+                    build: {
+                        "schema": data.get("schema"),
+                        "contracts": len(data.get("contracts", [])),
+                        "units": data.get("units", []),
+                        "inventory_gaps": data.get("inventory_gaps", []),
+                        "linked_imports": data.get("linked_imports", 0),
+                        "link_gaps": data.get("link_gaps", []),
+                        "derivation_attempts": data.get("derivation_attempts", 0),
+                        "llm_calls": 0,
+                        "complete_coverage_proven": False,
+                    }
+                    for build, data in {
+                        snapshot.scope.build_context_id: json.loads(
+                            bytes(snapshot.effect_payload)
+                        ).get("automatic_derivation", {})
+                        for snapshot in semantics_context.snapshots.values()
+                    }.items()
+                },
+                "dispatchers": {
+                    status: sum(
+                        1
+                        for row in project_document.get("dispatchers", []) or []
+                        if isinstance(row, dict) and row.get("status") == status
+                    )
+                    for status in ("pending", "confirmed", "rejected", "stale")
+                },
+                "function_pointer_bindings": {
+                    status: sum(
+                        1
+                        for row in project_document.get("function_pointer_bindings", []) or []
+                        if isinstance(row, dict) and row.get("status") == status
+                    )
+                    for status in ("pending", "confirmed", "rejected", "stale")
+                },
+            }
+
+        # Link records remain the only cross-TU ownership authority.  Graph
+        # view and batch rules are delegated to one real link-group unit when
+        # the record closes over every current member.  Unlinked builds retain
+        # one exact TU graph unit; they are also reported as a qualification
+        # gap rather than being promoted to a fabricated project graph.
+        covered_builds: Set[str] = set()
+        link_receipts_by_build: Dict[str, List[Dict[str, Any]]] = {}
+        link_groups: List[Dict[str, Any]] = []
+        try:
+            linked_factory = getattr(self.code_index, "linked_targets", None)
+            linked = linked_factory() if callable(linked_factory) else None
+            for target in list(getattr(linked, "targets", []) or []):
+                if not isinstance(target, dict):
+                    continue
+                raw_receipt = target.get("receipt")
+                receipt: Dict[str, Any] = dict(raw_receipt) if isinstance(raw_receipt, dict) else {}
+                target_id = str(receipt.get("target_id") or "")
+                if target_id:
+                    state["link_coverage"]["observed_targets"].append(target_id)
+                target_members = {str(item) for item in (target.get("members") or []) if item}
+                covered_builds.update(target_members)
+                if target_members:
+                    link_groups.append(
+                        {
+                            "target_id": target_id or f"link-target-{len(link_groups) + 1}",
+                            "members": sorted(target_members),
+                            "receipt": receipt,
+                        }
+                    )
+                for member in target_members:
+                    link_receipts_by_build.setdefault(member, []).append(
+                        {
+                            "receipt": receipt,
+                            "members": sorted(target_members),
+                        }
+                    )
+        except Exception as exc:
+            state["link_coverage"]["diagnostic"] = f"{type(exc).__name__}: {exc}"
+        state["link_coverage"]["covered_build_contexts"] = sorted(all_builds & covered_builds)
+        state["link_coverage"]["uncovered_build_contexts"] = sorted(all_builds - covered_builds)
+        linked_graph_builds = {
+            str(member)
+            for group in link_groups
+            if len(group.get("members") or []) > 1
+            and set(str(value) for value in group.get("members") or []).issubset(representatives)
+            for member in group.get("members") or []
+        }
+        build_runtime: Dict[str, Dict[str, Any]] = {}
+
+        for build_context_id in sorted(representatives):
+            self._cancellation_token.raise_if_cancelled()
+            build_started = time.monotonic()
+            entries_for_build = by_build.get(build_context_id, [])
+            representative_scope = representatives[build_context_id]
+            if entries_for_build:
+                representative_entry = entries_for_build[0][0]
+                representative_identity = representative_entry.identity_key(
+                    self.base_config.project.project_root
+                )
+            else:
+                representative_entry = FunctionEntry(
+                    str((representative_scope.function_names or (representative_scope.usr,))[0]),
+                    file_path=representative_scope.source or None,
+                )
+                representative_identity = f"__project_static__:{build_context_id}"
+            try:
+                snapshot = self._frozen_instance_semantic_snapshot(representative_scope)
+                semantics, overlay = materialize_effect_semantics(snapshot)
+                scoped_index = wrap_scoped_code_index(self.code_index, representative_scope)
+                build_contexts = list(scoped_index.get_build_contexts() or [])
+                if len(build_contexts) != 1:
+                    raise RuntimeError("scoped_build_context_missing_or_ambiguous")
+                build_context = dict(build_contexts[0])
+                inventory_getter = getattr(scoped_index, "list_function_instances", None)
+                function_scopes = (
+                    list(inventory_getter() or []) if callable(inventory_getter) else []
+                )
+                # The scheduled entry itself is always a real instance even if
+                # an older third-party facade cannot enumerate the whole TU.
+                # ``EntryInstance.identity`` is a report/navigation identity
+                # and may use a different textual key than the native
+                # inventory.  The execution identity is exactly
+                # ``(BuildContext, USR)``; keying by the display identity (or
+                # source spelling) would execute one function twice.
+                inventory = {
+                    (scope.build_context_id, scope.usr): scope
+                    for scope in function_scopes
+                    if scope.build_context_id and scope.usr
+                }
+                for _entry, scope in entries_for_build:
+                    inventory.setdefault((scope.build_context_id, scope.usr), scope)
+                project_scopes = [
+                    scope
+                    for scope in inventory.values()
+                    if self._source_is_in_project(scope.source)
+                ]
+                project_scopes.sort(key=lambda scope: (scope.source, scope.usr, scope.identity))
+                if not project_scopes:
+                    raise RuntimeError("scoped_function_inventory_empty")
+                validation_scopes = self._instance_scopes_by_build.setdefault(build_context_id, [])
+                known_validation_scope_ids = {scope.identity for scope in validation_scopes}
+                for function_scope in project_scopes:
+                    if function_scope.identity not in known_validation_scope_ids:
+                        validation_scopes.append(function_scope)
+                        known_validation_scope_ids.add(function_scope.identity)
+
+                helper = self._instance_validation_helper(representative_scope)
+                origins = overlay.get("symbol_origins") if isinstance(overlay, dict) else {}
+                if isinstance(origins, dict):
+                    for symbol_identity, reason in origins.items():
+                        text_reason = str(reason or "")
+                        if text_reason == ORIGIN_SYSTEM_RECEIPT:
+                            state["semantic_authorization"]["authorized"] += 1
+                            state["semantic_authorization"]["authorized_identities"].append(
+                                {
+                                    "build_context_id": build_context_id,
+                                    "symbol_identity": str(symbol_identity),
+                                    "origin": text_reason,
+                                }
+                            )
+                        else:
+                            rejected = state["semantic_authorization"]["rejected_by_reason"]
+                            rejected[text_reason or "unknown"] = (
+                                rejected.get(text_reason or "unknown", 0) + 1
+                            )
+                            state["semantic_authorization"]["rejected_identities"].append(
+                                {
+                                    "build_context_id": build_context_id,
+                                    "symbol_identity": str(symbol_identity),
+                                    "reason": text_reason or "unknown",
+                                }
+                            )
+                raw_project_contract_rows = (
+                    overlay.get("project_contracts", []) if isinstance(overlay, dict) else []
+                )
+                project_contract_rows = (
+                    raw_project_contract_rows if isinstance(raw_project_contract_rows, list) else []
+                )
+                for project_contract in project_contract_rows:
+                    if not isinstance(project_contract, dict):
+                        continue
+                    raw_symbol = project_contract.get("symbol")
+                    symbol = raw_symbol if isinstance(raw_symbol, dict) else {}
+                    raw_verification = project_contract.get("verification")
+                    verification = raw_verification if isinstance(raw_verification, dict) else {}
+                    state["semantic_authorization"]["project_authorized_identities"].append(
+                        {
+                            "build_context_id": build_context_id,
+                            "project_semantics_id": str(
+                                verification.get("project_semantics_id") or ""
+                            ),
+                            "name": str(symbol.get("name") or ""),
+                            "usr": str(symbol.get("usr") or ""),
+                            "role": str(project_contract.get("role") or ""),
+                            "authority": str(verification.get("authority") or ""),
+                        }
+                    )
+
+                function_names = {
+                    str(scope.function_names[0])
+                    for scope in project_scopes
+                    if scope.function_names and str(scope.function_names[0])
+                }
+                discovered_routes, unclosed = self._fast_reachability_routes(
+                    [(entry, scope) for entry, scope in entries_for_build],
+                    function_names,
+                )
+                for function, rows in discovered_routes.items():
+                    current = project_routes.setdefault(function, [])
+                    known = {json.dumps(row, sort_keys=True, ensure_ascii=False) for row in current}
+                    for row in rows:
+                        identity = json.dumps(row, sort_keys=True, ensure_ascii=False)
+                        if identity not in known:
+                            current.append(dict(row))
+                            known.add(identity)
+                routes = {
+                    function: list(project_routes.get(function) or [])
+                    for function in function_names
+                }
+                state["link_coverage"]["unclosed_edges"].extend(unclosed)
+                raw_for_build: List[Dict[str, Any]] = []
+
+                local_started = time.monotonic()
+                function_work: List[
+                    Tuple[
+                        InstanceScope,
+                        Dict[str, Any],
+                        Dict[str, Any],
+                        str,
+                        FunctionFactSummary,
+                    ]
+                ] = []
+                source_cache: Dict[Path, str] = {}
+                for function_scope in project_scopes:
+                    unit_id = self._fast_analysis_unit_id(build_context_id, function_scope.usr)
+                    if unit_id in seen_units:
+                        state["duplicate_local_executions"] += 1
+                        continue
+                    seen_units.add(unit_id)
+                    function = str(
+                        (function_scope.function_names or (representative_entry.function_name,))[0]
+                    )
+                    function_index = wrap_scoped_code_index(self.code_index, function_scope)
+                    program_facts = function_index.get_function_program_facts(
+                        function_scope.usr,
+                        function_scope.source,
+                        build_context_id=build_context_id,
+                    )
+                    bodies = (
+                        [
+                            value
+                            for value in program_facts.get("functions", []) or []
+                            if isinstance(value, Mapping)
+                        ]
+                        if isinstance(program_facts, Mapping)
+                        else []
+                    )
+                    exact_bodies = []
+                    for body in bodies:
+                        owner_value = body.get("owner")
+                        owner = owner_value if isinstance(owner_value, Mapping) else {}
+                        if str(owner.get("usr") or "") == function_scope.usr:
+                            exact_bodies.append(body)
+                    if (
+                        not isinstance(program_facts, Mapping)
+                        or program_facts.get("complete") is not True
+                        or len(exact_bodies) != 1
+                        or exact_bodies[0].get("complete") is not True
+                    ):
+                        reason = str(
+                            (
+                                program_facts.get("reason")
+                                if isinstance(program_facts, Mapping)
+                                else ""
+                            )
+                            or "program_facts_incomplete"
+                        )
+                        state["analysis_units"].append(
+                            {
+                                "schema_version": "zscope.function-fact-summary.v1",
+                                "analysis_unit_id": unit_id,
+                                "build_context_id": build_context_id,
+                                "usr": function_scope.usr,
+                                "function": function,
+                                "file": function_scope.source,
+                                "execution_status": "skipped_with_reason",
+                                "skip_reason": reason,
+                                "candidate_count": 0,
+                                "executed_rule_ids": [],
+                            }
+                        )
+                        state["planning_gaps"].append(
+                            {
+                                "build_context_id": build_context_id,
+                                "analysis_unit_id": unit_id,
+                                "usr": function_scope.usr,
+                                "reason": reason,
+                            }
+                        )
+                        continue
+                    body = exact_bodies[0]
+                    owner_value = body.get("owner")
+                    owner = owner_value if isinstance(owner_value, Mapping) else {}
+                    callable_value = body.get("callable")
+                    callable_row = callable_value if isinstance(callable_value, Mapping) else {}
+                    code, start_line, end_line = function_source_fragment(
+                        body, source_cache=source_cache
+                    )
+                    if not code.strip():
+                        state["analysis_units"].append(
+                            {
+                                "schema_version": "zscope.function-fact-summary.v1",
+                                "analysis_unit_id": unit_id,
+                                "build_context_id": build_context_id,
+                                "usr": function_scope.usr,
+                                "function": function,
+                                "file": str(owner.get("file") or function_scope.source),
+                                "execution_status": "skipped_with_reason",
+                                "skip_reason": "function_source_unavailable",
+                                "candidate_count": 0,
+                                "executed_rule_ids": [],
+                            }
+                        )
+                        state["planning_gaps"].append(
+                            {
+                                "build_context_id": build_context_id,
+                                "analysis_unit_id": unit_id,
+                                "usr": function_scope.usr,
+                                "reason": "function_source_unavailable",
+                            }
+                        )
+                        continue
+                    native_name = str(owner.get("name") or function)
+                    source_file = str(owner.get("file") or function_scope.source)
+                    numbered_code = numbered_source_fragment(code, start_line=start_line)
+                    impl = {
+                        "func_name": native_name,
+                        "index_name": native_name,
+                        "file": source_file,
+                        "signature": str(
+                            callable_row.get("canonical_signature")
+                            or callable_row.get("signature")
+                            or ""
+                        ),
+                        "code": numbered_code,
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "is_static": not bool(callable_row.get("external_linkage", True)),
+                        "is_macro": False,
+                        "truncated": False,
+                        "source_authority": "native_program_function",
+                    }
+                    if isinstance(program_facts, Mapping):
+                        for native_function in program_facts.get("functions", []) or []:
+                            if not isinstance(native_function, Mapping):
+                                continue
+                            for event in native_function.get("events", []) or []:
+                                if not isinstance(event, Mapping):
+                                    continue
+                                callee = event.get("callee")
+                                if (
+                                    not isinstance(callee, Mapping)
+                                    or callee.get("is_system_header") is not True
+                                ):
+                                    continue
+                                system_name = str(
+                                    callee.get("name") or callee.get("qualified_name") or ""
+                                ).strip()
+                                if system_name:
+                                    observed_system_interfaces.add(system_name)
+                    fact_summary = FunctionFactSummary.create(
+                        analysis_unit_id=unit_id,
+                        build_context_id=build_context_id,
+                        usr=function_scope.usr,
+                        function=function,
+                        file_path=str(impl.get("file") or function_scope.source),
+                        source=code,
+                        program_facts=(program_facts if isinstance(program_facts, Mapping) else {}),
+                    )
+                    wrapper_context = {
+                        "func_name": function,
+                        "index_name": str(impl.get("index_name") or function),
+                        "file_path": str(impl.get("file") or function_scope.source),
+                        "start_line": _integer_or_zero(impl.get("start_line")),
+                        "end_line": _integer_or_zero(impl.get("end_line")),
+                        "signature": str(impl.get("signature") or ""),
+                        "is_static": bool(impl.get("is_static")),
+                        "is_macro": False,
+                        "code": str(impl.get("code") or ""),
+                        "project_root": str(self.base_config.project.project_root),
+                        "build_context_id": build_context_id,
+                        "program_facts": program_facts,
+                    }
+                    function_work.append(
+                        (function_scope, impl, wrapper_context, unit_id, fact_summary)
+                    )
+                    state["analysis_units"].append(
+                        {
+                            **fact_summary.manifest(),
+                            "execution_status": "planned",
+                            "candidate_count": 0,
+                            "executed_rule_ids": [],
+                        }
+                    )
+
+                wrapper_summary = self._compile_fast_native_wrapper_contracts(
+                    build_context_id=build_context_id,
+                    semantics=semantics,
+                    overlay=overlay,
+                    functions=function_work,
+                )
+                semantic_state = state["semantic_authorization"]
+                semantic_state["wrapper_contracts_authorized"] += int(wrapper_summary["authorized"])
+                semantic_state["wrapper_authorized_identities"].extend(
+                    dict(value)
+                    for value in wrapper_summary.get("authorized_identities") or []
+                    if isinstance(value, dict)
+                )
+                semantic_state["wrapper_fixed_point_passes"] += int(
+                    wrapper_summary["fixed_point_passes"]
+                )
+                wrapper_rejected = semantic_state["wrapper_rejected_by_reason"]
+                for reason, count in wrapper_summary["rejected_by_reason"].items():
+                    wrapper_rejected[reason] = wrapper_rejected.get(reason, 0) + int(count)
+                semantic_state["wrapper_rejected_identities"].extend(
+                    dict(value)
+                    for value in wrapper_summary.get("rejected_identities") or []
+                    if isinstance(value, dict)
+                )
+
+                graph_view_builder = GraphCandidateGenerator(
+                    scoped_index,
+                    semantics,
+                    semantic_overlay=overlay,
+                    rule_policy=self.base_config.effective_rules.policy,
+                    restrict_to_semantics=True,
+                )
+                prepared_graph_views: List[Tuple[Any, Dict[str, Any]]] = []
+                for function_scope, impl, _context, _unit_id, fact_summary in function_work:
+                    function = str(
+                        (function_scope.function_names or (representative_entry.function_name,))[0]
+                    )
+                    exact_facts = fact_summary.facts_copy()
+                    view = graph_view_builder.prepare_function_view(
+                        function,
+                        impl,
+                        program_facts=exact_facts,
+                    )
+                    if view is None:
+                        raise RuntimeError(f"graph_view_unavailable:{function_scope.identity}")
+                    prepared_graph_views.append((view, exact_facts))
+
+                build_runtime[build_context_id] = {
+                    "function_work": function_work,
+                    "helper": helper,
+                    "semantics": semantics,
+                    "overlay": overlay,
+                    "function_names": set(function_names),
+                    "function_scopes": {
+                        str((scope.function_names or ("",))[0]): scope
+                        for scope in project_scopes
+                        if str((scope.function_names or ("",))[0])
+                    },
+                    "representative_scope": representative_scope,
+                    "representative_identity": representative_identity,
+                    "function_cache_keys": [],
+                    "prepared_graph_views": prepared_graph_views,
+                }
+
+                function_cache_keys: List[str] = []
+                unit_manifest = {
+                    str(row.get("analysis_unit_id") or ""): row
+                    for row in state["analysis_units"]
+                    if isinstance(row, dict)
+                }
+                local_rule_ids = sorted(
+                    rule_state.descriptor.id
+                    for rule_state in effective_rules.rules
+                    if rule_state.state == "enabled"
+                    and rule_state.descriptor.engine
+                    in {"cpp_regex", "cpp_clang_cfg", "cpp_clang_matcher"}
+                )
+                for (
+                    function_scope,
+                    impl,
+                    _wrapper_context,
+                    unit_id,
+                    fact_summary,
+                ) in function_work:
+                    self._cancellation_token.raise_if_cancelled()
+                    function = str(
+                        (function_scope.function_names or (representative_entry.function_name,))[0]
+                    )
+                    cache_key = self._fast_static_cache_identity(
+                        build_context_id=build_context_id,
+                        function_scope=function_scope,
+                        wrapper_context=_wrapper_context,
+                        build_context=build_context,
+                        semantic_overlay=overlay,
+                    )
+                    cache_path = cache_root / f"{cache_key}.json" if cache_root else None
+                    function_cache_keys.append(cache_key)
+                    build_runtime[build_context_id]["function_cache_keys"].append(cache_key)
+                    findings = (
+                        self._read_fast_static_cache(
+                            cache_path,
+                            cache_key=cache_key,
+                            build_context_id=build_context_id,
+                            unit_kind="function",
+                            unit_identity=function_scope.usr,
+                        )
+                        if cache_path is not None
+                        else None
+                    )
+                    cache_hit = findings is not None
+                    semantic_contract_events: List[Dict[str, Any]] = []
+                    semantic_contract_references: List[Dict[str, Any]] = []
+                    semantic_contract_trace_status = "unavailable"
+                    if findings is None:
+                        if cache_path is not None and cache_path.exists():
+                            state["cache"]["invalid_entries"] += 1
+                        generator = ClangAstCfgCandidateGenerator(
+                            program_facts_provider=(
+                                lambda *_args, _summary=fact_summary, **_kwargs: (
+                                    _summary.facts_copy()
+                                )
+                            ),
+                            semantics=semantics,
+                            semantic_overlay=overlay,
+                            tooling_evidence_provider=helper._clang_tooling_evidence_for,
+                            rule_policy=self.base_config.effective_rules.policy,
+                            restrict_to_semantics=True,
+                        )
+                        findings = generator.generate_issues(
+                            function,
+                            str(impl.get("code") or ""),
+                            str(impl.get("file") or function_scope.source),
+                            allowed_skills=None,
+                        )
+                        # Fast owns one project-level function analysis unit,
+                        # but that unit must execute every enabled local
+                        # deterministic engine.  Historically the telemetry
+                        # declared cpp_regex rules as executed while this path
+                        # only ran the Clang CFG facade, which silently dropped
+                        # several high-signal pre-MR checks (double free,
+                        # recursive lookup under a held lock, stale fd, ...).
+                        regex_generator = RegexCandidateGenerator(
+                            program_facts_provider=(
+                                lambda *_args, _summary=fact_summary, **_kwargs: (
+                                    _summary.facts_copy()
+                                )
+                            ),
+                            semantics=semantics,
+                            rule_policy=self.base_config.effective_rules.policy,
+                            restrict_to_semantics=True,
+                        )
+                        findings.extend(
+                            regex_generator.generate_issues(
+                                function,
+                                str(impl.get("code") or ""),
+                                str(impl.get("file") or function_scope.source),
+                                allowed_skills=None,
+                            )
+                        )
+                        state["local_engine_executions"]["cpp_clang_cfg"] += 1
+                        state["local_engine_executions"]["cpp_regex"] += 1
+                        semantic_contract_events = _semantic_contract_observation_rows(
+                            generator.last_semantic_events
+                        )
+                        semantic_contract_references = _semantic_contract_reference_rows(
+                            _wrapper_context, semantics.contracts
+                        )
+                        semantic_contract_trace_status = _semantic_contract_trace_status(
+                            _wrapper_context, semantics.contracts
+                        )
+                        findings.extend(
+                            clang_native_matcher_candidates_from_program_facts(
+                                function,
+                                str(impl.get("file") or function_scope.source),
+                                fact_summary.facts_copy(),
+                                semantics,
+                                rule_policy=self.base_config.effective_rules.policy,
+                            )
+                        )
+                        findings.extend(
+                            helper._clang_tooling_matcher_candidates_from_evidence(
+                                function,
+                                str(impl.get("file") or function_scope.source),
+                                helper._clang_tooling_evidence_for(
+                                    func_name=function,
+                                    file_path=str(impl.get("file") or function_scope.source),
+                                    start_line=_integer_or_zero(impl.get("start_line")),
+                                    end_line=_integer_or_zero(impl.get("end_line")),
+                                ),
+                                rule_policy=self.base_config.effective_rules.policy,
+                            )
+                        )
+                        state["local_engine_executions"]["cpp_clang_matcher"] += 1
+                        extension_state = {
+                            "entry_func": function,
+                            "entry_identity": representative_identity,
+                            "impl_result": impl,
+                            "engine_capabilities": {},
+                            "failed_deterministic_work": [],
+                        }
+                        findings.extend(helper._detect_extension_rule_candidates(extension_state))
+                        state["local_engine_executions"]["extension_provider"] += 1
+                        findings = helper._apply_candidate_validation_budget(
+                            dedupe_rule_candidates(findings)
+                        )
+                        state["cache"]["cold_misses"] += 1
+                        state["cache"]["local_cold_misses"] += 1
+                        state["local_analysis_executions"] += 1
+                        state["rule_execution"]["executed_functions"] += 1
+                        if cache_path is not None:
+                            try:
+                                self._write_fast_static_cache(
+                                    cache_path,
+                                    cache_key=cache_key,
+                                    build_context_id=build_context_id,
+                                    unit_kind="function",
+                                    unit_identity=function_scope.usr,
+                                    candidates=findings,
+                                )
+                            except (OSError, TypeError, ValueError):
+                                state["cache"]["write_failures"] += 1
+                    else:
+                        state["cache"]["hot_hits"] += 1
+                        state["cache"]["local_hot_hits"] += 1
+                        state["cache"]["reused_candidate_count"] += len(findings)
+                        try:
+                            semantic_contract_events = _semantic_contract_observation_rows(
+                                semantics.contracts.trace_calls(_wrapper_context)
+                            )
+                            semantic_contract_references = _semantic_contract_reference_rows(
+                                _wrapper_context, semantics.contracts
+                            )
+                            semantic_contract_trace_status = _semantic_contract_trace_status(
+                                _wrapper_context, semantics.contracts
+                            )
+                        except (KeyError, TypeError, ValueError) as exc:
+                            semantic_contract_trace_status = f"unavailable:{type(exc).__name__}"
+                    manifest = unit_manifest.get(unit_id)
+                    if manifest is not None:
+                        manifest["execution_status"] = "cache_reused" if cache_hit else "executed"
+                        manifest["candidate_count"] = len(findings)
+                        manifest["executed_rule_ids"] = list(local_rule_ids)
+                        manifest["semantic_contract_trace_status"] = semantic_contract_trace_status
+                        manifest["semantic_contract_events"] = semantic_contract_events
+                        manifest["semantic_contract_references"] = semantic_contract_references
+                    if not cache_hit:
+                        executed = state["rule_execution"]["executed_by_rule"]
+                        for rule_state in effective_rules.rules:
+                            if rule_state.state != "enabled":
+                                continue
+                            if rule_state.descriptor.engine not in {
+                                "cpp_regex",
+                                "cpp_clang_cfg",
+                                "cpp_clang_matcher",
+                            }:
+                                continue
+                            rule_id = rule_state.descriptor.id
+                            executed[rule_id] = executed.get(rule_id, 0) + 1
+                    else:
+                        reused = state["rule_execution"]["cache_reused_by_rule"]
+                        for rule_state in effective_rules.rules:
+                            if rule_state.state != "enabled":
+                                continue
+                            if rule_state.descriptor.engine not in {
+                                "cpp_regex",
+                                "cpp_clang_cfg",
+                                "cpp_clang_matcher",
+                            }:
+                                continue
+                            rule_id = rule_state.descriptor.id
+                            reused[rule_id] = reused.get(rule_id, 0) + 1
+                    attribution = list(routes.get(function) or [])
+                    reachability: Dict[str, Any] = {
+                        "status": "reachable" if attribution else "unknown",
+                        "reachable": True if attribution else None,
+                        "entries": sorted({str(row["entry_identity"]) for row in attribution}),
+                        "call_paths": [list(row["call_path"]) for row in attribution],
+                    }
+                    if not attribution:
+                        reachability["coverage_gap"] = "entry_path_not_closed_in_current_graph"
+                    for issue in findings:
+                        issue["build_context_id"] = build_context_id
+                        issue["analysis_unit_id"] = unit_id
+                        # Validation must reopen the exact function instance
+                        # that produced the candidate. Binding every issue to
+                        # the build's representative entry made other source
+                        # files and anonymous-namespace functions impossible
+                        # to resolve despite current native facts.
+                        issue["validation_scope_identity"] = function_scope.identity
+                        issue["reachability_attribution"] = reachability
+                        issue["entry_identity"] = (
+                            reachability["entries"][0]
+                            if reachability["entries"]
+                            else representative_identity
+                        )
+                        issue["call_path"] = (
+                            list(reachability["call_paths"][0])
+                            if reachability["call_paths"]
+                            else []
+                        )
+                        issue["fast_static_scan_v1"] = True
+                    annotated = helper._annotate_candidate_issues(
+                        findings,
+                        checker=helper._local_candidate_checker(),
+                        path_kind="fast_project_function_static",
+                    )
+                    raw_for_build.extend(annotated)
+                state["timings_seconds"][f"{build_context_id}:local"] = round(
+                    time.monotonic() - local_started, 4
+                )
+
+                graph_started = time.monotonic()
+                graph_unit_id = self._fast_analysis_unit_id(build_context_id, "graph")
+                graph_delegated = build_context_id in linked_graph_builds
+                graph_cache_key = self._fast_static_graph_cache_identity(
+                    build_context_id=build_context_id,
+                    build_context=build_context,
+                    function_cache_keys=function_cache_keys,
+                    semantic_overlay=overlay,
+                    link_receipts=link_receipts_by_build.get(build_context_id, ()),
+                )
+                graph_cache_path = (
+                    cache_root / f"graph-{graph_cache_key}.json" if cache_root else None
+                )
+                graph_findings = (
+                    []
+                    if graph_delegated
+                    else (
+                        self._read_fast_static_cache(
+                            graph_cache_path,
+                            cache_key=graph_cache_key,
+                            build_context_id=build_context_id,
+                            unit_kind="graph",
+                            unit_identity=graph_unit_id,
+                        )
+                        if graph_cache_path is not None
+                        else None
+                    )
+                )
+                graph_cache_hit = not graph_delegated and graph_findings is not None
+                if graph_findings is None:
+                    if graph_cache_path is not None and graph_cache_path.exists():
+                        state["cache"]["invalid_entries"] += 1
+                    graph_generator = GraphCandidateGenerator(
+                        scoped_index,
+                        semantics,
+                        semantic_overlay=overlay,
+                        rule_policy=self.base_config.effective_rules.policy,
+                        restrict_to_semantics=True,
+                    )
+                    graph_findings = graph_generator.generate_for_prepared_views(
+                        build_runtime[build_context_id]["prepared_graph_views"],
+                        include_view_rules=True,
+                        include_batch_rules=True,
+                    )
+                    graph_findings = dedupe_rule_candidates(graph_findings)
+                    state["graph_analysis_units"] += 1
+                    state["cache"]["cold_misses"] += 1
+                    state["cache"]["graph_cold_misses"] += 1
+                    if graph_cache_path is not None:
+                        try:
+                            self._write_fast_static_cache(
+                                graph_cache_path,
+                                cache_key=graph_cache_key,
+                                build_context_id=build_context_id,
+                                unit_kind="graph",
+                                unit_identity=graph_unit_id,
+                                candidates=graph_findings,
+                            )
+                        except (OSError, TypeError, ValueError):
+                            state["cache"]["write_failures"] += 1
+                else:
+                    state["cache"]["hot_hits"] += 1
+                    state["cache"]["graph_hot_hits"] += 1
+                    state["cache"]["reused_candidate_count"] += len(graph_findings)
+                all_routes = [
+                    row for function in sorted(routes) for row in routes.get(function, [])
+                ]
+                graph_reachability: Dict[str, Any] = {
+                    "status": "reachable" if all_routes else "unknown",
+                    "reachable": True if all_routes else None,
+                    "entries": sorted({str(row["entry_identity"]) for row in all_routes}),
+                    "call_paths": [list(row["call_path"]) for row in all_routes],
+                }
+                if not all_routes:
+                    graph_reachability["coverage_gap"] = "entry_path_not_closed_in_current_graph"
+                if not graph_delegated:
+                    state["unique_graph_units"] += 1
+                    for issue in graph_findings:
+                        issue["build_context_id"] = build_context_id
+                        issue["analysis_unit_id"] = graph_unit_id
+                        issue["validation_scope_identity"] = representative_scope.identity
+                        issue["reachability_attribution"] = graph_reachability
+                        issue["entry_identity"] = representative_identity
+                        issue["fast_static_scan_v1"] = True
+                    raw_for_build.extend(
+                        helper._annotate_candidate_issues(
+                            graph_findings,
+                            checker=helper._graph_candidate_checker(),
+                            path_kind="fast_project_graph_static",
+                        )
+                    )
+                    graph_rule_counter = state["rule_execution"][
+                        "cache_reused_by_rule" if graph_cache_hit else "executed_by_rule"
+                    ]
+                    graph_rule_ids: List[str] = []
+                    for rule_state in effective_rules.rules:
+                        if (
+                            rule_state.state == "enabled"
+                            and rule_state.descriptor.engine == "cpp_graph"
+                        ):
+                            rule_id = rule_state.descriptor.id
+                            graph_rule_ids.append(rule_id)
+                            graph_rule_counter[rule_id] = graph_rule_counter.get(rule_id, 0) + 1
+                    state["analysis_units"].append(
+                        {
+                            "analysis_unit_id": graph_unit_id,
+                            "build_context_id": build_context_id,
+                            "usr": "",
+                            "file": str(representative_scope.source or ""),
+                            "function": "__translation_unit_graph__",
+                            "execution_status": ("cache_reused" if graph_cache_hit else "executed"),
+                            "candidate_count": len(graph_findings),
+                            "executed_rule_ids": sorted(graph_rule_ids),
+                        }
+                    )
+                state["timings_seconds"][f"{build_context_id}:graph"] = round(
+                    time.monotonic() - graph_started, 4
+                )
+
+                backend_started = time.monotonic()
+                backend_state = {
+                    "entry_func": representative_entry.function_name,
+                    "entry_identity": representative_identity,
+                    "impl_result": {},
+                    "engine_capabilities": {},
+                    "failed_deterministic_work": [],
+                }
+                backend_findings = helper._detect_instance_backend_signals(
+                    backend_state,
+                    entry_func=representative_entry.function_name,
+                    reachable_funcs=set(function_names),
+                )
+                backend_unit_id = self._fast_analysis_unit_id(build_context_id, "backend")
+                for issue in backend_findings:
+                    issue["build_context_id"] = build_context_id
+                    issue["analysis_unit_id"] = backend_unit_id
+                    issue["validation_scope_identity"] = representative_scope.identity
+                    issue["reachability_attribution"] = graph_reachability
+                    issue["entry_identity"] = representative_identity
+                    issue["fast_static_scan_v1"] = True
+                raw_for_build.extend(
+                    helper._annotate_candidate_issues(
+                        dedupe_rule_candidates(backend_findings),
+                        checker=helper._backend_signal_checker(),
+                        path_kind="fast_project_backend_static",
+                    )
+                )
+                state["backend_analysis_units"] += 1
+                state["analysis_units"].append(
+                    {
+                        "analysis_unit_id": backend_unit_id,
+                        "build_context_id": build_context_id,
+                        "usr": "",
+                        "file": str(representative_scope.source or ""),
+                        "function": "__backend_signals__",
+                        "execution_status": "executed",
+                        "candidate_count": len(backend_findings),
+                        "executed_rule_ids": sorted(
+                            {
+                                str(issue.get("rule_id") or issue.get("rule") or "")
+                                for issue in backend_findings
+                                if str(issue.get("rule_id") or issue.get("rule") or "")
+                            }
+                        ),
+                    }
+                )
+                state["timings_seconds"][f"{build_context_id}:backend"] = round(
+                    time.monotonic() - backend_started, 4
+                )
+                capabilities = helper._engine_capabilities()
+                degraded_units: List[Dict[str, Any]] = []
+                for name, details in capabilities.items():
+                    if not isinstance(details, dict):
+                        continue
+                    capability_status = str(details.get("status") or "").lower()
+                    detail = str(details.get("detail") or "").lower()
+                    degraded = capability_status in {
+                        "partial",
+                        "degraded",
+                        "failed",
+                        "interrupted",
+                        "unavailable",
+                        "fallback",
+                    }
+                    # A scoped SVF exclusion is a declared coverage gap when
+                    # the producer did not return an exact instance result.
+                    if (
+                        name == "svf_taint_query"
+                        and capability_status == "excluded"
+                        and detail
+                        and not detail.startswith("complete:")
+                    ):
+                        degraded = True
+                    if degraded:
+                        degraded_units.append(
+                            {
+                                "engine": str(name),
+                                "status": capability_status or "unknown",
+                                "reason": str(details.get("reason") or ""),
+                                "detail": str(details.get("detail") or ""),
+                            }
+                        )
+                state["backend_health"]["by_build_context"][build_context_id] = {
+                    "degraded": bool(degraded_units),
+                    "units": degraded_units,
+                }
+                state["backend_health"]["degraded_units"].extend(
+                    {"build_context_id": build_context_id, **item} for item in degraded_units
+                )
+                state["backend_health"]["degraded"] = bool(
+                    state["backend_health"]["degraded_units"]
+                )
+
+                state["candidate_funnel"]["raw"] += len(raw_for_build)
+                merged = merge_unified_evidence_candidates(
+                    raw_for_build,
+                    enabled=helper._candidate_backend_profile() == "unified",
+                )
+                merged = dedupe_rule_candidates(merged)
+                state["candidate_funnel"]["dedup"] += len(merged)
+                emitted = state["rule_execution"]["emitted_by_rule"]
+                for issue in merged:
+                    rule_id = str(issue.get("rule_id") or issue.get("rule") or "")
+                    if rule_id:
+                        emitted[rule_id] = emitted.get(rule_id, 0) + 1
+                buffered.append(
+                    (
+                        helper,
+                        {
+                            "candidate_ledger": self._candidate_ledger,
+                            "entry_identity": representative_identity,
+                            "run_id": self.run_id,
+                        },
+                        merged,
+                    )
+                )
+                state["timings_seconds"][f"{build_context_id}:total"] = round(
+                    time.monotonic() - build_started, 4
+                )
+                state["completed_build_contexts"].append(build_context_id)
+            except CancellationError:
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "[fast-static] build context %s failed; entry discovery will be restored",
+                    build_context_id,
+                )
+                state["failures"].append(
+                    {
+                        "build_context_id": build_context_id,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+
+        # A final executable link is not always available for pre-MR library
+        # scans.  Preserve that formal coverage gap, but still join the one
+        # narrow lifecycle shape whose source identities are independently
+        # exact: a C++ ``new`` factory feeds a returned aggregate member, a
+        # constructor stores the aggregate, and the matching destructor omits
+        # that member while cleaning a sibling.  Do not run the general graph
+        # suite here; every other cross-TU rule remains link-record gated.
+        unlinked_started = time.monotonic()
+        prepared_occurrences: Dict[
+            Tuple[str, str, str],
+            List[Tuple[str, Any, Mapping[str, Any], InstanceScope]],
+        ] = {}
+        for runtime_build_id, runtime in build_runtime.items():
+            if runtime_build_id in linked_graph_builds:
+                continue
+            scopes_by_name = runtime.get("function_scopes") or {}
+            for view, facts in runtime.get("prepared_graph_views") or []:
+                scope = scopes_by_name.get(str(view.name))
+                if not isinstance(scope, InstanceScope):
+                    continue
+                occurrence_key = (str(view.name), str(view.file_path), str(view.signature))
+                prepared_occurrences.setdefault(occurrence_key, []).append(
+                    (runtime_build_id, view, facts, scope)
+                )
+        # The same source/signature appearing in multiple BuildContexts is a
+        # variant ambiguity, not a wildcard.  Exclude it rather than mixing
+        # evidence across compiler variants.
+        unique_unlinked = [
+            rows[0] for rows in prepared_occurrences.values() if len(rows) == 1
+        ]
+        if unique_unlinked:
+            first_build = unique_unlinked[0][0]
+            first_runtime = build_runtime[first_build]
+            project_graph = GraphCandidateGenerator(
+                wrap_scoped_code_index(
+                    self.code_index,
+                    first_runtime["representative_scope"],
+                ),
+                first_runtime["semantics"],
+                semantic_overlay=first_runtime["overlay"],
+                rule_policy=self.base_config.effective_rules.policy,
+                restrict_to_semantics=True,
+            )
+            project_findings = project_graph.generate_unlinked_factory_cleanup_candidates(
+                [(view, facts) for _build, view, facts, _scope in unique_unlinked]
+            )
+            unlinked_owners = {
+                (str(view.name), str(view.file_path)): (build, scope)
+                for build, view, _facts, scope in unique_unlinked
+            }
+            project_unit_id = self._fast_analysis_unit_id(
+                "project-unlinked", "factory-member-lifecycle"
+            )
+            annotated_project: List[Dict[str, Any]] = []
+            for issue in project_findings:
+                sink_owner = unlinked_owners.get(
+                    (str(issue.get("function") or ""), str(issue.get("file_path") or ""))
+                )
+                if sink_owner is None:
+                    location_file = str(issue.get("location") or "").rsplit(":", 1)[0]
+                    sink_owner = unlinked_owners.get(
+                        (str(issue.get("function") or ""), location_file)
+                    )
+                if sink_owner is None:
+                    continue
+                sink_build, sink_scope = sink_owner
+                runtime = build_runtime[sink_build]
+                helper = runtime["helper"]
+                evidence_pack = issue.get("evidence_pack")
+                if isinstance(evidence_pack, dict):
+                    path = evidence_pack.get("path")
+                    path = path if isinstance(path, dict) else {}
+                    participating = []
+                    for key in (
+                        "factory_function",
+                        "constructor_function",
+                        "destructor_function",
+                    ):
+                        function_name = str(path.get(key) or "")
+                        matches = [
+                            {
+                                "function": function_name,
+                                "build_context_id": build,
+                                "usr": scope.usr,
+                                "file": str(view.file_path),
+                            }
+                            for build, view, _facts, scope in unique_unlinked
+                            if str(view.name) == function_name
+                        ]
+                        participating.extend(matches)
+                    evidence_pack["cross_build_contexts"] = participating
+                    evidence_pack["linkage"] = {
+                        "status": "unverified",
+                        "reason": "final_link_record_missing",
+                        "formal_proof": False,
+                        "source_identities_exact": True,
+                    }
+                issue["build_context_id"] = sink_build
+                issue["analysis_unit_id"] = project_unit_id
+                issue["validation_scope_identity"] = sink_scope.identity
+                issue["reachability_attribution"] = {
+                    "status": "unknown",
+                    "reachable": None,
+                    "entries": [],
+                    "call_paths": [],
+                    "coverage_gap": "final_link_record_missing",
+                }
+                issue["entry_identity"] = runtime["representative_identity"]
+                issue["fast_static_scan_v1"] = True
+                issue["unlinked_project_observation"] = True
+                annotated_project.extend(
+                    helper._annotate_candidate_issues(
+                        [issue],
+                        checker=helper._graph_candidate_checker(),
+                        path_kind="fast_project_unlinked_factory_lifecycle",
+                    )
+                )
+            project_candidates = dedupe_rule_candidates(annotated_project)
+            if project_candidates:
+                sink_build = str(project_candidates[0].get("build_context_id") or "")
+                runtime = build_runtime[sink_build]
+                state["candidate_funnel"]["raw"] += len(annotated_project)
+                state["candidate_funnel"]["dedup"] += len(project_candidates)
+                emitted = state["rule_execution"]["emitted_by_rule"]
+                for issue in project_candidates:
+                    rule_id = str(issue.get("rule_id") or issue.get("rule") or "")
+                    if rule_id:
+                        emitted[rule_id] = emitted.get(rule_id, 0) + 1
+                buffered.append(
+                    (
+                        runtime["helper"],
+                        {
+                            "candidate_ledger": self._candidate_ledger,
+                            "entry_identity": runtime["representative_identity"],
+                            "run_id": self.run_id,
+                        },
+                        project_candidates,
+                    )
+                )
+            state["graph_analysis_units"] += 1
+            state["unique_graph_units"] += 1
+            executed = state["rule_execution"]["executed_by_rule"]
+            executed["paired_free_wrapper_omits_dynamic_member"] = (
+                executed.get("paired_free_wrapper_omits_dynamic_member", 0) + 1
+            )
+            state["analysis_units"].append(
+                {
+                    "analysis_unit_id": project_unit_id,
+                    "build_context_id": "project-unlinked",
+                    "usr": "",
+                    "file": "",
+                    "function": "__unlinked_factory_member_lifecycle__",
+                    "execution_status": "executed",
+                    "candidate_count": len(project_findings),
+                    "executed_rule_ids": ["paired_free_wrapper_omits_dynamic_member"],
+                    "coverage_gap": "final_link_record_missing",
+                }
+            )
+        state["timings_seconds"]["project-unlinked:factory-member-lifecycle"] = round(
+            time.monotonic() - unlinked_started, 4
+        )
+
+        # Cross-TU graph rules run once for each real link record.  Function
+        # facts remain owned by their exact BuildContext; the link unit only
+        # provides the call/SCC neighborhood in which those facts interact.
+        for link_group in link_groups:
+            members = [
+                str(value)
+                for value in link_group.get("members") or []
+                if str(value) in build_runtime
+            ]
+            if len(members) <= 1:
+                continue
+            target_id = str(link_group.get("target_id") or "")
+            missing_members = sorted(
+                set(str(value) for value in link_group.get("members") or []) - set(members)
+            )
+            if missing_members:
+                state["unsupported_capabilities"].append(
+                    {
+                        "target_id": target_id,
+                        "reason": "link_group_member_runtime_missing",
+                        "members": missing_members,
+                    }
+                )
+                continue
+            owners: Dict[str, List[str]] = {}
+            for member in members:
+                for function in build_runtime[member]["function_names"]:
+                    owners.setdefault(str(function), []).append(member)
+            ambiguous = {
+                function: sorted(values) for function, values in owners.items() if len(values) != 1
+            }
+            if ambiguous:
+                state["unsupported_capabilities"].append(
+                    {
+                        "target_id": target_id,
+                        "reason": "link_group_function_identity_ambiguous",
+                        "function_count": len(ambiguous),
+                        "functions": ambiguous,
+                    }
+                )
+                continue
+            function_names = set(owners)
+            group_started = time.monotonic()
+            sccs = self._fast_link_group_sccs(function_names)
+            state["link_group_scc_count"] += len(sccs)
+            first_runtime = build_runtime[members[0]]
+            graph_unit_id = self._fast_analysis_unit_id("link-group", target_id)
+            group_build_id = f"link-group:{target_id}"
+            group_cache_key = self._fast_static_graph_cache_identity(
+                build_context_id=group_build_id,
+                build_context={
+                    "target_id": target_id,
+                    "members": members,
+                    "sccs": sccs,
+                },
+                function_cache_keys=[
+                    str(value)
+                    for member in members
+                    for value in build_runtime[member]["function_cache_keys"]
+                ],
+                semantic_overlay=first_runtime["overlay"],
+                link_receipts=[
+                    {
+                        "receipt": dict(link_group.get("receipt") or {}),
+                        "members": members,
+                    }
+                ],
+            )
+            group_cache_path = (
+                cache_root / f"link-graph-{group_cache_key}.json" if cache_root else None
+            )
+            prepared_group_views: List[Tuple[Any, Dict[str, Any]]] = [
+                prepared
+                for member in members
+                for prepared in build_runtime[member]["prepared_graph_views"]
+            ]
+            semantics_by_build = [build_runtime[member]["semantics"] for member in members]
+            link_semantics_by_member: Dict[str, LocalPatternSemantics] = {}
+            projected_contracts: List[Dict[str, Any]] = []
+            for member in members:
+                member_semantics, member_projections = self._project_link_group_semantics(
+                    target_id=target_id,
+                    member_build_context_ids=members,
+                    base_semantics=build_runtime[member]["semantics"],
+                    semantics_by_build=semantics_by_build,
+                )
+                link_semantics_by_member[member] = member_semantics
+                projected_contracts.extend(member_projections)
+            state["semantic_authorization"]["link_group_projected_contracts"] += len(
+                projected_contracts
+            )
+            state["semantic_authorization"]["link_group_projected_identities"].extend(
+                projected_contracts
+            )
+            try:
+                group_findings = (
+                    self._read_fast_static_cache(
+                        group_cache_path,
+                        cache_key=group_cache_key,
+                        build_context_id=group_build_id,
+                        unit_kind="link_group_graph",
+                        unit_identity=graph_unit_id,
+                    )
+                    if group_cache_path is not None
+                    else None
+                )
+                cache_hit = group_findings is not None
+                if group_findings is None:
+                    group_findings = []
+                    # Every function view is evaluated once, using its TU's
+                    # system-header/shadow decisions plus exact-USR contracts
+                    # projected from this closed link group.  All views remain
+                    # available in ``by_name`` for cross-TU relationships.
+                    for member in members:
+                        member_runtime = build_runtime[member]
+                        member_generator = GraphCandidateGenerator(
+                            self.code_index,
+                            link_semantics_by_member[member],
+                            semantic_overlay=member_runtime["overlay"],
+                            rule_policy=self.base_config.effective_rules.policy,
+                            restrict_to_semantics=True,
+                        )
+                        group_findings.extend(
+                            member_generator.generate_for_prepared_views(
+                                prepared_group_views,
+                                include_view_rules=True,
+                                include_batch_rules=False,
+                                view_rule_names=member_runtime["function_names"],
+                            )
+                        )
+                    # Batch detectors execute once over the complete link
+                    # group.  The first member provides the target's system
+                    # catalog; exact project contracts are link-projected.
+                    link_generator = GraphCandidateGenerator(
+                        self.code_index,
+                        link_semantics_by_member[members[0]],
+                        semantic_overlay=first_runtime["overlay"],
+                        rule_policy=self.base_config.effective_rules.policy,
+                        restrict_to_semantics=True,
+                    )
+                    group_findings.extend(
+                        link_generator.generate_for_prepared_views(
+                            prepared_group_views,
+                            include_view_rules=False,
+                            include_batch_rules=True,
+                        )
+                    )
+                    group_findings = dedupe_rule_candidates(group_findings)
+                    for issue in group_findings:
+                        function = str(
+                            issue.get("function")
+                            or issue.get("function_name")
+                            or issue.get("func_name")
+                            or ""
+                        )
+                        owner_build_id = owners.get(function, [""])[0]
+                        runtime = build_runtime.get(owner_build_id) or first_runtime
+                        scope = runtime["function_scopes"].get(function)
+                        issue["build_context_id"] = owner_build_id
+                        issue["analysis_unit_id"] = graph_unit_id
+                        issue["link_group_id"] = target_id
+                        issue["link_group_scc"] = next(
+                            (component for component in sccs if function in component),
+                            [function],
+                        )
+                        issue["validation_scope_identity"] = (
+                            scope.identity
+                            if isinstance(scope, InstanceScope)
+                            else runtime["representative_scope"].identity
+                        )
+                        attribution = list(project_routes.get(function) or [])
+                        issue["reachability_attribution"] = {
+                            "status": "reachable" if attribution else "unknown",
+                            "reachable": True if attribution else None,
+                            "entries": sorted({str(row["entry_identity"]) for row in attribution}),
+                            "call_paths": [list(row["call_path"]) for row in attribution],
+                        }
+                        if not attribution:
+                            issue["reachability_attribution"][
+                                "coverage_gap"
+                            ] = "entry_path_not_closed_in_current_graph"
+                        issue["fast_static_scan_v1"] = True
+                    if group_cache_path is not None:
+                        self._write_fast_static_cache(
+                            group_cache_path,
+                            cache_key=group_cache_key,
+                            build_context_id=group_build_id,
+                            unit_kind="link_group_graph",
+                            unit_identity=graph_unit_id,
+                            candidates=group_findings,
+                        )
+                    state["cache"]["cold_misses"] += 1
+                    state["cache"]["graph_cold_misses"] += 1
+                    state["graph_analysis_units"] += 1
+                else:
+                    state["cache"]["hot_hits"] += 1
+                    state["cache"]["graph_hot_hits"] += 1
+                    state["cache"]["reused_candidate_count"] += len(group_findings)
+                state["unique_graph_units"] += 1
+                state["link_group_graph_units"] += 1
+                graph_rule_counter = state["rule_execution"][
+                    "cache_reused_by_rule" if cache_hit else "executed_by_rule"
+                ]
+                graph_rule_ids = sorted(
+                    rule_state.descriptor.id
+                    for rule_state in effective_rules.rules
+                    if rule_state.state == "enabled" and rule_state.descriptor.engine == "cpp_graph"
+                )
+                for rule_id in graph_rule_ids:
+                    graph_rule_counter[rule_id] = graph_rule_counter.get(rule_id, 0) + 1
+                state["analysis_units"].append(
+                    {
+                        "analysis_unit_id": graph_unit_id,
+                        "build_context_id": group_build_id,
+                        "usr": "",
+                        "file": "",
+                        "function": f"link-group:{target_id}",
+                        "execution_status": "cache_reused" if cache_hit else "executed",
+                        "candidate_count": len(group_findings),
+                        "executed_rule_ids": graph_rule_ids,
+                        "member_build_context_ids": members,
+                        "scc_count": len(sccs),
+                    }
+                )
+                grouped_findings: Dict[str, List[Dict[str, Any]]] = {}
+                for issue in group_findings:
+                    grouped_findings.setdefault(
+                        str(issue.get("build_context_id") or ""), []
+                    ).append(issue)
+                state["candidate_funnel"]["raw"] += len(group_findings)
+                for owner_build_id, findings in grouped_findings.items():
+                    owner_runtime = build_runtime.get(owner_build_id)
+                    if owner_runtime is None:
+                        continue
+                    annotated = owner_runtime["helper"]._annotate_candidate_issues(
+                        findings,
+                        checker=owner_runtime["helper"]._graph_candidate_checker(),
+                        path_kind="fast_link_group_graph_static",
+                    )
+                    deduped = dedupe_rule_candidates(annotated)
+                    state["candidate_funnel"]["dedup"] += len(deduped)
+                    buffered.append(
+                        (
+                            owner_runtime["helper"],
+                            {
+                                "candidate_ledger": self._candidate_ledger,
+                                "entry_identity": owner_runtime["representative_identity"],
+                                "run_id": self.run_id,
+                            },
+                            deduped,
+                        )
+                    )
+                state["timings_seconds"][f"link-group:{target_id}:graph"] = round(
+                    time.monotonic() - group_started,
+                    4,
+                )
+            except CancellationError:
+                raise
+            except Exception as exc:
+                state["failures"].append(
+                    {
+                        "link_group_id": target_id,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+
+        self._cancellation_token.raise_if_cancelled()
+        state["link_coverage"]["observed_targets"] = sorted(
+            set(state["link_coverage"]["observed_targets"])
+        )
+        # Earlier per-TU routing cannot know that a callee is owned by another
+        # member of the same real link record.  Close those edges only after
+        # every exact BuildContext inventory is available.  A symbol absent
+        # from all inventories is retained only when the current index can
+        # still prove that its definition belongs to this project; ordinary
+        # system calls (for example GetLastError) are not project gaps.
+        all_project_functions = {
+            str(function)
+            for runtime in build_runtime.values()
+            for function in runtime.get("function_names") or []
+            if str(function)
+        }
+        genuinely_unclosed: List[Dict[str, Any]] = []
+        for row in state["link_coverage"]["unclosed_edges"]:
+            if not isinstance(row, dict):
+                continue
+            callee = str(row.get("callee") or "")
+            if callee in all_project_functions:
+                continue
+            try:
+                unresolved_impl = (
+                    self.code_index.get_function_impl(
+                        callee,
+                        max_lines=1,
+                        warn_missing=False,
+                    )
+                    if callee
+                    else None
+                )
+            except Exception:
+                genuinely_unclosed.append(row)
+                continue
+            if isinstance(unresolved_impl, dict) and self._source_is_in_project(
+                str(unresolved_impl.get("file") or "")
+            ):
+                genuinely_unclosed.append(row)
+        state["link_coverage"]["unclosed_edges"] = [
+            json.loads(key)
+            for key in sorted(
+                {
+                    json.dumps(row, sort_keys=True, ensure_ascii=False)
+                    for row in genuinely_unclosed
+                    if isinstance(row, dict)
+                }
+            )
+        ]
+        state["analysis_units"] = sorted(
+            state["analysis_units"],
+            key=lambda row: (
+                str(row.get("build_context_id") or ""),
+                str(row.get("analysis_unit_id") or ""),
+            ),
+        )
+        state["unique_function_instances"] = len(seen_units)
+        state["semantic_catalog"]["observed_system_interfaces"] = sorted(observed_system_interfaces)
+        state["semantic_catalog"]["observed_unclassified_system_interfaces"] = sorted(
+            observed_system_interfaces - catalog_classified_names
+        )
+        state["semantic_catalog"]["complete"] = bool(
+            state["semantic_catalog"].get("complete")
+            and not state["semantic_catalog"]["observed_unclassified_system_interfaces"]
+        )
+        authorization = state["semantic_authorization"]
+        for key in (
+            "authorized_identities",
+            "rejected_identities",
+            "project_authorized_identities",
+            "wrapper_authorized_identities",
+            "wrapper_rejected_identities",
+            "link_group_projected_identities",
+        ):
+            identities = {
+                json.dumps(value, sort_keys=True, ensure_ascii=False): dict(value)
+                for value in authorization.get(key) or []
+                if isinstance(value, dict)
+            }
+            authorization[key] = [identities[value] for value in sorted(identities)]
+        authorization["link_group_projected_contracts"] = len(
+            authorization["link_group_projected_identities"]
+        )
+        # Counts are identities, not repeated call sites or fixed-point passes.
+        authorization["authorized"] = len(authorization["authorized_identities"])
+        authorization["wrapper_contracts_authorized"] = len(
+            authorization["wrapper_authorized_identities"]
+        )
+        authorization["project_contracts_authorized"] = len(
+            authorization["project_authorized_identities"]
+        )
+        build_authorization: Dict[str, Dict[str, int]] = {}
+        for kind, rows in (
+            ("builtin_authorized", authorization["authorized_identities"]),
+            ("builtin_rejected", authorization["rejected_identities"]),
+            ("project_authorized", authorization["project_authorized_identities"]),
+            ("derived_wrapper_authorized", authorization["wrapper_authorized_identities"]),
+            ("derived_wrapper_rejected", authorization["wrapper_rejected_identities"]),
+        ):
+            for row in rows:
+                build = str(row.get("build_context_id") or "unknown")
+                bucket = build_authorization.setdefault(build, {})
+                bucket[kind] = bucket.get(kind, 0) + 1
+        authorization["by_build_context"] = {
+            build: dict(sorted(values.items()))
+            for build, values in sorted(build_authorization.items())
+        }
+        if state["cache"]["status"] != "unavailable":
+            hits = int(state["cache"]["hot_hits"] or 0)
+            misses = int(state["cache"]["cold_misses"] or 0)
+            state["cache"]["status"] = (
+                "hot" if hits and not misses else "mixed" if hits and misses else "cold"
+            )
+        executed_rules = state["rule_execution"]["executed_by_rule"]
+        reused_rules = state["rule_execution"]["cache_reused_by_rule"]
+        skipped_rules = state["rule_execution"]["skipped_with_reason"]
+        for rule_state in effective_rules.rules:
+            if rule_state.state != "enabled":
+                continue
+            rule_id = rule_state.descriptor.id
+            if rule_id in executed_rules or rule_id in reused_rules:
+                continue
+            skipped_rules[rule_id] = (
+                "analysis_unit_failed" if state["failures"] else "no_applicable_analysis_unit"
+            )
+        if state["failures"]:
+            state["status"] = "fallback_to_entry_discovery"
+            state["activated"] = False
+            state["candidate_funnel"]["raw"] = 0
+            state["candidate_funnel"]["dedup"] = 0
+        else:
+            for helper, register_state, candidates in buffered:
+                for candidate in candidates:
+                    function = str(
+                        candidate.get("function")
+                        or candidate.get("function_name")
+                        or candidate.get("func_name")
+                        or ""
+                    )
+                    attribution = list(project_routes.get(function) or [])
+                    reachability = {
+                        "status": "reachable" if attribution else "unknown",
+                        "reachable": True if attribution else None,
+                        "entries": sorted({str(row["entry_identity"]) for row in attribution}),
+                        "call_paths": [list(row["call_path"]) for row in attribution],
+                    }
+                    if not attribution:
+                        reachability["coverage_gap"] = "entry_path_not_closed_in_current_graph"
+                    candidate["reachability_attribution"] = reachability
+                    if attribution:
+                        candidate["entry_identity"] = reachability["entries"][0]
+                        candidate["call_path"] = list(reachability["call_paths"][0])
+                helper._register_candidate_issues(
+                    register_state,
+                    candidates,
+                    source="fast_project_static_pass",
+                )
+            state["status"] = (
+                "complete_with_coverage_gaps"
+                if state["link_coverage"]["uncovered_build_contexts"]
+                or state["link_coverage"]["unclosed_edges"]
+                or state["planning_gaps"]
+                or state["unsupported_capabilities"]
+                or state["backend_health"]["degraded"]
+                else "complete"
+            )
+            state["activated"] = True
+            # Publish only the atomically admitted static inventory. A failed
+            # build must not leak partial facts into semantic discovery.
+            if resolve_discovery_profile(self.base_config).name == "deep":
+                self._hierarchical_static_inputs = (build_runtime, link_groups)
+        state["formal_qualified"] = bool(
+            state["activated"]
+            and not state["link_coverage"]["uncovered_build_contexts"]
+            and not state["link_coverage"]["unclosed_edges"]
+            and not state["planning_gaps"]
+            and not state["unsupported_capabilities"]
+            and not state["backend_health"]["degraded"]
+            and state.get("semantic_catalog", {}).get("complete") is True
+            and not state.get("semantic_catalog", {}).get("observed_unclassified_system_interfaces")
+            and state.get("project_semantics", {}).get("ready") is True
+            and state["completed_build_contexts"] == state["planned_build_contexts"]
+        )
+        state["timings_seconds"]["static_total"] = round(time.monotonic() - started, 4)
+        logger.info(
+            "[fast-static] status=%s functions=%d local_exec=%d graph_units=%d "
+            "raw=%d dedup=%d duplicate_local=%d duration=%.2fs",
+            state["status"],
+            state["unique_function_instances"],
+            state["local_analysis_executions"],
+            state["graph_analysis_units"],
+            state["candidate_funnel"]["raw"],
+            state["candidate_funnel"]["dedup"],
+            state["duplicate_local_executions"],
+            state["timings_seconds"]["static_total"],
+        )
 
     def _run_project_deterministic_fact_pass(
         self,
@@ -2945,6 +6125,8 @@ class ParallelAnalyzer:
                 max_retries=llm_cfg.max_retries,
                 retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                 max_tokens=llm_cfg.max_tokens,
+                context_window=llm_cfg.context_window,
+                model_context_windows=llm_cfg.model_context_windows,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),
@@ -3195,6 +6377,7 @@ class ParallelAnalyzer:
         self,
         entry: FunctionEntry,
         instance_scope: Optional[InstanceScope] = None,
+        skip_candidate_discovery: bool = False,
     ) -> ParallelAnalysisResult:
         """Analyze a single function entry with optional custom prompt."""
 
@@ -3205,6 +6388,13 @@ class ParallelAnalyzer:
             if instance_scope is not None
             else self.code_index
         )
+        if skip_candidate_discovery and instance_scope is not None:
+            return self._project_fast_static_entry_result(
+                entry,
+                instance_scope,
+                scoped_index,
+                started=start_time,
+            )
         if instance_scope is not None:
             # Per-instance contracts come only from the generator's standard
             # roots.  The project-wide semantic model and overlay are never used
@@ -3237,12 +6427,13 @@ class ParallelAnalyzer:
             phase_started = time.time()
             config_copy = self._create_config_for_entry(entry)
             if instance_scope is not None:
-                self._instance_semantic_snapshot(instance_scope)
+                self._frozen_instance_semantic_snapshot(instance_scope)
                 scoped_index = _InstanceEntryLookupIndex(
                     self.code_index,
                     instance_scope,
                     entry,
                     semantics_context=self._instance_semantics_context,
+                    batch_guarded=True,
                 )
             logger.info(
                 "[entry-worker] config-ready entry=%s key=%s duration=%.2fs",
@@ -3254,7 +6445,7 @@ class ParallelAnalyzer:
             # Create analyzer and run with shared components
             phase_started = time.time()
             instance_snapshot = (
-                self._instance_semantic_snapshot(instance_scope)
+                self._frozen_instance_semantic_snapshot(instance_scope)
                 if instance_scope is not None
                 else None
             )
@@ -3283,8 +6474,9 @@ class ParallelAnalyzer:
                 reproduction_service=getattr(self, "reproduction_service", None),
                 instance_semantics_snapshot=instance_snapshot,
                 instance_semantics_current=(
-                    instance_context.is_current if instance_context is not None else None
+                    instance_context.is_frozen if instance_context is not None else None
                 ),
+                skip_candidate_discovery=skip_candidate_discovery,
             )
             logger.info(
                 "[entry-worker] analyzer-ready entry=%s key=%s duration=%.2fs",
@@ -3313,7 +6505,7 @@ class ParallelAnalyzer:
                     self.base_config.project.project_root
                 ):
                     raise ValueError("instance_entry_workflow_identity_changed")
-                self._instance_semantic_snapshot(instance_scope)
+                self._frozen_instance_semantic_snapshot(instance_scope)
             logger.info(
                 "[entry-worker] run-end entry=%s key=%s duration=%.2fs",
                 entry.function_name,
@@ -3447,6 +6639,106 @@ class ParallelAnalyzer:
             )
         finally:
             self._close_thread_llm_sessions()
+
+    def _project_fast_static_entry_result(
+        self,
+        entry: FunctionEntry,
+        scope: InstanceScope,
+        scoped_index: Any,
+        *,
+        started: float,
+    ) -> ParallelAnalysisResult:
+        """Attach entry attribution without rerunning an entry workflow.
+
+        The project pass has already executed and atomically registered every
+        detector output.  Reconstructing an ``Analyzer`` for each public entry
+        would only rewrite empty reports and snapshots; it cannot discover or
+        validate another candidate.  This projection retains the exact
+        instance collection closure required by recovery while making entry
+        work a metadata-only operation.
+        """
+
+        context = getattr(self, "_instance_semantics_context", None)
+        snapshot = getattr(context, "snapshots", {}).get(scope.identity)
+        if snapshot is None or snapshot.scope != scope:
+            raise ValueError("instance_semantics_missing_for_fast_entry_projection")
+        self._cancellation_token.raise_if_cancelled()
+        scope_metadata = self._instance_scope_metadata(scope, scoped_index)
+        entry_identity = entry.identity_key(self.base_config.project.project_root)
+        selected_stages = ["local", "graph", "backend", "merge", "persist", "registration"]
+        collection = {
+            "schema": "zscope.instance-collection-closure.v1",
+            "supported": True,
+            "selected_workflow": list(DEFAULT_SCAN_STEP_IDS),
+            "selected_stages": selected_stages,
+            "semantics_digest": snapshot.digest,
+            "scope": snapshot.scope.to_payload(),
+            "stages": {
+                stage: {
+                    "disposition": "unsupported" if stage == "persist" else "complete",
+                    "reason": (
+                        "scoped_raw_knowledge_db_unavailable"
+                        if stage == "persist"
+                        else "fast_project_static_pass_precollected"
+                    ),
+                }
+                for stage in selected_stages
+            },
+            "collection_closed": True,
+            "input_current": True,
+            "active_stage_errors": [],
+            "unsupported_stages": {"persist": "scoped_raw_knowledge_db_unavailable"},
+            "excluded_capabilities": {
+                "semantic_modeling": "instance_scoped_builtin_confirmed_project_no_scan_discovery",
+                "svf_taint_query": "scoped_raw_knowledge_db_unavailable",
+            },
+            "excluded_subchannels": (
+                {"clang_knowledge_db": "scoped_raw_knowledge_db_unavailable"}
+                if hasattr(scoped_index, "get_instance_backend_signals")
+                else {
+                    "svf_taint_query": "scoped_raw_knowledge_db_unavailable",
+                    "clang_knowledge_db": "scoped_raw_knowledge_db_unavailable",
+                }
+            ),
+            "entry_identity": entry_identity,
+        }
+        self._cancellation_token.raise_if_cancelled()
+        duration = time.monotonic() - started
+        metadata = {
+            **scope_metadata,
+            "instance_semantics": snapshot.authority_policy,
+            "instance_semantics_schema": snapshot.schema,
+            "instance_semantics_digest": snapshot.digest,
+            "instance_collection": deepcopy(collection),
+            "fast_static_entry_projection": True,
+            "context_tokens": 0,
+            "cumulative_prompt_tokens": 0,
+            "cumulative_completion_tokens": 0,
+            "cumulative_total_tokens": 0,
+        }
+        logger.info(
+            "[fast-static] entry-attribution entry=%s build=%s duration=%.4fs",
+            entry.function_name,
+            scope.build_context_id,
+            duration,
+        )
+        return ParallelAnalysisResult(
+            function_name=entry.function_name,
+            verdict="no_issue_found",
+            entry_identity=entry_identity,
+            entry_file_path=entry.normalized_file_path(self.base_config.project.project_root),
+            entry_signature=FunctionEntry.normalize_signature(entry.signature),
+            duration_seconds=duration,
+            diff_focus=entry.diff_focus,
+            metadata=metadata,
+            build_context_id=scope.build_context_id,
+            usr=scope.usr,
+            instance_identity=scope.identity,
+            instance_scope_report=scope_metadata.get("instance_scope_report"),
+            instance_collection=deepcopy(collection),
+            execution_completeness="complete",
+            scan_outcome="clean",
+        )
 
     @staticmethod
     def _entry_budget_metadata(
@@ -3634,7 +6926,7 @@ class ParallelAnalyzer:
         project_id = str(
             getattr(project_config, "project_id", "") or Path(project_root).name or "project"
         )
-        source_root = str(getattr(project_config, "source_root", "") or "")
+        source_root = str(getattr(project_config, "project_root", "") or "")
         batch_run_id = str(getattr(self, "run_id", "") or "")
         benchmark_ablation_override = getattr(self, "_benchmark_ablation_override", None)
         benchmark_ablation_metadata = (
@@ -3912,12 +7204,212 @@ class ParallelAnalyzer:
         global_validation_duration = float(
             getattr(self, "_global_validation_duration_seconds", 0.0) or 0.0
         )
+        fast_static_state = deepcopy(getattr(self, "_fast_static_scan_state", {}) or {})
+        fast_funnel = fast_static_state.setdefault("candidate_funnel", {})
+        terminal_counts = {
+            "confirmed": 0,
+            "rejected": 0,
+            "needs_review": 0,
+        }
+        deduplicated_alias_count = 0
+        unresolved_terminal_count = 0
+        for outcome in canonical_outcomes:
+            disposition = str(outcome.get("candidate_disposition") or "").lower()
+            if disposition == "confirmed":
+                terminal_counts["confirmed"] += 1
+            elif disposition in {"rejected_with_proof", "rejected_with_evidence"}:
+                terminal_counts["rejected"] += 1
+            elif disposition == "needs_review":
+                terminal_counts["needs_review"] += 1
+            elif disposition == "deduplicated_alias":
+                # Alias records preserve the audit trail for an occurrence
+                # already represented by another canonical validation group.
+                # They are terminal, but are not themselves a group requiring
+                # a second confirmed/rejected/review decision.
+                deduplicated_alias_count += 1
+            elif (
+                disposition != "shadow_observation"
+                and str(outcome.get("record_role") or "") != "operational_obligation"
+            ):
+                unresolved_terminal_count += 1
+        fast_funnel.update(terminal_counts)
+        fast_funnel["deduplicated_aliases"] = deduplicated_alias_count
+        terminal_total = sum(terminal_counts.values())
+        fast_funnel["terminal"] = terminal_total
+        # ``dedup`` counts build-scoped candidate records while terminal
+        # outcomes count canonical validation groups.  Several records may
+        # intentionally share one group, so subtracting the two units invents
+        # unresolved work.  The lifecycle projection itself is authoritative:
+        # every canonical group must have one of the three terminal states.
+        fast_funnel["unresolved_terminal"] = (
+            unresolved_terminal_count
+            if canonical_projection
+            else int(int(fast_funnel.get("dedup", 0) or 0) > 0)
+        )
+        fast_funnel["terminal_count_unit"] = "canonical_validation_group"
+        fast_funnel["dedup_count_unit"] = "build_scoped_candidate_record"
+        validator_telemetry: Dict[str, Any] = {
+            "raw_verdicts": {},
+            "parsed_verdicts": {},
+            "final_verdicts": {},
+            "protocol_anomaly_count": 0,
+            "fact_payload_count": 0,
+            "edge_payload_count": 0,
+            "catalog_ref_count": 0,
+            "fact_edge_ref_count": 0,
+            "readable_ref_count": 0,
+            "empty_ref_count": 0,
+            "decision_critical_omission_count": 0,
+            "noncritical_truncation_downgrade_count": 0,
+            "provider_request_count": 0,
+            "provider_delta_count": 0,
+            "provider_no_evidence_gain_count": 0,
+            "provider_resolved_count": 0,
+            "provider_proven_absent_count": 0,
+            "provider_unsupported_count": 0,
+            "provider_failure_count": 0,
+            "evidence_gate_accepted_count": 0,
+            "evidence_gate_blocked_count": 0,
+            "evidence_gate_failure_reasons": {},
+            "claim_replay_positive_count": 0,
+            "claim_replay_counter_count": 0,
+            "provider_payload_normalized_count": 0,
+            "length_retry_count": 0,
+            "repair_thinking_disabled_count": 0,
+            "protocol_exhausted_count": 0,
+            "score_role": "ranking_only",
+        }
+        for outcome in canonical_outcomes:
+            final_verdict = str(outcome.get("model_verdict") or "unavailable")
+            final_counts = validator_telemetry["final_verdicts"]
+            final_counts[final_verdict] = final_counts.get(final_verdict, 0) + 1
+            trail = outcome.get("validator_audit_trail")
+            for audit in trail if isinstance(trail, list) else []:
+                if not isinstance(audit, dict):
+                    continue
+                raw_verdict = str(audit.get("raw_verdict") or "unavailable")
+                raw_counts = validator_telemetry["raw_verdicts"]
+                raw_counts[raw_verdict] = raw_counts.get(raw_verdict, 0) + 1
+                parsed_verdict = raw_verdict if audit.get("parsed") is True else "unparsed"
+                parsed_counts = validator_telemetry["parsed_verdicts"]
+                parsed_counts[parsed_verdict] = parsed_counts.get(parsed_verdict, 0) + 1
+                if audit.get("protocol_error"):
+                    validator_telemetry["protocol_anomaly_count"] += 1
+                if audit.get("provider_payload_normalized") is True:
+                    validator_telemetry["provider_payload_normalized_count"] += 1
+                validator_telemetry["length_retry_count"] += int(
+                    audit.get("length_retry_count", 0) or 0
+                )
+                if audit.get("repair_thinking_disabled") is True:
+                    validator_telemetry["repair_thinking_disabled_count"] += 1
+                if audit.get("protocol_exhausted") is True:
+                    validator_telemetry["protocol_exhausted_count"] += 1
+            gate = outcome.get("evidence_gate")
+            if isinstance(gate, dict):
+                gate_key = (
+                    "evidence_gate_accepted_count"
+                    if gate.get("accepted") is True
+                    else "evidence_gate_blocked_count"
+                )
+                validator_telemetry[gate_key] += 1
+                claim_kind = str(gate.get("claim_kind") or "")
+                if claim_kind == "positive":
+                    validator_telemetry["claim_replay_positive_count"] += 1
+                elif claim_kind == "counter":
+                    validator_telemetry["claim_replay_counter_count"] += 1
+                failure_counts = validator_telemetry["evidence_gate_failure_reasons"]
+                for failure in gate.get("failures") or []:
+                    key = str(failure)
+                    failure_counts[key] = int(failure_counts.get(key, 0) or 0) + 1
+            readability = outcome.get("validator_evidence_readability")
+            if isinstance(readability, dict):
+                for key in (
+                    "fact_payload_count",
+                    "edge_payload_count",
+                    "catalog_ref_count",
+                    "fact_edge_ref_count",
+                    "readable_ref_count",
+                    "empty_ref_count",
+                    "decision_critical_omission_count",
+                ):
+                    validator_telemetry[key] += int(readability.get(key) or 0)
+            if outcome.get("model_verdict_before_context_check") and not outcome.get(
+                "validator_decision_critical_omissions"
+            ):
+                validator_telemetry["noncritical_truncation_downgrade_count"] += 1
+            pre_llm = outcome.get("validator_pre_llm_fact_resolution")
+            if isinstance(pre_llm, dict):
+                statuses = pre_llm.get("statuses")
+                for status in statuses if isinstance(statuses, list) else []:
+                    if not isinstance(status, dict):
+                        continue
+                    validator_telemetry["provider_request_count"] += 1
+                    value = str(status.get("status") or "")
+                    if status.get("evidence_delta_hash"):
+                        validator_telemetry["provider_delta_count"] += 1
+                    if value == "resolved":
+                        validator_telemetry["provider_resolved_count"] += 1
+                    elif value == "proven_absent":
+                        validator_telemetry["provider_proven_absent_count"] += 1
+                    elif value == "unsupported":
+                        validator_telemetry["provider_unsupported_count"] += 1
+                    elif value == "failed":
+                        validator_telemetry["provider_failure_count"] += 1
+        refs = int(validator_telemetry["fact_edge_ref_count"] or 0)
+        requests = int(validator_telemetry["provider_request_count"] or 0)
+        validator_telemetry["fact_edge_readability_rate"] = (
+            round(
+                int(validator_telemetry["readable_ref_count"] or 0) / refs,
+                4,
+            )
+            if refs
+            else 1.0
+        )
+        validator_telemetry["provider_delta_rate"] = (
+            round(
+                int(validator_telemetry["provider_delta_count"] or 0) / requests,
+                4,
+            )
+            if requests
+            else 1.0
+        )
+        fast_static_state["validator"] = validator_telemetry
+        validator_sessions = int(global_validation_state.get("validator_session_count", 0) or 0)
+        fast_admission = global_validation_state.get("fast_validation_admission")
+        fast_admission = fast_admission if isinstance(fast_admission, dict) else {}
+        validator_admitted = int(fast_admission.get("admitted", validator_sessions) or 0)
+        fast_deferred = int(fast_admission.get("deferred_to_needs_review", 0) or 0)
+        decision_ready = sum(
+            1 for outcome in canonical_outcomes if outcome.get("validator_decision_ready") is True
+        )
+        validator_validated = sum(
+            1 for outcome in canonical_outcomes if outcome.get("validator_validated") is True
+        )
+        fast_admission["decision_ready"] = decision_ready
+        fast_admission["validator_validated"] = validator_validated
+        fast_admission["decision_ready_equals_validated"] = decision_ready == validator_validated
+        if fast_admission:
+            fast_static_state["validator_admission"] = deepcopy(fast_admission)
+        dedup_count = int(fast_funnel.get("dedup", 0) or 0)
+        fast_funnel["llm"] = validator_sessions
+        fast_funnel["validator_admitted"] = validator_admitted
+        fast_funnel["decision_ready"] = decision_ready
+        fast_funnel["validator_validated"] = validator_validated
+        fast_funnel["fast_deferred_needs_review"] = fast_deferred
+        # Deferred fast obligations are not deterministic rejections and must
+        # not be mislabeled as V0 filtering.  They remain visible in the
+        # explicit needs-review view while the default precision view stays
+        # confirmed-only.
+        fast_funnel["v0"] = max(0, dedup_count - validator_sessions - fast_deferred)
         active_discovery_state = dict(getattr(self, "_active_discovery_state", {}) or {})
         active_discovery_duration = float(
             active_discovery_state.get("duration_seconds", 0.0) or 0.0
         )
         total_duration += global_validation_duration
         total_duration += active_discovery_duration
+        total_duration += float(
+            (fast_static_state.get("timings_seconds") or {}).get("static_total", 0.0) or 0.0
+        )
         batch_wall_seconds = round(float(getattr(self, "_last_batch_wall_seconds", 0.0) or 0.0), 2)
         effective_speedup = (total_duration / batch_wall_seconds) if batch_wall_seconds > 0 else 0.0
         worker_utilization = (
@@ -4038,6 +7530,27 @@ class ParallelAnalyzer:
                     "failures": list(project_fact_state.get("failures") or []),
                 }
             }
+        if fast_static_state:
+            engine_capabilities["__fast_static_scan__"] = {
+                "fast_static_scan": {
+                    "schema": str(fast_static_state.get("schema") or "zscope.fast-static-scan.v1"),
+                    "status": str(fast_static_state.get("status") or "not_run"),
+                    "active": bool(fast_static_state.get("activated", False)),
+                    "unique_function_instances": int(
+                        fast_static_state.get("unique_function_instances", 0) or 0
+                    ),
+                    "local_analysis_executions": int(
+                        fast_static_state.get("local_analysis_executions", 0) or 0
+                    ),
+                    "duplicate_local_executions": int(
+                        fast_static_state.get("duplicate_local_executions", 0) or 0
+                    ),
+                    "graph_analysis_units": int(
+                        fast_static_state.get("graph_analysis_units", 0) or 0
+                    ),
+                    "failures": list(fast_static_state.get("failures") or []),
+                }
+            }
         if active_discovery_state:
             engine_capabilities["__active_discovery__"] = {
                 "security_semantic_map": {
@@ -4154,6 +7667,8 @@ class ParallelAnalyzer:
                 "validation_performance": validation_performance_summary,
                 "global_validation_queue": dict(global_validation_report),
                 "project_deterministic_fact_pass": project_fact_state,
+                "fast_static_scan": fast_static_state,
+                "mode_outcomes": dict(getattr(self, "_global_validation_state", {}).get("mode_outcomes", {})),
                 "active_discovery": active_discovery_state,
                 "benchmark_ablation": benchmark_ablation_metadata,
                 "va_candidate_coverage": va_candidate_coverage_summary,
@@ -4243,6 +7758,8 @@ class ParallelAnalyzer:
                 "validation_performance": validation_performance_summary,
                 "global_validation_queue": dict(global_validation_report),
                 "project_deterministic_fact_pass": project_fact_state,
+                "fast_static_scan": fast_static_state,
+                "mode_outcomes": dict(getattr(self, "_global_validation_state", {}).get("mode_outcomes", {})),
                 "active_discovery": active_discovery_state,
                 "benchmark_ablation": benchmark_ablation_metadata,
                 "va_candidate_coverage_summary": va_candidate_coverage_summary,
@@ -4323,12 +7840,46 @@ class ParallelAnalyzer:
         combined_report["metadata"]["candidate_funnel"] = candidate_funnel(combined_report)
         from ..retrieval.build_context import scan_build_coverage
 
-        combined_report["metadata"]["build_coverage"] = scan_build_coverage(
+        build_coverage = scan_build_coverage(
             # Combined coverage describes the whole stored index: resolve a
             # scoped facade back to its base so a per-entry "instance" view can
             # never become the scan counts of the combined report.
             _unwrapped_coverage_source(getattr(self, "code_index", None))
         )
+        if fast_static_state.get("enabled") is True:
+            input_status = build_coverage.get("instance_input_status")
+            input_status = input_status if isinstance(input_status, dict) else {}
+            expected_instances = int(build_coverage.get("instances", 0) or 0)
+            inputs_current = bool(expected_instances) and len(input_status) == expected_instances
+            inputs_current = inputs_current and all(
+                str(value) == "current" for value in input_status.values()
+            )
+            project_scan_complete = bool(
+                fast_static_state.get("activated")
+                and fast_static_state.get("completed_build_contexts")
+                == fast_static_state.get("planned_build_contexts")
+                and build_coverage.get("extraction_complete") is True
+                and inputs_current
+            )
+            build_coverage["scan_complete"] = project_scan_complete
+            if not project_scan_complete:
+                reasons = list(build_coverage.get("reasons") or [])
+                if "fast_project_scan_incomplete" not in reasons:
+                    reasons.append("fast_project_scan_incomplete")
+                build_coverage["reasons"] = reasons
+                build_coverage["status"] = "partial"
+            fast_static_state["build_coverage_qualified"] = bool(
+                project_scan_complete
+                and not fast_static_state.get("link_coverage", {}).get("uncovered_build_contexts")
+                and not fast_static_state.get("link_coverage", {}).get("unclosed_edges")
+            )
+            fast_static_state["formal_qualified"] = bool(
+                fast_static_state.get("formal_qualified")
+                and fast_static_state["build_coverage_qualified"]
+            )
+            combined_report["summary"]["fast_static_scan"] = fast_static_state
+            combined_report["metadata"]["fast_static_scan"] = fast_static_state
+        combined_report["metadata"]["build_coverage"] = build_coverage
         from ..snapshots.policy import SNAPSHOT_CANDIDATE_POLICY_VERSION
 
         combined_report["metadata"]["snapshot_candidate_policy"] = SNAPSHOT_CANDIDATE_POLICY_VERSION
@@ -5069,6 +8620,17 @@ class ParallelAnalyzer:
             f"- **Audit Observations**: {len(review_items)}",
             f"- **Deferred Entry Candidates**: {deferred_count}",
         ]
+        funnel = metadata.get("mode_outcomes") or summary.get("mode_outcomes") or {}
+        if funnel:
+            md.extend(["", "## Mode Outcomes", "",
+                "运行裁决数量；TP/FP、误拒和 precision/recall 由独立 benchmark 评分。", "",
+                "| 阶段 | 确认 | 排除 | 未决 |", "|---|---:|---:|---:|",
+                f"| 静态候选低成本裁决 | {funnel.get('cheap_confirmed', 0)} | {funnel.get('cheap_rejected', 0)} | {funnel.get('cheap_unresolved', 0)} |",
+                f"| 自主 Validator 追加裁决 | {funnel.get('autonomous_confirmed', 0)} | {funnel.get('autonomous_rejected', 0)} | {funnel.get('autonomous_unresolved', 0)} |",
+                "",
+                f"静态候选：{funnel.get('static_candidates', 0)}；deep 额外候选：{funnel.get('deep_additional_candidates', 0)}，其中确认：{funnel.get('deep_additional_confirmed', 0)}。",
+                f"自主调查成本：{funnel.get('autonomous_tokens', 0)} tokens / {funnel.get('autonomous_seconds', 0):.2f}s；deep 发现：{funnel.get('discovery_tokens', 0)} tokens。",
+            ])
 
         diff_coverage = metadata.get("diff_impact_coverage")
         coverage_summary = (

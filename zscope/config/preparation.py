@@ -18,7 +18,7 @@ def prepare_project(config: Any, config_path: Path) -> dict[str, Any]:
     messages: list[dict[str, str]] = []
     if not root.is_dir():
         messages.append(
-            {"code": "project_missing", "message": "工程目录不存在，请修正 project.root。"}
+            {"code": "project_missing", "message": "工程目录不存在，请检查所选 YAML 的所在目录。"}
         )
     build: dict[str, Any] = {"status": "not_applicable", "link_targets": "unverified"}
     if config.project.language == "c_cpp":
@@ -125,13 +125,27 @@ def prepare_project(config: Any, config_path: Path) -> dict[str, Any]:
                 "message": "C/C++ 扫描和运行验证应在 Linux/WSL 执行；当前工具检查仅反映此服务所在环境。",
             }
         )
+    semantics: dict[str, Any] = {"applicable": False, "ready": True}
+    if config.project.language == "c_cpp":
+        from .project_semantics import ProjectSemanticsStore
+        from .semantics_workflow import workflow_status
+
+        try:
+            if not config.project.semantics_file:
+                raise ValueError("请设置 project.semantics_file 并完成原语引导。")
+            semantics = {"applicable": True, **workflow_status(
+                ProjectSemanticsStore(config.project.semantics_file).read(allow_unbound_primitive_proposals=True), root, config_path
+            )}
+        except (OSError, ValueError) as exc:
+            semantics = {"applicable": True, "ready": False, "stage": "needs_discovery", "reasons": [str(exc)]}
+        if not semantics["ready"]:
+            messages.append({"code": "project_semantics_not_ready", "message": "项目原语未就绪：" + "; ".join(semantics.get("reasons", []) or ["请完成发现与人工审阅。"] )})
     return {
         "schema": "zscope.project-preparation.v1",
         "config_path": str(config_path.resolve()),
         "working_directory": str(Path.cwd()),
         "project": {
             "root": str(root),
-            "source_root": str(config.project.source_root),
             "language": config.project.language,
             "backend": backend,
         },
@@ -156,4 +170,5 @@ def prepare_project(config: Any, config_path: Path) -> dict[str, Any]:
         },
         "messages": messages,
         "read_only": True,
+        "project_semantics": semantics,
     }

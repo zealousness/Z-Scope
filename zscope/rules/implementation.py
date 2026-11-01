@@ -36,6 +36,17 @@ _INTERNAL_MATCHER_FACT_IDS = frozenset(
         "clang_ast_resource_release_call",
     }
 )
+# A canonical rule normally has exactly one implementation engine.  These
+# narrowly reviewed exceptions are semantics-aware secondary producers for an
+# existing rule: they add a stronger fact source without creating another
+# catalog identity or another qualification obligation.  The canonical engine
+# must still contain the same ID, so this table cannot hide a missing primary
+# implementation.
+_SECONDARY_RULE_PRODUCERS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "cpp_clang_cfg": frozenset({"clang_ast_release_then_call_argument_use"}),
+    }
+)
 _ALLOWED_UNRESOLVED_RULE_EXPRESSIONS = frozenset(
     {
         # The regex facade binds the concrete ID supplied by each domain
@@ -170,11 +181,26 @@ def _discover_cached(root_text: str, source_sha256: str) -> BuiltinImplementatio
 
     ids_by_engine: Dict[str, Tuple[str, ...]] = {}
     for engine, methods in methods_by_engine.items():
-        ids_by_engine[engine] = tuple(sorted(_discover_rule_keywords(engine, methods)))
+        discovered = _discover_rule_keywords(engine, methods)
+        discovered.difference_update(_SECONDARY_RULE_PRODUCERS.get(engine, ()))
+        ids_by_engine[engine] = tuple(sorted(discovered))
 
     matcher_tree = _parse_source(root / _MATCHER_SOURCE)
     matcher_ids = _discover_matcher_ids(matcher_tree) - _INTERNAL_MATCHER_FACT_IDS
     ids_by_engine["cpp_clang_matcher"] = tuple(sorted(matcher_ids))
+
+    primary_ids = {item for values in ids_by_engine.values() for item in values}
+    orphaned_secondary = sorted(
+        rule_id
+        for values in _SECONDARY_RULE_PRODUCERS.values()
+        for rule_id in values
+        if rule_id not in primary_ids
+    )
+    if orphaned_secondary:
+        raise RuleCatalogError(
+            "secondary built-in rule producer has no canonical implementation: "
+            + ", ".join(orphaned_secondary)
+        )
 
     # Importing this local table is side-effect free: it compiles regex objects
     # but does not create a CodeIndex, invoke a tool, or call an LLM.

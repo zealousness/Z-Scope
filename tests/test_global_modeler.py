@@ -207,7 +207,7 @@ def _config(tmp_path: Path) -> ZScopeConfig:
             max_premodel_callees=10,
             trivial_function_max_lines=0,
         ),
-        project=ProjectConfig(project_root=tmp_path, source_root=tmp_path),
+        project=ProjectConfig(project_root=tmp_path),
         concurrency=ConcurrencyConfig(entry_workers=2),
     )
 

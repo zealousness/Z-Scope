@@ -2,7 +2,8 @@
 
 This adapts the existing CFG/USR receipt into ApiContract, not another lifetime
 checker. Unsupported input is diagnostic and cannot fall back to token authority.
-The first slice excludes protocol pools, realloc, indirect calls and C++.
+The supported slice includes direct malloc-family allocation/reallocation and
+release wrappers.  Protocol pools, indirect calls and C++ remain excluded.
 """
 
 from __future__ import annotations
@@ -26,6 +27,18 @@ from .contracts import (
 )
 
 TRUE = {"op": "true"}
+
+# A generic ``standard_operation`` role only tells consumers that an API is
+# not an allocator/releaser.  Publishing every project helper around strlen,
+# strcmp, memcpy, and similar operations created hundreds of human-review
+# rows without giving any rule a mechanism it could replay.  These path-state
+# queries are the deliberately small composable subset whose delegated root
+# is consumed by the TOCTOU/path protocol rules.  Other standard operations
+# remain visible in native function facts and are analysed in their bodies;
+# they are not promoted into reviewer-owned project contracts.
+DISCOVERABLE_STANDARD_OPERATION_ROOTS = frozenset(
+    {"access", "stat", "lstat", "faccessat", "fstatat"}
+)
 
 
 class NativeInference(TypedDict):
@@ -73,6 +86,7 @@ class State:
     outward_releases: dict[str, dict[str, Any]] = field(default_factory=dict)
     path: list[int] = field(default_factory=list)
     returned: dict[str, Any] | None = None
+    opaque_calls: list[str] = field(default_factory=list)
 
 
 class NativeWrapper:
@@ -100,7 +114,7 @@ class NativeWrapper:
             value = Path(root) / value
         return str(value.resolve()) if value.is_absolute() else str(value)
 
-    def prepare(self) -> None:
+    def prepare(self, *, allow_record_values: bool = False) -> None:
         from .contract_compiler import closing
 
         bodies = self.facts.get("functions") or []
@@ -119,7 +133,7 @@ class NativeWrapper:
             or self.source_file(str(body["owner"].get("file") or ""))
             != self.source_file(str(self.context.get("file_path") or ""))
             or body["owner"].get("name") != self.context.get("func_name")
-            or body.get("fact_version") != "zscope.program-events.v5"
+            or body.get("fact_version") != "zscope.program-events.v7"
             or body.get("lifecycle_value_facts_version") != "zscope.lifecycle-value-facts.v1"
         ):
             raise Unsupported("native_value_receipt_unavailable")
@@ -154,7 +168,32 @@ class NativeWrapper:
             for edge in body.get("cfg_edges", [])
             if edge.get("condition")
         }
-        if source_guards != native_guards:
+
+        def guard_atoms(values: set[str]) -> set[str]:
+            atoms: set[str] = set()
+            for value in values:
+                current: list[str] = []
+                depth = 0
+                for token in code_tokens(value):
+                    if token == "(":
+                        depth += 1
+                    elif token == ")":
+                        depth = max(0, depth - 1)
+                    if depth == 0 and token in {"&&", "||"}:
+                        if current:
+                            atoms.add(compact("".join(current)))
+                            current = []
+                        continue
+                    current.append(token)
+                if current:
+                    atoms.add(compact("".join(current)))
+            return atoms
+
+        # Clang may materialize short-circuit operands as separate CFG edge
+        # predicates.  The native CFG remains authoritative for grouping and
+        # reachability, while this source-currentness check compares the exact
+        # predicate leaves so a changed source guard cannot reuse old facts.
+        if guard_atoms(source_guards) != guard_atoms(native_guards):
             raise Unsupported("native_cfg_condition_conflict")
         marker = "@F@" + str(body["owner"].get("name") or "") + "@"
         for event in body.get("events", []):
@@ -173,10 +212,9 @@ class NativeWrapper:
                     for k in (
                         "overlapping_storage",
                         "volatile_or_atomic",
-                        "record_value",
                         "floating_value",
                     )
-                ):
+                ) or (value.get("record_value") and not allow_record_values):
                     raise Unsupported("unsupported_native_value_kind")
                 bits = value.get("integer_bits", 0)
                 if bits and (
@@ -184,6 +222,7 @@ class NativeWrapper:
                     or (
                         value.get("integer_unsigned")
                         and value.get("usr") not in self.unsigned_parameters
+                        and value.get("value_kind") != "local"
                     )
                 ):
                     raise Unsupported("scalar_conversion_unclosed")
@@ -234,15 +273,40 @@ class NativeWrapper:
         if text in {"((void*)0)", "NULL"}:
             return literal(None)
         text = "".join(unparen(code_tokens(text)))
+        # Preserve object identity across an explicit C pointer cast of a
+        # native-observed call result.  Clang emits the nested CallExpr and
+        # its exact result target separately from the declaration initializer
+        # (for example ``char *p = (char *)safe_malloc(n)``).  The cast cannot
+        # create a new allocation or alias; only an already replayed exact
+        # call may pass this narrow path.
+        pointer_cast = re.fullmatch(
+            r"\((?:(?:const|volatile|restrict|struct|union|enum)" r"|[A-Za-z_]\w*)+\*+\)(.+)",
+            text,
+        )
+        if pointer_cast and pointer_cast.group(1) in state.calls:
+            return state.calls[pointer_cast.group(1)]
         if re.fullmatch(r"-?\d+", text):
-            value = int(text)
-            if not -(2**31) <= value < 2**31:
+            literal_value = int(text)
+            if not -(2**31) <= literal_value < 2**31:
                 raise Unsupported("integer_range_unclosed")
-            return literal(value)
+            return literal(literal_value)
         if text.startswith("&"):
             return {"kind": "address", "location": self.location(text[1:], state)}
         if text in state.calls:
             return state.calls[text]
+        derived_calls = [
+            (call, value)
+            for call, value in state.calls.items()
+            if text.startswith(call) and re.fullmatch(re.escape(call) + r"(?:[+-]\d+)+", text)
+        ]
+        if len(derived_calls) == 1:
+            call, value = derived_calls[0]
+            return {
+                "kind": "derived_value",
+                "expression": text,
+                "base": value,
+                "suffix": text[len(call) :],
+            }
         location = self.location(text, state)
         if location not in state.values:
             raise Unsupported("value_not_defined_in_current_frame")
@@ -268,7 +332,7 @@ class NativeWrapper:
         if value.get("kind") == "return":
             return returned
         if value.get("kind") == "argument":
-            index = value.get("index")
+            index = value.get("index", value.get("argument_index"))
             if (
                 type(index) is not int
                 or not 0 <= index < len(args)
@@ -279,15 +343,78 @@ class NativeWrapper:
             return args[index]
         return {k: self.mapped(v, args, returned) for k, v in value.items()}
 
+    def interface_mapped(self, value: Any, args: list[dict[str, Any]]) -> Any:
+        """Map a root protocol reference into the wrapper's public frame."""
+        if isinstance(value, list):
+            return [self.interface_mapped(item, args) for item in value]
+        if not isinstance(value, dict):
+            return value
+        kind = value.get("kind")
+        if kind == "return":
+            return {"kind": "return"}
+        if kind == "argument":
+            index = value.get("index", value.get("argument_index"))
+            if type(index) is not int or not 0 <= index < len(args):
+                raise Unsupported("root_protocol_mapping_unclosed")
+            mapped = args[index]
+            if mapped.get("kind") != "argument" or mapped.get("member_path"):
+                raise Unsupported("root_protocol_mapping_unclosed")
+            return {"kind": "argument", "index": mapped["index"]}
+        return {key: self.interface_mapped(item, args) for key, item in value.items()}
+
+    def opaque_call(self, event: dict[str, Any], state: State) -> None:
+        """Retain a side-effecting call only for a later non-export-path check.
+
+        The call may not consume the tracked resource or define a value used by
+        the wrapper.  ``run`` subsequently proves it occurs only on exits that
+        do not export the acquisition.  This admits logging on allocation
+        failure without treating arbitrary successful-path helpers as harmless.
+        """
+        target = self.call_target(event)
+        if target.get("usr"):
+            raise Unsupported("opaque_call_result_unclosed")
+        tracked_locations = {
+            location
+            for location, value in state.values.items()
+            if value.get("kind") == "call_result" and str(value.get("name") or "") in self.resources
+        }
+        used = {
+            str(value.get("usr") or "")
+            for group in event.get("argument_uses", [])
+            for value in group
+            if isinstance(value, dict)
+        }
+        if tracked_locations & used:
+            raise Unsupported("opaque_call_observes_resource")
+        state.opaque_calls.append(str(event.get("event_id") or event.get("expression") or "call"))
+
+    @staticmethod
+    def call_target(event: Mapping[str, Any]) -> dict[str, Any]:
+        target = event.get("object") or {}
+        if isinstance(target, dict) and target.get("usr"):
+            return target
+        definitions = [
+            value
+            for value in event.get("defs", []) or []
+            if isinstance(value, dict) and value.get("usr")
+        ]
+        # Nested calls inside a declaration/assignment are emitted separately;
+        # their single native def is the value-transfer target.
+        return definitions[0] if len(definitions) == 1 else {}
+
     def call(self, event: dict[str, Any], state: State) -> None:
         from .contract_compiler import _base_cases
 
         callee = event.get("callee") or {}
         if not callee.get("usr"):
             raise Unsupported("indirect_or_unresolved_call")
-        rows = self.registry.find_for_call(str(callee.get("name") or ""))
+        # Native events already identify the exact callee. Discovery runs
+        # outside a scanner's call-context binding, so omitting USR here
+        # incorrectly rejects every pinned project wrapper in the next layer.
+        rows = self.registry.find_for_call(str(callee.get("name") or ""), usr=str(callee["usr"]))
         if len(rows) != 1 or not rows[0].effects_trusted:
-            raise Unsupported("opaque_or_unverified_call")
+            self.opaque_call(event, state)
+            return
         root = rows[0]
         if (
             root.source == "builtin_defaults"
@@ -299,12 +426,19 @@ class NativeWrapper:
             str(callee.get("location", {}).get("file") or "")
         ):
             raise Unsupported("root_symbol_mismatch")
-        if (
+        if root.role in {"standard_operation", "copy"}:
+            if (
+                (root.protocol and root.protocol.get("kind") != "standard_api_effects")
+                or root.protocol.get("transitions")
+                or root.resource_domain
+            ):
+                raise Unsupported("root_effect_not_supported")
+        elif (
             (root.protocol and root.protocol.get("kind") != "standard_api_effects")
-            or root.protocol.get("transitions")
             or root.resource_domain
             or root.resource_family != "malloc"
-            or root.role not in {"allocator", "calloc", "deallocator"}
+            or root.role not in {"allocator", "calloc", "reallocator", "deallocator"}
+            or (root.protocol.get("transitions") and root.role != "reallocator")
         ):
             raise Unsupported("root_effect_not_supported")
         if root.preconditions != TRUE:
@@ -314,11 +448,27 @@ class NativeWrapper:
         site = str(event["location"]["offset"])
         returned = {"kind": "call_result", "name": self.body["owner"]["usr"] + ":" + site}
         state.calls[compact(event["expression"])] = returned
-        target = event.get("object") or {}
+        target = self.call_target(event)
         if target.get("usr"):
             if target["usr"] not in self.locals:
                 raise Unsupported("external_store")
             state.values[target["usr"]] = returned
+        if root.role == "standard_operation":
+            return
+        if root.role == "copy":
+            index = root.carrier.argument_index
+            if (
+                root.carrier.kind != "argument"
+                or root.carrier.member_path
+                or index is None
+                or index >= len(args)
+            ):
+                raise Unsupported("copy_carrier_unclosed")
+            destination = args[index]
+            resource = str(destination.get("name") or "")
+            if resource not in self.resources or resource in state.releases:
+                raise Unsupported("copy_destination_not_tracked_resource")
+            return
         if root.role == "deallocator":
             index = root.carrier.argument_index
             if (
@@ -433,10 +583,33 @@ class NativeWrapper:
                     and (e.get("location", {}).get("offset"), e.get("callee", {}).get("usr")) == key
                     and e.get("contains_macro") is False
                 ]
+                # A macro such as LOG_ERROR may expand directly to one
+                # source-resolved call without a second non-macro CallExpr.
+                # It is still safe to replay as an opaque call when the exact
+                # callee USR is present.  Multiple expansion calls remain
+                # ambiguous and are rejected.
+                if not primary:
+                    expanded = [
+                        e
+                        for e in events
+                        if e.get("event_kind") == "call"
+                        and (
+                            e.get("location", {}).get("offset"),
+                            e.get("callee", {}).get("usr"),
+                        )
+                        == key
+                        and e.get("callee", {}).get("usr")
+                    ]
+                    if len(expanded) == 1:
+                        primary = expanded
                 if len(primary) != 1:
                     raise Unsupported("ambiguous_native_call_site")
                 event = primary[0]
-            if event.get("contains_macro") is not False and not event.get("null_pointer_constant"):
+            if (
+                event.get("contains_macro") is not False
+                and not event.get("null_pointer_constant")
+                and not (kind == "call" and (event.get("callee") or {}).get("usr"))
+            ):
                 raise Unsupported("macro_effect_unclosed")
             self.sites.append(
                 {
@@ -583,6 +756,8 @@ class NativeWrapper:
                 raise Unsupported("resource_released_before_export")
             if uid not in state.acquired or not success:
                 raise Unsupported("acquisition_success_unclosed")
+            if state.opaque_calls:
+                raise Unsupported("opaque_call_on_export_path")
             if carrier is not None and carrier != current:
                 raise Unsupported("inconsistent_output_carrier")
             carrier = current
@@ -614,6 +789,15 @@ class NativeWrapper:
                     "transitions": [],
                     "allocation_extent": mapped_extent,
                 }
+        if root.role == "reallocator":
+            transitions = root.protocol.get("transitions") or []
+            if not transitions:
+                raise Unsupported("reallocation_protocol_missing")
+            protocol = {
+                **protocol,
+                "kind": "standard_api_effects",
+                "transitions": self.interface_mapped(transitions, resource["arguments"]),
+            }
         return [self.contract(root, carrier, cases, protocol)]
 
     def contract(
@@ -628,7 +812,7 @@ class NativeWrapper:
         return {
             "symbol": asdict(
                 SymbolIdentity.from_value(
-                    {},
+                    {"usr": self.body["owner"]["usr"]},
                     name=self.context.get("func_name"),
                     file_path=self.context.get("file_path"),
                     signature=self.context.get("signature"),
@@ -667,7 +851,7 @@ class NativeWrapper:
             ],
             "verification": {
                 "method": "source_composition",
-                "checker": "native_wrapper_value_flow.v1",
+                "checker": "native_wrapper_value_flow.v2",
                 "mapping_verified": True,
                 "proof_authority": False,
                 "effect_strength": "must_under_guard",
@@ -693,15 +877,183 @@ class NativeWrapper:
         }
 
 
+def _infer_returned_standard_operation(
+    context: Mapping[str, Any], registry: ContractRegistry
+) -> list[dict[str, Any]]:
+    """Compile a transparent predicate/query wrapper around one exact root.
+
+    This deliberately covers only a single direct ``standard_operation`` used
+    in the wrapper's return expression.  It is enough for project predicates
+    such as ``file_exists(path) -> stat(path, ...)`` without treating an
+    arbitrary function that happens to call ``stat`` as a semantic wrapper.
+    """
+
+    from .contract_review import proof_key
+
+    wrapper = NativeWrapper(context, registry)
+    wrapper.prepare(allow_record_values=True)
+    unique_events: dict[tuple[str, int, str], Mapping[str, Any]] = {}
+    for raw in wrapper.body.get("events", []) or []:
+        if not isinstance(raw, Mapping) or raw.get("event_kind") != "call":
+            continue
+        raw_callee = raw.get("callee")
+        callee: Mapping[str, Any] = raw_callee if isinstance(raw_callee, Mapping) else {}
+        raw_location = raw.get("location")
+        location: Mapping[str, Any] = raw_location if isinstance(raw_location, Mapping) else {}
+        key = (
+            str(callee.get("usr") or callee.get("name") or ""),
+            int(location.get("offset") or 0),
+            str(raw.get("expression") or ""),
+        )
+        unique_events[key] = raw
+    if len(unique_events) != 1:
+        return []
+    event = next(iter(unique_events.values()))
+    raw_callee = event.get("callee")
+    callee = raw_callee if isinstance(raw_callee, Mapping) else {}
+    callee_name = str(callee.get("name") or "")
+    roots = [
+        row
+        for row in wrapper.registry.find_for_call(callee_name, usr=str(callee.get("usr") or ""))
+        if row.role == "standard_operation"
+        and row.effects_trusted
+        and row.symbol.name in DISCOVERABLE_STANDARD_OPERATION_ROOTS
+    ]
+    if len(roots) != 1:
+        return []
+    root = roots[0]
+    if (
+        root.source == "builtin_defaults"
+        and callee.get("has_definition")
+        and not callee.get("is_system_header")
+    ):
+        raise Unsupported("project_shadows_standard")
+    callee_usr = str(callee.get("usr") or callee.get("referenced_usr") or "")
+    if root.symbol.usr and callee_usr != root.symbol.usr:
+        raise Unsupported("root_symbol_mismatch")
+    source = str(context.get("code") or "")
+    if not re.search(rf"\breturn\b[^;]*\b{re.escape(callee_name)}\s*\(", source, re.S):
+        return []
+    arguments = [str(value or "").strip() for value in event.get("arguments", []) or []]
+    carrier = ObjectBinding("unknown")
+    if root.carrier.kind == "argument" and root.carrier.argument_index is not None:
+        root_index = root.carrier.argument_index
+        if root_index >= len(arguments):
+            raise Unsupported("standard_wrapper_argument_missing")
+        expression = arguments[root_index]
+        parameter_index = next(
+            (
+                index
+                for index, name in enumerate(wrapper.parameters)
+                if compact(expression) == compact(name)
+            ),
+            None,
+        )
+        if parameter_index is None:
+            raise Unsupported("standard_wrapper_argument_mapping_unclosed")
+        carrier = ObjectBinding("argument", parameter_index)
+    elif root.carrier.kind == "return":
+        carrier = ObjectBinding("return")
+    else:
+        raise Unsupported("standard_wrapper_carrier_unsupported")
+
+    cases: list[dict[str, Any]] = [{"when": dict(TRUE), "effect": "applies"}]
+    if carrier.kind == "argument" and carrier.argument_index is not None:
+        name = wrapper.parameters[carrier.argument_index]
+        if re.search(
+            rf"\bif\s*\(\s*!\s*{re.escape(name)}\s*\)\s*(?:\{{\s*)?return\b",
+            source,
+        ):
+            bound = {"kind": "argument", "index": carrier.argument_index}
+            cases = [
+                {"when": compare(bound, "!=", None), "effect": "applies"},
+                {"when": compare(bound, "==", None), "effect": "no_effect"},
+            ]
+    owner = wrapper.body.get("owner") or {}
+    raw_location = event.get("location")
+    location = raw_location if isinstance(raw_location, Mapping) else {}
+    return [
+        {
+            "symbol": asdict(
+                SymbolIdentity.from_value(
+                    owner,
+                    name=context.get("func_name"),
+                    file_path=context.get("file_path"),
+                    signature=context.get("signature"),
+                    build_context_id=wrapper.build,
+                )
+            ),
+            "role": "standard_operation",
+            "carrier": asdict(carrier),
+            "conditions": [],
+            "preconditions": dict(TRUE),
+            "effect_cases": cases,
+            "pairs": [],
+            "resource_family": root.resource_family,
+            "protocol": deepcopy(root.protocol),
+            "source": "inferred:semantic_modeling",
+            "confidence": 1.0,
+            "delegates": [
+                {
+                    "symbol": asdict(root.symbol),
+                    "role": root.role,
+                    "carrier": asdict(root.carrier),
+                    "transparent": True,
+                }
+            ],
+            "evidence": [
+                {
+                    "function_usr": str(owner.get("usr") or ""),
+                    "build_context_id": wrapper.build,
+                    "native_input_hash": digest(wrapper.body),
+                    "sites": [
+                        {
+                            "callee": asdict(root.symbol),
+                            "callee_usr": callee_usr,
+                            "line": int(location.get("line") or 0),
+                            "offset": int(location.get("offset") or 0),
+                            "expression": str(event.get("expression") or ""),
+                        }
+                    ],
+                }
+            ],
+            "verification": {
+                "method": "source_composition",
+                "checker": "native_standard_wrapper_value_flow.v1",
+                "mapping_verified": True,
+                "proof_authority": False,
+                "effect_strength": "must_under_guard",
+                "compiler_version": CONTRACT_COMPILER_VERSION,
+                "source_hash": digest(code_tokens(source)),
+                "proof_dependencies": [proof_key(root)],
+                "native_input_hash": digest(wrapper.body),
+                "fresh_no_alias": False,
+                "assumptions": [],
+            },
+        }
+    ]
+
+
 def infer_native_wrapper(context: Mapping[str, Any], registry: ContractRegistry) -> NativeInference:
-    """Only claim the native heap-wrapper subset; pools retain their own checker."""
+    """Claim bounded native resource and transparent standard wrappers."""
     facts = context.get("program_facts") or {}
+    standard_error = ""
+    if facts:
+        try:
+            standard_contracts = _infer_returned_standard_operation(context, registry)
+        except Unsupported as exc:
+            standard_contracts = []
+            standard_error = str(exc)
+        else:
+            standard_error = ""
+        if standard_contracts:
+            return {"attempted": True, "contracts": standard_contracts, "reasons": []}
     rows = [
         c
         for c in registry.for_context(context).contracts
-        if c.role in {"allocator", "calloc", "deallocator"}
+        if c.role in {"allocator", "calloc", "reallocator", "deallocator"}
         and (not c.protocol or c.protocol.get("kind") == "standard_api_effects")
-        and not c.protocol.get("transitions")
+        and (c.role == "reallocator" or not c.protocol.get("transitions"))
         and not c.resource_domain
     ]
     names = {c.symbol.name for c in rows}
@@ -710,6 +1062,23 @@ def infer_native_wrapper(context: Mapping[str, Any], registry: ContractRegistry)
         t in names and tokens[i + 1] == "(" for i, t in enumerate(tokens[:-1])
     )
     if not applicable:
+        lock_names = {
+            c.symbol.name
+            for c in registry.for_context(context).contracts
+            if c.role in {"lock", "unlock"} and c.effects_trusted
+        }
+        lock_applicable = bool(facts) and any(
+            token in lock_names and tokens[index + 1] == "("
+            for index, token in enumerate(tokens[:-1])
+        )
+        if lock_applicable:
+            return {
+                "attempted": True,
+                "contracts": [],
+                "reasons": ["void_or_status_hiding_lock_wrapper_not_authorized"],
+            }
+        if standard_error:
+            return {"attempted": True, "contracts": [], "reasons": [standard_error]}
         return {"attempted": False, "contracts": [], "reasons": []}
     try:
         contracts = NativeWrapper(context, registry).run()

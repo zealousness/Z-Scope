@@ -77,6 +77,7 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     a shared root-cause token or call path.
     """
     records: Dict[str, Dict[str, Any]] = {}
+    occurrence_keys: Dict[str, List[str]] = {}
     merge_cache: Dict[int, Dict[str, Any]] = {}
     for issue in issues:
         normalize_issue_fields(issue)
@@ -95,12 +96,22 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 issue.setdefault("resource_signature", signature)
             issue.setdefault("duplicate_sources", [])
             records[key] = issue
+            occurrence_keys[key] = [key]
             continue
 
-        equivalent = issues_have_destructive_equivalence(existing, issue)
-        if equivalent and not _same_defect_site(existing, issue):
-            equivalent = False
-        if not equivalent:
+        # A canonical root may contain several independent occurrences. Search
+        # all of them so later copies of the second occurrence do not become
+        # extra findings simply because they differ from the first one.
+        matched_key = next(
+            (
+                candidate_key
+                for candidate_key in occurrence_keys[key]
+                if issues_have_destructive_equivalence(records[candidate_key], issue)
+                and _same_defect_site(records[candidate_key], issue)
+            ),
+            None,
+        )
+        if matched_key is None:
             occurrence_key = _independent_occurrence_key(issue, key)
             suffix = 1
             unique_key = occurrence_key
@@ -114,24 +125,26 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 issue.setdefault("resource_signature", signature)
             issue.setdefault("duplicate_sources", [])
             records[unique_key] = issue
+            occurrence_keys[key].append(unique_key)
             continue
 
+        existing = records[matched_key]
         if issue_rank(issue) > issue_rank(existing):
             merge_duplicate_issue(
                 issue,
                 existing,
-                dedup_key=key,
+                dedup_key=matched_key,
                 decision={"method": decision_method, "root_cause_key": key},
                 merge_cache=merge_cache,
             )
-            issue["dedup_key"] = key
-            records[key] = issue
+            issue["dedup_key"] = matched_key
+            records[matched_key] = issue
             continue
 
         merge_duplicate_issue(
             existing,
             issue,
-            dedup_key=key,
+            dedup_key=matched_key,
             decision={"method": decision_method, "root_cause_key": key},
             merge_cache=merge_cache,
         )
@@ -3007,13 +3020,29 @@ def flatten_issue_text(value: Any) -> str:
 
 
 def parse_issue_location(location: str) -> tuple[str, Optional[int]]:
+    """Parse an identity coordinate using case-folded path spelling.
+
+    This helper is intentionally for stable identity and deduplication.  Code
+    that opens a path on a case-sensitive filesystem must use
+    :func:`parse_issue_location_preserving_path_case` instead.
+    """
+
+    file_path, line = parse_issue_location_preserving_path_case(location)
+    return file_path.lower(), line
+
+
+def parse_issue_location_preserving_path_case(
+    location: str,
+) -> tuple[str, Optional[int]]:
+    """Parse a report coordinate without changing its physical path spelling."""
+
     normalized = location.replace("\\", "/")
     match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+):(\d+)", normalized)
     if match:
-        return match.group(1).lower(), int(match.group(2))
+        return match.group(1), int(match.group(2))
     match = re.search(r"(.+\.[chp]+):(\d+)", normalized)
     if match:
-        return match.group(1).lower(), int(match.group(2))
+        return match.group(1), int(match.group(2))
     match = re.match(r"^\s*(\d+)(?:\s*-\s*\d+)?\s*$", normalized)
     if match:
         return "", int(match.group(1))

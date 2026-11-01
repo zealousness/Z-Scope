@@ -153,6 +153,12 @@ Provider 是可执行代码；只安装来自受信来源且经过依赖/许可�
 
 同一个 provider rule 实例可能被多个入口 worker 共享。运行时会按 rule 实例串行调用 `evaluate()`，不同 rule 仍可并行，因此 provider 不得依赖跨 rule 的调用顺序；如需共享缓存，仍应自行使用线程安全的数据结构。预检绑定 `EffectiveRuleSet` 后 registry 会被封存，扫描期间不能再注册 pack/provider 或替换 descriptor。
 
+## 检测与抑制实现不变量
+
+确定性规则的抑制证据必须强于命中证据：guard 需要绑定同一对象、receiver 或算术操作数，并由 CFG/程序事实证明危险分支终止、危险操作未执行或安全效果支配 sink。附近出现 `NULL`、`MAX`、`Principal`、安全配置字符串、日志调用或注释都不能单独抑制候选；另一对象上的等名配置同样无效。
+
+对象成员、helper、回调参数和容器链路优先从语义契约、调用绑定、字段/类型事实和对象流关系识别。兼容旧规则时可以保留名称提示作为低置信候选来源，但固定成员名、函数前后缀或局部变量名不能是规则成立或安全抑制的唯一条件。正反例除漏洞/修复对外，还应覆盖标识符重命名、前后缀自增等价写法、receiver 替换、无关 guard 和只记录日志但继续执行的分支。
+
 ## Public YAML 与禁用语义
 
 ```yaml
@@ -165,13 +171,15 @@ rules:
     - clang_cfg_use_after_release
 ```
 
-相对 pack 路径按 `project.root` 解析。两份根目录参考 YAML 在没有扩展/禁用需求时省略空 `rules` 区块。
+相对 pack 路径按 YAML 所在工程目录解析；这是唯一工程根，不再读取独立根目录字段。两份根目录参考 YAML 在没有扩展/禁用需求时省略空 `rules` 区块。
 
 `disabled_ids` 对 Java local、C/C++ Regex、Clang CFG/matcher、Graph、YAML pack 和 Python provider 全局生效，并优先于 `enabled_ids`；同一 ID 同时出现在两表时以禁用为准。表内重复、未知 ID 或跨语言 ID 会严格报错；同语言但当前 backend 不会运行的规则可以禁用，`validate` 会输出“当前 backend 不适用”警告。
 
 ## Stable 资格门禁
 
 `qualification_registry.yaml` 的证据哈希必须对应当前 revision。`qualified` 记录还必须能在同目录的 `qualification_evidence/<rule_id>.r<revision>.json` 解引用；加载器校验 manifest SHA、descriptor commitment，并从逐案例记录重新计算所有计数和 precision，不能只信任 registry 里的汇总数字。
+
+默认启用的 C/C++ 规则还必须在 `zscope.validation-obligation-catalog.v1` 中按 canonical ID 与当前 revision 绑定验证义务；规则名称、类别描述或 `free/thread/lock` 等子串不得推导缺失事实。义务 profile 定义必需角色、正向/反向 claim checker 和实际可请求 provider，身份进入 Validator 缓存及报告。修改规则机制或所需事实时应同步 rule revision 与该绑定，并增加正向确认、反证拒绝和缺事实 needs_review 回归。
 
 `zscope.rule-qualification-evidence.v1` 的 `leakage_lint`、每个 `metamorphic_cases` / `external_cases` 条目以及每个 `vulnerable_fixed_pairs` 条目都必须同时提供 `artifact_path` 和 `artifact_sha256`。`artifact_path` 是相对 `qualification_evidence/` 根目录的规范 POSIX 相对路径：不接受绝对路径、Windows drive、反斜杠、`.` / `..`、重复分隔符或符号链接/reparse point。加载器要求目标是 evidence root 内的实际普通文件，并重新计算文件字节的 SHA-256；缺失、越界、链接或哈希不符都会使预检 fail closed。只有 artifact 通过这些检查后，对应布尔值和案例结果才参与资格指标计算。
 
@@ -192,6 +200,14 @@ python scripts/audit_rule_qualifications.py \
   --benchmark-truth benchmark/ground_truth.json \
   --view default \
   --output rule_qualification_audit.json
+```
+
+外部资格材料可先用 campaign 工具生成逐 revision 工作清单；它不会生成或伪造证据，也拒绝 Range GT。`verify` 对项目独立性、案例数量、变形、漏洞/修复对、泄漏检查与外部 precision 重新计算，只有全部当前规则通过后 `assemble` 才会生成 registry：
+
+```bash
+python scripts/rule_qualification_campaign.py prepare --output /path/to/campaign
+python scripts/rule_qualification_campaign.py verify --root /path/to/campaign --output /path/to/report.json
+python scripts/rule_qualification_campaign.py assemble --root /path/to/campaign --output /path/to/qualification_registry.json
 ```
 
 `--benchmark-report` 与 `--benchmark-truth` 必须同时提供；`--view` 可选 `default` 或 `with_needs_review`。该步骤复用统一 scorer 的 `matched_issue_indices`，只能在扫描完成且答案隔离解除后运行。输出会 canonicalize alias，列出每条参与规则的 TP 数、truth ID、当前 revision、资格状态、证据验证状态和默认启用状态，并单列目录未知 detector。一个 TP 可以同时归因到多条规则，因此 per-rule TP count 有重叠，不能相加后当作 distinct TP。省略 benchmark 参数时，脚本仍只输出原有目录和资格状态审计。

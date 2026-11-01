@@ -11,14 +11,20 @@ from typing import Any
 from ...framework.llm_client import LLMClient
 
 
-def record_projection(result: dict[str, Any], section: str, original: Any, kept: Any) -> None:
+def record_projection(
+    result: dict[str, Any],
+    section: str,
+    original: Any,
+    kept: Any,
+    *,
+    decision_critical: bool = False,
+) -> None:
     """Make upstream field/list compaction visible to the budget and validator."""
     if original == kept:
         return
     encoded = json.dumps(original, ensure_ascii=False, sort_keys=True, default=str)
     actual = json.dumps(kept, ensure_ascii=False, sort_keys=True, default=str)
     result["slice_truncated"] = True
-    result["context_requires_retrieval"] = True
     sections = result.setdefault("slice_truncated_sections", [])
     if section not in sections:
         sections.append(section)
@@ -28,8 +34,18 @@ def record_projection(result: dict[str, Any], section: str, original: Any, kept:
             [{"role": "user", "content": encoded}]
         ),
         "actual_estimated_tokens": LLMClient.estimate_tokens([{"role": "user", "content": actual}]),
-        "retrieval": "validation evidence pack or query_validation_facts",
+        "decision_critical": decision_critical,
+        "retrieval": (
+            "validation evidence pack or query_validation_facts"
+            if decision_critical
+            else "not required for the current decision"
+        ),
     }
+    if decision_critical:
+        result["context_requires_retrieval"] = True
+        critical = result.setdefault("decision_critical_omissions", [])
+        if section not in critical:
+            critical.append(section)
 
 
 def fit_evidence(source: dict[str, Any], *, max_tokens: int) -> dict[str, Any]:
@@ -48,6 +64,8 @@ def fit_evidence(source: dict[str, Any], *, max_tokens: int) -> dict[str, Any]:
     )
     result.setdefault("slice_truncated", False)
     result.setdefault("slice_truncated_sections", [])
+    result.setdefault("decision_critical_omissions", [])
+    result.setdefault("context_requires_retrieval", False)
     result["slice_estimated_tokens"] = original
     # Include metadata itself in the budget. Keep a small framing allowance.
     target = max_tokens - 32
@@ -67,7 +85,7 @@ def fit_evidence(source: dict[str, Any], *, max_tokens: int) -> dict[str, Any]:
         if owner.get(key):
             before = owner[key]
             owner[key] = [] if isinstance(before, list) else {}
-            record_projection(result, key, before, owner[key])
+            record_projection(result, key, before, owner[key], decision_critical=False)
     if estimate() <= target:
         result["slice_estimated_tokens"] = estimate()
         return result
@@ -137,6 +155,9 @@ def fit_evidence(source: dict[str, Any], *, max_tokens: int) -> dict[str, Any]:
         if "omitted_source_context" not in missing:
             missing.append("omitted_source_context")
         result["context_requires_retrieval"] = True
+        critical = result.setdefault("decision_critical_omissions", [])
+        if "code.function_context" not in critical:
+            critical.append("code.function_context")
 
     # Large optional sections can crowd out even a small function. Preserve
     # their identity commitments elsewhere; never silently cut proof/contract.
@@ -152,7 +173,6 @@ def fit_evidence(source: dict[str, Any], *, max_tokens: int) -> dict[str, Any]:
         if owner.get(key):
             owner[key] = [] if isinstance(owner[key], list) else {}
             sections.append(key)
-            result["context_requires_retrieval"] = True
     result["slice_truncated_sections"] = sorted(set(sections))
     result["slice_estimated_tokens"] = estimate()
     if estimate() > max_tokens:

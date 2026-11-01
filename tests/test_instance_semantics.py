@@ -322,12 +322,14 @@ def _build(
     scope: InstanceScope,
     workbook: FrozenWorkbookRows | None = None,
     dependencies: SemanticsDependencies | None = None,
+    project_contracts_override: Optional[List[Dict[str, Any]]] = None,
 ) -> InstanceSemanticsSnapshot | SemanticsUnavailable:
     return build_instance_semantics(
         scope=scope,
         scoped_index=scoped,
         workbook=workbook if workbook is not None else _workbook(),
         dependencies=dependencies if dependencies is not None else _dependencies(),
+        project_contracts_override=project_contracts_override,
     )
 
 
@@ -479,6 +481,60 @@ def test_builtin_effects_materialize_for_exact_scope(
         assert payload["symbol_origins"]["fopen"] == ORIGIN_NO_RECEIPT
         assert "fopen" in overlay["shadowed_symbols"]
         assert all(row["source"] == "builtin_defaults" for row in payload["contracts"])
+    finally:
+        backend.close()
+
+
+def test_extended_standard_api_families_materialize_from_real_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend, index, scope = _native_instance(
+        tmp_path,
+        monkeypatch,
+        "#include <fcntl.h>\n"
+        "#include <pthread.h>\n"
+        "#include <signal.h>\n"
+        "#include <string.h>\n"
+        "#include <sys/socket.h>\n"
+        "#include <time.h>\n"
+        "#include <unistd.h>\n"
+        "static void handler(int value) { (void)value; }\n"
+        "void f(void) {\n"
+        "  char a[8] = {0}, b[8] = {0};\n"
+        "  pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;\n"
+        "  struct timespec ts = {0};\n"
+        "  memcpy(a, b, sizeof(a));\n"
+        '  int fd = open("/dev/null", O_RDONLY);\n'
+        "  int sock = socket(AF_INET, SOCK_STREAM, 0);\n"
+        "  pthread_mutex_lock(&lock);\n"
+        "  pthread_mutex_unlock(&lock);\n"
+        "  signal(SIGUSR1, handler);\n"
+        "  clock_gettime(CLOCK_REALTIME, &ts);\n"
+        "  close(sock);\n"
+        "  close(fd);\n"
+        "}\n",
+    )
+    try:
+        snapshot = _snapshot(_build(ScopedCodeIndex(index, scope), scope))
+        semantics, overlay = materialize_effect_semantics(snapshot)
+        for root in (
+            "memcpy",
+            "open",
+            "close",
+            "socket",
+            "pthread_mutex_lock",
+            "pthread_mutex_unlock",
+            "signal",
+            "clock_gettime",
+        ):
+            assert overlay["symbol_origins"][root] == ORIGIN_SYSTEM_RECEIPT
+            assert root not in overlay["shadowed_symbols"]
+        assert "memcpy" in semantics.copy_sinks
+        assert "open" in semantics.io_acquirers
+        assert "close" in semantics.io_releasers
+        assert "pthread_mutex_lock" in semantics.lock_apis
+        assert "pthread_mutex_unlock" in semantics.unlock_apis
+        assert "signal" in semantics.callback_registrars
     finally:
         backend.close()
 
@@ -1023,15 +1079,15 @@ def test_native_identity_mismatch_and_unproven_abi_denied(tmp_path: Path) -> Non
     payload_static = json.loads(snapshot_static.effect_payload)
     assert payload_static["symbol_origins"]["malloc"] == ORIGIN_IDENTITY_MISMATCH
 
-    # A root outside the verified ABI table (e.g. a lock root) stays denied
-    # with an explicit unproven-ABI gap even with a plausible system receipt.
+    # Supported roots still require the exact platform signature.  A generic
+    # pointer signature cannot authorize the pthread ABI.
     scoped_lock, scope_lock = _setup(
         tmp_path,
         call_rows={"ctx-a": [_call_receipt("pthread_mutex_lock", signature="int (void *)")]},
     )
     snapshot_lock = _snapshot(_build(scoped_lock, scope_lock))
     payload_lock = json.loads(snapshot_lock.effect_payload)
-    assert payload_lock["symbol_origins"]["pthread_mutex_lock"] == ORIGIN_ABI_UNPROVEN
+    assert payload_lock["symbol_origins"]["pthread_mutex_lock"] == ORIGIN_SIGNATURE_MISMATCH
     assert "pthread_mutex_lock" in payload_lock["shadowed_symbols"]
     semantics_lock, overlay_lock = materialize_effect_semantics(snapshot_lock)
     assert "pthread_mutex_lock" not in semantics_lock.lock_apis
@@ -1680,6 +1736,101 @@ def test_materializations_are_independent_deep_copies(tmp_path: Path) -> None:
     assert third_semantics.contracts.find("free", "deallocator")
 
 
+def test_materialized_overlay_reports_exact_project_contracts(tmp_path: Path) -> None:
+    scoped, scope = _setup(tmp_path)
+    project_contract = {
+        "symbol": {
+            "name": "project_alloc",
+            "file_path": scope.source,
+            "signature": "void *(unsigned long)",
+            "symbol_type": "function",
+            "build_context_id": scope.build_context_id,
+            "usr": "c:@F@project_alloc",
+        },
+        "role": "allocator",
+        "carrier": {"kind": "return"},
+        "pairs": [{"name": "free"}],
+        "resource_family": "heap",
+        "source": "inferred:project_semantics:project:function:project_alloc",
+        "status": "confirmed",
+        "preconditions": {"op": "true"},
+        "effect_cases": [],
+        "protocol": {},
+        "evidence": [],
+        "verification": {
+            "method": "source_composition",
+            "compiler_version": CONTRACT_COMPILER_VERSION,
+            "effect_strength": "must_under_guard",
+            "source_hash": "a" * 64,
+            "identity_verified": True,
+            "project_semantics_id": "project:function:project_alloc",
+            "authority": "native_current",
+        },
+    }
+    snapshot = _snapshot(_build(scoped, scope, project_contracts_override=[project_contract]))
+
+    semantics, overlay = materialize_effect_semantics(snapshot)
+
+    # A materialization belongs to one exact instance.  Consumers make a
+    # restricted copy before binding an individual call, so the registry must
+    # carry that BuildContext already; otherwise every exact project contract
+    # is filtered out while build-less builtin roots survive.
+    assert semantics.contracts.build_context_id == scope.build_context_id
+    assert semantics.contracts.find("project_alloc", "allocator")
+    assert semantics.contracts.find(
+        "project_alloc", "allocator", build_context_id=scope.build_context_id
+    )
+    assert len(overlay["project_contracts"]) == 1
+    reported_symbol = overlay["project_contracts"][0]["symbol"]
+    assert reported_symbol["name"] == "project_alloc"
+    assert reported_symbol["usr"] == "c:@F@project_alloc"
+    assert reported_symbol["build_context_id"] == scope.build_context_id
+    assert overlay["project_contracts"][0]["verification"] == project_contract["verification"]
+    assert overlay["project_semantics"] == {
+        "contracts": 1,
+        "assumptions": 0,
+        "contract_ids": ["project:function:project_alloc"],
+    }
+
+    from zscope.core.candidates.regex import _restricted_semantics
+
+    restricted = _restricted_semantics(semantics)
+    assert restricted.contracts.find("project_alloc", "allocator")
+    caller = {
+        "func_name": "f",
+        "file_path": scope.source,
+        "build_context_id": scope.build_context_id,
+        "code": "int f(void) { void *p = project_alloc(1); return p != 0; }",
+        "program_facts": {
+            "complete": True,
+            "build_context_id": scope.build_context_id,
+            "function_identity": {
+                "build_context_id": scope.build_context_id,
+                "usr": scope.usr,
+            },
+            "functions": [
+                {
+                    "complete": True,
+                    "owner": {"name": "f", "usr": scope.usr},
+                    "events": [
+                        {
+                            "event_kind": "call",
+                            "callee": {
+                                "name": "project_alloc",
+                                "usr": "c:@F@project_alloc",
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+    project_events = restricted.contracts.trace_calls(caller)
+    assert [event["source"] for event in project_events] == [project_contract["source"]]
+    assert project_events[0]["symbol"]["usr"] == "c:@F@project_alloc"
+    assert project_events[0]["effects_trusted"] is True
+
+
 # ── Snapshot identity binding and fail-closed decoding ──
 
 
@@ -1817,6 +1968,8 @@ def test_build_uses_only_pinned_scoped_queries(tmp_path: Path) -> None:
         call == "get_build_contexts"
         or call.startswith("facts:ctx-a:")
         or call == "receipts:ctx-a:call"
+        or call == "receipts:ctx-a:macro_reference,symbol_reference"
+            or call == "receipts:ctx-a:program_function"
         for call in index.calls
     )
 
@@ -2134,3 +2287,19 @@ def test_r31_real_standard_origin_survives_unrelated_user_include_and_rechecks_i
         assert "current" in stale.reason or "stale" in stale.reason
     finally:
         backend.close()
+
+
+@pytest.mark.parametrize("signature,system,expected", [
+    ("int (int, struct sockaddr *, unsigned int *)", True, ORIGIN_SYSTEM_RECEIPT),
+    ("int (int, __SOCKADDR_ARG, unsigned int *)", True, ORIGIN_SYSTEM_RECEIPT),
+    ("int (int, void *, unsigned int *)", True, ORIGIN_SIGNATURE_MISMATCH),
+    ("int (int, struct sockaddr *, unsigned int *)", False, ORIGIN_NON_SYSTEM_RECEIPT),
+])
+def test_accept_declaration_variants_keep_origin_gates(tmp_path, signature, system, expected):
+    from zscope.semantics.instance_semantics import _builtin_origin_status
+    from types import SimpleNamespace
+    header = tmp_path / "socket.h"
+    header.write_text("/* receipt fixture */")
+    target = _call_receipt("accept", system=system, signature=signature, declaration_file=str(header))["target"]
+    index = SimpleNamespace(get_function_program_facts=lambda *args: {"functions": [], "reason": "function_identity_not_found"})
+    assert _builtin_origin_status(index, "accept", [("accept", target)], [], False, frozenset({header})) == expected

@@ -3992,6 +3992,28 @@ class KnowledgeDB:
         ).fetchone()
         return dict(row) if row else None
 
+    def _taint_query_rows(
+        self, query: str, params: List[Any], func_names: Sequence[str]
+    ) -> List[sqlite3.Row]:
+        """Filter large name sets without JSON1, temp writes or variable limits."""
+        connection = self._conn
+        if not func_names:
+            return connection.execute(query, params).fetchall()
+        wanted = frozenset(func_names)
+        # Connections are thread-local and the cursor is fully consumed here.
+        # Registration is also allowed on a read-only SQLite connection.
+        connection.create_function(
+            "_zscope_reachable_name",
+            3,
+            lambda source, sink, function: int(
+                source in wanted or sink in wanted or function in wanted
+            ),
+        )
+        try:
+            return connection.execute(query, params).fetchall()
+        finally:
+            connection.create_function("_zscope_reachable_name", 3, None)
+
     def get_enriched_taint_bugs(
         self,
         bug_type: str = "",
@@ -4013,23 +4035,9 @@ class KnowledgeDB:
             {str(name).strip() for name in (func_names or []) if str(name).strip()}
         )
         if normalized_func_names:
-            where.append(
-                "EXISTS ("
-                "SELECT 1 FROM json_each(?) reachable "
-                "WHERE reachable.value = t.source_func "
-                "OR reachable.value = t.sink_func "
-                "OR reachable.value = f.name"
-                ")"
-            )
-            params.append(
-                json.dumps(
-                    normalized_func_names,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            )
+            where.append("_zscope_reachable_name(t.source_func, t.sink_func, f.name)")
         params.extend([limit, max(0, int(offset))])
-        rows = self._conn.execute(
+        rows = self._taint_query_rows(
             f"SELECT t.*, f.name AS func_name, f.signature, "
             f"f.start_line AS func_start, f.end_line AS func_end "
             f"FROM ("
@@ -4048,7 +4056,8 @@ class KnowledgeDB:
             f"t.source_func, t.sink_func, f.file_path, f.start_line, "
             f"f.name, f.signature LIMIT ? OFFSET ?",
             params,
-        ).fetchall()
+            normalized_func_names,
+        )
         return [self._row_with_svf_groups(r) for r in rows]
 
     def get_instance_taint_signals(
@@ -4077,23 +4086,9 @@ class KnowledgeDB:
             {str(name).strip() for name in (func_names or []) if str(name).strip()}
         )
         if normalized_func_names:
-            where.append(
-                "EXISTS ("
-                "SELECT 1 FROM json_each(?) reachable "
-                "WHERE reachable.value = t.source_func "
-                "OR reachable.value = t.sink_func "
-                "OR reachable.value = f.name"
-                ")"
-            )
-            params.append(
-                json.dumps(
-                    normalized_func_names,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            )
+            where.append("_zscope_reachable_name(t.source_func, t.sink_func, f.name)")
         params.extend([limit, max(0, int(offset))])
-        rows = self._conn.execute(
+        rows = self._taint_query_rows(
             f"SELECT t.*, f.name AS func_name, f.signature, "
             f"f.start_line AS func_start, f.end_line AS func_end "
             f"FROM ("
@@ -4112,7 +4107,8 @@ class KnowledgeDB:
             f"t.source_func, t.sink_func, f.file_path, f.start_line, "
             f"f.name, f.signature LIMIT ? OFFSET ?",
             params,
-        ).fetchall()
+            normalized_func_names,
+        )
         return [self._row_with_svf_groups(r) for r in rows]
 
     def count_taint_signal_attribution(self, command_id: str = "") -> Dict[str, int]:
@@ -4150,15 +4146,18 @@ class KnowledgeDB:
         wanted = sorted({str(value).strip() for value in command_ids if str(value).strip()})
         if not wanted:
             return {}
-        rows = self._conn.execute(
-            "SELECT command_id, context_id FROM compilation_instances "
-            "WHERE command_id IN (SELECT value FROM json_each(?)) "
-            "ORDER BY command_id, context_id",
-            (json.dumps(wanted, separators=(",", ":")),),
-        ).fetchall()
         mapping: Dict[str, List[str]] = {}
-        for row in rows:
-            mapping.setdefault(str(row["command_id"]), []).append(str(row["context_id"]))
+        for start in range(0, len(wanted), 900):
+            chunk = wanted[start : start + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                "SELECT command_id, context_id FROM compilation_instances "
+                f"WHERE command_id IN ({placeholders}) "
+                "ORDER BY command_id, context_id",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                mapping.setdefault(str(row["command_id"]), []).append(str(row["context_id"]))
         return mapping
 
     @staticmethod

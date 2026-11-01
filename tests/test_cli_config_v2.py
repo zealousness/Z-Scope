@@ -25,8 +25,6 @@ def _regex_config(root: Path) -> dict:
             }
         },
         "project": {
-            "root": str(root),
-            "source_root": ".",
             "language": "c_cpp",
             "entry_discovery": {
                 "enabled": True,
@@ -73,11 +71,12 @@ def test_zscope_init_generates_detected_strict_v3_config(tmp_path: Path, monkeyp
     raw = yaml.safe_load(output.read_text(encoding="utf-8"))
     assert raw["config_version"] == 3
     assert raw["project"]["language"] == "c_cpp"
-    assert raw["project"]["root"] == "."
+    assert "root" not in raw["project"]
+    assert "source_root" not in raw["project"]
     assert raw["project"]["targets"] == [
         {"id": "main", "compile_commands": "build/compile_commands.json"}
     ]
-    assert raw["scan"]["preset"] == "overnight"
+    assert raw["scan"]["preset"] == "deep"
     monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "http://localhost/v1")
     monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "unit-model")
     monkeypatch.setenv("Z_SCOPE_API_KEY", "unit-key")
@@ -127,7 +126,7 @@ def test_zscope_init_generates_language_isolated_java_config(tmp_path: Path, mon
     assert raw["config_version"] == 3
     assert raw["project"]["language"] == "java"
     assert raw["project"]["targets"] == [{"id": "main"}]
-    assert raw["scan"]["preset"] == "quick"
+    assert raw["scan"]["preset"] == "fast"
     assert "indexing" not in raw
     assert "concurrency" not in raw
     assert all("compile_commands" not in target for target in raw["project"]["targets"])

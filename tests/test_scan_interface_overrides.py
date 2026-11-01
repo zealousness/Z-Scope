@@ -43,6 +43,9 @@ def test_web_config_service_returns_effective_depth_and_usage(tmp_path: Path, mo
 def test_interface_scan_request_passes_only_depth_and_returns_usage(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # This unit test isolates argv/usage projection; the shared admission gate
+    # is covered with real configuration in test_semantics_workflow.
+    monkeypatch.setattr("zscope.config.semantics_workflow.require_workflow", lambda _: None)
     config_path = tmp_path / "zscope.yaml"
     config_path.write_text("config_version: 2\n", encoding="utf-8")
     effective = SimpleNamespace(
@@ -93,6 +96,7 @@ def test_interface_scan_request_passes_only_depth_and_returns_usage(
 def test_interface_scan_child_inherits_parent_cwd(tmp_path: Path, monkeypatch) -> None:
     """子进程继承父进程 CWD，保证相对 project.root 的解析与父进程完全一致。"""
 
+    monkeypatch.setattr("zscope.config.semantics_workflow.require_workflow", lambda _: None)
     config_path = tmp_path / "zscope.yaml"
     config_path.write_text("config_version: 2\n", encoding="utf-8")
     effective = SimpleNamespace(

@@ -151,6 +151,28 @@ class _ScopedIndex:
             "code": "int f(void){return 0;}\n",
         }
 
+    def get_compilation_facts(
+        self,
+        context_id: str,
+        *,
+        kinds: Tuple[str, ...] = (),
+        symbol: str = "",
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        rows = [dict(row) for row in self.rows.get(context_id, [])]
+        if kinds:
+            rows = [row for row in rows if row.get("kind") in kinds]
+        if symbol:
+            rows = [row for row in rows if (row.get("owner") or {}).get("name") == symbol]
+        if file_path:
+            rows = [
+                row
+                for row in rows
+                if not (row.get("owner") or {}).get("file")
+                or (row.get("owner") or {}).get("file") == file_path
+            ]
+        return rows
+
     def get_function_program_facts(
         self, name: str, file_path: str = "", *, build_context_id: str = ""
     ) -> Dict[str, Any]:
@@ -383,14 +405,14 @@ def test_blocked_consumers_return_empty_and_record_a_gap(tmp_path: Path) -> None
     index = _ScopedIndex([context], {"ctx-a": [_facts("c:@F@f", "f", str(source))]})
     scoped = ScopedCodeIndex(index, _scope("ctx-a", "c:@F@f", str(source)))
 
-    # A graph consumer whose projection spans the whole index is blocked: it
-    # returns an empty result, never another variant's callee list.
+    # The exact call-receipt query is served and happens to be empty; it is not
+    # a consumer gap merely because this function has no callees.
     assert scoped.get_callees("f") == []
     # A navigation consumer for a symbol that is not the pinned entry is blocked.
     assert scoped.find_function_infos("other") == []
 
     report = scoped.scope_report()
-    assert report["blocked_consumers"] == ["find_function_infos", "get_callees"]
+    assert report["blocked_consumers"] == ["find_function_infos"]
     assert report["unscoped_consumers"] == report["blocked_consumers"]
     assert report["identity_gaps"] == []
     assert all(gap["severity"] == "consumer" for gap in report["scope_gaps"])
@@ -414,6 +436,100 @@ def test_entry_body_is_scoped_and_other_symbols_are_blocked(tmp_path: Path) -> N
     report = scoped.scope_report()
     assert report["identity_gaps"] == []
     assert "get_function_impl" in report["blocked_consumers"]
+
+
+def test_exact_same_instance_callee_body_is_served_without_a_consumer_gap(
+    tmp_path: Path,
+) -> None:
+    source = _write(
+        tmp_path,
+        "unit.c",
+        "int helper(void){return 1;}\nint f(void){return helper();}\n",
+    )
+    context = _context("ctx-a", str(source), dependencies={str(source): file_digest(source)})
+    entry = _facts("c:@F@f", "f", str(source))
+    helper = _facts("c:@F@helper", "helper", str(source))
+    call = {
+        "kind": "call",
+        "owner": dict(entry["owner"]),
+        "target": {
+            "usr": "c:@F@helper",
+            "name": "helper",
+            "qualified_name": "helper",
+            "declaration": {"file": str(source), "line": 1},
+        },
+        "location": {"file": str(source), "line": 2},
+    }
+    index = _ScopedIndex([context], {"ctx-a": [entry, helper, call]})
+    scoped = ScopedCodeIndex(index, _scope("ctx-a", "c:@F@f", str(source)))
+
+    impl = scoped.get_function_impl("helper", include_context=False)
+
+    assert impl is not None
+    assert impl["index_name"] == index._entry_identity("helper")
+    report = scoped.scope_report()
+    assert report["identity_gaps"] == []
+    assert report["blocked_consumers"] == []
+    assert report["served_consumers"]["get_function_impl"] >= 1
+
+
+def test_exact_same_instance_callee_metadata_is_served_for_validator_input(
+    tmp_path: Path,
+) -> None:
+    source = _write(
+        tmp_path,
+        "unit.c",
+        "int helper(void){return 1;}\nint f(void){return helper();}\n",
+    )
+    context = _context("ctx-a", str(source), dependencies={str(source): file_digest(source)})
+    entry = _facts("c:@F@f", "f", str(source), line=2)
+    helper = _facts("c:@F@helper", "helper", str(source), line=1)
+
+    class _MetadataIndex(_ScopedIndex):
+        def find_function_infos(
+            self, func_name: str, file_path: str = "", **_: Any
+        ) -> List[Dict[str, Any]]:
+            name = str(func_name).split("@", 1)[0]
+            if name != "helper":
+                return []
+            return [
+                {
+                    "function_name": "helper",
+                    "index_name": self._entry_identity("helper"),
+                    "file_path": str(source),
+                    "start_line": 1,
+                    "end_line": 1,
+                    "signature": "int helper(void)",
+                    "is_static": False,
+                    "referenced_types": [],
+                }
+            ]
+
+        def get_function_type_context(
+            self, func_name: str, file_path: str = "", start_line: int = 0
+        ) -> Dict[str, Any]:
+            return {"referenced_types": []}
+
+        def get_function_symbol_context(
+            self, func_name: str, file_path: str = ""
+        ) -> Dict[str, Any]:
+            return {"referenced_globals": [], "referenced_macros": []}
+
+    index = _MetadataIndex([context], {"ctx-a": [entry, helper]})
+    scoped = ScopedCodeIndex(index, _scope("ctx-a", "c:@F@f", str(source)))
+
+    infos = scoped.find_function_metadata("helper", file_path=str(source))
+    types = scoped.get_function_type_context("helper", file_path=str(source), start_line=1)
+    symbols = scoped.get_function_symbol_context("helper", file_path=str(source))
+
+    assert [item["function_name"] for item in infos] == ["helper"]
+    assert types == {"referenced_types": []}
+    assert symbols == {"referenced_globals": [], "referenced_macros": []}
+    report = scoped.scope_report()
+    assert report["blocked_consumers"] == []
+    assert report["served_consumers"]["find_function_infos"] >= 1
+    assert report["served_consumers"]["get_function_type_context"] >= 1
+    assert report["served_consumers"]["get_function_symbol_context"] >= 1
 
 
 def test_entry_body_omits_unreceipted_context_without_mutating_shared_cache(tmp_path: Path) -> None:
@@ -547,6 +663,38 @@ def test_ambiguous_entry_metadata_is_refused_not_returned(tmp_path: Path) -> Non
     )
 
 
+def test_scoped_metadata_omits_empty_optional_member_facts(tmp_path: Path) -> None:
+    source = _write(tmp_path, "unit.c", "int f(void){return 0;}\n")
+    context = _context("ctx-a", str(source), dependencies={str(source): file_digest(source)})
+    rows = {"ctx-a": [_facts("c:@F@f", "f", str(source))]}
+
+    class _EmptyOptionalMembers(_ScopedIndex):
+        def find_function_infos(self, func_name, file_path="", *, include_type_context=True):
+            return [
+                {
+                    "name": "f",
+                    "file": str(source),
+                    "start_line": 1,
+                    "referenced_types": [],
+                    "unresolved_referenced_types": [],
+                    "referenced_macros": [],
+                    "referenced_globals": [],
+                }
+            ]
+
+    scoped = ScopedCodeIndex(
+        _EmptyOptionalMembers([context], rows),
+        _scope("ctx-a", "c:@F@f", str(source)),
+    )
+
+    [info] = scoped.find_function_infos("f")
+
+    assert info["referenced_types"] == []
+    assert "unresolved_referenced_types" not in info
+    assert "referenced_macros" not in info
+    assert "referenced_globals" not in info
+
+
 def _binding_receipt(usr: str, build_id: str, source: Path) -> Dict[str, Any]:
     return {"usr": usr, "build_context_id": build_id, "file": str(source)}
 
@@ -609,6 +757,30 @@ def test_type_context_is_served_only_with_a_member_binding_receipt(tmp_path: Pat
         }
     )
     assert pinned["referenced_types"][0]["name"] == "T"
+
+
+def test_scoped_type_context_omits_empty_optional_member_facts(tmp_path: Path) -> None:
+    source = _write(tmp_path, "unit.c", "int f(void){return 0;}\n")
+    context = _context("ctx-a", str(source), dependencies={str(source): file_digest(source)})
+    rows = {"ctx-a": [_facts("c:@F@f", "f", str(source))]}
+
+    class _EmptyTypeContext(_ScopedIndex):
+        def get_function_type_context(self, func_name, file_path="", start_line=0):
+            return {
+                "referenced_types": [],
+                "unresolved_referenced_types": [],
+                "referenced_macros": [],
+                "referenced_globals": [],
+            }
+
+    scoped = ScopedCodeIndex(
+        _EmptyTypeContext([context], rows),
+        _scope("ctx-a", "c:@F@f", str(source)),
+    )
+
+    value = scoped.get_function_type_context("f")
+
+    assert value == {"referenced_types": []}
 
 
 def test_symbol_context_members_need_their_own_receipt(tmp_path: Path) -> None:
@@ -796,9 +968,13 @@ def test_analyze_entry_instances_rejects_closed_and_concurrent(tmp_path: Path) -
 # ── Native-gated: real index, real Analyzer, real validation chain ──
 
 RULE = "clang_cfg_same_object_released_twice"
+GRAPH_VIEW_RULE = "global_registration_slot_checked_before_lock"
 
 
-def _native_config(tmp_path: Path, cdb: Path, source_root: Path):
+def _native_config(tmp_path: Path, cdb: Path, source_root: Optional[Path] = None):
+    # ``ProjectConfig`` now has one root. Keep the third argument as a test
+    # helper compatibility shim for native suites that still import it.
+    del source_root
     from zscope.config.config import (
         AgentConfig,
         AnalysisConfig,
@@ -809,6 +985,11 @@ def _native_config(tmp_path: Path, cdb: Path, source_root: Path):
         RulesConfig,
         ZScopeConfig,
     )
+    from zscope.config.project_semantics import render_empty_project_semantics
+
+    semantics_path = tmp_path / "zscope.semantics.yaml"
+    if not semantics_path.exists():
+        semantics_path.write_text(render_empty_project_semantics(), encoding="utf-8")
 
     return ZScopeConfig(
         llm=LLMConfig(),
@@ -820,13 +1001,13 @@ def _native_config(tmp_path: Path, cdb: Path, source_root: Path):
         ),
         project=ProjectConfig(
             project_root=tmp_path,
-            source_root=source_root,
             language="c_cpp",
             compile_commands_path=cdb,
+            semantics_file=semantics_path,
             agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
         ),
         concurrency=ConcurrencyConfig(entry_workers=2),
-        rules=RulesConfig(enabled_ids=[RULE]),
+        rules=RulesConfig(enabled_ids=[RULE, GRAPH_VIEW_RULE]),
     )
 
 
@@ -862,10 +1043,41 @@ def native_variants(tmp_path, monkeypatch):
     )
     (tmp_path / "unit.c").write_text(
         '#include "flags.h"\n'
+        "static void *project_alloc(size_t n) { return malloc(n); }\n"
+        "static void *project_dup(size_t n) { return project_alloc(n); }\n"
+        "static void project_release(void *p) { free(p); }\n"
+        "static int helper(void) { return 1; }\n"
+        "void g(void) { (void)helper(); }\n"
+        "void wrapper_bug(void) {\n"
+        "  char *p = project_alloc(4);\n"
+        "  if (!p) { return; }\n"
+        "  project_release(p);\n"
+        "  project_release(p);\n"
+        "}\n"
         "void f(void) {\n"
         "  char *p = malloc(4);\n"
         "  if (!p) { return; }\n"
         "  RELEASE(p);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "other.c").write_text(
+        "#include <pthread.h>\n"
+        "#include <stdlib.h>\n"
+        "static void *g_registration_slot;\n"
+        "static pthread_mutex_t g_registration_lock = PTHREAD_MUTEX_INITIALIZER;\n"
+        "void graph_view_bug(void *next) {\n"
+        "  if (g_registration_slot != NULL) {\n"
+        "    pthread_mutex_lock(&g_registration_lock);\n"
+        "    g_registration_slot = next;\n"
+        "    pthread_mutex_unlock(&g_registration_lock);\n"
+        "  }\n"
+        "}\n"
+        "void outside_entry_graph(void) {\n"
+        "  char *p = malloc(8);\n"
+        "  if (!p) { return; }\n"
+        "  free(p);\n"
+        "  free(p);\n"
         "}\n",
         encoding="utf-8",
     )
@@ -877,6 +1089,13 @@ def native_variants(tmp_path, monkeypatch):
         )
         for flags in ([], ["-DALT=1"])
     ]
+    rows.append(
+        dict(
+            directory=str(tmp_path),
+            file=str(tmp_path / "other.c"),
+            arguments=["clang", "-c", str(tmp_path / "other.c")],
+        )
+    )
     # A named entry list is an ordinary project file and it lives inside the
     # include search root, so it must exist before the index snapshot: a file
     # that appears afterwards makes the stored search receipt stale and the
@@ -884,6 +1103,11 @@ def native_variants(tmp_path, monkeypatch):
     (tmp_path / "entries.json").write_text(
         json.dumps({"functions": [{"function_name": "f", "file_path": "unit.c"}]}),
         encoding="utf-8",
+    )
+    from zscope.config.project_semantics import render_empty_project_semantics
+
+    (tmp_path / "zscope.semantics.yaml").write_text(
+        render_empty_project_semantics(), encoding="utf-8"
     )
     cdb = tmp_path / "compile_commands.json"
     cdb.write_text(json.dumps(rows), encoding="utf-8")
@@ -926,7 +1150,7 @@ def test_real_two_variant_instances_analyze_with_scoped_candidates(native_varian
     assert len(plan.instances) == 2
 
     parallel = ParallelAnalyzer(
-        _native_config(root, cdb, root),
+        _native_config(root, cdb),
         code_index=index,
         semantic_result=_semantic_stub(),
     )
@@ -951,7 +1175,15 @@ def test_real_two_variant_instances_analyze_with_scoped_candidates(native_varian
         for candidate in by_context[base_id].issues
         if candidate["defect_class"] == "double_free"
     ]
-    assert base_double_free == []
+    # Fast is a project-level pass: the unconditional bug in ``wrapper_bug``
+    # is reported for both variants even though ``f`` is the attribution
+    # entry.  Only the ALT macro expansion adds the second, variant-specific
+    # finding inside ``f`` itself.
+    assert {candidate["location"] for candidate in base_double_free} == {f"{root / 'unit.c'}:11"}
+    assert {candidate["location"] for candidate in alt_double_free} == {
+        f"{root / 'unit.c'}:11",
+        f"{root / 'unit.c'}:16",
+    }
 
     # Every candidate carries exactly the build identity of the instance that
     # produced it; no variant borrows another variant's candidate.
@@ -959,35 +1191,105 @@ def test_real_two_variant_instances_analyze_with_scoped_candidates(native_varian
         for candidate in outcome.issues:
             assert candidate["build_context_id"] == outcome.build_context_id
 
-    # Unscoped consumers are blocked, not merely listed: the instance scope is
-    # sound (no identity gap) while full consumer coverage stays incomplete.
+    # Exact native receipts now cover the graph, function inventory, and body
+    # consumers without borrowing either macro variant's project projection.
     assert report.instance_scope_complete is True
-    assert report.consumer_scope_complete is False
-    assert report.scan_coverage_complete is False
-    blocked = set(report.unscoped_consumers)
-    assert {"get_callees", "get_function_impl", "list_functions"} <= blocked
+    assert report.consumer_scope_complete is True
+    assert report.scan_coverage_complete is True
+    assert report.unscoped_consumers == []
     for outcome in report.outcomes:
         assert outcome.scope_gaps == []
-        assert outcome.semantics == "builtin_current_manual_advisory_no_inferred.v1"
+        assert outcome.semantics == "builtin_current_automatic_native_confirmed_project.v3"
 
     # The project-wide semantic model / deterministic pass / active discovery
     # were never run for scoped entries.
     assert parallel._project_fact_pass_state.get("status") == "skipped"
     assert parallel._active_discovery_state.get("status") == "skipped"
     assert parallel._shared_local_pattern_semantics is None
+    fast_state = parallel._fast_static_scan_state
+    assert fast_state["schema"] == "zscope.fast-static-scan.v1"
+    assert fast_state["activated"] is True
+    assert fast_state["unique_function_instances"] >= 2
+    assert fast_state["local_analysis_executions"] == fast_state["unique_function_instances"]
+    assert fast_state["duplicate_local_executions"] == 0
+    assert fast_state["graph_analysis_units"] == 4  # Three TU units plus the unlinked project observation.
+    assert fast_state["candidate_funnel"]["raw"] >= 1
+    assert fast_state["candidate_funnel"]["dedup"] >= 1
+    assert fast_state["semantic_authorization"]["wrapper_contracts_authorized"] >= 2, fast_state[
+        "semantic_authorization"
+    ]
+    authorized_wrapper_names = {
+        row["function"]
+        for row in fast_state["semantic_authorization"]["wrapper_authorized_identities"]
+    }
+    assert {"project_alloc", "project_release"} <= authorized_wrapper_names
+    # The current native wrapper pass replays the bounded forwarding chain;
+    # publication is backed by the exact current callee and body receipts.
+    assert "project_dup" in authorized_wrapper_names
+    lifecycle = parallel._candidate_ledger.freeze()
+    dispositions = {
+        str(item.get("terminal_disposition") or item.get("candidate_disposition") or "")
+        for item in lifecycle.get("outcomes") or []
+        if isinstance(item, dict)
+    }
+    assert dispositions
+    assert dispositions <= {"confirmed", "rejected_with_proof", "needs_review"}
+    fast_outcomes = [
+        item.get("issue") or {}
+        for item in lifecycle.get("outcomes") or []
+        if isinstance(item, dict) and (item.get("issue") or {}).get("fast_static_scan_v1")
+    ]
+    assert fast_outcomes
+    assert any(
+        "other.c" in json.dumps(candidate, sort_keys=True)
+        and candidate["reachability_attribution"]["reachable"] is None
+        and candidate["reachability_attribution"]["status"] == "unknown"
+        and candidate["reachability_attribution"]["coverage_gap"]
+        for candidate in fast_outcomes
+    )
+    graph_view = next(
+        candidate
+        for candidate in fast_outcomes
+        if candidate.get("rule") == GRAPH_VIEW_RULE
+        and candidate.get("function") == "graph_view_bug"
+    )
+    assert graph_view["analysis_unit_id"]
+    assert graph_view["build_context_id"]
+    assert graph_view["reachability_attribution"]["status"] == "unknown"
+    assert any(
+        "unit.c" in json.dumps(candidate, sort_keys=True)
+        and candidate["reachability_attribution"]["reachable"] is True
+        for candidate in fast_outcomes
+    )
+    for candidate in fast_outcomes:
+        assert len(candidate["analysis_unit_id"]) == 64
+        assert candidate["reachability_attribution"]["reachable"] in {True, None}
 
     payload = report.to_payload()
     assert payload["scheduled_instances"] == 2
     assert payload["instance_scope_complete"] is True
-    assert payload["consumer_scope_complete"] is False
-    assert payload["blocked_consumers"]
-    assert any(reason.startswith("blocked_consumers:") for reason in payload["reasons"])
+    assert payload["consumer_scope_complete"] is True
+    assert payload["blocked_consumers"] == []
+    assert not any(reason.startswith("blocked_consumers:") for reason in payload["reasons"])
+
+    combined = parallel.generate_combined_report(parallel.last_instance_results())
+    telemetry = combined["metadata"]["fast_static_scan"]
+    assert telemetry["schema"] == "zscope.fast-static-scan.v1"
+    assert telemetry["duplicate_local_executions"] == 0
+    assert telemetry["candidate_funnel"]["dedup"] >= len(lifecycle["outcomes"])
+    assert combined["summary"]["fast_static_scan"] == telemetry
 
     # The raw per-entry results stay available for the existing report path and
     # are keyed per instance, not collapsed onto the shared function name.
     raw_results = parallel.last_instance_results()
     assert len(raw_results) == 2
     assert len(set(raw_results)) == 2
+    assert all(
+        result.metadata["fast_static_entry_projection"] is True for result in raw_results.values()
+    )
+    assert all(
+        result.instance_collection["collection_closed"] is True for result in raw_results.values()
+    )
 
     plan_payload = plan.to_payload(report)
     assert plan_payload["scheduled_instances"] == 2
@@ -1015,7 +1317,7 @@ def test_native_validation_helper_keeps_the_instance_scope(native_variants, monk
 
     monkeypatch.setattr(parallel_module.Analyzer, "__init__", observe)
     parallel = ParallelAnalyzer(
-        _native_config(root, cdb, root), code_index=index, semantic_result=_semantic_stub()
+        _native_config(root, cdb), code_index=index, semantic_result=_semantic_stub()
     )
     try:
         report = parallel.analyze_entry_instances(plan)
@@ -1030,6 +1332,221 @@ def test_native_validation_helper_keeps_the_instance_scope(native_variants, monk
         ), "the project-wide semantic result cannot authorize an instance verdict"
     finally:
         parallel.close()
+
+
+def test_fast_static_pass_analyzes_shared_functions_once_per_build(native_variants) -> None:
+    backend, root, cdb = native_variants
+    from zscope.orchestration.entry_instances import plan_entry_instances
+    from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
+
+    index = _native_index(backend, root, cdb)
+
+    plan = plan_entry_instances(
+        index,
+        [
+            FunctionEntry("f", file_path="unit.c"),
+            FunctionEntry("g", file_path="unit.c"),
+        ],
+    )
+    assert plan.status == "planned"
+    assert len(plan.instances) == 4
+    expected_units = set()
+    seen_builds = set()
+    for context in index.get_build_contexts():
+        build_id = str(context["build_context_id"])
+        seen_builds.add(build_id)
+        for row in index.get_compilation_facts(build_id, kinds=("program_function",)):
+            owner = row.get("owner") or {}
+            source = Path(str(owner.get("file") or ""))
+            try:
+                source.resolve().relative_to(root.resolve())
+            except ValueError:
+                continue
+            if owner.get("usr"):
+                expected_units.add((build_id, str(owner["usr"])))
+
+    parallel = ParallelAnalyzer(
+        _native_config(root, cdb),
+        code_index=index,
+        semantic_result=_semantic_stub(),
+    )
+    try:
+        report = parallel.analyze_entry_instances(plan)
+        assert report.status == "analyzed"
+        state = parallel._fast_static_scan_state
+        assert state["activated"] is True
+        assert state["unique_function_instances"] == len(expected_units)
+        assert state["local_analysis_executions"] == len(expected_units)
+        assert state["duplicate_local_executions"] == 0
+        assert {
+            (scope.build_context_id, scope.usr)
+            for scopes in parallel._instance_scopes_by_build.values()
+            for scope in scopes
+        } == expected_units
+        assert parallel._validation_semantics_snapshots
+        assert (
+            set(parallel._validation_semantics_snapshots)
+            == set(parallel._validation_semantics_receipts)
+            == set(parallel._validation_semantics_fact_receipts)
+        )
+        assert {
+            (snapshot.scope.build_context_id, snapshot.scope.usr)
+            for snapshot in parallel._validation_semantics_snapshots.values()
+        }.issubset(expected_units)
+        assert state["local_engine_executions"] == {
+            "cpp_clang_cfg": len(expected_units),
+            "cpp_regex": len(expected_units),
+            "cpp_graph_view": 0,
+            "cpp_clang_matcher": len(expected_units),
+            "extension_provider": len(expected_units),
+        }
+        # The unlinked factory/member observation is a separate project unit.
+        assert state["graph_analysis_units"] == len(seen_builds) + 1
+        assert state["cache"]["status"] == "cold"
+        assert state["cache"]["local_cold_misses"] == len(expected_units)
+        assert state["cache"]["graph_cold_misses"] == len(seen_builds)
+        assert state["cache"]["hot_hits"] == 0
+        assert state["rule_execution"]["executed_by_rule"][RULE] == len(expected_units)
+        assert state["rule_execution"]["declared_fact_prerequisites"][RULE]
+        function_manifests = [row for row in state["analysis_units"] if row.get("usr")]
+        assert len(function_manifests) == len(expected_units)
+        assert all(
+            row["semantic_contract_trace_status"] == "complete"
+            and isinstance(row["semantic_contract_events"], list)
+            for row in function_manifests
+        )
+    finally:
+        parallel.close()
+
+    # A second analyzer over byte-identical sources, exact native contexts,
+    # semantics and rule revisions reuses the local summaries.  Graph/backend
+    # units remain independently recomputed until their dependency frontier is
+    # represented by a current link/SCC receipt.
+    warm_index = _native_index(backend, root, cdb)
+    warm_plan = plan_entry_instances(
+        warm_index,
+        [
+            FunctionEntry("f", file_path="unit.c"),
+            FunctionEntry("g", file_path="unit.c"),
+        ],
+    )
+    warm = ParallelAnalyzer(
+        _native_config(root, cdb),
+        code_index=warm_index,
+        semantic_result=_semantic_stub(),
+    )
+    try:
+        warm_report = warm.analyze_entry_instances(warm_plan)
+        assert warm_report.status == "analyzed"
+        warm_state = warm._fast_static_scan_state
+        assert warm_state["unique_function_instances"] == len(expected_units)
+        assert warm_state["local_analysis_executions"] == 0
+        assert warm_state["duplicate_local_executions"] == 0
+        assert warm_state["local_engine_executions"] == {
+            "cpp_clang_cfg": 0,
+            "cpp_regex": 0,
+            "cpp_graph_view": 0,
+            "cpp_clang_matcher": 0,
+            "extension_provider": 0,
+        }
+        assert warm_state["cache"]["status"] == "hot"
+        assert warm_state["cache"]["local_hot_hits"] == len(expected_units)
+        assert warm_state["cache"]["graph_hot_hits"] == len(seen_builds)
+        assert warm_state["cache"]["cold_misses"] == 0
+        assert warm_state["rule_execution"]["cache_reused_by_rule"][RULE] == len(expected_units)
+        assert RULE not in warm_state["rule_execution"]["executed_by_rule"]
+        assert warm_state["unique_graph_units"] == len(seen_builds) + 1
+        assert warm_state["graph_analysis_units"] == 1
+        warm_function_manifests = [row for row in warm_state["analysis_units"] if row.get("usr")]
+        assert len(warm_function_manifests) == len(expected_units)
+        assert all(
+            row["semantic_contract_trace_status"] == "complete"
+            and isinstance(row["semantic_contract_events"], list)
+            for row in warm_function_manifests
+        )
+    finally:
+        warm.close()
+
+
+def test_link_group_semantics_projects_only_member_contracts_with_exact_usr() -> None:
+    from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
+    from zscope.semantics.contracts import ApiContract, ObjectBinding, SymbolIdentity
+    from zscope.semantics.models import LocalPatternSemantics
+
+    member = LocalPatternSemantics()
+    member.contracts.add(
+        ApiContract(
+            symbol=SymbolIdentity(
+                "project_lock",
+                "src/locks.c",
+                "void ( pthread_mutex_t * )",
+                "function",
+                "ctx-locks",
+                "c:@F@project_lock",
+            ),
+            role="lock",
+            carrier=ObjectBinding("argument", 0),
+            source="native_test_receipt",
+        )
+    )
+    unknown = LocalPatternSemantics()
+    unknown.contracts.add(
+        ApiContract(
+            symbol=SymbolIdentity(
+                "unknown_lock",
+                "src/unknown.c",
+                "void ( pthread_mutex_t * )",
+                "function",
+                "ctx-locks",
+                "",
+            ),
+            role="lock",
+            carrier=ObjectBinding("argument", 0),
+            source="native_test_receipt",
+        )
+    )
+    outsider = LocalPatternSemantics()
+    outsider.contracts.add(
+        ApiContract(
+            symbol=SymbolIdentity(
+                "other_lock",
+                "src/other.c",
+                "void ( pthread_mutex_t * )",
+                "function",
+                "ctx-other",
+                "c:@F@other_lock",
+            ),
+            role="lock",
+            carrier=ObjectBinding("argument", 0),
+            source="native_test_receipt",
+        )
+    )
+
+    projected, records = ParallelAnalyzer._project_link_group_semantics(
+        target_id="app",
+        member_build_context_ids=["ctx-caller", "ctx-locks"],
+        base_semantics=member,
+        semantics_by_build=[member, unknown, outsider],
+    )
+
+    exact = projected.contracts.find(
+        "project_lock", usr="c:@F@project_lock", build_context_id="ctx-caller"
+    )
+    assert len(exact) == 1
+    assert exact[0].symbol.build_context_id == ""
+    assert exact[0].symbol.usr == "c:@F@project_lock"
+    assert projected.contracts.find("project_lock", usr="c:@F@different") == []
+    assert projected.contracts.find("unknown_lock") == []
+    assert projected.contracts.find("other_lock") == []
+    assert records == [
+        {
+            "link_group_id": "app",
+            "definition_build_context_id": "ctx-locks",
+            "name": "project_lock",
+            "usr": "c:@F@project_lock",
+            "role": "lock",
+        }
+    ]
 
 
 def test_navigation_body_must_match_the_native_source_range(tmp_path: Path) -> None:

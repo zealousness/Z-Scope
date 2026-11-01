@@ -10,6 +10,8 @@ Review 完整事实实验默认关闭：底层保留绑定编译配置的完整�
 
 Native 编译事实已新增按 BuildContext 隔离的持久化与精确查询，保留同一源码的不同编译实例。单实例内的同名函数通过 native USR 消歧，函数事实身份绑定 BuildContext 与 USR；未消歧时仅提供函数选项，不合并证明事件。旧函数导航投影尚不覆盖全部变体，完整扫描消费者仍在迁移；歧义程序事实不能作为单一实例证明，未知链接归属不能推出跨 TU 路径完整。具体合同见[代码检索与后端](modules/retrieval-backends.md#编译实例事实与导航投影)。
 
+C/C++ 三种模式共享“项目级静态发现、入口后置归因、全局候选裁决”：compile database 中每个当前 BuildContext 都先取得精确 native owner 清单，每个 `(BuildContext, USR)` 的 AST/CFG/本地规则只执行一次，TU 图与实例 backend 单元各执行一次；入口不再重复触发发现，只附加 reachability 与 call path。候选携带稳定 `analysis_unit_id` 和构建身份，经全局 Ledger 去重后由 V0 与 Validator 收敛。fast 采用低成本裁决，balanced/deep 追加未闭合义务调查，只有 deep 默认运行分层 LLM 主动发现。真实 link record 未闭合时仍扫描可证明的本地单元，但本轮不得取得 formal qualification。
+
 受限跨 TU 对象路径通过显式本地构建记录核对实际 C executable 成员，保留各 TU 的 BuildContext，并按 USR/签名连接调用与具体对象。只读、完整初始化的有限 ops 表可以按已知选择解析；未知目标或选择仍为缺口。链接产物与全部成员参与当前性检查和 Validator 重放，不把普通调用图或同名符号当作链接证明。该切片复用既有单槽池/留存路径，实验规则维持默认关闭。
 
 非原子引用计数沿用同一契约发布、对象路径和验收链。源码核验只描述受限计数变化，实际终结效果由当前 callback 路径与对象代次确定；池逻辑归还与物理 free 分开。首批只消费 signed 32-bit 计数和内嵌单槽池，非并发执行及业务清理前提分别保留，不能从顺序计数推断线程安全。
@@ -44,6 +46,8 @@ Z-SCOPE 的定位可以归纳为三个层面：
 受限 pthread 回调寿命复用 native CFG、ObjectRef、契约发布与 S04 裁决。标准效果分开保存创建、取消请求、释放 join 句柄和等待完成；单槽队列路径进一步保留工作者首次解锁时的局部任务引用，在调用方取消排队项、停止接收后于 join 期间继续。提交/取消 helper 由当前同 TU CFG 重放，不将名称或 active 标记当作完成证明。native opaque mutex/cond 收据、实际锁实例和共享字段访问随路径核验；同锁不能排除 UAF。单等待者 cond_wait 可暂停实际调用，释放 mutex 后接收匹配条件实例的通知，重获锁后才返回并重检条件。仅选定有界调度，首个非法访问后停止并记录真实恢复位置；未匹配通知、一般唤醒/超时场景、取消模式切换/任意取消点、多工作者和完整 drain 调度仍有缺口。默认延迟取消复用当前宏/AST 收据解释受限 C/glibc cleanup，先重获等待锁再按注册栈逆序重放实际回调；原获取对象、正常 pop、取消投递和 join 完成分别记录。同一 C 文件中的工作者直接 helper 复用有界 CFG 调用帧；暂停恢复保留嵌套路径和独立局部状态，返回值仅在函数返回后发布，取消清理归属于注册帧。未知/间接目标、局部地址逃逸和 cleanup 内 helper 不扩大证明范围。业务前提在现有验收阶段集中确认，规则默认关闭。
 
 ## 2. 设计目标
+
+实例扫描同时消费无需人工配置的确定性 native 包装器闭包：在当前 BuildContext 内从已授权标准根沿真实 USR 推导受限资源与单调用转发效果，每个构建计算一次，并保存不能推导的原因。该机器事实与已确认项目 YAML 分开，不将模型发现的全部效果复制为必填配置；配置必要性由完整契约等价及实际规则消费对照判断。此切片不证明跨 TU 或整个工程语义覆盖完整，详见[最小配置与自动 native 推导](modules/configuration-state.md#最小配置与自动-native-推导)。
 
 Z-SCOPE 的架构目标可以概括为四句话：
 
@@ -80,9 +84,8 @@ flowchart TB
 
     subgraph EvidencePlane["证据平面"]
         Candidate["CandidatePipeline<br/>rules + graph + backend signals"]
-        SecurityMap["Security Semantic Map<br/>facts + evidence-backed claims"]
-        Gap["Coverage-gap Planner<br/>candidate-blind units"]
-        Discovery["Active Discovery<br/>hypotheses only"]
+        Hierarchy["Deep hierarchical context<br/>函数 → 功能 → 模块契约"]
+        Discovery["Deep candidate-blind discovery<br/>hypotheses + semantic supplements"]
         Ledger["CandidateLedger<br/>dedup + freeze"]
         SemanticDedup["Semantic report dedup<br/>programmatic"]
     end
@@ -97,14 +100,14 @@ flowchart TB
 ReviewMemory["ReviewMemory<br/>baseline + suppression + advisory review patterns"]
     Tools["ToolsRuntime<br/>ToolPolicy + agent tools"]
     Snapshot["SnapshotStore<br/>snapshots + reports"]
-    UserCfg["UserConfigStore<br/>user_config.xlsx + feedback state"]
+    UserCfg["ProjectSemanticsStore<br/>zscope.semantics.yaml"]
     Report["ReportAssembler<br/>views / semantic dedup / SARIF / metadata"]
 
     Ingress --> Config --> Workflow
-    Workflow --> DiffImpact --> Modeling["增量并发接口建模"]
-    KDB --> Modeling
-    Modeling --> UserCfg
-    Modeling --> Snapshot
+    Ingress --> PrimitiveDiscovery["独立原语发现 + 人工复核"] --> UserCfg
+    Workflow --> DiffImpact --> SemanticsGate["只读项目语义门禁"]
+    UserCfg --> SemanticsGate
+    SemanticsGate --> Snapshot
     Workflow --> Index
     Index --> Regex --> KDB
     Index --> Clang --> KDB
@@ -112,21 +115,20 @@ ReviewMemory["ReviewMemory<br/>baseline + suppression + advisory review patterns
     Index --> JavaUnified --> KDB
     Index --> Unified --> KDB
     Workflow --> Snapshot
-    Workflow --> UserCfg
     KDB --> Candidate
     Snapshot --> SnapshotPoints["未验证的快照背景"] --> V1
     UserCfg --> Candidate
     Candidate --> Ledger
-    KDB --> SecurityMap --> Gap --> Discovery --> Ledger
+    KDB --> Hierarchy --> Discovery --> Ledger
     Ledger --> SemanticDedup
     Ledger --> V0 --> V1 --> V2 --> V3
-    TokenUsage --> SecurityMap
+    TokenUsage --> Hierarchy
     TokenUsage --> Discovery
     TokenUsage --> V1
     TokenUsage --> V2
     TokenUsage --> V3
     V3 --> ReviewMemory
-    Tools --> SecurityMap
+    Tools --> Hierarchy
     Tools --> Discovery
     Tools --> V3
     Index --> Tools
@@ -134,7 +136,6 @@ ReviewMemory["ReviewMemory<br/>baseline + suppression + advisory review patterns
     UserCfg --> Tools
     V3 --> Report
     Report --> Snapshot
-    Report --> UserCfg
 ```
 
 人工 false-positive review patterns 属于独立的 Validator Review Memory
@@ -148,7 +149,7 @@ finding 的 verdict。Review Memory 按项目、规则和类别隔离，并在�
 proposal。只有 `active` 才将合格 proposal 作为 `authority=advisory` 的
 Validator 上下文使用。
 
-总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof 或分层 Validator 改变终态，模型 hypothesis 不能直接确认漏洞。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore 与 ReviewMemory 保留中间产物、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
+总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面共享项目级静态 pass，并在 deep 中用分层契约摘要与 candidate-blind 探索扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof 或分层 Validator 改变终态，模型 hypothesis 不能直接确认漏洞。反馈平面通过 SnapshotStore、项目语义 YAML、状态库与 ReviewMemory 分别保留中间产物、人工契约、最终报告和人工决策；旧 Security Semantic Map finder 仅用于离线对照。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 向调查和受控发现开放白名单内的只读查询。
 
 跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.5` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。
 
@@ -168,17 +169,17 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 | Tools | `zscope/tools/` | LLM 工具运行时、参数校验、ToolPolicy、敏感路径 hook 和审计 |
 | Web / MCP | `zscope/web/`、`zscope/mcp/` | Dashboard service layer、stdio/HTTP MCP、远程安全校验 |
 
-### 3.1 配置边界：UserConfigV2 + RuntimeSpec
+### 3.1 配置边界：UserConfigV2/V3 + RuntimeSpec
 
 配置加载分为三层：
 
-1. `UserConfigV2` 严格解析用户 YAML，只接受 LLM、项目/入口、审计重点、语言后端拓扑、SVF 规划、并发和规则扩展。
+1. `UserConfigV2` / `UserConfigV3` 按版本严格解析用户 YAML：v2 保留语言后端拓扑、SVF 规划、并发和规则扩展；v3 使用 llms、project、scan 与可选 execution，工程目标逐项保留，多目标执行仍明确拒绝。两版本均以 YAML 父目录为唯一工程根，不接受独立 root/source_root；项目内相对路径从该目录解析。
 2. 打包的 `runtime_defaults.yaml` 解析为 `RuntimeSpec`，提供 Agent 启用状态/LLM 角色、分析预算、缓存、报告策略和稳定算法默认值。
 3. loader 把两者组合为内部 `EffectiveConfig`，并把 RuntimeSpec 的版本、来源路径和 SHA-256 写入配置哈希、缓存身份与报告 metadata。
 
-产品运行时只接受 `config_version: 2`，不保留 v1 别名。旧配置只能由独立的 `zscope-config migrate` 读取。开发者覆盖必须同时设置 `Z_SCOPE_DEVELOPER_MODE=1` 和绝对路径 `Z_SCOPE_RUNTIME_SPEC`；覆盖文件也执行重复键、未知键、类型和枚举校验。
+产品运行时接受严格 `config_version: 2` / `3`，不保留 v1 或旧双根字段别名。v3 preset 与有效深度统一为 fast/balanced/deep，Java 仅 fast；旧 quick/overnight 只能显式迁移为 fast/deep。旧配置由独立的 `zscope-config migrate` 读取，迁移到原工程目录并核对原路径基准，不静默扩大或缩小扫描范围。开发者覆盖必须同时设置 `Z_SCOPE_DEVELOPER_MODE=1` 和绝对路径 `Z_SCOPE_RUNTIME_SPEC`；覆盖文件也执行重复键、未知键、类型和枚举校验。
 
-`AGENT.md`、`SKILL.md` 和 workflow YAML 分别保持 Agent prompt、Skill/Tool 和流程契约，不复制进 RuntimeSpec。KnowledgeDB、snapshot 与默认 user-config 状态路径统一相对 `project.root`，避免跨目录运行污染进程工作目录。
+`AGENT.md`、`SKILL.md` 和 workflow YAML 分别保持 Agent prompt、Skill/Tool 和流程契约，不复制进 RuntimeSpec。KnowledgeDB、snapshot 与默认 user-config 状态路径统一相对 YAML 所在工程目录，避免跨目录运行污染进程工作目录。
 
 ## 4. 运行时主流程
 
@@ -187,11 +188,11 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 默认工作流由 entry workflow 与 scan-level 收敛阶段共同组成：
 
 1. `discover_entries`：当 `--discover-entries` 或 `project.entry_discovery.enabled` 启用时，发现公共 API、通信/IPC、线程入口、已解析的信号/退出注册回调和用户输入点，并把候选入口列表写入项目根目录 `entry_functions_list.json`。注册回调使用 `callback` exposure，信号回调保留异步执行上下文；入口线索不代表注册必然成功。
-2. `prepare_semantics`：索引/Wiki 就绪后，所有 C/C++ 档位执行增量并发建模，合并并重读 user_config，固定本轮接口契约版本。普通重扫也复用有效语义缓存。
+2. `prepare_semantics`：C/C++ 在扫描开始前只读加载 `zscope.semantics.yaml`，要求 pending/stale/unresolved/跨构建冲突为零，并把当前证据支持的 confirmed contract 编译为实例级 Registry；扫描不执行接口发现、不调用相关 LLM，也不写回 YAML。
 3. `collect_candidates`：各入口收集规则、图与 backend signal。快照怀疑点仅供 Validator 验证已有候选时参考，不独立登记到 Candidate Ledger；发现层不得因 token 预算静默丢候选。
-4. `semantic_and_gap_discovery`：fast 跳过；balanced/deep 先构建零 LLM Security Semantic Map 骨架，只对高风险 audit unit 做证据化 semantic delta，再运行 candidate-blind 主动发现并登记 hypothesis。
+4. `semantic_and_gap_discovery`：fast/balanced 不做独立发现；deep 从共同静态 pass 的精确 BuildContext/USR 与真实 link record 建立函数→功能→模块契约摘要，主动查询已准入函数事实，提交无规则 hypothesis 并向已有候选补充待验证语义。旧 Security Semantic Map finder 仅保留离线对照，不默认双跑。缺少精确静态输入时明确记录 gap。
 5. `freeze_ledger`：全部入口与主动发现结束后冻结全局 Ledger，按同一安全义务跨入口合并。
-6. `validate_findings`：V0 proof → V1 结构化单次判定 → 按 obligation 定向补齐全部必需事实 → 有事实增量才执行一次 V2 → balanced 调查 high/critical 或外部可达的未闭合 cluster，deep 调查全部无完整反证的非 shadow 未闭合 cluster。
+6. `validate_findings`：三模式共享 V0 proof 与 V1 低成本裁决；balanced/deep 对非 shadow 未闭合义务运行同一自主 Validator。provider 作为取证加速手段，调查可组合只读工具、正反解释和新事实；中风险内部候选不再被风险阈值排除。程序核对身份与引用，模型作语义判断；确定性拒绝和有证据 LLM 拒绝分别记录为 `rejected_with_proof` 与 `rejected_with_evidence`。缺少范围覆盖、业务假设或关键证据时保持未决。
 7. `persist_report`：无论完整或部分完成都保存报告、地图、usage 与未覆盖区域；已启用阶段不完整时标记 partial。
 
 当 `${snapshot_dir}/balanced_rollout_state.json` 存在时，配置生效边界在创建 usage 账本之前执行统一灰度策略。状态必须是由受保护控制面使用专用环境密钥生成的 HMAC-SHA256 信封，并通过 schema/policy/language/release identity、单调 sequence、签发时间、有效期和内部状态校验，才有权改变省略档位：telemetry/回退状态强制 fast，validator opt-in 不启用语义/发现，semantic shadow 运行候选盲发现但将其闭合为不进入用户视图的 `shadow_observation`，10/50/100 依据稳定 project-id bucket 做确定性 enrollment。CLI、Web、MCP 和报告均回显 requested/effective depth、rollout stage、bucket、认证状态与语义/发现可见性；无密钥、裸文件、篡改、过期或 identity 不匹配均视为 unmanaged，不能把省略档位切为 balanced，但不会阻断用户显式 `--scan-depth balanced|deep`。没有安装状态文件的开发/既有部署保持原配置行为。
@@ -219,12 +220,12 @@ diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `-
 
 控制平面负责把用户意图变成可执行流程：
 
-- `zscope/cli/cli.py` 处理运行模式、WebUI、MCP、SARIF 告警验证、SARIF 导出、索引预热、`--infer-user-config` 工作簿推断和 `--diff-base/--diff-head/--diff-repo-root/--diff-path` 差异影响扫描，并暴露 `--mode`、`--sarif`、`--dashboard-host/--dashboard-port`、`--mcp-http`、`--mcp-host/--mcp-port/--mcp-endpoint`、`--mcp-auth-token-env`、`--mcp-client-allowlist` 等服务边界参数。
+- `zscope/cli/cli.py` 处理运行模式、WebUI、MCP、SARIF 告警验证、SARIF 导出、索引预热、`--discover-primitives` 项目原语发现和 `--diff-base/--diff-head/--diff-repo-root/--diff-path` 差异影响扫描，并暴露 `--mode`、`--sarif`、`--dashboard-host/--dashboard-port`、`--mcp-http`、`--mcp-host/--mcp-port/--mcp-endpoint`、`--mcp-auth-token-env`、`--mcp-client-allowlist` 等服务边界参数。
 - `zscope/orchestration/scan_session.py` 统一入口发现、diff impact 入口规划、发现/差异结果落盘、批量加载、断点续扫和报告备份。
 - `zscope/orchestration/workflow_executor.py` 执行声明式 workflow step，并在报告 metadata 中记录进度。
 - `zscope/orchestration/workflow_runner.py` 装配单入口运行态，负责 state factory、workflow executor、report build/persist/finalize 回调和已有报告返回路径；history reconciler 与 validation runner 仍由 `Analyzer` step handler 调用。
 
-`--infer-user-config` 是独立的控制面命令：它构建 CodeIndex，运行 `infer_user_config_rows()`，再用默认 LLM profile 按 `concurrency.llm_max_inflight` 并行筛选、修订或丢弃候选行，把保留的语义行合并进 `user_config.xlsx`，然后退出。该命令不会触发漏洞扫描。
+`--discover-primitives` 是独立控制面命令：它构建所有精确函数实例的 native 事实，以当前验证的 packaged primitive 和 YAML 中 confirmed primitive 为根，在 link group/SCC 上发现 wrapper、宏、pointer slot 与 dispatcher。人工审核面只发布效果跨函数边界可观察、载体能精确映射并由规则实际消费的高信号契约；普通字符串/数值 standard-operation 薄封装及无法完整映射全部操作数的 copy helper 留在机器事实层。standard-operation 自动提升当前仅覆盖路径协议消费者能够重放的 `access/stat/lstat/faccessat/fstatat` 委托。宏 wrapper 在同一次命令内基于精确 native 定义收据求传递闭包，并把嵌套调用的参数或全局对象逐层映射到结构化 ObjectPath；名称相似或缺少实参映射都不能进入执行语义。dispatcher 只有在精确 handler 实例已进入该高信号接口闭包时才成为审核候选，普通业务 switch 不进入语义 YAML。pointer binding 只有在当前 native/SVF 证据给出精确、非空且闭合的目标集时才成为待复核 YAML 行；只有 slot/callsite 而没有目标集的调用进入机器 coverage gap，不能要求人工确认一个 schema 本身不允许发布的空绑定，也不能据此宣传已覆盖间接调用。模型只对首次出现、证据变化或歧义候选做一次 advisory 初审与最多一次事实补全，不能把行发布为 confirmed。结果以 pending/stale 合并到同一 YAML，原始事实和模型响应写入 `.zscope_snapshots/semantics/` 后退出。`--infer-user-config` 仅为一个版本周期的别名，不再读写 XLSX。
 
 这种设计把“什么时候运行哪个阶段”从 Agent prompt 中拿出来，放到可测试、可审计的 Python 编排层。
 
@@ -289,17 +290,17 @@ C/C++ 确定性引擎对外保留 `RegexCandidateGenerator`、`ClangAstCfgCandid
 
 `CandidatePipeline.collect_signal_candidates()` 输出 `CandidateSignalBatch`，分为 `local_candidates`、`graph_candidates`、`backend_candidates` 和 `merged_candidates`。这使上层只消费 evidence-only candidate，不再直接关心候选来自 regex、Clang、SVF、Graph 还是 Joern。
 
-确定性候选生成器不再只依赖内置 API 名称表。v1.0 将本地模式语义收敛到 `zscope/semantics/`：`defaults.yaml` 提供 allocator/deallocator/reallocator/copy/lock/unlock/size type 等默认语义；`SemanticOverlayCompiler` 合并内置 defaults 与 `UserConfigStore` 中的工作簿/配置行，生成 checker-facing overlay；`LocalPatternSemanticBuilder` 只读取本轮已发布的用户配置与 typedef，生成 local candidate generators 消费的 `LocalPatternSemantics`。项目私有 API 因而可以参与同一套候选规则。
+确定性候选生成器不再只依赖内置 API 名称表。版本化 C/POSIX/Linux catalog 统一生成标准 contract、role bucket、pair 与精确 ABI 期望；`ProjectSemanticsStore` 把人工确认且当前 native 身份仍成立的项目 effect 编译进同一实例级 `ContractRegistry`，并把已复核 `derived_from` 来源保留为实例级 delegate。Regex/Clang/Graph 等规则在 call site 查询 resolved effect、ObjectPath 与该来源边，不维护另一套项目 malloc/free/lock/path-query 名称表。
 
 语义配置的分层如下：
 
 | 层级 | 作用 |
 |------|------|
-| `defaults.yaml` | 打包发布的默认 API role、type alias 和 checker role |
-| user workbook | 项目私有 allocator、release、lock、dispatcher、module lifecycle、pointer target、function intent |
-| state DB / legacy SQLite | 配置告警、finding suppression、baseline 和旧 SQLite 配置兼容 |
-| local semantics | typedef 与已提交工作簿中的结构化接口契约；不从历史快照或名称补充项目角色 |
-| filtered context | `user_config_context.py` 按入口函数和文件 scope 注入 prompt 所需片段 |
+| packaged catalog | 已分类的 C/POSIX/Linux active/neutral/unsupported 接口、selector、condition、effect、pair、来源和 ABI |
+| `zscope.semantics.yaml` | 项目 primitive、derived wrapper、macro、dispatcher 与 pointer binding 的唯一人工权威 |
+| state DB | finding suppression、baseline、业务前提回答；不能授予项目接口效果 |
+| local semantics | 当前 BuildContext 下已授权的 builtin 与 confirmed project contract |
+| LLM Wiki | module lifecycle、function intent 等说明性上下文；不作为规则效果依据 |
 
 图候选弥补单函数词法规则的边界，当前覆盖持锁调用会重入加锁的 helper、错误清理类型、线程参数生命周期、全局容器生命周期、对象发布后初始化、容器解链后释放、timer/pipe 等级联等待、锁顺序反转、协议状态机、字节序逻辑、fd 类型契约、shared-memory create-if-absent race、signal handler deadlock、callback self-destroy 以及 stale tree/list 链接等形态。图候选输出仍保持与其他 candidate 相同的数据形状，因此直接进入全局 Ledger 与分层 Validator，不形成旁路报告。
 
@@ -338,7 +339,7 @@ Z-SCOPE 不再默认逐入口复活旧式全量多 Agent fanout；LLM 职责围�
 | Semantic Map enrichment | 仅补全高风险 audit unit 的关键契约 | 零 LLM 骨架、代码/后端事实 | 带可解析 evidence ref 的 semantic delta |
 | Active discovery worker | 对 coverage gap 做候选盲审 | audit unit、地图投影、Skill | hypothesis / observation，不能 confirmed |
 | `validator_agent` V1/V2 | 单次结构化判定与新增事实复判 | 有界 evidence slice / evidence delta | verified / rejected / uncertain 模型意见 |
-| `validator_agent` V3 | balanced 调查 high/critical 或外部可达未决项，deep 调查全部无反证的非 shadow 未决项 | 一次连续会话、只读工具、证据、Skill | 带可解析新增事实的 investigation synthesis |
+| `validator_agent` V3 | balanced/deep 调查全部非 shadow 未闭合义务 | 一次连续会话、只读工具、证据、Skill | 带可解析新增事实的 investigation synthesis |
 | `issue_reconciler_agent` | 增量维护中判断历史缺陷仍存在还是已修复 | 历史 issue、新代码 | still_exists / fixed |
 
 Skill 是漏洞领域契约，用于约束分析目标和证据要求，不是检测规则。每个 `SKILL.md` 通过 frontmatter `languages` 声明适用于 `c_cpp`、`java` 或两者。`scan.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等；空字符串启用当前语言全部适用 Skill，非空文本只表达审计重点。规则 descriptor 必须引用一个存在且支持相同语言的 Skill。
@@ -368,7 +369,7 @@ ToolsRuntime 原子暴露六个证据导向工具：`search_code`、`read_code`�
 
 这层的设计目标是让所有候选都先保持“待验证证据”的形态，再由统一的验证门禁决定是否进入 `issues[]`、`metadata.audit_observations[]` 或被 suppression/baseline 拦截。高置信规则也不再绕过验证流水线；它们只能在证据完整、无反证且满足评分门槛时被自动接受。
 
-验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。状态机固定为：V0 完整正/反 proof；V1 单次无工具结构化判定；从 security obligation 派生全部必需 fact kind 并只调用对应本地 provider；有 delta hash 变化才执行一次无历史 V2。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3。balanced 不再使用 top-K，调查 high/critical 或外部可达且有可闭合证据缺口的 cluster；deep 调查全部无完整反证的非 shadow cluster。V3 单会话最多 50 次模型迭代，无独立工具次数上限，但仅能使用只读白名单；重复查询立即拒绝，连续两个模型轮次没有新增事实即提前结束。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review，V3 verified 也必须具有可解析引用、已闭合阻断事实、无冲突且通过现有 promotion policy 才能进入默认视图。
+验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。状态机固定为：V0 完整正/反 proof；V1 单次无工具结构化判定；从 security obligation 派生全部必需 fact kind 并只调用对应本地 provider；有 delta hash 变化才执行一次无历史 V2。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3。balanced/deep 调查全部非 shadow 未闭合义务；风险只用于排序，不再限定调查资格。V3 单会话最多 50 次模型迭代，无独立工具次数上限，但仅能使用只读白名单；重复查询立即拒绝，连续两个模型轮次没有新增事实即提前结束。`model_verdict` 与最终 `policy_disposition` 分离；无证据闭合的模型 rejected 进入 needs-review；满足有证据语义反驳约束时可记录 rejected_with_evidence，V3 verified 也必须具有可解析引用、已闭合阻断事实、无冲突且通过现有 promotion policy 才能进入默认视图。
 
 ### 5.7 持久化与反馈平面
 
@@ -379,22 +380,12 @@ Z-SCOPE 使用五类主要持久化区域：
 | `.zscope_knowledge/code_knowledge.db` | 代码事实、SVF 信号、Inspection IR | 全局代码知识图谱和候选证据审计 |
 | `.zscope_snapshots/snapshots.db` | 语义快照索引、final report 索引 | `--resume`、`--maintain` 和函数级缓存 |
 | `.zscope_snapshots/security_map.db` | 程序安全事实、semantic claim、unknown/conflict、audit unit | balanced/deep 的只读 Security Semantic Map sidecar |
-| `.zscope_snapshots/user_config.xlsx` | 外部函数、配对函数、函数指针、dispatcher、模块生命周期、函数意图 | 人工可审阅的用户领域知识 |
-| `.zscope_snapshots/user_config.state.db` 或 `user_config.db` | 抑制、baseline、配置告警和历史兼容数据 | 误报反馈与旧 SQLite 配置兼容 |
+| `zscope.semantics.yaml` | 精确 selector、条件、effect、pair、构建变体和人工状态 | C/C++ 项目语义的唯一人工权威 |
+| `.zscope_snapshots/semantics/` | native/CFG/LLM 原始发现证据与 receipt | 机器审计材料，不是第二份配置 |
+| `.zscope_snapshots/user_config.state.db` 或 `user_config.db` | 抑制、baseline、业务前提回答和历史兼容数据 | 误报反馈；与语义授权分离 |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划 | 审计本次 SVF 分析实际纳入了哪些翻译单元；WSL `/mnt/...` 场景可能写入 Linux 原生临时 bitcode 目录 |
 
-`UserConfigStore` 当前的人工配置工作簿 sheet：
-
-| Sheet | 作用 |
-|-------|------|
-| `resource` | 描述 allocator、reallocator、deallocator、copy API 与多对多资源配对 |
-| `lock` | 描述自定义 lock/unlock API 和锁配对 |
-| `dispatcher` | 描述消息分发入口、message type、handler、handler kind、资源和分支配对 |
-| `module_lifecycle` | 描述 init/finit、模块资源、错误路径清理和全局生命周期约束 |
-| `pointer_targets` | 补充函数指针、ops 表、hook slot 的目标函数 |
-| `function_intents` | 保存人工确认的函数设计意图和特殊约束 |
-
-旧 SQLite 路径仍然保留 `external_functions`、`paired_functions`、`function_pointer_targets`、`function_intent`、`config_warnings`、`finding_suppressions` 和 `finding_baselines`。当配置路径指向 `.xlsx`，语义配置走工作簿，反馈状态写入同名 `.state.db`；当配置路径指向目录且存在 `user_config.xlsx`，目录模式也会自动优先使用工作簿。
+`zscope.semantics.yaml` 顶层固定为 `interfaces`、`dispatchers`、`function_pointer_bindings` 与 `discovery_receipt`。接口同时保存 primitive 标志、精确 selector、basis、人工 status、条件分支、类型化 effect、`otherwise: unknown`、pair、证据引用与逐 BuildContext variant。`discovery_receipt` 只保存有界的人读摘要、总数、摘要和少量 coverage gap 样本；逐函数 manifest、完整 gap 集合和模型原始响应只写入其 `evidence_ref` 指向的机器快照，避免把人工配置膨胀成第二份事实数据库。XLSX 只保留一次性迁移入口，运行时不再读取其语义；module lifecycle 与 function intent 在迁移报告中删除并转由 Wiki 表达。
 
 快照策略不再只区分“完整 LLM 语义”和“跳过”。`zscope/snapshots/policy.py` 会为短函数构造 syntactic snapshot，并把协议版本过滤、fd 编码/类型契约、协议长度、状态恢复、error status 和 facade forwarding 等短函数风险放入 `suspicious_points`。可证明的字面量语法，以及有可靠底层契约且可完整组合的透明封装，可以绕过 LLM；未知协议仍由入口前置的增量建模阶段发现，分配/释放/锁 wrapper 不按名称生成语义。
 
@@ -402,7 +393,7 @@ Z-SCOPE 使用五类主要持久化区域：
 
 Issue identity 由 `zscope/common/issue_identity.py` 统一提供。`canonical_issue_key` 适合单次报告内根因合并，`stable_issue_fingerprint` 用于长期 baseline、SARIF partial fingerprints 和 benchmark 匹配；可选的 `source_context_fingerprint` 从源码片段或 evidence snippet 生成第三层校验，双方都有上下文且冲突时会阻止过宽的 stable baseline 命中。
 
-与 prompt 相关的用户配置上下文已经迁入 `zscope/semantics/user_config_context.py`。运行时会按当前函数源码标识符和文件 scope 过滤用户配置，只注入与当前入口相关的 resource、lock、pointer target、dispatcher、module lifecycle 和 function intent 片段。
+Project contract 以当前调用点的 native callee identity、BuildContext 与证据摘要选择；unknown build 不是通配符。名称、描述和 LLM 建议只能进入 advisory 审计，不能补充执行角色。
 
 报告层默认生成两类视图：`report_views.default` 只包含可报告的确认问题；`report_views.with_needs_review` 会把 `needs_review` 审计观察项也并入列表，供人工复核或 WebUI 切换查看。在视图构建前，`zscope/reporting/issue_aggregation.py` 会把同缺陷家族、同函数、同结构化 sink 锚点（行距链式聚类）的 confirmed/needs_review 结果折叠为一个 primary，CWE 与类别标签取成员并集（issue 级 `cwes`/`categories`，可归属多个 CWE），成员转 `deduplicated_alias` 终态保留审计；报告侧的 `zscope/common/defect_cwe_map.py` 集中维护类别→CWE 集合的兜底映射，保证可分类 finding 的 `cwes` 非空。`ReportAssembler` 负责最终 report、views、metadata、JSON/Markdown 和 snapshot 持久化，并支持 `deduplicate_report_issues` 钩子，让最终报告在构建视图前应用语义去重。`semantic_dedup_summary` 会记录程序化合并、LLM 小簇判重、cache hit、合并数和拒绝合并数；issue 本身保留 `duplicate_sources`、`alternate_evidence`、`dedup_decisions`、`category_family` 与 `resource_signature`。报告 metadata 另外记录规则目录 schema/hash、enabled/disabled/unavailable IDs、扩展来源和按 engine/rule 聚合的已产生候选数。CLI 的 `--export-sarif` 输出 SARIF v2.1.0：`ruleId` 直接使用 canonical `rule_id`，CWE 进入 tags/properties，历史 `CWE:rule` 写入 `properties.legacyRuleId`，engine/revision/Skill/catalog hash 进入 rule descriptor；`partialFingerprints.zscopeStableIssueFingerprint` 与 finding 身份算法保持不变。读取旧报告时仍会回退到历史 `rule` 字段，不就地改写归档。
 
@@ -480,8 +471,8 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 - 显式支持批量入口 `entry_functions_list`。
 - `--discover-entries` 或 `project.entry_discovery.enabled` 能扫描头文件公共 API、网络/IPC、线程创建、文件/环境/标准输入等入口。
 - 自动发现结果会写入 `entry_functions_list.json`，包含 exposure、reasons、confidence 和入口级审计提示，可由人工继续编辑后复用。
-- `entry_discovery.search_root` 可把入口发现限制到指定目录（支持相对路径，固定基于 `source_root` 解析），适合只审计大型仓库中的某个模块。
-- handler、allocator、release、dispatch 等项目语义由 `user_config.xlsx` 与 `--infer-user-config` 承担，不再通过批量 prompt autofill 注入。
+- `entry_discovery.search_root` 可把入口发现限制到指定目录（支持相对路径，固定基于 YAML 所在工程目录解析），适合只审计大型仓库中的某个模块。
+- handler、allocator、release、dispatch 等项目语义由 `zscope.semantics.yaml` 与独立 `--discover-primitives` 承担；正常扫描只读 confirmed contract，不通过 prompt 或名称推断注入。
 
 ### 8.3 事实覆盖
 
@@ -498,6 +489,8 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 `GraphCandidateGenerator` 负责跨函数和协议形态，包括 cross-function recursive lock、lock order inversion、wrong cleanup contract、thread argument lifetime、global container lifecycle、object publication ordering、runtime/protocol state contract、fd type contract、lost wakeup、shared-memory race、signal deadlock、callback self-destroy、timer cascade wait 和 stale tree/list liveness。它与确定性规则共享候选形状和去重链路，因此不会形成一套旁路报告体系。
 
 ### 8.5 分析覆盖
+
+生产默认的覆盖链路是共同静态发现 → balanced 自主 Validator → deep 分层契约发现。deep 的函数 inventory、调用边、功能/模块组合及未知项输出到 `hierarchical_contracts.json`；叶摘要按精确实例增量复用，父摘要绑定成员和子摘要，验证沿用同一候选 Ledger。规则提案记录待评审分类、正反例、适用/排除条件、对象身份与需要的事实；旧输入的提案保留为 stale，不自动安装。以下 Security Semantic Map / coverage-gap planner 描述的是保留的离线旧方案对照，不再默认参与 balanced/deep。
 
 - Security Semantic Map 先以零 LLM 骨架覆盖入口、调用边、危险事件、globals/types 与 backend coverage，只在高风险 audit unit 补语义。
 - Coverage-gap planner 按 known variant、diff、外部可达敏感路径、candidate desert、动态边/alias 缺口、backend 降级、跨模块协议和 semantic unknown/conflict 打分。其中 candidate desert 只消费事件家族级的覆盖 presence/count，不读取候选 ID、source/sink、位置、规则名或结论；这些候选内容也不会进入主动发现 Prompt。
@@ -546,7 +539,7 @@ Validator 可以返回：
 | `validation_confidence` | 0.20 | Validator 的置信度 |
 | `history_feedback` | 0.10 | baseline 中的历史反馈 |
 
-Validator 启用时，`verified` 且满足 policy 才默认进入 `issues`；未决项进入审计观察。只有完整确定性反 proof 或未来的 dynamic/human 决策能安全地隐藏 rejected；单独的 LLM `rejected` 必须保留为 `needs_review`。V4 `DynamicReproductionRequest/Result` 和 `decision_level=V4` 只定义数据接口，本里程碑不调度 PoC、ASan 或沙箱执行。
+Validator 启用时，`verified` 且满足 policy 才默认进入 `issues`；未决项进入审计观察。确定性反证明与自主调查的有证据语义拒绝分开记录；只有模型标签、分数或未闭合证据的 `rejected` 必须保留为 `needs_review`。V4 `DynamicReproductionRequest/Result` 和 `decision_level=V4` 只定义数据接口，本里程碑不调度 PoC、ASan 或沙箱执行。
 
 ### 9.5 人工反馈与报告分层
 
@@ -596,7 +589,8 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `zscope -c zscope.yaml --plan-entries` | 构建索引并预览/写出入口计划，不调用 LLM |
 | `zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD` | 差异影响扫描，生成 `entry_functions_diff.json` 并标注 diff relevance |
 | `zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD --diff-repo-root /repo --diff-path src/net` | 指定 git worktree 并只纳入特定路径下的变更函数；必要扫描 root 可位于路径外 |
-| `zscope -c zscope.yaml --infer-user-config` | 推断或刷新 `user_config.xlsx` 后退出 |
+| `zscope -c zscope.yaml --discover-primitives` | 项目级发现 wrapper/macro/pointer/dispatcher，合并待复核 YAML 后退出 |
+| `zscope-config migrate-semantics --config zscope.yaml --from-xlsx old.xlsx --output zscope.semantics.yaml` | 一次性迁移旧工作簿并生成删除/重绑定报告 |
 | `zscope -c zscope.yaml --build-index` | 仅构建索引（`--build-cpg` 为弃用别名） |
 | `zscope -c zscope.yaml --dashboard` | 启动 Web 仪表盘 |
 | `zscope -c zscope.yaml --mcp-stdio` | 启动 MCP stdio server |
@@ -610,13 +604,15 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 
 ### 11.2 WebUI
 
-当前 Web 后端由 `zscope/web/server.py` 负责路由，业务逻辑委托给 `zscope/web/services.py`：
+当前 Web 后端由 `zscope/web/server.py` 负责路由，业务逻辑委托给项目、语义、作业及报告服务。`zscope --web` 可无配置进入工程选择；业务请求以 `X-ZScope-Project` 绑定所选 YAML，不依赖全局可切换的当前工程。
 
 | Service | 职责 |
 |---------|------|
 | `ConfigService` | `zscope.yaml` 文本与结构化配置读写 |
-| `WorkbookService` | `user_config.xlsx` 读取、保存、导入和下载 |
-| `UserConfigService` | warnings、external functions、paired functions、pointer targets、function intents 等 CRUD |
+| `ProjectLibrary`（`web/projects.py`） | 最近工程、执行机目录浏览、创建与打开 YAML、按工程隔离服务 |
+| `SemanticsService`（`web/semantics_service.py`） | 项目语义 YAML、独立发现任务、人工审阅、当前性与扫描就绪 |
+| `ScanJobsHttpService`（`web/scan_jobs_service.py`） | 持久作业、结果快照及时间计划；执行复用 `ScanJobService` 与 owner |
+| `WorkbookService` / `UserConfigService` | 历史工作簿及配置接口；C/C++ 已迁移语义接口返回 `410 semantics_moved`，warnings 保留 |
 | `CpgService` | CPG/索引状态查询和异步构建触发 |
 | `SourceSnippetService` | 报告位置到源码片段的安全读取 |
 | `ReportFeedbackService` | `/api/save_findings` 的验证状态更新、snapshot 更新、feedback 持久化和报告保存 |
@@ -626,6 +622,12 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 
 | API | 用途 |
 |-----|------|
+| `GET /api/projects`、`GET /api/projects/browse` | 最近工程与执行机目录浏览 |
+| `POST /api/projects/open`、`POST /api/projects/create` | 打开已有 YAML 或在已有工程目录创建配置 |
+| `GET /api/semantics`、`GET /api/semantics/entries` | 当前工程原语就绪状态与语义条目 |
+| `POST /api/semantics/tasks`、`POST /api/semantics/review`、`POST /api/semantics/complete` | 独立发现、审阅与完成确认 |
+| `GET/POST /api/jobs`、`GET /api/jobs/<id>/result` | 持久扫描作业及绑定本轮的结果 |
+| `GET/POST /api/schedules`、`POST /api/schedules/cancel` | 单次或每日运行窗口，按 YAML 作用域持久保存 |
 | `GET /api/findings` | 读取当前报告中的 findings |
 | `GET /api/version` | 返回当前 Z-SCOPE 版本和展示字符串 |
 | `POST /api/save_findings` | 保存验证状态并持久化 feedback |
@@ -645,6 +647,8 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `POST /api/user_config/workbook/import` | 导入用户配置工作簿 |
 | `GET /api/user_config/workbook/download` | 下载当前用户配置工作簿 |
 | `GET/POST/DELETE /api/user_config/<resource>` | 用户配置 CRUD |
+
+表中旧工作簿与用户配置 CRUD 仅为历史接口清单，不是 C/C++ 当前语义入口；迁移须通过项目原语页或 `zscope-config migrate-semantics` 显式执行。时间计划与作业恢复只复用经核对的输入和可恢复状态；关闭网页不停止后台，主机或 WSL 关闭时不能执行。详细行为见[接口与报告](modules/interfaces-reporting.md)。
 
 ### 11.3 MCP
 
@@ -725,21 +729,23 @@ Z-SCOPE 已经具备证据优先、多后端、自适应语义发现、分层三
 
 架构上，这些增强都可以沿用主线分层：继续把事实、候选、验证、反馈拆开，用结构化证据驱动 LLM，降低模型独自承担静态分析本体的风险。
 
-## 规则前的增量接口契约
+## 规则前的项目原语契约
 
-C/C++ 所有档位执行：入口确定 → 索引/Wiki 就绪 → 增量并发建模 → 工作簿合并与重读 → 规则候选登记 → 后续发现 → Ledger 冻结 → 统一验证与补证。普通第二次扫描自动复用语义，不要求 resume/maintain。共享 callee 去重，代码改变但对外契约不变时停止传播；递归组件冻结上一轮契约、并发计算并统一发布，失败或未收敛保留未知并标为 partial。
+项目原语已有 Web 控制面：`web/semantics_service.py` 和本地 `dashboard_semantics.js/css` 将工程声明、独立准备任务、人工审阅与扫描就绪串联。`orchestration/primitive_preparation.py` 复用 CLI 发现核心，`primitive_tasks.py` 持久化运行状态；`config/semantics_workflow.py` 统一 CLI/Web/MCP/计划的只读就绪判断与发布锁。YAML discovery_receipt 保存输入收据及人工完成摘要，任务数据库不成为第二份配置权威。空文件、过期输入和未完成审阅均不能授权扫描。
 
-`ApiContract` v4 区分调用前提与效果分支，条件使用结构化比较、布尔组合和参数、返回值、全局对象、内部调用结果引用。资源对象与池分别由 `carrier`、`resource_domain` 绑定。LLM 保留发现未知池协议的职责；实现校验器目前验证受限侵入式空闲链表协议，其他协议可由人工配置建立底层模型。具备实现凭证或人工契约后，完整可解析的透明函数与宏先静态组合，省去外层 LLM 建模；保留 calloc/reallocator 角色，内部成对操作不成为对外接口。未知调用只有在不可变、未逃逸的局部结果或值参数证明其守卫与效果分支互斥时，才不影响该分支的确定性；证据记录被排除的调用与守卫，不依据日志函数名称判断副作用。隐藏返回状态和不完整控制流仍保留未知。
+C/C++ 所有档位执行：加载并校验 YAML → 绑定当前 BuildContext/USR 与 catalog/native receipt → 编译只读实例 Registry → 规则候选登记 → 后续发现 → Ledger 冻结 → 统一验证与补证。pending、stale、unresolved、跨构建冲突或 discovery blocking gap 会在扫描前失败；正常扫描不会更新 YAML。项目级 discovery 是单独命令，在所有精确函数实例及 link-group SCC 上求 wrapper/宏/间接调用/dispatcher 闭包，每个实例事实只生成一次；宏闭包保留逐层 `derived_from` 与精确参数/全局载体映射，不能用零参数宏冒充 argument 0。
+
+`ApiContract` 区分调用前提与效果分支，条件使用结构化比较、布尔组合和参数、返回值、全局对象、内部调用结果引用；YAML ObjectPath 结构化表达载体。具备当前实现凭证或明确 external authority 后，透明函数与宏由静态分析组合。隐藏返回状态形成 `may`，不伪造必然效果；LLM 只能给出 agree/refine/disagree/insufficient 建议，不能发布契约。
 
 `ApiPair` 保存有依据的多对多有向边，不做共享端点的传递闭包。人工角色和配对优先，自动更新只刷新当前覆盖范围；生成数据先原子写入再重读，规则消费同一契约版本。Clang/Regex 生命周期规则要求合法配对、同一对象、同一池及成立的效果；未知释放保留候选并限制证明完整性。实现凭证绑定当前源码，人工派生契约保留假设，schema 与模型置信度不能授权安全或缺陷证明。Graph 保留已核验锁接口的可能成功分支，未知解锁不解除义务；词法锁顺序不能成为确定性路径证明。KnowledgeDB 枚举每次获取，通过共享编译器对象义务检查释放、返回和输出转移，不以释放函数名称的出现判定泄漏。全局、成员与容器清理未闭合时保持未知；任意跨函数池别名仍超出当前能力。
 
-快照中的 `suspicious_points` 保留为未验证背景，不写接口工作簿，不产生 `semantic_snapshot` 候选或独立验证任务，也不进入 candidate-blind 主动发现提示词。暂停不构成覆盖失败；候选策略版本绑定报告缓存，旧报告不能复活这类候选。规则优先组 `semantic_suspicious_point` 不受影响。发布阶段导出原始与规范化契约、发布版本和调用解析清单；benchmark 在临时工作区清理前归档这些证据及工作簿。
+快照中的 `suspicious_points` 保留为未验证背景，不写项目语义 YAML，不产生 `semantic_snapshot` 候选或独立验证任务，也不进入 candidate-blind 主动发现提示词。项目接口的机器证据单独存入 `.zscope_snapshots/semantics/`；benchmark 在临时工作区清理前归档 YAML 摘要、catalog 版本、逐构建授权和语义覆盖缺口。
 
-共享 `ModelingCoordinator` 以扫描命名空间、稳定符号和完整输入版本合并所有实际建模请求。一个任务拥有内部重试，其他请求等待同一结果；任务结果原子提交后才对等待者可见，SCC 的工作簿发布仍统一提交。等待者不占 LLM 额度，局部取消不取消共享工作，扫描取消统一传播。任务数与物理调用数分别计量。
+Discovery 复用项目级 fast planner 与 `FunctionFactSummary`，按 BuildContext+USR 去重本地分析，并在真实 link group/SCC 上传播摘要。源码、构建、catalog、native 工具或证据变化标记旧决定 stale；同源码不同变体独立存储。
 
-标准 C/POSIX 接口由版本化 `standard_api.py` 提供结构化契约，依据系统声明来源和项目定义区分同名符号，直接计为外部模型覆盖；不请求 LLM 源码建模。未知外部接口记为 `external_model_missing`，不能推定无副作用。Clang 事实携带目标 ABI、glibc 标记及已解析常量。初始化、销毁、等待与加锁角色分离，复合效果表达 realloc 旧对象保留/替换和条件变量重新获取锁。无精确调用点时仅使用所有同形调用共有的事实，不猜测隐藏状态。
+标准 C/POSIX/Linux 接口来自单一版本化 packaged catalog。每项分类为 active、neutral 或 unsupported；active 必须同时具备精确声明身份/ABI、规范来源和规则消费者，且仍需当前系统头收据、external linkage、无项目同名定义、USR/签名/BuildContext/工具摘要全匹配。项目实际调用但 catalog 未分类的系统接口会阻止 formal readiness。
 
-契约证明图先静态求闭包，再选择剩余根协议供 `contract_review` 审核。pending 行不生效；confirmed 行作为明确人工契约导入，撤销审核会移除对应导入行。确认只沿已核验的映射传播，不授权不透明释放端，也不证明某次调用成功。外层透明包装可以静态重建，原始人工配置不被自动覆盖。
+pending/rejected/stale 行不生效；confirmed 行作为明确人工契约导入。人工决定不会被相同证据覆盖，证据变化则转 stale。确认只沿已核验映射传播，不授权不透明释放端，也不证明某次调用成功。
 
 报告逻辑视图不变，默认持久化改用单文件共享对象表，公共读取层解引用后向评分、回放、SARIF 和 Web 提供原逻辑数据。完整证据和源码不裁剪；检查点复用不可变内容对象。只读访问不会使共享引用失效，嵌套修改保持投影隔离；契约和决策事实的序列化边界避免把内部 tuple 带入 JSON 证据池而触发整份复制。详见接口与报告模块。
 

@@ -255,6 +255,57 @@ def test_validation_runner_cache_is_scoped_to_runner_instance() -> None:
     assert second._validator_cache_get("same-candidate") is None
 
 
+def test_fast_review_cache_preserves_validator_protocol_audit() -> None:
+    runner = _runner(None, scan=SimpleNamespace(depth="fast"))
+    runner._review_enabled = lambda: True
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        validator_audit_trail=[
+            {
+                "pass": "initial",
+                "raw_verdict": "uncertain",
+                "raw_response": {"verdict": "uncertain"},
+                "protocol_error": "",
+            }
+        ],
+    )
+    item = SimpleNamespace(
+        raw_issue=issue,
+        issue_func="sink_func",
+        issue_code="void sink_func(void) {}",
+        evidence_pack={},
+    )
+    cache_key = runner._validator_cache_key(item)
+
+    assert cache_key
+    assert runner._validator_cache_put(
+        cache_key,
+        _validator_v3_result(stop_reason="no_evidence_gain"),
+        issue=issue,
+    )
+    replay_issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    cached = runner._validator_cache_get(cache_key, issue=replay_issue)
+
+    assert cached == _validator_v3_result(stop_reason="no_evidence_gain")
+    assert replay_issue["validator_cache_replayed"] is True
+    assert replay_issue["validator_audit_trail"][0]["raw_verdict"] == "uncertain"
+    assert replay_issue["validator_audit_trail"][0]["raw_response"] == {"verdict": "uncertain"}
+
+
+def test_balanced_review_still_disables_validator_result_cache() -> None:
+    runner = _runner(None, scan=SimpleNamespace(depth="balanced"))
+    runner._review_enabled = lambda: True
+    item = SimpleNamespace(
+        raw_issue=_issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3"),
+        issue_func="sink_func",
+        issue_code="void sink_func(void) {}",
+        evidence_pack={},
+    )
+
+    assert runner._validator_cache_key(item) == ""
+
+
 @pytest.mark.parametrize(
     "stop_reason",
     [
@@ -291,6 +342,37 @@ def test_zero_sized_validation_cache_is_really_disabled() -> None:
     assert runner._validator_result_cache_size == 0
     assert not runner._validator_result_cache.enabled
     assert runner._validation_cache_wait_seconds() is None
+
+
+def test_disabled_validation_cache_neither_reads_nor_writes_persistent_results() -> None:
+    runner = _runner(None, analysis=SimpleNamespace(validation_cache_entries=0))
+
+    class UnexpectedPersistentCache:
+        def load_validation_result(self, *args, **kwargs):
+            pytest.fail("disabled cache read persisted validator results")
+
+        def save_validation_result(self, *args, **kwargs):
+            pytest.fail("disabled cache wrote persisted validator results")
+
+    runner.snapshot_store = UnexpectedPersistentCache()
+
+    assert runner._validator_cache_get("existing-result") is None
+    assert not runner._validator_cache_put("new-result", {"verdict": "verified"})
+    assert runner._validator_cache_key(SimpleNamespace()) == ""
+
+
+def test_validation_cache_isolates_nested_result_payloads() -> None:
+    cache = ValidationResultCache(max_entries=2)
+    original = {"negative_evidence": [{"reason": "guard present"}]}
+    cache.put("candidate", original)
+    original["negative_evidence"][0]["reason"] = "changed by producer"
+
+    first = cache.get("candidate")
+    assert first == {"negative_evidence": [{"reason": "guard present"}]}
+    first["negative_evidence"][0]["reason"] = "changed by consumer"
+    first["negative_evidence"].append({"reason": "other occurrence"})
+
+    assert cache.wait("candidate") == {"negative_evidence": [{"reason": "guard present"}]}
 
 
 def test_validation_runner_cache_key_ignores_occurrence_only_entry_context() -> None:
@@ -417,15 +499,15 @@ def test_validation_runner_coalesces_identical_inflight_work_across_entry_runner
         )
 
     assert len(calls) == 1
-    assert len(first_state["issues"]) == 1
-    assert len(second_state["issues"]) == 1
+    assert len(first_state["observations"]) == 1
+    assert len(second_state["observations"]) == 1
     cache_hits = int(first_state.get("validator_cache_hit", 0)) + int(
         second_state.get("validator_cache_hit", 0)
     )
     assert cache_hits == 1
 
 
-def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
+def test_validation_runner_keeps_uncited_legacy_verified_outcome_for_review() -> None:
     memory = []
     agent = FakeValidatorAgent(
         [
@@ -446,15 +528,112 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     _runner(agent, memory=memory).run(state)
 
     assert state["pending_new_issues"] == []
-    assert len(state["issues"]) == 1
-    assert state["issues"][0]["validation_status"] == "validated"
-    assert state["issues"][0]["validator_verdict"] == "verified"
-    assert state["issues"][0]["model_verdict"] == "verified"
-    assert state["issues"][0]["policy_disposition"] == "confirmed"
-    assert state["issues"][0]["attribution"]["discovered_by"] == []
-    assert state["issues"][0]["attribution"]["decided_by"] == "validator_llm"
-    assert memory == [("ISSUE_1", "validated")]
+    assert len(state["observations"]) == 1
+    retained = state["observations"][0]
+    assert retained["validation_status"] == "needs_review"
+    assert retained["validator_verdict"] == "verified"
+    assert retained["model_verdict"] == "verified"
+    assert retained["policy_disposition"] == "needs_review"
+    assert retained["attribution"]["discovered_by"] == []
+    assert retained["attribution"]["decided_by"] == "unresolved"
+    assert memory == [("ISSUE_1", "needs_review")]
     assert agent.inputs[0]["agent_contract"] == "validator_agent"
+
+
+def test_fast_decision_ready_candidate_is_validated_once_and_claim_replayed() -> None:
+    class CitingValidator:
+        def __init__(self):
+            self.inputs = []
+
+        def run(self, input_data):
+            self.inputs.append(input_data)
+            evidence_slice = input_data["evidence_slice"]
+            fact_ref = next(
+                ref
+                for ref, record in evidence_slice["evidence_ref_catalog"].items()
+                if record.get("kind") == "decision_fact" and record.get("summary")
+            )
+            return AgentResponse(
+                success=True,
+                data={
+                    "schema_version": "zscope.validator-result.v3",
+                    "candidate_uid": input_data["finding_uid"],
+                    "validation_cluster_uid": input_data["validation_cluster_uid"],
+                    "pass": "initial",
+                    "verdict": "verified",
+                    "reasoning": "the cited lock-to-return path omits unlock",
+                    "positive_evidence": ["lock is held on the cited return path"],
+                    "negative_evidence": [],
+                    "evidence_refs": [fact_ref],
+                    "blocking_negative_evidence": False,
+                    "missing_fact_request": None,
+                    "stop_reason": "decision_complete",
+                },
+            )
+
+    agent = CitingValidator()
+    issue = _issue(
+        candidate_uid="CAND_FAST_LOCK",
+        validation_cluster_uid="VAL_FAST_LOCK",
+        build_context_id="build-fast-lock",
+        rule_id="clang_cfg_return_with_lock_held",
+        rule_revision=10,
+        decision_fact_coverage="complete",
+        missing_fact_kinds=[],
+        decision_fact_slice={
+            "fact_uids": ["FACT_LOCK_RETURN_PATH"],
+            "dependency_code_hashes": ["sha256:lock-path"],
+            "missing_fact_kinds": [],
+            "coverage": "complete",
+            "facts": [
+                {
+                    "fact_uid": "FACT_LOCK_RETURN_PATH",
+                    "fact_kind": "source_sink_reachability",
+                    "summary": "mutex acquire reaches the early return without unlock",
+                    "dependency_code_hash": "sha256:lock-path",
+                }
+            ],
+        },
+    )
+    state = _state(issue)
+
+    _runner(agent, scan=SimpleNamespace(depth="fast")).run(state)
+
+    assert len(agent.inputs) == 1
+    assert state["issues"] == [issue]
+    assert issue["validator_decision_ready"] is True
+    assert issue["validator_validated"] is True
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["evidence_gate"]["accepted"] is True
+    assert issue["score_role"] == "ranking_only"
+
+
+def test_fast_unclosed_typed_obligation_skips_validator_and_stays_reviewable() -> None:
+    agent = FakeValidatorAgent([])
+    issue = _issue(
+        candidate_uid="CAND_FAST_UNREADY",
+        validation_cluster_uid="VAL_FAST_UNREADY",
+        build_context_id="build-fast-lock",
+        rule_id="clang_cfg_return_with_lock_held",
+        rule_revision=10,
+        decision_fact_coverage="partial",
+        missing_fact_kinds=[],
+        decision_fact_slice={
+            "fact_uids": [],
+            "dependency_code_hashes": [],
+            "missing_fact_kinds": [],
+            "coverage": "partial",
+        },
+    )
+    state = _state(issue)
+
+    _runner(agent, scan=SimpleNamespace(depth="fast")).run(state)
+
+    assert agent.inputs == []
+    assert state["observations"] == [issue]
+    assert issue["validator_decision_ready"] is False
+    assert issue["validator_validated"] is False
+    assert issue["candidate_disposition"] == "needs_review"
 
 
 def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once() -> None:
@@ -517,16 +696,27 @@ def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once()
     _runner(agent).run(state)
 
     assert len(agent.inputs) == 2
-    assert agent.inputs[1]["validation_pass"] == "evidence_recheck"
-    delta = agent.inputs[1]["evidence_slice"]["evidence_delta"]
-    assert {fact["fact_uid"] for fact in delta["facts"]} == {
+    assert set(agent.inputs[0]["evidence_slice"]["allowed_missing_fact_kinds"]) == {
+        "guard_dominance",
+        "value_range",
+    }
+    initial_delta = agent.inputs[0]["evidence_slice"]["evidence_delta"]
+    assert {fact["fact_uid"] for fact in initial_delta["facts"]} == {
         "FACT_RANGE",
         "FACT_GUARD",
     }
-    assert delta["fact_kinds"] == ["guard_dominance", "value_range"]
-    assert issue["validator_fact_resolution"]["status"] == "completed_partial"
+    assert agent.inputs[1]["validation_pass"] == "evidence_recheck"
+    delta = agent.inputs[1]["evidence_slice"]["evidence_delta"]
+    # Pre-LLM completion already supplied every obligation fact.  A model
+    # that nevertheless asks for one fact receives only that requested delta
+    # on the bounded recheck; facts are not recomputed as a second broad pass.
+    assert {fact["fact_uid"] for fact in delta["facts"]} == {"FACT_RANGE"}
+    assert delta["fact_kinds"] == ["value_range"]
+    assert issue["validator_fact_resolution"]["status"] == "resolved"
     assert issue["validator_pass_history"][-1]["pass"] == "evidence_recheck"
-    assert issue["evidence_completion_attempt_count"] == 2
+    # Two provider-backed obligation facts were attempted before the initial
+    # LLM call, followed by one bounded recheck for the requested fact.
+    assert issue["evidence_completion_attempt_count"] == 3
 
 
 def test_validation_runner_does_not_recheck_without_evidence_delta() -> None:
@@ -546,14 +736,63 @@ def test_validation_runner_does_not_recheck_without_evidence_delta() -> None:
             )
         ]
     )
-    issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        allowed_missing_fact_kinds=["value_range"],
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+    )
     state = _state(issue)
 
     _runner(agent).run(state)
 
     assert len(agent.inputs) == 1
-    assert issue["validator_fact_resolution"]["status"] == "exhausted"
-    assert issue["validator_stop_reason"] == "no_evidence_gain"
+    assert issue["validator_fact_resolution"]["status"] == "proven_absent"
+    assert issue["validator_stop_reason"] == "unsupported_fact"
+
+
+def test_validation_runner_preserves_terminal_after_pre_llm_fact_resolution() -> None:
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="rejected",
+                    missing_fact_request=None,
+                    stop_reason="decision_complete",
+                ),
+            )
+        ]
+    )
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["value_range"],
+        },
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+    )
+    state = _state(issue)
+
+    _runner(agent).run(state)
+
+    assert len(agent.inputs) == 1
+    assert issue["evidence_completion_attempt_count"] == 1
+    assert issue["validator_fact_resolution"]["phase"] == "pre_llm"
+    assert issue["validator_stop_reason"] == "decision_complete"
+    assert issue["model_verdict"] == "rejected"
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["validator_rejection_proof_status"] == "not_reproduced"
+    assert issue["validator_rejection_proof_failure"] == "no_current_deterministic_rejection_proof"
+    audit = issue["validator_audit_trail"][-1]
+    assert audit["parsed_verdict"] == "rejected"
+    assert audit["final_disposition"] == "needs_review"
+    assert audit["provider_result"]["phase"] == "pre_llm"
+    assert audit["rejection_proof_status"] == "not_reproduced"
 
 
 def test_validation_runner_maps_fact_provider_timeout_to_canonical_stop(monkeypatch) -> None:
@@ -586,13 +825,19 @@ def test_validation_runner_maps_fact_provider_timeout_to_canonical_stop(monkeypa
         "_requested_completion_proofs",
         slow_provider,
     )
-    issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        allowed_missing_fact_kinds=["value_range"],
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+    )
     state = _state(issue)
 
     runner.run(state)
 
     assert state["validation_queue_drained"] is True
-    assert issue["validator_fact_resolution"]["status"] == "timeout"
+    assert issue["validator_fact_resolution"]["status"] == "failed"
     assert issue["validator_stop_reason"] == "fact_timeout"
     assert issue["candidate_disposition"] == "needs_review"
 
@@ -757,6 +1002,7 @@ def test_balanced_runs_long_v3_for_high_risk_external_candidate() -> None:
     issue = _issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
+        build_context_id="build-v3",
         severity="high",
         reachable_from_entry=True,
         security_obligation={
@@ -829,7 +1075,7 @@ def test_balanced_runs_v3_without_v2_when_local_fact_providers_add_no_delta() ->
     ]
 
 
-def test_balanced_does_not_run_v3_for_medium_risk_candidate() -> None:
+def test_balanced_runs_v3_for_medium_risk_candidate_with_unclosed_obligation() -> None:
     class InvestigatingValidator(FakeValidatorAgent):
         def __init__(self):
             super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
@@ -837,7 +1083,9 @@ def test_balanced_does_not_run_v3_for_medium_risk_candidate() -> None:
 
         def investigate(self, input_data, **kwargs):
             self.called = True
-            raise AssertionError("medium-risk candidate must not enter V3")
+            assert input_data["autonomous_validation"] is True
+            return AgentResponse(success=True, data=_validator_v3_result(
+                validation_pass="investigation_synthesis"))
 
     agent = InvestigatingValidator()
     state = _state(
@@ -862,7 +1110,7 @@ def test_balanced_does_not_run_v3_for_medium_risk_candidate() -> None:
 
     _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
 
-    assert agent.called is False
+    assert agent.called is True
 
 
 def test_balanced_runs_v3_for_medium_candidate_when_explicitly_external() -> None:
@@ -924,6 +1172,7 @@ def test_balanced_recoverable_v1_failure_enters_v3(error) -> None:
     issue = _issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
+        build_context_id="build-v3-recovery",
         severity="high",
         impact_level="high",
         externally_reachable=True,
@@ -1057,6 +1306,7 @@ def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
     issue = _issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
+        build_context_id="build-v3-tool-closure",
         severity="high",
         impact_level="high",
         reachable_from_entry=True,
@@ -1077,6 +1327,8 @@ def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
             "coverage": "partial",
         },
         decision_fact_coverage="partial",
+        rule_id="clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        rule_revision=9,
     )
     state = _state(issue)
 
@@ -1089,7 +1341,7 @@ def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
     assert issue["v3_evidence_closure"]["fact_uids"] == ["FACT_V3_RANGE"]
     assert issue["decision_fact_coverage"] == "complete"
     assert issue["missing_fact_kinds"] == []
-    assert issue["decision_fact_slice"]["facts"][0]["fact_uid"] == "FACT_V3_RANGE"
+    assert "FACT_V3_RANGE" in {fact["fact_uid"] for fact in issue["decision_fact_slice"]["facts"]}
     assert issue["v3_tool_fact_catalog"]["TOOLFACT_RANGE"]["tool_name"] == "get_data_flow"
 
 
@@ -1515,6 +1767,64 @@ def test_validation_runner_recovers_uncertain_observation_location_from_evidence
     assert observation["source_loc"] == "src/recovered.c:70"
 
 
+def test_validation_runner_preserves_linux_path_case_for_evidence_lookup() -> None:
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data={"verdict": "uncertain", "reasoning": "Needs source review."},
+            )
+        ]
+    )
+    physical_path = "/tmp/RW-LDB-I01/Variant_A/db/c.cc"
+    lookup_paths = []
+
+    class CaseTrackingCodeIndex(FakeCodeIndex):
+        def get_file_snippet(self, file_path, start, end):
+            lookup_paths.append(("snippet", file_path))
+            return "snippet"
+
+        def find_function_metadata(self, query, *, file_path=""):
+            lookup_paths.append(("metadata", file_path))
+            return [
+                {
+                    "function_name": "sink_func",
+                    "index_name": "sink_func@db/c.cc:70-80",
+                    "file_path": physical_path,
+                    "start_line": 70,
+                    "end_line": 80,
+                    "signature": "void sink_func(void)",
+                }
+            ]
+
+        find_function_infos = find_function_metadata
+
+    state = _state(
+        _issue(
+            id="ISSUE_CASE_PATH",
+            location=f"{physical_path}:77",
+            file="",
+            line=None,
+            start_line=None,
+            evidence_pack={
+                "path": {"complete": True, "complete_to_entry": True},
+                "finding_summary": {"location": f"{physical_path}:77"},
+            },
+        )
+    )
+
+    _runner(agent, code_index=CaseTrackingCodeIndex()).run(state)
+
+    observation = state["observations"][0]
+    assert observation["file"] == physical_path
+    assert observation["file_path"] == physical_path
+    assert observation["location"] == f"{physical_path}:77"
+    assert lookup_paths == [
+        ("snippet", physical_path),
+        ("metadata", physical_path),
+    ]
+
+
 def test_validation_runner_parallel_workers_preserve_order_and_token_totals() -> None:
     calls = []
 
@@ -1556,7 +1866,11 @@ def test_validation_runner_parallel_workers_preserve_order_and_token_totals() ->
     )
     runner.run(state)
 
-    assert [issue["id"] for issue in state["issues"]] == ["ISSUE_1", "ISSUE_2", "ISSUE_3"]
+    assert [issue["id"] for issue in state["observations"]] == [
+        "ISSUE_1",
+        "ISSUE_2",
+        "ISSUE_3",
+    ]
     assert state["total_context_tokens"] == 30
     assert state["total_cumulative_prompt_tokens"] == 60
     assert state["total_cumulative_completion_tokens"] == 15
@@ -1588,8 +1902,8 @@ def test_validation_deadline_is_a_soft_budget_and_retains_late_result() -> None:
 
     runner.run(state)
 
-    assert [item["id"] for item in state["issues"]] == ["ISSUE_SOFT_BUDGET"]
-    assert issue["validation_status"] == "validated"
+    assert [item["id"] for item in state["observations"]] == ["ISSUE_SOFT_BUDGET"]
+    assert issue["validation_status"] == "needs_review"
     assert issue["validation_soft_budget_overrun"] is True
     assert issue["validation_soft_budget_overrun_seconds"] > 0
     assert issue["validation_duration_seconds"] >= 0.02

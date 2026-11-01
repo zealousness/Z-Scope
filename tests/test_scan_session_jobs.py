@@ -146,6 +146,10 @@ def native_job_project(tmp_path, monkeypatch):
     _forbid_global_modeling(monkeypatch)
     _write_project(tmp_path)
     store = _job_store(tmp_path)
+    _run_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    # Discovery is a separate pre-scan phase, without a scan owner identity.
+    # The fixture's root-level job files must exist before native include probes.
+    _config(tmp_path)
     _bind_job_env(monkeypatch, tmp_path, store)
     return tmp_path, store
 
@@ -158,7 +162,9 @@ def test_job_scan_runs_exact_instances_on_the_queue(native_job_project) -> None:
     analysis = _instance_analysis(report)
     assert analysis["analyzed_instances"] == 2
     assert analysis["instance_scope_complete"] is True
-    assert analysis["scan_coverage_complete"] is False
+    assert analysis["scan_coverage_complete"] is True
+    assert analysis["consumer_scope_complete"] is True
+    assert report["metadata"]["build_coverage"]["scan_complete"] is False
     counts = sorted(item["candidate_count"] for item in analysis["instances"])
     assert counts == [0, 1], analysis["instances"]
     with_candidate = next(item for item in analysis["instances"] if item["candidate_count"])
@@ -362,16 +368,16 @@ def test_checkpoint_whose_bytes_do_not_match_its_receipt_is_rejected(
 
 
 def _blocking_analyzer(monkeypatch) -> Dict[str, Any]:
-    """Replace ``Analyzer.run`` only with a token-aware model-boundary wait."""
+    """Block either legacy entry execution or the fast attribution boundary."""
 
     from zscope.core.analysis.analyzer import Analyzer
+    from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
     observed: Dict[str, Any] = {}
     started = threading.Event()
     original_run = Analyzer.run
 
-    def blocking_run(self: Any) -> Any:
-        token = getattr(self, "cancellation_token", None)
+    def wait_for_cancel(token: Any) -> None:
         observed["token_present"] = token is not None
         started.set()
         deadline = time.monotonic() + 30
@@ -381,9 +387,19 @@ def _blocking_analyzer(monkeypatch) -> Dict[str, Any]:
                 token.raise_if_cancelled()
             time.sleep(0.02)
         observed["expired"] = True
+
+    def blocking_run(self: Any) -> Any:
+        wait_for_cancel(getattr(self, "cancellation_token", None))
         return original_run(self)
 
+    original_projection = ParallelAnalyzer._project_fast_static_entry_result
+
+    def blocking_projection(self: Any, *args: Any, **kwargs: Any) -> Any:
+        wait_for_cancel(self.cancellation_token)
+        return original_projection(self, *args, **kwargs)
+
     monkeypatch.setattr(Analyzer, "run", blocking_run)
+    monkeypatch.setattr(ParallelAnalyzer, "_project_fast_static_entry_result", blocking_projection)
     observed["started"] = started
     return observed
 

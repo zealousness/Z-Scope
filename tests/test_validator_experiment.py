@@ -9,6 +9,7 @@ from scripts.score_validator_replay_experiment import main as score_experiment_c
 from zscope.benchmarking.replay_bundle import write_validator_replay_bundle
 from zscope.benchmarking.validator_experiment import (
     BALANCED_DEFAULT_EXPECTED_MAX_TOKENS,
+    RANGE_GROUND_TRUTH_COUNT,
     VALIDATOR_EXPERIMENT_SCHEMA_VERSION,
     ValidatorExperimentError,
     load_validator_replay_experiment,
@@ -36,7 +37,7 @@ def _sha256_file(path: Path) -> str:
 
 def _truth() -> dict:
     vulnerabilities = []
-    for index in range(1, 137):
+    for index in range(1, RANGE_GROUND_TRUTH_COUNT + 1):
         vulnerabilities.append(
             {
                 "id": f"RANGE-{index:03d}",
@@ -53,7 +54,7 @@ def _truth() -> dict:
     return {
         "benchmark": "synthetic-validator-range",
         "version": 1,
-        "total_vulnerabilities": 136,
+        "total_vulnerabilities": RANGE_GROUND_TRUTH_COUNT,
         "vulnerabilities": vulnerabilities,
         "safe_entries": [],
     }
@@ -61,7 +62,7 @@ def _truth() -> dict:
 
 def _report() -> dict:
     states = []
-    for index in range(1, 137):
+    for index in range(1, RANGE_GROUND_TRUTH_COUNT + 1):
         states.append(
             {
                 "validation_cluster_uid": f"VAL-{index:03d}",

@@ -36,6 +36,7 @@ from zscope.benchmarking.protocol import (
     score_report_views,
     select_validator_arm,
     _select_multi_tp_pairs,
+    candidate_coverage_audit,
 )
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
 from zscope.benchmarking.isolation import ISOLATION_SCHEMA_VERSION
@@ -60,6 +61,348 @@ def _range_fp_audit_classifier():
 
 
 classify_range_false_positive_record = _range_fp_audit_classifier()
+
+
+def test_post_score_candidate_coverage_preserves_truth_anchor_audit_fields() -> None:
+    report = {
+        "metadata": {
+            "fast_static_scan": {
+                "analysis_units": [
+                    {
+                        "analysis_unit_id": "AU_1",
+                        "build_context_id": "build-a",
+                        "function": "leaky",
+                        "file": "src/demo.c",
+                        "executed_rule_ids": ["error_path_allocation_not_released"],
+                        "semantic_contract_trace_status": "complete",
+                        "semantic_contract_events": [
+                            {
+                                "name": "project_alloc",
+                                "role": "allocator",
+                                "effects_trusted": True,
+                                "project_semantics_id": "iface.alloc",
+                            },
+                            {
+                                "name": "project_free",
+                                "role": "deallocator",
+                                "effects_trusted": True,
+                                "project_semantics_id": "iface.free",
+                            },
+                        ],
+                    }
+                ],
+                "rule_execution": {
+                    "executed_by_rule": {"error_path_allocation_not_released": 1},
+                    "cache_reused_by_rule": {},
+                },
+            }
+        },
+        "candidate_terminal_states": [
+            {
+                "candidate_uid": "CAND_1",
+                "rule": "error_path_allocation_not_released",
+                "category": "memory_leak",
+                "function": "leaky",
+                "location": "src/demo.c:10",
+                "analysis_unit_id": "AU_1",
+            }
+        ],
+    }
+    truth = _truth()["vulnerabilities"][:1]
+
+    audit = candidate_coverage_audit(report, truth, line_tolerance=0)
+
+    assert audit["semantic_candidate_coverage_count"] == 1
+    assert audit["schema_version"] == "zscope.post-score-candidate-coverage.v3"
+    assert audit["gap_observation_counts"] == {"covered": 1}
+    row = dict(audit["rows"][0])
+    observation = row.pop("gap_observation")
+    assert row == {
+        "truth_id": "BUG-1",
+        "truth_category": "memory_leak",
+        "truth_file": "src/demo.c",
+        "truth_function": "leaky",
+        "truth_line": 10,
+        "classification": "mechanism_qualified",
+        "function_instance_analyzed": True,
+        "analysis_unit_ids": ["AU_1"],
+        "candidates": [
+            {
+                "candidate_uid": "CAND_1",
+                "analysis_unit_id": "AU_1",
+                "build_context_id": None,
+                "rule_id": "error_path_allocation_not_released",
+                "category_match": "category_exact:memory_leak",
+                "mechanism_match": "mechanism_profile_roles_and_endpoints_match",
+                "obligation_profile_id": None,
+                "obligation_mechanism_family": None,
+                "model_verdict": None,
+                "final_disposition": None,
+            }
+        ],
+    }
+    assert observation["first_failed_checkpoint"] == "covered"
+    assert observation["semantic_contract_trace_complete"] is True
+    assert "error_path_allocation_not_released" in observation["expected_rule_ids"]
+    assert observation["expected_rule_ids_scheduled"]
+    assert {
+        checkpoint["checkpoint"]: checkpoint["state"]
+        for checkpoint in observation["interface_role_checkpoints"]
+    } == {
+        "resource_acquisition": "resolved_at_truth_function",
+        "resource_release": "resolved_at_truth_function",
+    }
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["check_then_act_race", "missing_fd_release", "unlock_without_lock"],
+)
+def test_post_score_gap_observation_routes_specialized_truth_to_existing_rule_family(
+    category: str,
+) -> None:
+    audit = candidate_coverage_audit(
+        {},
+        [
+            {
+                "id": "SPECIALIZED",
+                "category": category,
+                "function": "f",
+                "file": "src/unit.c",
+                "line": 4,
+            }
+        ],
+        line_tolerance=0,
+    )
+
+    observation = audit["rows"][0]["gap_observation"]
+    assert observation["expected_rule_ids"]
+    assert observation["first_failed_checkpoint"] == "function_not_analyzed"
+
+
+@pytest.mark.parametrize(
+    ("truth_category", "candidate_category", "family"),
+    [
+        ("incomplete_cleanup", "memory_leak", "resource_leak"),
+        ("partial_resource_leak", "memory_leak", "resource_leak"),
+        ("missing_fd_release", "fd_leak", "resource_leak"),
+        ("check_then_act_race", "race", "race"),
+        ("registration_race", "shared_state_race", "race"),
+        ("unlock_without_lock", "lock_protocol_violation", "race"),
+        ("signed_unsigned", "integer_overflow", "integer_conversion"),
+    ],
+)
+def test_candidate_coverage_prefers_semantic_family_over_shared_cwe(
+    truth_category: str,
+    candidate_category: str,
+    family: str,
+) -> None:
+    report = {
+        "candidate_terminal_states": [
+            {
+                "candidate_uid": "candidate-1",
+                "function": "f",
+                "file": "src/unit.c",
+                "line": 8,
+                "defect_class": candidate_category,
+                "cwe": "CWE-667",
+            }
+        ]
+    }
+    truth = [
+        {
+            "id": "SPECIALIZED",
+            "category": truth_category,
+            "cwe": "CWE-667",
+            "function": "f",
+            "file": "src/unit.c",
+            "line": 8,
+        }
+    ]
+
+    audit = candidate_coverage_audit(report, truth, line_tolerance=0)
+
+    assert audit["exact_or_family"] == 1
+    assert audit["cwe_only"] == 0
+    assert audit["rows"][0]["candidates"][0]["category_match"] == (f"category_family:{family}")
+
+
+def test_candidate_coverage_rejects_exact_category_with_wrong_rule_mechanism() -> None:
+    report = {
+        "candidate_terminal_states": [
+            {
+                "candidate_uid": "wrong-local-mechanism",
+                "rule_id": "clang_cfg_free_non_owner_pointer_expression",
+                "function": "consume_after_callback",
+                "file": "src/async.c",
+                "line": 44,
+                "defect_class": "use_after_free",
+            }
+        ]
+    }
+    truth = [
+        {
+            "id": "ASYNC-UAF",
+            "category": "use_after_free",
+            "function": "consume_after_callback",
+            "file": "src/async.c",
+            "line": 44,
+        }
+    ]
+
+    audit = candidate_coverage_audit(report, truth, line_tolerance=0)
+
+    assert audit["semantic_candidate_coverage_count"] == 0
+    assert audit["wrong_mechanism"] == 1
+    candidate = audit["rows"][0]["candidates"][0]
+    assert candidate["mechanism_match"].startswith("mechanism_family_mismatch:")
+
+
+def test_candidate_coverage_requires_cross_function_truth_endpoint() -> None:
+    report = {
+        "candidate_terminal_states": [
+            {
+                "candidate_uid": "borrowed-object-only",
+                "rule_id": "clang_cfg_borrowed_pointer_returned_after_unlock",
+                "function": "lookup_runtime",
+                "file": "src/runtime.c",
+                "line": 88,
+                "defect_class": "use_after_free",
+                "source": "runtime->entry",
+                "sink": "return runtime->entry",
+            }
+        ]
+    }
+    truth = [
+        {
+            "id": "SHUTDOWN-RACE",
+            "category": "use_after_free",
+            "function": "lookup_runtime",
+            "related_functions": ["remove_runtime_entry"],
+            "file": "src/runtime.c",
+            "line": 88,
+        }
+    ]
+
+    audit = candidate_coverage_audit(report, truth, line_tolerance=0)
+
+    assert audit["semantic_candidate_coverage_count"] == 0
+    assert audit["wrong_mechanism"] == 1
+    assert (
+        audit["rows"][0]["candidates"][0]["mechanism_match"] == "required_related_endpoint_missing"
+    )
+
+
+def test_local_mechanism_does_not_require_reproduction_caller_endpoint() -> None:
+    report = {
+        "candidate_terminal_states": [
+            {
+                "candidate_uid": "local-invalid-free",
+                "rule_id": "clang_cfg_free_derived_pointer_alias",
+                "function": "release_offset",
+                "file": "src/memory.c",
+                "line": 42,
+                "defect_class": "invalid_free",
+                "source": "base + 1",
+                "sink": "free(base + 1)",
+            }
+        ]
+    }
+    truth = [
+        {
+            "id": "INVALID-FREE",
+            "category": "invalid_free",
+            "function": "release_offset",
+            "additional_locations": [{"function": "exercise_release_offset"}],
+            "file": "src/memory.c",
+            "line": 42,
+        }
+    ]
+
+    audit = candidate_coverage_audit(report, truth, line_tolerance=0)
+
+    assert audit["semantic_candidate_coverage_count"] == 1
+    assert audit["wrong_mechanism"] == 0
+    assert audit["rows"][0]["classification"] == "mechanism_qualified"
+
+
+def test_current_rule_binding_overrides_stale_embedded_mechanism_family() -> None:
+    report = {
+        "candidate_terminal_states": [
+            {
+                "candidate_uid": "lock-order",
+                "rule_id": "cross_function_lock_order_inversion",
+                "function": "take_locks",
+                "file": "src/locks.c",
+                "line": 20,
+                "defect_class": "deadlock",
+                "source": "lock_a",
+                "sink": "lock_b",
+                "obligation_profile_id": "concurrency",
+                "obligation_mechanism_family": "concurrency",
+                "obligation_required_roles": ["source", "sink", "access"],
+            }
+        ]
+    }
+    truth = [
+        {
+            "id": "DEADLOCK",
+            "category": "deadlock",
+            "function": "take_locks",
+            "file": "src/locks.c",
+            "line": 20,
+        }
+    ]
+
+    audit = candidate_coverage_audit(report, truth, line_tolerance=0)
+
+    assert audit["semantic_candidate_coverage_count"] == 1
+    assert audit["rows"][0]["classification"] == "mechanism_qualified"
+
+
+def test_post_score_gap_observation_distinguishes_exact_reference_from_path_trace() -> None:
+    report = {
+        "metadata": {
+            "fast_static_scan": {
+                "analysis_units": [
+                    {
+                        "analysis_unit_id": "AU_1",
+                        "build_context_id": "build-a",
+                        "function": "leaky",
+                        "file": "src/demo.c",
+                        "executed_rule_ids": ["error_path_allocation_not_released"],
+                        "semantic_contract_trace_status": "source_parser_incomplete",
+                        "semantic_contract_events": [],
+                        "semantic_contract_references": [
+                            {
+                                "name": "SAFE_FREE",
+                                "role": "deallocator",
+                                "effects_trusted": True,
+                                "project_semantics_id": "project:macro:SAFE_FREE",
+                            }
+                        ],
+                    }
+                ],
+                "rule_execution": {
+                    "executed_by_rule": {"error_path_allocation_not_released": 1},
+                    "cache_reused_by_rule": {},
+                },
+            }
+        }
+    }
+
+    audit = candidate_coverage_audit(report, _truth()["vulnerabilities"][:1], line_tolerance=0)
+    observation = audit["rows"][0]["gap_observation"]
+    checkpoints = {
+        checkpoint["checkpoint"]: checkpoint
+        for checkpoint in observation["interface_role_checkpoints"]
+    }
+    release = checkpoints["resource_release"]
+    assert release["state"] == "exact_reference_at_truth_function"
+    assert release["resolved_interfaces"] == []
+    assert release["exact_referenced_interfaces"] == ["project:macro:SAFE_FREE"]
+    assert observation["semantic_contract_trace_complete"] is False
+    assert "interface_semantics" in observation["suspected_gap_layers"]
 
 
 def _truth():
@@ -1948,8 +2291,6 @@ def _write_integrity_suite(tmp_path: Path) -> tuple[Path, Path, str]:
         '    models: ["unit-model"]\n'
         "    api_key: unit-key\n"
         "project:\n"
-        f'  root: "{project.as_posix()}"\n'
-        "  source_root: .\n"
         "  language: c_cpp\n"
         '  entry_functions_list: "../benchmark/entries.json"\n'
         "scan:\n"
@@ -1965,7 +2306,7 @@ def _write_integrity_suite(tmp_path: Path) -> tuple[Path, Path, str]:
         "  svf_workers: 1\n"
         "  llm_max_inflight: 1\n"
     )
-    (suite_root / "zscope.benchmark.yaml").write_text(original_config, encoding="utf-8")
+    (suite_root / "project" / "zscope.benchmark.yaml").write_text(original_config, encoding="utf-8")
     return suite_root, source, original_config
 
 
@@ -2113,8 +2454,10 @@ def test_full_trial_uses_isolated_snapshot_cache_and_records_integrity(
         )
     )
 
-    assert (suite_root / "zscope.benchmark.yaml").read_text(encoding="utf-8") == original_config
-    assert Path(observed_config["path"]).parent == run_dir
+    assert (suite_root / "project" / "zscope.benchmark.yaml").read_text(
+        encoding="utf-8"
+    ) == original_config
+    assert Path(observed_config["path"]).parent == suite_root / "project"
     assert observed_config["text"] == original_config
     assert observed_config["developer_mode"] == "1"
     assert Path(observed_config["runtime_override"]).parent == run_dir
@@ -2204,7 +2547,7 @@ def test_run_prepared_candidate_layer_writes_protocol_summary(tmp_path: Path) ->
         encoding="utf-8",
     )
     (benchmark / "ground_truth.json").write_text(json.dumps(_truth()), encoding="utf-8")
-    (suite_root / "zscope.benchmark.yaml").write_text(
+    (project / "zscope.benchmark.yaml").write_text(
         "project:\n  prompt_autofill:\n    enabled: false\nindexing:\n  backend: regex\n",
         encoding="utf-8",
     )

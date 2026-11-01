@@ -25,7 +25,7 @@ cd /path/to/target
 zscope -c /path/to/target/zscope.yaml --mcp-stdio --mcp-profile candidate_blind
 ```
 
-`project.root` 相对进程工作目录解析；源码路径和缓存路径锁定该配置的项目。建议 root 与 config 使用绝对路径。服务器必须使用已安装 Z-Scope 的 Linux Python，不使用 Windows Python；依赖未安装时由用户准备，不由服务自动安装。
+YAML 所在目录是唯一工程根；源码和缓存路径锁定该配置的工程，跨工作目录执行不会改根。公共配置不接受独立 root/source_root，显式 `--config` 建议使用绝对 YAML 路径，工程内路径保持相对。服务器必须使用已安装 Z-Scope 的 Linux Python，不使用 Windows Python；依赖未安装时由用户准备，不由服务自动安装。
 
 HTTP 入口同样支持 `--mcp-profile`，原有 token、客户端 allowlist 和非 loopback 绑定限制仍然生效。本地使用优先 stdio。stdout 只输出 JSON-RPC，日志走 stderr；新客户端使用换行 JSON，兼容旧 Content-Length 输入。只读 stdio 按序处理请求，最多排队 32 个，支持 `notifications/cancelled` 协作取消正在进行的搜索及 SQLite 查询；取消只属于当前请求。
 

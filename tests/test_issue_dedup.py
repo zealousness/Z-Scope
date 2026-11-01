@@ -335,6 +335,40 @@ def test_issue_rank_prefers_precise_sink_over_generic_clang_candidate() -> None:
     assert issue_rank(exact) > issue_rank(generic)
 
 
+def test_dedup_merges_repeated_secondary_occurrences_without_losing_sites() -> None:
+    def issue(issue_id: str, line: int, confidence: float = 0.5) -> dict:
+        return {
+            "id": issue_id,
+            "function": "copy_entry",
+            "location": f"src/demo.c:{line}",
+            "category": "bounds",
+            "rule": "clang_cfg_unchecked_copy",
+            "root_cause_key": "unchecked_copy",
+            "resource_signature": "buffer",
+            "sink": "memcpy",
+            "confidence": confidence,
+            "build_context_id": "build-a",
+        }
+
+    first = issue("FIRST", 20)
+    second = issue("SECOND", 80)
+    duplicate = issue("SECOND_PRECISE", 80, confidence=0.9)
+    another_duplicate = issue("SECOND_AGAIN", 80)
+    other_build = {**issue("OTHER_BUILD", 80), "build_context_id": "build-b"}
+
+    assert canonical_issue_key(first) == canonical_issue_key(second)
+    deduped = deduplicate_issues(
+        [first, second, duplicate, another_duplicate, other_build]
+    )
+
+    assert len(deduped) == 3
+    merged = next(item for item in deduped if item["id"] == "SECOND_PRECISE")
+    assert merged["duplicate_count"] == 2
+    assert "|occurrence:" in merged["dedup_key"]
+    assert first["dedup_key"] != merged["dedup_key"]
+    assert other_build in deduped
+
+
 def test_dedup_merges_chinese_needs_review_with_rule_finding() -> None:
     issues = [
         {

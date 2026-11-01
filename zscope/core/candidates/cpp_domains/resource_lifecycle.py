@@ -21,7 +21,7 @@ from .models import (
 )
 
 from .models import DetectorStage
-from .source_events import ordered_lines
+from .source_events import has_terminating_guard, ordered_lines
 
 # FILE*-style stdlib openers must not enter the int-fd leak state machine;
 # they were excluded before user-defined io_acquire wrappers were introduced.
@@ -268,16 +268,23 @@ class RegexResourceLifecycleRules:
         )
 
     def _rule_stale_resources(self, lines: List[CodeLine], emit) -> None:
+        is_destructor = any(
+            re.search(r"(?:^|::)~[A-Za-z_]\w*\s*\(", item.text) for item in lines[:6]
+        )
         for line in lines:
             close = re.search(
                 self._literal_api_pattern(r"\bclose\s*\(\s*(?P<fd>[A-Za-z_]\w*)\s*\)\s*;"),
                 line.text,
             )
             if close:
+                fd = close.group("fd")
                 later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 7])
-                if not self._previous_assignment_from_open(
-                    lines, line.index, close.group("fd")
-                ) and not re.search(r"(?:g_[A-Za-z_]\w*fd|fd)\s*=\s*-1", later):
+                # A local descriptor closed before return is invalidated by
+                # scope exit.  Missing ``fd = -1`` is a stale-handle lead only
+                # for a persistent owner slot; a destructor is terminal too.
+                persistent_owner = fd.startswith("g_") or fd.endswith("_")
+                reset = re.search(rf"\b{re.escape(fd)}\s*=\s*-1\b", later)
+                if persistent_owner and not is_destructor and not reset:
                     emit(
                         defect_class="stale_fd",
                         rule="fd_closed_without_invalidation",
@@ -285,15 +292,25 @@ class RegexResourceLifecycleRules:
                         description="文件描述符被关闭，但缺少相邻的持有者失效处理。",
                         root_cause="其他路径可能在 close 之后重用陈旧的描述符值。",
                         suggested_fix="在 close 之后于同一同步下将持有描述符置为 -1。",
-                        source=close.group("fd"),
+                        source=fd,
                         sink=line.text.strip(),
                         confidence=0.62,
                         positive=[f"line {line.number}: close without nearby fd=-1 assignment"],
                     )
 
-            if "munmap" in line.text and self._semantic_call_allowed("munmap", "io_release"):
+            unmap = re.search(
+                self._literal_api_pattern(
+                    r"\bmunmap\s*\(\s*(?P<owner>[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)"
+                ),
+                line.text,
+            )
+            if unmap and self._semantic_call_allowed("munmap", "io_release"):
                 later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 8])
-                if "NULL" not in later:
+                owner = unmap.group("owner")
+                persistent_owner = owner.startswith("g_") or "->" in owner or owner.endswith("_")
+                if persistent_owner and not is_destructor and not re.search(
+                    rf"\b{re.escape(owner)}\s*=\s*(?:NULL|nullptr|0)\b", later
+                ):
                     emit(
                         defect_class="use_after_free",
                         rule="mapping_unmapped_without_pointer_clear",
@@ -331,13 +348,20 @@ class GraphResourceLifecycleRules:
     ) -> None:
         for line in view.lines:
             for call_name in self._called_names(line.text):
-                if (
-                    call_name not in self._free_names
-                    and call_name not in self.semantics.io_releasers
-                ):
-                    continue
                 callee = by_name.get(call_name) or self._view_for(call_name)
                 if not callee:
+                    continue
+                explicit_release = (
+                    call_name in self._free_names or call_name in self.semantics.io_releasers
+                )
+                cleanup_contract = bool(
+                    re.search(r"(?:cleanup|destroy|release|deinit|fini)", call_name, re.I)
+                    and re.search(
+                        r"(?:free|close|munmap|pthread_[A-Za-z_]*destroy)\s*\(",
+                        "\n".join(item.text for item in callee.lines),
+                    )
+                )
+                if not explicit_release and not cleanup_contract:
                     continue
                 param_type = self._first_param_type(callee.signature)
                 if not param_type:
@@ -692,7 +716,9 @@ class GraphResourceLifecycleRules:
         if not line:
             return
         if not re.search(
-            r"(?:peer|socket|sock|fd|conn|control|reply)", view.signature + "\n" + line.text, re.I
+            r"(?:peer|socket|sock|pipe|conn|control|reply)",
+            view.signature + "\n" + line.text,
+            re.I,
         ):
             return
         issues.append(
@@ -766,6 +792,8 @@ class GraphResourceLifecycleRules:
         views: Sequence[FunctionView],
         issues: List[Dict[str, Any]],
     ) -> None:
+        self._emit_factory_returned_member_cleanup_gaps(views, issues)
+        self._emit_getter_backed_member_cleanup_gaps(views, issues)
         for view in views:
             self._rule_same_function_helper_alloc_member_cleanup_gap(view, issues)
 
@@ -869,6 +897,378 @@ class GraphResourceLifecycleRules:
                     )
                 )
                 break
+
+    def _emit_factory_returned_member_cleanup_gaps(
+        self,
+        views: Sequence[FunctionView],
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        """Detect a conditionally-created returned member omitted by a destructor.
+
+        The producer must return a local aggregate, create one of its members
+        only when that member was null, and obtain the value from ``new`` or a
+        current exact allocator contract.  The consumer must store that exact
+        factory result in a constructor member and its matching destructor
+        must visibly clean another member of the aggregate while omitting the
+        acquired one.  These constraints keep this out of name-only ownership
+        guessing while covering C++ option/sanitizer factories.
+        """
+
+        cxx_new_factories = {
+            str(view.name).rsplit("::", 1)[-1]
+            for view in views
+            if re.search(
+                r"\breturn\s+new\s+[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:\s*<[^;>]+>)?\s*\(",
+                "\n".join(line.text for line in view.lines),
+            )
+        }
+        producers: List[Dict[str, Any]] = []
+        for view in views:
+            text = "\n".join(line.text for line in view.lines)
+            returned = re.findall(r"\breturn\s+(?P<local>[A-Za-z_]\w*)\s*;", text)
+            if len(set(returned)) != 1:
+                continue
+            local = returned[0]
+            if not re.search(
+                rf"\b[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:\s*<[^;>]+>)?\s+"
+                rf"{re.escape(local)}\s*=",
+                text,
+            ):
+                continue
+            for index, guard_line in enumerate(view.lines):
+                guard = re.search(
+                    rf"\bif\s*\(\s*{re.escape(local)}\s*\.\s*"
+                    r"(?P<field>[A-Za-z_]\w*)\s*==\s*(?:NULL|nullptr|0)\s*\)",
+                    guard_line.text,
+                )
+                if not guard:
+                    continue
+                field = guard.group("field")
+                assignment = None
+                rhs = ""
+                for candidate in view.lines[index + 1 : index + 9]:
+                    assigned = re.search(
+                        rf"\b{re.escape(local)}\s*\.\s*{re.escape(field)}\s*=\s*"
+                        r"(?P<rhs>[^;]+)\s*;",
+                        candidate.text,
+                    )
+                    if assigned:
+                        assignment = candidate
+                        rhs = assigned.group("rhs").strip()
+                        break
+                if assignment is None:
+                    continue
+                if not self._trusted_factory_member_acquire(
+                    view,
+                    assignment,
+                    rhs,
+                    cxx_new_factories=cxx_new_factories,
+                ):
+                    continue
+                producers.append(
+                    {
+                        "view": view,
+                        "local": local,
+                        "field": field,
+                        "guard": guard_line,
+                        "assignment": assignment,
+                        "rhs": rhs,
+                    }
+                )
+
+        for producer in producers:
+            factory = producer["view"]
+            factory_name = str(factory.name).rsplit("::", 1)[-1]
+            field = str(producer["field"])
+            for constructor in views:
+                class_name = self._constructor_class_name(constructor.name)
+                if not class_name:
+                    continue
+                constructor_text = "\n".join(line.text for line in constructor.lines)
+                init = re.search(
+                    rf"\b(?P<member>[A-Za-z_]\w*)\s*\(\s*(?:(?:[A-Za-z_]\w*)::)*"
+                    rf"{re.escape(factory_name)}\s*\(",
+                    constructor_text,
+                )
+                if not init:
+                    continue
+                member = init.group("member")
+                destructor = next(
+                    (
+                        view
+                        for view in views
+                        if self._destructor_class_name(view.name) == class_name
+                    ),
+                    None,
+                )
+                if destructor is None:
+                    continue
+                destructor_text = "\n".join(line.text for line in destructor.lines)
+                target = rf"{re.escape(member)}\s*(?:\.|->)\s*{re.escape(field)}"
+                if re.search(
+                    rf"\b(?:delete\s*(?:\[\s*\])?|free\s*\()\s*{target}",
+                    destructor_text,
+                ):
+                    continue
+                sibling_cleanup = next(
+                    (
+                        line
+                        for line in destructor.lines
+                        if re.search(
+                            rf"\bdelete\s*(?:\[\s*\])?\s*{re.escape(member)}\s*"
+                            r"(?:\.|->)\s*[A-Za-z_]\w*",
+                            line.text,
+                        )
+                    ),
+                    None,
+                )
+                if sibling_cleanup is None:
+                    continue
+                sink_line = destructor.lines[-1] if destructor.lines else sibling_cleanup
+                assignment = producer["assignment"]
+                issue = self._issue(
+                    defect_class="memory_leak",
+                    rule="paired_free_wrapper_omits_dynamic_member",
+                    view=destructor,
+                    line=sink_line,
+                    description=(
+                        f"`{factory.name}` 在空值分支为返回对象的 `{field}` 创建资源，"
+                        f"构造函数把该对象保存到 `{member}`，但 `{destructor.name}` 未清理 "
+                        f"`{member}.{field}`。"
+                    ),
+                    root_cause=(
+                        "按条件创建的成员所有权随返回对象进入类成员；析构函数清理了同一"
+                        "聚合对象的其他动态成员，却遗漏了该成员的释放路径。"
+                    ),
+                    suggested_fix=(
+                        f"记录 `{member}.{field}` 是否由本对象创建，并在析构时执行匹配释放，"
+                        "或改用明确表达所有权的 RAII 成员。"
+                    ),
+                    source=f"{factory.name}:{assignment.number}:{assignment.text.strip()}",
+                    sink=f"{destructor.name}: exit without releasing {member}.{field}",
+                    confidence=0.9,
+                    impact_level="high",
+                    positive=[
+                        f"{factory.name} line {producer['guard'].number}: `{field}` is created only when the copied member is null",
+                        f"{factory.name} line {assignment.number}: `{field}` receives an allocation-backed value",
+                        f"{constructor.name}: `{member}` stores the exact factory result",
+                        f"{destructor.name} line {sibling_cleanup.number}: the destructor cleans a sibling owned member but never `{member}.{field}`",
+                    ],
+                    negative=[
+                        "no matching delete/free of the acquired member is visible in the exact destructor",
+                    ],
+                    evidence={
+                        "source": {
+                            "expression": assignment.text.strip(),
+                            "file": factory.file_path,
+                            "line": assignment.number,
+                        },
+                        "sink": {
+                            "operation": f"destructor exit without releasing {member}.{field}",
+                            "file": destructor.file_path,
+                            "line": sink_line.number,
+                        },
+                        "path": {
+                            "factory_function": factory.name,
+                            "constructor_function": constructor.name,
+                            "destructor_function": destructor.name,
+                            "source_line": assignment.number,
+                            "sink_line": sink_line.number,
+                            "complete_in_function": False,
+                            "path_constraints": [
+                                f"{producer['local']}.{field} is null",
+                                f"{member} receives the returned aggregate",
+                                f"{member}.{field} reaches destructor exit without release",
+                            ],
+                        },
+                        "ownership": {
+                            "carrier": f"return.{field}",
+                            "consumer": f"{class_name}.{member}.{field}",
+                            "acquire_expression": producer["rhs"],
+                            "release": "absent",
+                        },
+                    },
+                )
+                if not issue.get("_zscope_rule_policy_filtered"):
+                    issues.append(issue)
+
+    def _trusted_factory_member_acquire(
+        self,
+        view: FunctionView,
+        line: GraphLine,
+        rhs: str,
+        *,
+        cxx_new_factories: Optional[Set[str]] = None,
+    ) -> bool:
+        if re.match(r"^new\b", rhs):
+            return True
+        call = re.match(r"(?:(?:[A-Za-z_]\w*)::)*(?P<name>[A-Za-z_]\w*)\s*\(", rhs)
+        if not call:
+            return False
+        name = call.group("name")
+        if name in (cxx_new_factories or set()):
+            return True
+        facts = self._program_facts_for_view(view)
+        build_context_id = str(facts.get("build_context_id") or "")
+        bodies = [row for row in facts.get("functions", []) or [] if isinstance(row, Mapping)]
+        if len(bodies) != 1:
+            return False
+        for event in bodies[0].get("events", []) or []:
+            if not isinstance(event, Mapping) or event.get("event_kind") != "call":
+                continue
+            location = event.get("location")
+            location = location if isinstance(location, Mapping) else {}
+            if int(location.get("line") or 0) != line.number:
+                continue
+            callee = event.get("callee")
+            callee = callee if isinstance(callee, Mapping) else {}
+            callee_name = str(callee.get("qualified_name") or callee.get("name") or "")
+            if callee_name.rsplit("::", 1)[-1] != name:
+                continue
+            callee_usr = str(callee.get("usr") or callee.get("referenced_usr") or "")
+            for contract in self.semantics.contracts.find(
+                callee_name,
+                build_context_id=build_context_id,
+                usr=callee_usr,
+            ):
+                if (
+                    contract.role in {"allocator", "calloc", "reallocator"}
+                    and contract.carrier.kind == "return"
+                    and contract.effects_trusted
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _constructor_class_name(name: str) -> str:
+        parts = str(name).split("::")
+        if len(parts) >= 2 and parts[-1] == parts[-2] and not parts[-1].startswith("~"):
+            return parts[-1]
+        return ""
+
+    @staticmethod
+    def _destructor_class_name(name: str) -> str:
+        parts = str(name).split("::")
+        if len(parts) >= 2 and parts[-1] == f"~{parts[-2]}":
+            return parts[-2]
+        return ""
+
+    def _emit_getter_backed_member_cleanup_gaps(
+        self,
+        views: Sequence[FunctionView],
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        """Close the getter-alias gap in composite owner cleanup.
+
+        The graph pass can prove that a getter returns a particular global
+        owner.  If a consumer allocates an indexed/member child through that
+        alias and then frees the global owner without releasing the child,
+        the existing paired-member rule applies without relying on names.
+        """
+
+        returned_globals: Dict[str, str] = {}
+        for view in views:
+            body = "\n".join(line.text for line in view.lines)
+            returned = re.search(r"\breturn\s+(?P<global>g_[A-Za-z_]\w*)\s*;", body)
+            if returned:
+                returned_globals[view.name] = returned.group("global")
+        if not returned_globals:
+            return
+
+        for view in views:
+            text = "\n".join(line.text for line in view.lines)
+            alias_line = None
+            owner = getter = ""
+            for line in view.lines:
+                alias = re.search(
+                    r"\b(?:struct\s+)?[A-Za-z_]\w*(?:\s*\*)+\s*"
+                    r"(?P<owner>[A-Za-z_]\w*)\s*=\s*"
+                    r"(?P<getter>[A-Za-z_]\w*)\s*\(\s*\)\s*;",
+                    line.text,
+                )
+                if alias and alias.group("getter") in returned_globals:
+                    alias_line = line
+                    owner = alias.group("owner")
+                    getter = alias.group("getter")
+                    break
+            if alias_line is None:
+                continue
+            global_owner = returned_globals[getter]
+            member_line = None
+            member = api = ""
+            for line in view.lines[alias_line.index + 1 :]:
+                allocated = re.search(
+                    self._semantic_api_pattern(
+                        rf"\b{re.escape(owner)}->(?P<field>[A-Za-z_]\w*)"
+                        r"(?:\s*\[[^\]]+\])?\s*=\s*(?:\([^)]*\)\s*)?"
+                        r"(?P<api>(?:malloc|calloc|realloc|strdup))\s*\("
+                    ),
+                    line.text,
+                    re.I,
+                )
+                if allocated:
+                    member_line = line
+                    member = allocated.group("field")
+                    api = allocated.group("api")
+                    break
+            if member_line is None:
+                continue
+            parent_release = self._first_line_matching(
+                view,
+                re.compile(
+                    self._semantic_api_pattern(
+                        rf"\b(?:free)\s*\(\s*{re.escape(global_owner)}\s*\)"
+                    ),
+                    re.I,
+                ),
+            )
+            if parent_release is None:
+                continue
+            if re.search(
+                self._semantic_api_pattern(
+                    rf"\b(?:free)\s*\([^;]*\b{re.escape(owner)}->{re.escape(member)}\b"
+                ),
+                text,
+                re.I,
+            ):
+                continue
+            issues.append(
+                self._issue(
+                    defect_class="memory_leak",
+                    rule="paired_free_wrapper_omits_dynamic_member",
+                    view=view,
+                    line=member_line,
+                    description=(
+                        f"`{getter}` 返回的全局持有者通过 `{owner}->{member}` 获取了动态资源，"
+                        f"但清理只释放了外围持有者 `{global_owner}`。"
+                    ),
+                    root_cause="getter 返回别名下的动态成员在外围所有者释放前没有被逐项释放。",
+                    suggested_fix=f"释放 `{global_owner}` 前遍历并释放 `{owner}->{member}` 的有效元素。",
+                    source=f"{getter} -> {global_owner}",
+                    sink=parent_release.text.strip(),
+                    confidence=0.86,
+                    impact_level="high",
+                    positive=[
+                        f"{getter}: returns exact global owner `{global_owner}`",
+                        f"line {alias_line.number}: `{owner}` receives that getter result",
+                        f"line {member_line.number}: `{owner}->{member}` receives storage via `{api}`",
+                        f"line {parent_release.number}: the global owner is released without member cleanup",
+                    ],
+                    negative=[
+                        "Validator must confirm no external destructor releases the indexed member array."
+                    ],
+                    evidence={
+                        "path": {
+                            "getter_function": getter,
+                            "cleanup_function": view.name,
+                            "source_line": member_line.number,
+                            "sink_line": parent_release.number,
+                            "complete_in_function": False,
+                            "path_constraints": ["getter-to-global owner alias"],
+                        }
+                    },
+                )
+            )
 
     def _rule_same_function_helper_alloc_member_cleanup_gap(
         self,
@@ -1235,6 +1635,164 @@ class GraphResourceLifecycleRules:
 
 
 class ClangResourceLifecycleRules:
+
+    def _maybe_emit_global_mapping_overwrite(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        publish = re.search(
+            r"\b(?P<slot>g_[A-Za-z_0-9]+(?:\.|->)[A-Za-z_0-9]+)\s*=\s*"
+            r"(?:\([^)]*\)\s*)?(?P<value>[A-Za-z_]\w*)\s*;",
+            line.text,
+        )
+        if not publish:
+            return
+        value = publish.group("value")
+        acquire_line = next(
+            (
+                item
+                for item in reversed(lines[max(0, line.index - 20) : line.index])
+                if re.search(
+                    rf"\b{re.escape(value)}\s*=\s*(?:\([^)]*\)\s*)?mmap\s*\(",
+                    item.text,
+                )
+            ),
+            None,
+        )
+        if acquire_line is None or not self._semantic_call_allowed("mmap", "allocator"):
+            return
+        slot = publish.group("slot")
+        prior = "\n".join(item.text for item in lines[: line.index])
+        if re.search(
+            rf"\bmunmap\s*\(\s*(?:\([^)]*\)\s*)?{re.escape(slot)}\b",
+            prior,
+        ):
+            return
+        if re.search(
+            rf"\bif\s*\([^)]*{re.escape(slot)}[^)]*(?:==\s*(?:NULL|0)|!\s*{re.escape(slot)})",
+            prior,
+        ):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="memory_leak",
+            rule="clang_cfg_slot_overwrite_without_existing_owner_cleanup",
+            line=line,
+            description=f"新映射被写入全局槽位 `{slot}`，但旧映射在覆盖前没有被解除。",
+            root_cause="可重复调用的映射路径覆盖了持有旧 mmap 地址的唯一全局句柄。",
+            suggested_fix="在替换全局映射前对旧地址和长度执行 munmap，或拒绝重复映射。",
+            source=acquire_line.text,
+            sink=line.text,
+            confidence=0.91,
+            impact_level="medium",
+            positive=[
+                f"line {acquire_line.number}: a new mapping is acquired into `{value}`",
+                f"line {line.number}: global mapping slot `{slot}` is overwritten",
+                "no prior munmap of the same global slot is visible",
+            ],
+            negative=[],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("mapping_acquire", acquire_line, value, "mmap", acquire_line.text),
+                    self._event("global_mapping_publish", line, slot, value, line.text),
+                ],
+                [acquire_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_guarded_fd_release_gap(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        close = re.search(
+            r"\bclose\s*\(\s*(?P<owner>[A-Za-z_]\w*)\s*->\s*(?P<field>[A-Za-z_]\w*)\s*\)",
+            line.text,
+        )
+        if not close or not self._semantic_call_allowed("close", "io_release"):
+            return
+        owner = close.group("owner")
+        field = close.group("field")
+        guard = next(
+            (
+                item
+                for item in reversed(lines[max(0, line.index - 8) : line.index])
+                if re.search(
+                    rf"\bif\s*\([^)]*{re.escape(owner)}\s*->\s*{re.escape(field)}\s*>=\s*0"
+                    rf"[^)]*&&[^)]*{re.escape(owner)}\s*->\s*{re.escape(field)}\s*<\s*[^)]*\)",
+                    item.text,
+                )
+            ),
+            None,
+        )
+        if guard is None:
+            return
+        if any(item.text.lstrip().startswith("}") for item in lines[guard.index + 1 : line.index]):
+            return
+        owner_release = next(
+            (
+                item
+                for item in lines[line.index + 1 :]
+                if re.search(rf"\bfree\s*\(\s*{re.escape(owner)}\s*\)", item.text)
+            ),
+            None,
+        )
+        if owner_release is None:
+            return
+        if any(
+            re.search(
+                rf"\bclose\s*\(\s*{re.escape(owner)}\s*->\s*{re.escape(field)}\s*\)",
+                item.text,
+            )
+            for item in lines[line.index + 1 : owner_release.index]
+        ):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="fd_leak",
+            rule="clang_cfg_fd_open_return_without_close",
+            line=guard,
+            description=f"有效描述符 `{owner}->{field}` 只有在满足注册表上界时才会被关闭。",
+            root_cause="注册表索引范围和描述符有效性被合并为同一个释放条件，范围外的有效描述符随所有者释放而泄漏。",
+            suggested_fix="将 close 的有效性条件与注册表摘除条件分开；所有非负描述符都必须关闭。",
+            source=guard.text,
+            sink=owner_release.text,
+            confidence=0.94,
+            impact_level="medium",
+            positive=[
+                f"line {guard.number}: close is guarded by both descriptor validity and an upper registry bound",
+                f"line {line.number}: `{owner}->{field}` is closed only inside that restricted branch",
+                f"line {owner_release.number}: owner is released after the branch",
+            ],
+            negative=[],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("restricted_fd_guard", guard, f"{owner}->{field}", "", guard.text),
+                    self._event("fd_close", line, f"{owner}->{field}", "close", line.text),
+                    self._event("owner_release", owner_release, owner, "free", owner_release.text),
+                ],
+                [guard.number, line.number, owner_release.number],
+            ),
+        )
 
     def _run_object_protocol_paths(
         self,
@@ -1725,6 +2283,74 @@ class ClangResourceLifecycleRules:
                 ):
                     freed.pop(var, None)
                     continue
+                async_handoff = self._released_member_async_handoff(line.text, var)
+                if async_handoff is not None:
+                    worker, owner = async_handoff
+                    before = len(issues)
+                    self._emit(
+                        issues,
+                        func_name,
+                        file_path,
+                        lines,
+                        allowed_skills,
+                        defect_class="use_after_free",
+                        rule="clang_ast_release_then_call_argument_use",
+                        line=line,
+                        description=(
+                            f"`{var}` 已通过别名释放，但所属对象 `{owner}` 随后仍被交给"
+                            f"异步工作者 `{worker}`。"
+                        ),
+                        root_cause=(
+                            "释放成员的别名没有清除所有者中的原始成员槽位；"
+                            "pthread_create 成功后，工作者可观察到已经失效的指针代次。"
+                        ),
+                        suggested_fix=(
+                            "将成员清空并让工作者在访问前检查，或把该成员的释放推迟到"
+                            "工作者完成之后；不要把仍携带悬空成员的对象交给异步回调。"
+                        ),
+                        source=f"{free_api} releases {var} at line {free_line.number}",
+                        sink=(
+                            f"pthread_create hands `{owner}` to `{worker}` at line {line.number}"
+                        ),
+                        confidence=0.82,
+                        impact_level="high",
+                        positive=[
+                            f"line {free_line.number}: an alias of `{var}` is released via `{free_api}`",
+                            f"line {line.number}: `{owner}` is passed to pthread worker `{worker}` after that release",
+                            f"line {line.number}: `{var}` is not cleared or reassigned before the async handoff",
+                        ],
+                        negative=[
+                            "Validator must confirm the worker reads the retained member on a feasible pthread_create success path."
+                        ],
+                        ast_cfg=self._ast_cfg_pack(
+                            lines,
+                            [
+                                self._event("release", free_line, var, free_api, free_line.text),
+                                self._event(
+                                    "async_owner_handoff",
+                                    line,
+                                    var,
+                                    "pthread_create",
+                                    line.text,
+                                ),
+                            ],
+                            [free_line.number, line.number],
+                        ),
+                    )
+                    if len(issues) != before:
+                        pack = issues[-1]["evidence_pack"]
+                        pack["async_handoff"] = {
+                            "schema_version": "zscope.async-member-handoff.v1",
+                            "owner": owner,
+                            "released_member": var,
+                            "worker": worker,
+                            "release_line": free_line.number,
+                            "handoff_line": line.number,
+                            "create_success_required": True,
+                            "worker_access_requires_validation": True,
+                        }
+                    emitted_uaf.add(var)
+                    continue
                 if self._uses_freed_var(line.text, var, release_api_names=self._release_names):
                     self._emit_use_after_release(
                         issues,
@@ -1899,14 +2525,29 @@ class ClangResourceLifecycleRules:
 
         for line in lines:
             unlink = re.search(
-                r"(?P<link>[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*)\s*=\s*"
-                r"(?P<object>[A-Za-z_]\w*)\s*->\s*(?:next|prev)\s*;",
+                r"^\s*(?P<link>[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*)\s*=\s*"
+                r"(?P<object>[A-Za-z_]\w*)\s*->\s*(?P<object_link>next|prev)\s*;",
                 line.text,
             )
             if not unlink:
                 continue
             obj = unlink.group("object")
             tail = "\n".join(item.text for item in lines[line.index + 1 :])
+            # A link-to-link assignment is ordinary intrusive-list mutation
+            # unless the detached node's own link is subsequently cleared.
+            # Requiring that local detach marker prevents list repair and
+            # insertion code such as ``e->next->prev = e->prev`` or
+            # ``e->prev = list->prev`` from becoming ownership-loss
+            # candidates.  Whether the container actually owns the object is
+            # still a separate validation obligation; this pattern alone is
+            # never a deterministic leak proof.
+            object_link = unlink.group("object_link")
+            if not re.search(
+                rf"\b{re.escape(obj)}\s*->\s*{re.escape(object_link)}\s*=\s*"
+                rf"(?:NULL|nullptr|0)\s*;",
+                tail,
+            ):
+                continue
             if re.search(
                 self._semantic_api_pattern(rf"\b(?:free|close)\s*\([^;]*\b{re.escape(obj)}\b"),
                 tail,
@@ -1939,11 +2580,13 @@ class ClangResourceLifecycleRules:
                 confidence=0.86,
                 impact_level="high",
                 positive=[
-                    f"line {line.number}: container link is reassigned around `{obj}`",
+                    f"line {line.number}: a link is reassigned around `{obj}`",
+                    f"the detached `{obj}->{object_link}` link is cleared locally",
                     "no local release or ownership transfer follows the unlink",
                 ],
                 negative=[
-                    "Validator must confirm no callee retains ownership of the detached object."
+                    "Validator must establish that the container owned the detached object.",
+                    "Validator must confirm no caller or callee retains ownership of it.",
                 ],
                 ast_cfg=self._ast_cfg_pack(
                     lines,
@@ -2242,19 +2885,11 @@ class ClangResourceLifecycleRules:
                     f"line {line.number}: parent `{parent}` is released without releasing `{resource}`",
                 ]
             else:
-                if not self._looks_like_parent_delete_without_member_cleanup(
-                    func_name, lines, line, parent
-                ):
-                    return
-                resource = f"{parent}->child_list"
-                description = (
-                    f"父对象 `{parent}` 被释放，却缺少对所占有的子节点/链表成员的可见清理。"
-                )
-                source = self._parent_declaration_text(lines, line, parent) or parent
-                positive = [
-                    f"line {line.number}: parent `{parent}` is released in a delete/remove/destroy-style function",
-                    "no visible walk or release of child/list members appears before the parent release",
-                ]
+                # A destructor-shaped function or a type/member spelling is
+                # not ownership evidence.  Without an acquisition assignment
+                # or an explicit contract carrier, leave this to validation
+                # instead of inventing a child/list member.
+                return
 
         self._emit(
             issues,
@@ -2367,22 +3002,50 @@ class ClangResourceLifecycleRules:
         if not release:
             return
         var = release.group("var")
-        window_lines = lines[max(0, idx - 18) : idx + 1]
-        window = "\n".join(item.text for item in window_lines)
-        ref_line = next(
-            (
-                item
-                for item in reversed(window_lines)
-                if re.search(rf"\b{re.escape(var)}->ref_count\s*=", item.text)
-                or re.search(rf"\b{re.escape(var)}->ref_count\b", item.text)
-            ),
-            None,
-        )
-        if not ref_line:
+        window_lines = lines[max(0, idx - 30) : idx + 1]
+        known_fields = self._known_refcount_fields() | {"ref_count"}
+        evidence = None
+        for item in reversed(window_lines):
+            field_match = re.search(
+                rf"\b{re.escape(var)}\s*->\s*(?P<field>[A-Za-z_]\w*)\b", item.text
+            )
+            if field_match and field_match.group("field") in known_fields:
+                evidence = item, field_match.group("field")
+                break
+        if evidence is None:
             return
-        if re.search(rf"\b{re.escape(var)}->ref_count\s*(?:--|-=)", window):
+        ref_line, ref_field = evidence
+        member = rf"\b{re.escape(var)}\s*->\s*{re.escape(ref_field)}\b"
+        before_free = window_lines[:-1]
+
+        def proves_last_reference(condition: str) -> bool:
+            updated_to_zero = re.search(
+                rf"(?:(?:--\s*{member}|{member}\s*--)\s*==\s*0|"
+                rf"0\s*==\s*(?:--\s*{member}|{member}\s*--))",
+                condition,
+            )
+            rejects_updated_nonzero = re.search(
+                rf"(?:(?:--\s*{member}|{member}\s*--)\s*!=\s*0|"
+                rf"0\s*!=\s*(?:--\s*{member}|{member}\s*--))",
+                condition,
+            )
+            rejects_nonlast = re.search(rf"{member}\s*(?:!=|>)\s*1\b", condition)
+            return bool(updated_to_zero or rejects_updated_nonzero or rejects_nonlast)
+
+        if has_terminating_guard(
+            before_free,
+            len(before_free),
+            proves_last_reference,
+            lookback=len(before_free) or 1,
+        ):
             return
-        if re.search(rf"\b{re.escape(var)}->ref_count\s*(?:==|<=|<)\s*1", window):
+        if any(
+            re.search(
+                rf"\bif\s*\([^)]*(?:--\s*{member}|{member}\s*--)[^)]*==\s*0[^)]*\)",
+                item.text,
+            )
+            for item in before_free
+        ):
             return
         self._emit(
             issues,
@@ -2396,13 +3059,13 @@ class ClangResourceLifecycleRules:
             description=f"共享资源 `{var}` 在未检查或更新其引用计数协议的情况下就被释放了。",
             root_cause="关闭路径在释放共享/入表对象之前绕过了对未决引用的核算。",
             suggested_fix="在释放资源之前先递减/检查引用计数并将其取消链接。",
-            source=f"ref_count evidence at line {ref_line.number}",
+            source=f"reference-count field evidence at line {ref_line.number}",
             sink=line.text,
             confidence=0.82,
             impact_level="high",
             positive=[
-                f"line {ref_line.number}: `{var}->ref_count` is maintained for the resource",
-                f"line {line.number}: `{var}` is freed without a visible ref_count decrement or zero/one check",
+                f"line {ref_line.number}: `{var}->{ref_field}` is maintained as the configured reference-count field",
+                f"line {line.number}: `{var}` is freed without proof that `{var}->{ref_field}` reached zero",
             ],
             negative=[
                 "Validator must confirm no helper on the same path performs the refcount protocol."
@@ -2410,7 +3073,7 @@ class ClangResourceLifecycleRules:
             ast_cfg=self._ast_cfg_pack(
                 lines,
                 [
-                    self._event("refcount_state", ref_line, var, "ref_count", ref_line.text),
+                    self._event("refcount_state", ref_line, var, ref_field, ref_line.text),
                     self._event("free_without_refcount", line, var, "", line.text),
                 ],
                 [ref_line.number, line.number],
@@ -2591,6 +3254,7 @@ class ClangResourceLifecycleRules:
     ) -> None:
         carrier_text = "output argument" if state.carrier == "output_argument" else "return value"
         exit_text = "return edge" if is_return else "function exit"
+        before = len(issues)
         self._emit(
             issues,
             func_name,
@@ -2629,6 +3293,23 @@ class ClangResourceLifecycleRules:
                 [state.line.number, line.number],
             ),
         )
+        if len(issues) != before:
+            # Several obligations can reach the same return edge. Discovering
+            # an additional wrapper must not replace an earlier resource just
+            # because their sinks share a line and spelling.
+            identity = [
+                state.object_identity,
+                state.var,
+                state.api,
+                state.line.number,
+                state.resource_domain,
+                state.resource_family,
+            ]
+            suffix = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
+            issue = issues[-1]
+            for key in ("id", "candidate_id", "dedup_key"):
+                issue[key] = str(issue[key]) + ":" + suffix
+            issue["evidence_pack"]["candidate_id"] = issue["candidate_id"]
 
     def _allocation_is_short_lived(
         self,
@@ -2846,6 +3527,37 @@ class ClangResourceLifecycleRules:
                 [free_line.number, use_line.number],
             ),
         )
+
+    def _released_member_async_handoff(
+        self,
+        text: str,
+        released_expr: str,
+    ) -> Optional[Tuple[str, str]]:
+        """Return the pthread worker/owner when a released member escapes.
+
+        The released identity must be a concrete member expression, the exact
+        owner must be pthread_create's context argument, and pthread_create
+        must be authorized by the current semantics registry.  The caller has
+        already excluded a reassignment or NULL clear before this check.
+        """
+
+        member = re.fullmatch(
+            r"(?P<owner>[A-Za-z_]\w*)(?:->|\.)[A-Za-z_]\w*",
+            str(released_expr or ""),
+        )
+        if member is None or not self._semantic_call_allowed("pthread_create", "thread_create"):
+            return None
+        owner = member.group("owner")
+        for api, raw_args in self._calls(text):
+            if api != "pthread_create":
+                continue
+            args = self._split_args(raw_args)
+            if len(args) < 4 or self._resource_var(args[3]) != owner:
+                continue
+            worker = self._resource_var(args[2])
+            if worker:
+                return worker, owner
+        return None
 
     def _slot_pointer_is_indexed_registry(
         self,

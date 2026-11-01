@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from zscope.core.validation.evidence_completion import EvidenceCompletionQueue
 from zscope.core.validation.proofs import deterministic_decision_proof
 
@@ -136,6 +138,7 @@ def test_evidence_completion_confirms_complete_cfg_obligation_path() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
+        "rule": "clang_cfg_header_length_reaches_copy_without_wire_bound",
         "evidence_pack": {
             "path": {"complete_in_function": True},
             "ast_cfg": {
@@ -162,6 +165,7 @@ def test_evidence_completion_prevalidation_promotes_complete_cfg_proof() -> None
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
+        "rule": "clang_cfg_header_length_reaches_copy_without_wire_bound",
         "evidence_pack": {
             "path": {"complete_in_function": True},
             "ast_cfg": {
@@ -181,6 +185,47 @@ def test_evidence_completion_prevalidation_promotes_complete_cfg_proof() -> None
     assert completed is True
     assert issue["evidence_completion_terminal_status"] == "completed_with_proof"
     assert issue["deterministic_proofs"][0]["proof_kind"] == "deterministic_cfg_obligation_path"
+
+
+@pytest.mark.parametrize(
+    ("rule", "events"),
+    [
+        (
+            "clang_cfg_pointer_may_be_uninitialized_before_use",
+            [
+                {"kind": "uninitialized_pointer_decl", "line": 10},
+                {"kind": "uninitialized_pointer_use", "line": 14},
+            ],
+        ),
+        (
+            "clang_cfg_size_addition_without_overflow_guard",
+            [{"kind": "integer_size_arithmetic", "line": 10}],
+        ),
+        (
+            "clang_cfg_unbounded_vla_or_stack_array",
+            [{"kind": "runtime_stack_array", "line": 10}],
+        ),
+    ],
+)
+def test_detector_only_cfg_events_do_not_mint_v0_confirmation(rule, events) -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": rule,
+        "rule_id": rule,
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {"events": events},
+        },
+    }
+
+    completed = queue.complete_prevalidation(
+        issue,
+        validation_evidence={"function_context": {"code": "candidate source"}},
+    )
+
+    assert completed is False
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
 
 
 def test_evidence_completion_uses_structured_ast_null_guard_without_source_text() -> None:
@@ -263,6 +308,66 @@ def test_evidence_completion_confirms_rule_scoped_structured_contract() -> None:
     proof = issue["deterministic_proofs"][0]
     assert proof["outcome"] == "confirm"
     assert proof["proof_kind"] == "deterministic_cfg_obligation_path"
+
+
+def test_permission_mode_pattern_requires_validator_semantic_adjudication() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_requested_permission_not_applied_to_mode",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "hardcoded_permission", "line": 10},
+                    {"kind": "requested_permission_check", "line": 12},
+                ]
+            },
+        },
+    }
+
+    completed = queue.complete_prevalidation(
+        issue,
+        validation_evidence={
+            "function_context": {
+                "code": "mode = 0660; if ((requested & 4) && !(mode & 4)) return -1;"
+            }
+        },
+    )
+
+    assert completed is False
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_timer_callback_lock_hint_cannot_self_confirm_without_opposite_path() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_timer_callback_object_lock_without_scheduler_lock",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "global_scheduler_walk", "line": 10},
+                    {"kind": "object_lock_in_callback", "line": 14},
+                ]
+            },
+        },
+        "negative_evidence": [
+            "Validator must confirm a reachable close/destroy path takes these locks "
+            "in the opposite order."
+        ],
+    }
+
+    completed = queue.complete_prevalidation(
+        issue,
+        validation_evidence={
+            "function_context": {"code": "node = g_scheduler.head; lock(&node->lock);"}
+        },
+    )
+
+    assert completed is False
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
 
 
 def test_evidence_completion_confirms_ordered_publication_contract() -> None:
@@ -461,7 +566,9 @@ int link(void) {
     assert proof.proof_kind == "lock_held_on_failure_return"
 
 
-def test_legacy_unbound_evidence_completion_rejects_parent_cleanup_when_member_acquisition_failed() -> None:
+def test_legacy_unbound_evidence_completion_rejects_parent_cleanup_when_member_acquisition_failed() -> (
+    None
+):
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
@@ -591,6 +698,82 @@ def test_evidence_completion_confirms_owned_member_left_live_when_parent_freed()
     proof = deterministic_decision_proof(issue, outcome="confirm")
     assert proof is not None
     assert proof.proof_kind == "owned_member_left_live_when_parent_released"
+
+
+def test_container_unlink_without_ownership_authority_is_not_self_confirming() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "category": "memory_leak",
+        "rule": "clang_cfg_container_unlink_without_release",
+        "sink": "registry.head = node->next;",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "container_unlink",
+                        "line": 1192,
+                        "variable": "node",
+                        "expression": "registry.head = node->next;",
+                    }
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+int remove_node(void) {
+    registry.head = node->next;
+    return 0;
+}
+"""
+        }
+    }
+
+    queue.complete_prevalidation(issue, validation_evidence=evidence)
+
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_container_unlink_unknown_callee_receiving_owner_blocks_confirmation() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "category": "memory_leak",
+        "rule": "clang_cfg_container_unlink_without_release",
+        "sink": "registry.head = node->next;",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "container_unlink",
+                        "line": 1192,
+                        "variable": "node",
+                        "expression": "registry.head = node->next;",
+                    }
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+int remove_node(void) {
+    registry.head = node->next;
+    SAFE_FREE(node->payload);
+    SAFE_FREE(node);
+    return 0;
+}
+"""
+        }
+    }
+
+    queue.complete_prevalidation(issue, validation_evidence=evidence)
+
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
 
 
 def test_evidence_completion_keeps_parent_release_as_review_without_member_acquisition() -> None:
@@ -1242,7 +1425,9 @@ def test_v12_does_not_equate_different_allocation_and_copy_lengths() -> None:
     assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
-def test_legacy_unbound_v12_rejects_reported_leak_when_same_resource_is_released_before_exit() -> None:
+def test_legacy_unbound_v12_rejects_reported_leak_when_same_resource_is_released_before_exit() -> (
+    None
+):
     queue = EvidenceCompletionQueue(enable_v12_providers=True)
     issue = {
         "rule": "clang_cfg_acquire_without_release_on_exit",
@@ -1549,7 +1734,10 @@ def test_requested_fact_resolution_dispatches_only_named_fact_kind(monkeypatch) 
         "_guard_dominance_proof",
         lambda issue, evidence: calls.append("guard") or None,
     )
-    issue = {"validation_cluster_uid": "VAL_TYPED"}
+    issue = {
+        "validation_cluster_uid": "VAL_TYPED",
+        "allowed_missing_fact_kinds": ["value_range"],
+    }
 
     resolution = queue.resolve_requested_fact(
         issue,
@@ -1564,7 +1752,8 @@ def test_requested_fact_resolution_dispatches_only_named_fact_kind(monkeypatch) 
     )
 
     assert resolution is not None
-    assert resolution.status == "exhausted"
+    assert resolution.status == "proven_absent"
+    assert resolution.evidence_delta["provider_outcome"] == "proven_absent"
     assert "value_range" in calls
     assert "guard" not in calls
 
@@ -1573,6 +1762,7 @@ def test_requested_fact_resolution_rejects_duplicate_request() -> None:
     queue = EvidenceCompletionQueue(enable_v12_providers=False)
     issue = {
         "validation_cluster_uid": "VAL_TYPED",
+        "allowed_missing_fact_kinds": ["caller_contract"],
         "fact_completion_by_kind": {
             "caller_contract": [{"fact_uid": "FACT_CONTRACT", "value": "non-null"}]
         },
@@ -1589,15 +1779,16 @@ def test_requested_fact_resolution_rejects_duplicate_request() -> None:
     first = queue.resolve_requested_fact(issue, validator_data=validator_data)
     second = queue.resolve_requested_fact(issue, validator_data=validator_data)
 
-    assert first is not None and first.status == "completed_partial"
+    assert first is not None and first.status == "resolved"
     assert first.evidence_delta_hash
-    assert second is not None and second.status == "duplicate_request"
+    assert second is not None and second.status == "failed"
 
 
 def test_requested_fact_resolution_rejects_forged_fact_uid() -> None:
     queue = EvidenceCompletionQueue(enable_v12_providers=False)
     issue = {
         "validation_cluster_uid": "VAL_TYPED",
+        "allowed_missing_fact_kinds": ["caller_contract"],
         "fact_completion_by_kind": {
             "caller_contract": [{"fact_uid": "FACT_FORGED", "value": "non-null"}]
         },
@@ -1631,7 +1822,10 @@ def test_requested_fact_resolution_times_out_provider(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(queue, "_requested_completion_proofs", slow_provider)
-    issue = {"validation_cluster_uid": "VAL_TIMEOUT"}
+    issue = {
+        "validation_cluster_uid": "VAL_TIMEOUT",
+        "allowed_missing_fact_kinds": ["value_range"],
+    }
 
     resolution = queue.resolve_requested_fact(
         issue,
@@ -1645,8 +1839,8 @@ def test_requested_fact_resolution_times_out_provider(monkeypatch) -> None:
     )
 
     assert resolution is not None
-    assert resolution.status == "timeout"
-    assert issue["evidence_completion_terminal_status"] == "timeout"
+    assert resolution.status == "failed"
+    assert issue["evidence_completion_terminal_status"] == "failed"
     assert issue["evidence_completion_error"] == "fact provider timed out"
 
 
@@ -1657,7 +1851,10 @@ def test_requested_fact_resolution_contains_provider_exception(monkeypatch) -> N
         raise RuntimeError("backend unavailable")
 
     monkeypatch.setattr(queue, "_requested_completion_proofs", broken_provider)
-    issue = {"validation_cluster_uid": "VAL_ERROR"}
+    issue = {
+        "validation_cluster_uid": "VAL_ERROR",
+        "allowed_missing_fact_kinds": ["value_range"],
+    }
 
     resolution = queue.resolve_requested_fact(
         issue,
@@ -1671,9 +1868,33 @@ def test_requested_fact_resolution_contains_provider_exception(monkeypatch) -> N
     )
 
     assert resolution is not None
-    assert resolution.status == "provider_error"
-    assert issue["evidence_completion_terminal_status"] == "provider_error"
+    assert resolution.status == "failed"
+    assert issue["evidence_completion_terminal_status"] == "failed"
     assert issue["evidence_completion_error"] == "RuntimeError: backend unavailable"
+
+
+def test_requested_fact_resolution_does_not_claim_absence_without_provider() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=False)
+    issue = {
+        "validation_cluster_uid": "VAL_UNSUPPORTED",
+        "allowed_missing_fact_kinds": ["source_controllability"],
+    }
+
+    resolution = queue.resolve_requested_fact(
+        issue,
+        validator_data={
+            "verdict": "uncertain",
+            "missing_fact_request": {
+                "fact_kind": "source_controllability",
+                "reason": "need source authority",
+            },
+        },
+    )
+
+    assert resolution is not None
+    assert resolution.status == "unsupported"
+    assert resolution.evidence_delta == {}
+    assert issue["evidence_completion_error"] == "no_registered_provider"
 
 
 def test_required_fact_resolution_closes_all_obligation_kinds_before_v2() -> None:
@@ -1742,6 +1963,36 @@ def test_required_fact_resolution_closes_all_obligation_kinds_before_v2() -> Non
     assert issue["missing_fact_kinds"] == []
     assert issue["candidate_promotion_eligible"] is True
     assert len(issue["decision_fact_slice"]["facts"]) == 3
+
+
+def test_exhaustive_provider_absence_closes_request_without_minting_positive_fact() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=False)
+    issue = {
+        "validation_cluster_uid": "VAL_ABSENT_RANGE",
+        "allowed_missing_fact_kinds": ["value_range"],
+        "obligation_required_fact_kinds": ["value_range"],
+        "missing_fact_kinds": ["value_range"],
+        "decision_fact_slice": {
+            "fact_uids": ["FACT_SOURCE"],
+            "dependency_code_hashes": ["code-sha"],
+            "missing_fact_kinds": ["value_range"],
+            "coverage": "partial",
+            "facts": [{"fact_uid": "FACT_SOURCE", "fact_kind": "source"}],
+        },
+    }
+
+    batch = queue.resolve_required_facts(issue, validator_data={"verdict": "uncertain"})
+
+    assert [value.status for value in batch.resolutions] == ["proven_absent"]
+    absence = next(
+        fact
+        for fact in issue["decision_fact_slice"]["facts"]
+        if fact.get("fact_kind") == "provider_absence"
+    )
+    assert absence["resolves_fact_kinds"] == ["value_range"]
+    assert absence["satisfies_fact_kinds"] == []
+    assert issue["missing_fact_kinds"] == []
+    assert issue["decision_fact_coverage"] == "complete"
 
 
 def test_completed_local_fact_normalizes_event_alias_in_decision_slice() -> None:

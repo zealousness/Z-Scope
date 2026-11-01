@@ -8,7 +8,7 @@ Z-SCOPE-compatible project layout for each benchmark subset:
     project/
     benchmark/entries.json
     benchmark/ground_truth.json
-    zscope.benchmark.yaml
+    project/zscope.benchmark.yaml
 
 It can also run the local regex/graph candidate layer as a cheap first
 signal before a full LLM-backed Z-SCOPE scan.
@@ -468,8 +468,6 @@ llms:
     timeout: 120
 
 project:
-  root: "{project.as_posix()}"
-  source_root: "."
   language: c_cpp
   entry_functions_list: "../benchmark/entries.json"
   compile_commands_path: "compile_commands.json"
@@ -512,7 +510,7 @@ concurrency:
   svf_workers: 4
   llm_max_inflight: 8
 """
-    (suite_root / "zscope.benchmark.yaml").write_text(config, encoding="utf-8")
+    (project / "zscope.benchmark.yaml").write_text(config, encoding="utf-8")
 
 
 def prepare_juliet(args: argparse.Namespace) -> dict[str, Any]:
@@ -1064,7 +1062,7 @@ def _suite_project_dir(suite_root: Path) -> Path:
 
 def _suite_config_metadata(suite_root: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
     env = env or os.environ
-    config_path = suite_root / "zscope.benchmark.yaml"
+    config_path = _suite_project_dir(suite_root) / "zscope.benchmark.yaml"
     metadata: dict[str, Any] = {
         "backend": "",
         "model": env.get("Z_SCOPE_MODEL", ""),
@@ -1101,7 +1099,7 @@ def _prepare_trial_config(
 ) -> Path:
     """Create a strict v2 trial config plus an isolated RuntimeSpec override."""
 
-    config_path = suite_root / "zscope.benchmark.yaml"
+    config_path = _suite_project_dir(suite_root) / "zscope.benchmark.yaml"
     if warm_cache:
         return config_path
     if yaml is None:
@@ -1131,9 +1129,9 @@ def _prepare_trial_config(
         ),
         encoding="utf-8",
     )
-    trial_config = run_dir / "zscope.benchmark.cold.yaml"
-    trial_config.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
-    return trial_config
+    # The override isolates cache state; copying identical YAML outside the
+    # project would change the only root authority. Load the original in place.
+    return config_path
 
 
 def _contains_answer_key(value: Any) -> bool:
@@ -1292,11 +1290,11 @@ def _write_formal_container_config(
     project = loaded.get("project")
     if not isinstance(project, dict):
         raise BenchmarkIsolationError("formal external config project must be an object")
-    project["root"] = "/zscope-cache/project"
-    project["source_root"] = "."
+    if "root" in project or "source_root" in project:
+        raise BenchmarkIsolationError("legacy project roots require explicit migration before formal execution")
     project["entry_functions_list"] = "/zscope-input/entries.json"
     has_compile_commands = (
-        (destination.parent / "project" / "compile_commands.json").is_file()
+        (destination.parent / "compile_commands.json").is_file()
         if compile_commands_present is None
         else bool(compile_commands_present)
     )
@@ -1401,7 +1399,7 @@ def _run_formal_full_zscope_oci(
         _rewrite_compile_commands_for_container(
             sealed_project / "compile_commands.json", source_project=source_project
         )
-        container_config = scan_input / "zscope.execution.yaml"
+        container_config = sealed_project / "zscope.execution.yaml"
         _write_formal_container_config(
             config_path,
             container_config,
@@ -1434,7 +1432,7 @@ def _run_formal_full_zscope_oci(
             "-m",
             "zscope.cli.cli",
             "-c",
-            "/zscope-input/zscope.execution.yaml",
+            "/zscope-cache/project/zscope.execution.yaml",
             "--verbose",
         ]
         executor = _OCI_EXECUTOR_FACTORY(
@@ -1979,7 +1977,7 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
         else suite_root / "runs" / time.strftime("%Y%m%d_%H%M%S") / run_suffix
     )
     run_dir.mkdir(parents=True, exist_ok=True)
-    config_path = suite_root / "zscope.benchmark.yaml"
+    config_path = _suite_project_dir(suite_root) / "zscope.benchmark.yaml"
     warm_cache = bool(getattr(args, "warm_cache", False))
     cold_snapshot_cache = condition == CONDITION_FULL_ZSCOPE and not warm_cache
     if run_kind == "formal":

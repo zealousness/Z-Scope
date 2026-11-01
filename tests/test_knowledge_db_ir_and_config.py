@@ -1879,29 +1879,45 @@ def test_enriched_taint_bugs_preserve_distinct_source_sink_identities(
         db.close()
 
 
-def test_enriched_taint_reachability_filter_uses_one_sql_parameter(
+@pytest.mark.parametrize("source_name", ["reachable_10999", "quoted'\\\x00中文"])
+@pytest.mark.parametrize("instance_scoped", [False, True])
+def test_large_taint_reachability_filter_is_read_only_and_avoids_json1(
     tmp_path: Path,
+    source_name: str,
+    instance_scoped: bool,
 ) -> None:
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     try:
         db.insert_taint_signature(
-            "reachable_10999",
+            source_name,
             "sink",
             "Memory Leak",
             file_path="src/large.c",
             line=7,
             tool="saber",
             svf_group="full",
+            command_id="command-current",
+            attribution="exact",
         )
         db.commit()
-
-        rows = db.get_enriched_taint_bugs(
-            func_names=[f"reachable_{index}" for index in range(11_000)],
+        db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        db._conn.execute("PRAGMA query_only=ON")
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+        changes = db._conn.total_changes
+        query = db.get_instance_taint_signals if instance_scoped else db.get_enriched_taint_bugs
+        extra = {"command_id": "command-current"} if instance_scoped else {}
+        rows = query(
+            **extra,
+            func_names=[f"reachable_{index}" for index in range(11_000)] + [source_name],
             limit=10,
         )
 
         assert len(rows) == 1
-        assert rows[0]["source_func"] == "reachable_10999"
+        assert rows[0]["source_func"] == source_name
+        assert query(**extra, func_names=["absent"]) == []
+        assert db._conn.total_changes == changes
+        assert all("json_each" not in statement.lower() for statement in statements)
     finally:
         db.close()
 

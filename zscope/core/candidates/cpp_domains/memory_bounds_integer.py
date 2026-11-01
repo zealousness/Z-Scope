@@ -6,7 +6,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from .source_events import ordered_lines
+from .source_events import (
+    has_terminating_guard,
+    null_rejection_condition,
+    ordered_lines,
+    overflow_rejection_condition,
+)
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .models import (
@@ -103,7 +108,7 @@ class RegexMemoryBoundsIntegerRules:
                     item
                     for item in self._IDENT_RE.findall(expr)
                     if item not in {"sizeof", "SIZE_MAX", "UINT_MAX"}
-                ]
+                ] + re.findall(r"\b\d+\b", expr)
                 arithmetic_defs[assign.group("var")] = (line, expr, operands)
                 if (
                     self._next_window_has_sink(lines, line.index, assign.group("var"))
@@ -135,14 +140,18 @@ class RegexMemoryBoundsIntegerRules:
 
             alloc_call = self._match_call(clean, self._allocator_names, "expr")
             if alloc_call:
-                expr = alloc_call.group("expr")
+                # Comments such as ``mmap(/*addr=*/nullptr, size, ...)`` are
+                # not arithmetic.  Treating the ``*`` in a block comment as a
+                # multiplication operator produced an integer-overflow lead
+                # with no arithmetic operation in the source expression.
+                expr = re.sub(r"/\*.*?\*/|//.*$", "", alloc_call.group("expr")).strip()
                 if not re.search(r"[+*]", expr) or not self._is_high_risk_size_expr(expr, params):
                     continue
                 identifiers = [
                     item
                     for item in self._IDENT_RE.findall(expr)
                     if item not in {"sizeof"} | self._allocator_names | self._reallocator_names
-                ]
+                ] + re.findall(r"\b\d+\b", expr)
                 if identifiers and not self._has_pre_overflow_guard(lines, line.index, identifiers):
                     emit(
                         defect_class="integer_overflow",
@@ -165,17 +174,21 @@ class RegexMemoryBoundsIntegerRules:
             call = self._match_call(clean, self._calloc_names, "args", until=";")
             if not call:
                 continue
+            called = re.search(rf"\b(?P<api>{self._names_pattern(self._calloc_names)})\s*\(", clean)
+            # ISO/POSIX calloc performs the nmemb*size overflow check itself.
+            # Keep the rule for configured calloc-like wrappers whose contract
+            # does not establish that property, but do not report libc calloc.
+            if called and called.group("api") == "calloc":
+                continue
             args = call.group("args")
             identifiers = [
                 item
                 for item in self._IDENT_RE.findall(args)
                 if item not in {"calloc", "sizeof", "NULL"}
             ]
-            nearby = "\n".join(item.text for item in lines[max(0, line.index - 4) : line.index + 1])
             if (
                 len(identifiers) >= 2
                 and any(item in params for item in identifiers)
-                and "_parse_arguments" not in nearby
                 and not self._has_pre_overflow_guard(lines, line.index, identifiers)
             ):
                 emit(
@@ -471,7 +484,7 @@ class RegexMemoryBoundsIntegerRules:
             )
             if (
                 vla
-                and not self._is_macro_size_expr(vla.group("expr"))
+                and not self._is_compile_time_stack_extent(vla.group("expr"))
                 and re.search(r"[+*]|[A-Za-z_]\w*", vla.group("expr"))
             ):
                 emit(
@@ -608,23 +621,30 @@ class RegexMemoryBoundsIntegerRules:
         self, lines: List[CodeLine], idx: int, operands: Iterable[str]
     ) -> bool:
         operand_list = [item for item in operands if item]
-        window = "\n".join(item.text for item in lines[max(0, idx - 8) : idx + 1])
-        if "SIZE_MAX" not in window and "UINT_MAX" not in window:
-            return False
-        if "/" in window or "-" in window:
-            return any(re.search(rf"\b{re.escape(op)}\b", window) for op in operand_list)
-        return False
+        window = lines[max(0, idx - 12) : idx]
+        return has_terminating_guard(
+            window,
+            len(window),
+            lambda condition: overflow_rejection_condition(condition, operand_list),
+            lookback=len(window) or 1,
+        )
 
     def _has_post_wrap_check(
         self, lines: List[CodeLine], idx: int, var: str, operands: Iterable[str]
     ) -> bool:
-        window = "\n".join(item.text for item in lines[idx + 1 : idx + 5])
-        if not window:
-            return False
-        return any(
-            re.search(rf"\bif\s*\([^)]*\b{re.escape(var)}\s*<\s*{re.escape(op)}\b", window)
-            for op in operands
-            if op
+        window = lines[idx + 1 : idx + 6]
+        operand_list = [item for item in operands if item]
+        return has_terminating_guard(
+            window,
+            len(window),
+            lambda condition: any(
+                re.search(
+                    rf"\b{re.escape(var)}\b\s*<\s*\b{re.escape(operand)}\b",
+                    condition,
+                )
+                for operand in operand_list
+            ),
+            lookback=len(window) or 1,
         )
 
     def _is_high_risk_size_expr(self, expr: str, params: Iterable[str]) -> bool:
@@ -664,9 +684,12 @@ class RegexMemoryBoundsIntegerRules:
         return params
 
     @staticmethod
-    def _is_macro_size_expr(expr: str) -> bool:
+    def _is_compile_time_stack_extent(expr: str) -> bool:
         text = str(expr or "").strip()
-        return bool(re.fullmatch(r"[A-Z_][A-Z0-9_]*", text))
+        if re.fullmatch(r"sizeof\s*\([^()]+\)", text):
+            return True
+        constant = r"(?:[A-Za-z_]\w*::)*(?:[A-Z_][A-Z0-9_]*|k[A-Z][A-Za-z0-9_]*)"
+        return bool(re.fullmatch(rf"{constant}(?:\s*[-+*/]\s*\d+)?", text))
 
     def _guard_evidence(
         self, lines: List[CodeLine], idx: int, operands: Iterable[str]
@@ -679,6 +702,139 @@ class RegexMemoryBoundsIntegerRules:
 
 
 class GraphMemoryBoundsIntegerRules:
+    @staticmethod
+    def _graph_call_arguments(value: str) -> List[str]:
+        arguments: List[str] = []
+        current: List[str] = []
+        depth = 0
+        for char in value:
+            if char in "([{":
+                depth += 1
+            elif char in ")]}" and depth:
+                depth -= 1
+            if char == "," and depth == 0:
+                arguments.append("".join(current).strip())
+                current = []
+                continue
+            current.append(char)
+        if current or value.strip():
+            arguments.append("".join(current).strip())
+        return arguments
+
+    def _emit_callee_external_length_to_buffer_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        caller_text = "\n".join(line.text for line in view.lines)
+        caller_params = set(self._signature_param_names(view.signature))
+        for line in view.lines:
+            for callee_name in self._called_names(line.text):
+                call = re.search(
+                    rf"\b{re.escape(callee_name)}\s*\((?P<args>[^;]*)\)\s*;?",
+                    line.text,
+                )
+                if not call:
+                    continue
+                arguments = self._graph_call_arguments(call.group("args"))
+                if len(arguments) < 3:
+                    continue
+                length_index = next(
+                    (
+                        index
+                        for index, argument in enumerate(arguments)
+                        if re.search(r"(?:->|\.)[A-Za-z_0-9]*(?:len|length|size)\b", argument, re.I)
+                    ),
+                    None,
+                )
+                if length_index is None or length_index == 0:
+                    continue
+                destination_index = length_index - 1
+                destination = arguments[destination_index]
+                callee = self._view_for(callee_name)
+                if callee is None:
+                    continue
+                callee_params = self._signature_param_names(callee.signature)
+                if length_index >= len(callee_params) or destination_index >= len(callee_params):
+                    continue
+                destination_param = callee_params[destination_index]
+                length_param = callee_params[length_index]
+                callee_text = "\n".join(item.text for item in callee.lines)
+                index_match = re.search(
+                    rf"\b(?P<index>[A-Za-z_]\w*)\s*<\s*{re.escape(length_param)}\b",
+                    callee_text,
+                )
+                if not index_match:
+                    continue
+                index_name = index_match.group("index")
+                bounded_write = bool(
+                    re.search(
+                        rf"\b{re.escape(destination_param)}\s*\+\s*{re.escape(index_name)}\b"
+                        rf"[^;]*(?:{re.escape(length_param)}\s*-\s*{re.escape(index_name)})",
+                        callee_text,
+                        re.S,
+                    )
+                )
+                if not bounded_write:
+                    continue
+                # Accept a direct caller buffer parameter or a transparent
+                # ternary alias between that parameter and a fixed local array.
+                destination_from_caller = destination in caller_params
+                alias = re.search(
+                    rf"\b{re.escape(destination)}\s*=\s*(?P<external>[A-Za-z_]\w*)\s*\?\s*"
+                    rf"(?P=external)\s*:\s*(?P<fallback>[A-Za-z_]\w*)\s*;",
+                    caller_text,
+                )
+                if alias and alias.group("external") in caller_params:
+                    destination_from_caller = True
+                if not destination_from_caller:
+                    continue
+                length_expr = arguments[length_index]
+                before = "\n".join(item.text for item in view.lines[: line.index])
+                if re.search(
+                    rf"{re.escape(length_expr)}\s*<=?\s*(?:[A-Za-z_]\w*(?:len|size|capacity)|sizeof\s*\()",
+                    before,
+                    re.I,
+                ):
+                    continue
+                issues.append(
+                    self._issue(
+                        defect_class="bounds",
+                        rule="caller_limit_indexes_fixed_local_array",
+                        view=view,
+                        line=line,
+                        description=(
+                            f"外部长度 `{length_expr}` 被传入 `{callee_name}` 作为写入长度，"
+                            f"但调用方没有将它约束到 `{destination}` 的容量。"
+                        ),
+                        root_cause="跨函数写入契约使用协议长度控制目标缓冲区，而调用方已知的输出容量未参与该调用。",
+                        suggested_fix="在调用前将协议长度与输出容量比较，或把容量传入被调用方并在写入循环中强制检查。",
+                        source=length_expr,
+                        sink=line.text.strip(),
+                        confidence=0.91,
+                        impact_level="high",
+                        positive=[
+                            f"line {line.number}: `{length_expr}` is passed as the callee write bound",
+                            f"{callee_name}: `{destination_param}` is advanced while `{index_name} < {length_param}`",
+                            f"{callee_name}: the remaining write length is `{length_param} - {index_name}`",
+                            "no caller-side comparison to the output capacity is visible",
+                        ],
+                        evidence={
+                            "path": {
+                                "caller": view.name,
+                                "callee": callee_name,
+                                "source_line": line.number,
+                                "sink_line": line.number,
+                                "complete_in_function": False,
+                                "path_constraints": [
+                                    "direct exact callee body exposes destination-plus-offset and remaining-length write contract"
+                                ],
+                            }
+                        },
+                    )
+                )
+                return
+
     def _emit_uninitialized_output_candidate(
         self,
         view: FunctionView,
@@ -969,6 +1125,86 @@ class GraphMemoryBoundsIntegerRules:
 
 
 class ClangMemoryBoundsIntegerRules:
+    def _maybe_emit_unchecked_wait_status_read(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        use = re.search(
+            r"\bW(?:IFEXITED|EXITSTATUS|IFSIGNALED|TERMSIG|IFSTOPPED|STOPSIG)\s*"
+            r"\(\s*(?P<status>[A-Za-z_]\w*)\s*\)",
+            line.text,
+        )
+        if not use or not self._semantic_call_allowed("waitpid", "standard_operation"):
+            return
+        status = use.group("status")
+        declaration = next(
+            (
+                item
+                for item in reversed(lines[: line.index])
+                if re.search(rf"\bint\s+{re.escape(status)}\s*;", item.text)
+            ),
+            None,
+        )
+        if declaration is None:
+            return
+        wait_line = next(
+            (
+                item
+                for item in lines[declaration.index + 1 : line.index]
+                if re.search(
+                    rf"\bwaitpid\s*\([^;]*&\s*{re.escape(status)}\b[^;]*\)",
+                    item.text,
+                )
+            ),
+            None,
+        )
+        if wait_line is None:
+            return
+        if re.search(r"\b(?:if|while)\s*\([^)]*waitpid\s*\(", wait_line.text):
+            return
+        if re.search(r"(?:^|[^=!<>])=\s*waitpid\s*\(", wait_line.text):
+            return
+        between = "\n".join(item.text for item in lines[declaration.index + 1 : line.index])
+        if re.search(rf"\b{re.escape(status)}\s*=", between):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="uninitialized_read",
+            rule="zscope.c_cpp.cpp_clang_cfg.waitpid_status_read_without_success_check",
+            line=line,
+            description=f"`waitpid` 的返回值未检查，随后读取了输出状态 `{status}`。",
+            root_cause="waitpid 失败时不保证写入状态输出，WIF*/WEXITSTATUS 随后可能读取未初始化的栈值。",
+            suggested_fix="检查 waitpid 返回目标 pid；对 EINTR 重试，并在任何 WIF*/W*STATUS 使用前处理失败。",
+            source=wait_line.text,
+            sink=line.text,
+            confidence=0.93,
+            impact_level="medium",
+            positive=[
+                f"line {declaration.number}: `{status}` is declared without initialization",
+                f"line {wait_line.number}: waitpid writes `{status}` but its return value is ignored",
+                f"line {line.number}: a wait-status macro reads `{status}`",
+            ],
+            negative=[],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("uninitialized_status", declaration, status, "", declaration.text),
+                    self._event("unchecked_waitpid", wait_line, status, "waitpid", wait_line.text),
+                    self._event("wait_status_read", line, status, "", line.text),
+                ],
+                [declaration.number, wait_line.number, line.number],
+            ),
+        )
+
     def _maybe_emit_unchecked_strchr_result(
         self,
         issues: List[Dict[str, Any]],
@@ -997,10 +1233,11 @@ class ClangMemoryBoundsIntegerRules:
         between = lines[assign_line.index + 1 : line.index]
         if any(re.search(rf"\b{re.escape(var)}\s*(?:-|\[|->|\.)", item.text) for item in between):
             return
-        guard_window = "\n".join(item.text for item in between)
-        if re.search(
-            rf"\b{re.escape(var)}\s*(?:!=\s*NULL|==\s*NULL|!=\s*0|==\s*0|\?)|!\s*{re.escape(var)}\b",
-            guard_window,
+        if has_terminating_guard(
+            between,
+            len(between),
+            lambda condition: null_rejection_condition(condition, var),
+            lookback=len(between) or 1,
         ):
             return
         self._emit(
@@ -1316,10 +1553,7 @@ class ClangMemoryBoundsIntegerRules:
             if not match:
                 continue
             expr = match.groupdict().get("expr") or line.text
-            guard_window = "\n".join(
-                item.text for item in lines[max(0, line.index - 8) : line.index]
-            )
-            if self._has_overflow_guard(guard_window, expr):
+            if self._has_overflow_guard(lines, line, expr):
                 continue
             if self._has_small_count_bound_proof(lines, line, expr):
                 continue
@@ -2152,6 +2386,10 @@ class ClangMemoryBoundsIntegerRules:
             if re.search(rf"\b{re.escape(var)}\s*=", item.text)
         ]
         if assigns and any(not self._is_conditional_statement(lines, item) for item in assigns):
+            return
+        if any(self._conditional_assignment_dominates_use(lines, item, line) for item in assigns):
+            return
+        if self._out_parameter_initializes_before_guarded_use(lines, decl_line, line, var):
             return
         if any(
             self._is_null_guard(item.text, var)
@@ -3011,6 +3249,64 @@ class ClangMemoryBoundsIntegerRules:
             return bool(re.match(r"(?:if|else|switch|case)\b", stripped))
         return False
 
+    @staticmethod
+    def _conditional_assignment_dominates_use(
+        lines: Sequence[ClangCfgLine], assignment: ClangCfgLine, use: ClangCfgLine
+    ) -> bool:
+        """Recognize an assignment and use inside the same braced branch."""
+
+        if assignment.index >= use.index or re.search(r"\bif\s*\(", assignment.text):
+            return False
+        opener = None
+        for item in reversed(lines[max(0, assignment.index - 6) : assignment.index]):
+            if re.search(r"\b(?:if|else)\b", item.text) and "{" in item.text:
+                opener = item
+                break
+            if "}" in item.text:
+                break
+        if opener is None:
+            return False
+        depth = sum(
+            row.text.count("{") - row.text.count("}")
+            for row in lines[opener.index : assignment.index + 1]
+        )
+        if depth <= 0:
+            return False
+        for item in lines[assignment.index + 1 : use.index + 1]:
+            depth += item.text.count("{") - item.text.count("}")
+            if depth <= 0 and item.index < use.index:
+                return False
+        return depth > 0
+
+    @staticmethod
+    def _out_parameter_initializes_before_guarded_use(
+        lines: Sequence[ClangCfgLine],
+        declaration: ClangCfgLine,
+        use: ClangCfgLine,
+        var: str,
+    ) -> bool:
+        """Recognize a checked status-returning call that writes ``&var``."""
+
+        escaped = re.escape(var)
+        for item in lines[declaration.index + 1 : use.index]:
+            match = re.search(
+                rf"\b(?P<status>[A-Za-z_]\w*)\s*=\s*[^;]*\([^;]*&\s*{escaped}\b[^;]*\)\s*;",
+                item.text,
+            )
+            if not match:
+                continue
+            status = re.escape(match.group("status"))
+            window = "\n".join(
+                row.text for row in lines[item.index + 1 : min(use.index, item.index + 8)]
+            )
+            if re.search(
+                rf"\bif\s*\([^)]*(?:!\s*{status}\s*\.\s*ok\s*\(\s*\)|{status}\s*(?:!=|==)\s*[^)]*)[^)]*\)"
+                r"[\s\S]{0,180}\b(?:return|goto)\b",
+                window,
+            ):
+                return True
+        return False
+
     def _allocation_count_expression(self, api: str, args: str) -> str:
         return str(self.semantics.contracts.allocation_extent(api, self._split_args(args)))
 
@@ -3118,33 +3414,52 @@ class ClangMemoryBoundsIntegerRules:
                     return item
         return None
 
-    def _has_overflow_guard(self, guard_window: str, expr: str) -> bool:
-        text = str(guard_window or "")
-        identifiers = re.findall(r"\b[A-Za-z_]\w*\b", str(expr or ""))
-        size_names = [
-            name
-            for name in identifiers
-            if re.search(r"(?:len|length|size|count|num|total|max)", name, re.I)
-        ]
-        if re.search(
-            (
-                r"\b(?:SIZE_MAX|UINT32_MAX|UINT_MAX|INT_MAX|__builtin_(?:add|mul)_overflow)\b"
-                if not self.restrict_to_semantics
-                else r"\b(?:SIZE_MAX|UINT32_MAX|UINT_MAX|INT_MAX)\b"
-            ),
-            text,
-        ):
-            return True
-        if self.restrict_to_semantics and re.search(
-            self._literal_api_pattern(r"\b(?:__builtin_add_overflow|__builtin_mul_overflow)\s*\("),
-            text,
-        ):
-            return True
-        return any(
-            re.search(
-                rf"\b{re.escape(name)}\b\s*(?:>|>=|<|<=)\s*[^;]*(?:-\s*|/|MAX|SIZE|UINT|INT)", text
+    def _has_overflow_guard(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        expr: str,
+    ) -> bool:
+        identifiers = list(
+            dict.fromkeys(
+                name
+                for name in re.findall(r"\b[A-Za-z_]\w*\b", str(expr or ""))
+                if name
+                not in {
+                    "sizeof",
+                    "SIZE_MAX",
+                    "UINT_MAX",
+                    "UINT32_MAX",
+                    "UINT64_MAX",
+                    "INT_MAX",
+                }
             )
-            for name in size_names
+        )
+        identifiers.extend(
+            literal
+            for literal in re.findall(r"\b\d+\b", str(expr or ""))
+            if literal not in identifiers
+        )
+        window = lines[max(0, line.index - 12) : line.index]
+
+        def rejects(condition: str) -> bool:
+            if overflow_rejection_condition(condition, identifiers):
+                return True
+            if len(identifiers) != 1:
+                return False
+            variable = re.escape(identifiers[0])
+            return bool(
+                re.search(
+                    rf"\b{variable}\b\s*>\s*(?:UINT32_MAX|UINT_MAX|SIZE_MAX|INT_MAX)\b",
+                    condition,
+                )
+            )
+
+        return has_terminating_guard(
+            window,
+            len(window),
+            rejects,
+            lookback=len(window) or 1,
         )
 
     @staticmethod
@@ -3152,7 +3467,8 @@ class ClangMemoryBoundsIntegerRules:
         text = str(expr or "").strip()
         if re.fullmatch(r"\d+", text) or "sizeof" in text:
             return True
-        return bool(re.fullmatch(r"[A-Z_][A-Z0-9_]*(?:\s*[-+*/]\s*\d+)?", text))
+        constant = r"(?:[A-Za-z_]\w*::)*" r"(?:[A-Z_][A-Z0-9_]*|k[A-Z][A-Za-z0-9_]*)"
+        return bool(re.fullmatch(rf"{constant}(?:\s*[-+*/]\s*\d+)?", text))
 
     @staticmethod
     def _signature_param_names(lines: Sequence[ClangCfgLine]) -> List[str]:

@@ -234,6 +234,11 @@ def test_a_d_each_executor_invocation_is_one_fresh_provider_attempt(
     assert "validator_input_json" not in json.dumps(response)
     _messages, kwargs = clients[0].calls[0]
     assert kwargs["response_format"]["json_schema"]["strict"] is True
+    schema = kwargs["response_format"]["json_schema"]["schema"]
+    assert "oneOf" not in schema
+    assert schema["properties"]["candidate_uid"]["enum"] == [call.candidate_uid]
+    assert schema["properties"]["validation_cluster_uid"]["enum"] == [call.validation_cluster_uid]
+    assert schema["properties"]["pass"]["enum"] == [call.validation_pass]
     assert kwargs["max_tokens"] == 8192
 
 
@@ -337,6 +342,21 @@ def test_arm_d_bounded_turn_uses_action_schema_without_spending_query_quota_in_e
     assert kwargs["response_format"]["json_schema"]["name"] == "validator_replay_action"
 
 
+def test_format_repair_uses_a_distinct_compact_protocol_instruction() -> None:
+    call = _call("B", call_kind="format_repair")
+    executor = BuiltinProviderReplayExecutor(
+        _spec(structured=False),
+        "secret",
+        client_factory=lambda _spec, _key: object(),
+    )
+
+    messages = executor._messages(call)
+
+    assert messages[-1]["content"] == replay_provider._COMPACT_REPAIR_INSTRUCTION
+    assert "previous response violated" in messages[-1]["content"]
+    assert "JSON booleans true/false without quotes" in messages[-1]["content"]
+
+
 def test_non_structured_provider_uses_one_required_terminal_tool() -> None:
     call = _call("B")
     fake = _FakeClient(
@@ -373,7 +393,53 @@ def test_non_structured_provider_uses_one_required_terminal_tool() -> None:
     assert len(fake.calls) == 1
     _messages, kwargs = fake.calls[0]
     assert kwargs["tool_choice"]["function"]["name"] == "emit_validator_result_v3"
+    assert "oneOf" not in kwargs["tools"][0]["function"]["parameters"]
     assert "response_format" not in kwargs
+    assert executor.last_provider_response == fake.response
+
+
+def test_replay_provider_normalizes_only_the_strict_terminal_dsml_shape() -> None:
+    call = _call("B")
+    result = _result(call)
+    encoded = "zscope.validator-result.v3</parameter>"
+    for name, value in result.items():
+        if name == "schema_version":
+            continue
+        is_string = isinstance(value, str)
+        rendered = value if is_string else json.dumps(value, ensure_ascii=False)
+        encoded += (
+            f'<｜DSML｜ parameter name="{name}" '
+            f'string="{str(is_string).lower()}">{rendered}</parameter>'
+        )
+    encoded += "<｜DSML｜  invoke>"
+    fake = _FakeClient(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "emit_validator_result_v3",
+                                    "arguments": json.dumps({"schema_version": encoded}),
+                                }
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": _usage(),
+        }
+    )
+    executor = BuiltinProviderReplayExecutor(
+        _spec(structured=False),
+        "secret",
+        client_factory=lambda _spec, _key: fake,
+    )
+
+    assert executor.execute(call)["result"] == result
 
 
 def test_missing_provider_usage_and_builtin_arm_e_fail_closed_without_retry() -> None:

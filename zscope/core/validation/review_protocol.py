@@ -153,12 +153,12 @@ def adjudicate_review(
     reason = "review_evidence_recorded"
     if decision["verdict"] == "verified" and not supported:
         decision.update(
-            verdict="uncertain", missing_fact_request=None, stop_reason="decision_complete"
+            verdict="uncertain", missing_fact_request=None, stop_reason="unsupported_fact"
         )
         reason = "positive_case_incomplete"
     if refuted and not supported:
         decision.update(
-            verdict="uncertain", missing_fact_request=None, stop_reason="decision_complete"
+            verdict="uncertain", missing_fact_request=None, stop_reason="unsupported_fact"
         )
         reason = "rejection_refuted_unconfirmed"
     elif decision["verdict"] == "verified":

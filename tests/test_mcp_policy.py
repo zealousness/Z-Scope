@@ -56,7 +56,7 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         llms={"default": llm},
         indexing=IndexingConfig(knowledge_db_path=str(tmp_path / "missing.db")),
         analysis=AnalysisConfig(snapshot_dir=str(tmp_path / "snapshots")),
-        project=ProjectConfig(project_root=tmp_path, source_root=tmp_path),
+        project=ProjectConfig(project_root=tmp_path),
     )
 
 
@@ -444,7 +444,7 @@ def _knowledge_provider(
         llms={"default": llm},
         indexing=IndexingConfig(knowledge_db_path=str(db_path)),
         analysis=AnalysisConfig(snapshot_dir=str(tmp_path / "snapshots")),
-        project=ProjectConfig(project_root=tmp_path, source_root=tmp_path),
+        project=ProjectConfig(project_root=tmp_path),
     )
     code_index = FakeCodeIndex()
     snapshots = FakeSnapshotStore()

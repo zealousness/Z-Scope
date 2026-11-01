@@ -1524,8 +1524,8 @@ def execution_binary_holds(entry: "_ExecutionEntry") -> bool:
 
     An execution that bound a real binary file must still match the digest
     accepted at execution time. An execution that bound nothing only qualifies
-    when it never required binding, i.e. the symbolic test-only fixture; a real
-    production execution always requires a bound binary.
+    when its recipe never required binary binding. Executions that require a
+    binary retain that obligation even if the file later disappears.
     """
 
     if entry.binary_bound:

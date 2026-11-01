@@ -131,10 +131,17 @@ def resolve_trial_paths(
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        # JSON Lines is delimited by the physical LF byte.  ``str.splitlines``
+        # also splits valid JSON string content at Unicode separators such as
+        # U+2028/U+2029.  Providers can legitimately emit those characters in
+        # prose, so treating them as record boundaries corrupts an otherwise
+        # valid conversation trace.  Preserve every Unicode separator inside
+        # the JSON value and only remove an optional CR from CRLF input.
+        lines = path.read_text(encoding="utf-8").split("\n")
     except OSError as exc:
         raise TrialMetricsError(f"failed to read JSONL file {path}: {exc}") from exc
-    for line_number, line in enumerate(lines, 1):
+    for line_number, raw_line in enumerate(lines, 1):
+        line = raw_line[:-1] if raw_line.endswith("\r") else raw_line
         if not line.strip():
             continue
         try:

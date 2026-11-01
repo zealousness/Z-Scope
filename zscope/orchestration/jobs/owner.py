@@ -258,6 +258,12 @@ class Owner:
         )
         previous = str(self.job.get("input_revision") or "")
         current = fingerprint["sha256"]
+        expected = self.launch.get("expected_input_revision")
+        if expected is not None and (expected != previous or expected != current):
+            raise _OwnerFailure(
+                "schedule_input_changed",
+                "Scheduled inputs changed before scanner launch; refusing to rebind this window.",
+            )
         if previous and previous != current:
             old_components = self.job.get("input_components_json") or {}
             if not isinstance(old_components, dict):
@@ -682,9 +688,19 @@ class Owner:
             )
             return 0
 
-        self._spawn_scanner()
         stop_at_epoch = self.launch.get("stop_at_epoch")
         stop_at_epoch = float(stop_at_epoch) if stop_at_epoch is not None else None
+        if stop_at_epoch is not None and time.time() >= stop_at_epoch:
+            self._event("stop_window_reached", "stop window closed before scanner launch")
+            self._finalize(
+                status="partial",
+                exit_code=None,
+                baseline=baseline,
+                error_code="stop_window_closed",
+                error_message="window closed before scanner launch",
+            )
+            return 0
+        self._spawn_scanner()
         assert self._scanner is not None
 
         terminal_status: Optional[str] = None

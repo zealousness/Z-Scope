@@ -159,7 +159,9 @@ def context_input_status(
     )
     if not searches_current:
         return "stale_include_search"
-    if not include_probes_current(context.get("include_probes")):
+    if not include_probes_current(
+        context.get("include_probes"), context.get("include_lookups")
+    ):
         return "stale_include_probe"
     return "current"
 
@@ -230,7 +232,7 @@ def scan_build_coverage(code_index: Any) -> dict[str, Any]:
     input_status: dict[str, str] = {}
     # One validator per coverage pass: parallel instances usually share the same
     # headers, so each content digest is computed once.
-    validator = InputValidator()
+    validators: dict[tuple[str, ...], InputValidator] = {}
     for context in contexts:
         source = str(context.get("source") or "")
         sources[source] = sources.get(source, 0) + 1
@@ -241,6 +243,17 @@ def scan_build_coverage(code_index: Any) -> dict[str, Any]:
         if not _context_carries_receipt(context):
             input_status[build] = "unmeasured"
             continue
+        search_excludes = tuple(
+            sorted(
+                str(path)
+                for path in (context.get("search_excludes") or [])
+                if isinstance(path, str) and path
+            )
+        )
+        validator = validators.setdefault(
+            search_excludes,
+            InputValidator(Path(path) for path in search_excludes),
+        )
         currency = context_input_status(context, validator=validator)
         input_status[build] = currency
         if currency != "current":

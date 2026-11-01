@@ -43,7 +43,7 @@ def verify_single_slot_pool(
         return None
     body, name = bodies[0], str(context.get("func_name") or "")
     if (
-        body.get("fact_version") != "zscope.program-events.v5"
+        body.get("fact_version") != "zscope.program-events.v7"
         or body.get("resource_protocol_facts_version") != "zscope.resource-protocol-facts.v1"
         or body.get("owner", {}).get("name") != name
         or not body.get("owner", {}).get("usr")

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from copy import deepcopy
+import json
+import os
+import tempfile
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 import click
@@ -13,8 +17,10 @@ from ..config.v2 import (
     PUBLIC_CONFIG_VERSION,
     PUBLIC_CONFIG_VERSION_V3,
     load_yaml_unique,
+    _expand_env,
 )
 from ..config.v3 import DECLARED_ONLY, compose_effective_config, parse_user_config_v3
+from ..config.semantics_migration import write_migrated_semantics
 
 
 _LEGACY_TOP_LEVEL = {
@@ -303,8 +309,6 @@ def _migrate_project(raw: Any, warnings: List[str]) -> Tuple[Dict[str, Any], Dic
     language = _normalize_language(data.get("language"))
     project: Dict[str, Any] = {
         "language": language,
-        "root": data.get("root", "."),
-        "source_root": data.get("source_root", "."),
     }
     for source, target in (
         ("id", "id"),
@@ -739,6 +743,15 @@ def _echo_v3_preparation(payload: Dict[str, Any], version3: Mapping[str, Any]) -
         )
         for message in target["messages"]:
             click.echo(f"  - {message['message']}")
+    semantics = version3.get("project_semantics") or {}
+    if semantics.get("applicable"):
+        click.echo(
+            f"项目原语：{semantics.get('path') or '未配置'}；"
+            f"{'已就绪' if semantics.get('ready') else '未就绪'}"
+        )
+        for reason in semantics.get("reasons", [])[:20]:
+            message = reason.get("message") if isinstance(reason, Mapping) else str(reason)
+            click.echo(f"  - {message}")
     preset = version3["preset"]
     click.echo(
         f"预设：{preset['preset']}（临时映射到内部深度 {preset['mapped_depth']}；"
@@ -772,7 +785,14 @@ def _echo_v3_preparation(payload: Dict[str, Any], version3: Mapping[str, Any]) -
     required=True,
 )
 @click.option("--force", is_flag=True, help="Replace an existing output file.")
-def migrate_command(input_path: Path, output_path: Path, force: bool) -> None:
+@click.option(
+    "--legacy-working-directory",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Original execution directory, required for a relative v2/legacy project.root.",
+)
+def migrate_command(
+    input_path: Path, output_path: Path, force: bool, legacy_working_directory: Path | None
+) -> None:
     """Convert a legacy YAML file without changing the source file."""
 
     destination = output_path.expanduser()
@@ -783,7 +803,53 @@ def migrate_command(input_path: Path, output_path: Path, force: bool) -> None:
     if destination.exists() and not force:
         raise click.ClickException(f"refusing to overwrite existing file: {destination}")
     try:
-        migrated, warnings = migrate_legacy_document(load_yaml_unique(input_path.resolve()))
+        raw = load_yaml_unique(input_path.resolve())
+        old_project = _mapping(raw.get("project"), "project")
+        has_old_roots = any(key in old_project for key in ("root", "source_root"))
+        version = raw.get("config_version")
+        if has_old_roots or version not in (2, 3):
+            root_value = old_project.get("root", ".")
+            if not isinstance(root_value, str) or not root_value.strip():
+                raise ValueError("legacy project.root must be a nonempty string")
+            old_root = Path(_expand_env(root_value))
+            if not old_root.is_absolute():
+                if version == 3:
+                    old_root = input_path.resolve().parent / old_root
+                elif legacy_working_directory is not None:
+                    old_root = legacy_working_directory.resolve() / old_root
+                else:
+                    raise ValueError(
+                        "relative legacy/v2 project.root needs --legacy-working-directory ORIGINAL_CWD; its original root cannot be inferred safely"
+                    )
+            old_root = old_root.resolve()
+            source_value = old_project.get("source_root", ".")
+            if not isinstance(source_value, str) or not source_value.strip():
+                raise ValueError("legacy project.source_root must be a nonempty string")
+            old_source = Path(_expand_env(source_value))
+            if not old_source.is_absolute():
+                old_source = old_root / old_source
+            if old_source.resolve() != old_root:
+                raise ValueError(
+                    "split project.root/source_root cannot migrate automatically; explicitly rebase include/exclude and discovery paths to one project directory first"
+                )
+        else:
+            old_root = input_path.resolve().parent
+        if destination.resolve().parent != old_root:
+            raise ValueError(
+                f"--output must be directly inside the original project directory: {old_root}; moving it elsewhere would change scan scope"
+            )
+        if version in (2, 3):
+            migrated = deepcopy(raw)
+            migrated["project"].pop("root", None)
+            migrated["project"].pop("source_root", None)
+            warnings = ["YAML directory is now the only project root; review before scanning"]
+            if version == 3 and migrated.get("scan", {}).get("preset") in {"quick", "overnight"}:
+                migrated["scan"]["preset"] = {"quick": "fast", "overnight": "deep"}[
+                    migrated["scan"]["preset"]
+                ]
+                warnings.append("converted old scan preset to its exact execution depth")
+        else:
+            migrated, warnings = migrate_legacy_document(raw)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -795,9 +861,136 @@ def migrate_command(input_path: Path, output_path: Path, force: bool) -> None:
     )
     with destination.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
-    click.echo(f"Created config v2: {destination}")
+    click.echo(f"Created config v{migrated['config_version']}: {destination}")
     for warning in warnings:
         click.echo(f"Warning: {warning}", err=True)
+
+
+@main.command("review-semantics")
+@click.option("--config", "config_path", type=click.Path(path_type=Path, exists=True), default="zscope.yaml")
+@click.option("--complete", is_flag=True, help="Verify current discovery and record explicit human completion.")
+@click.option("--declare-none", is_flag=True, help="Explicitly declare no known custom primitives; discovery is still required.")
+@click.option("--json", "as_json", is_flag=True)
+def review_semantics_command(config_path: Path, complete: bool, declare_none: bool, as_json: bool) -> None:
+    from ..config.project_semantics import ProjectSemanticsStore
+    from ..config.semantics_workflow import workflow_status, complete_review, revision, save_document
+
+    try:
+        config = ConfigLoader.load(str(config_path), read_only=True)
+        if config.project.language == "java":
+            click.echo('{"applicable": false, "ready": true}' if as_json else "Java：项目原语不适用。")
+            return
+        path = config.project.semantics_file
+        if path is None:
+            raise ValueError("请先设置 project.semantics_file。")
+        version = revision(path)
+        document = ProjectSemanticsStore(path).read(allow_unbound_primitive_proposals=True)
+        if declare_none:
+            if any(row.get("primitive") and row.get("status") != "rejected" for row in document["interfaces"]):
+                raise ValueError("已有项目原语；请先审视这些声明，不能同时声明没有自定义原语。")
+            document["discovery_receipt"]["declaration"] = "none_known"
+            version = save_document(path, document, root=config.project.project_root, expected_revision=version)
+        if complete:
+            complete_review(path, root=config.project.project_root, config_path=config_path.resolve(), expected_revision=version)
+            document = ProjectSemanticsStore(path).read()
+        status = workflow_status(document, config.project.project_root, config_path.resolve())
+        click.echo(json.dumps(status, ensure_ascii=False, indent=2) if as_json else
+                   f"项目原语：{status['stage']}\n" + "\n".join(status["reasons"]))
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@main.command("migrate-semantics")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--from-xlsx",
+    "xlsx_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    required=True,
+)
+def migrate_semantics_command(
+    config_path: Path,
+    xlsx_path: Path,
+    output_path: Path,
+) -> None:
+    """Migrate XLSX semantics once, preserve it, and bind a v3 config to YAML."""
+
+    config_path = config_path.resolve()
+    project_root = config_path.parent
+    destination = output_path if output_path.is_absolute() else project_root / output_path
+    destination = destination.resolve()
+    report_path = destination.with_suffix(".migration-report.json")
+    try:
+        destination.relative_to(project_root)
+    except ValueError as exc:
+        raise click.ClickException("--output must stay inside the project directory") from exc
+    if destination.exists():
+        raise click.ClickException(f"refusing to overwrite existing file: {destination}")
+    if report_path.exists():
+        raise click.ClickException(f"refusing to overwrite existing report: {report_path}")
+    try:
+        raw = load_yaml_unique(config_path)
+        if raw.get("config_version") != PUBLIC_CONFIG_VERSION_V3:
+            raise ValueError("migrate-semantics requires a public config v3 document")
+        project = _mapping(raw.get("project"), "project")
+        if project.get("language") not in {"cpp", "c", "c_cpp"}:
+            raise ValueError("migrate-semantics is available only for C/C++ projects")
+        if project.get("semantics_file"):
+            raise ValueError("project.semantics_file is already configured")
+        report = write_migrated_semantics(xlsx_path.resolve(), destination)
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+
+        # Preserve comments and ordering while changing the only public config
+        # field owned by this migration.
+        from ruamel.yaml import YAML  # type: ignore[import-untyped]
+
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with config_path.open("r", encoding="utf-8") as handle:
+            editable = yaml_rt.load(handle)
+        editable["project"]["semantics_file"] = destination.relative_to(project_root).as_posix()
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{config_path.name}.", suffix=".tmp", dir=str(project_root)
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                yaml_rt.dump(editable, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            # Validate the exact bytes before publishing them.
+            parse_user_config_v3(temporary_name)
+            os.replace(temporary_name, config_path)
+        finally:
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
+    except Exception as exc:
+        # The destination did not exist before this command, so this removes
+        # only a partially-created migration output.  The XLSX is never touched.
+        if destination.exists():
+            destination.unlink()
+        if report_path.exists():
+            report_path.unlink()
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Created project semantics: {destination}")
+    click.echo(f"Updated config reference: {config_path}")
+    click.echo(f"Migration report: {report_path}")
+    click.echo(
+        "Run --discover-primitives to resolve current native identities, then review every pending row."
+    )
 
 
 if __name__ == "__main__":

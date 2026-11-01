@@ -8,6 +8,8 @@ from zscope.common.validator_protocol import (
     VALIDATOR_RESULT_VERSION,
     ValidatorResultV3,
     parse_validator_result_v3,
+    validator_result_provider_schema_v3,
+    validator_result_schema_v3,
 )
 from zscope.framework.base import BaseTool
 
@@ -207,7 +209,7 @@ class _InvestigationLLM:
             fact_uid = fact["fact"]["fact_uid"]
             payload = _result(
                 evidence_refs=[fact_uid],
-                stop_reason="investigation_complete",
+                stop_reason="decision_complete",
             )
             payload["pass"] = "investigation_synthesis"
             iterations = 4
@@ -256,7 +258,70 @@ def test_validator_v3_uses_one_direct_strict_completion() -> None:
     assert len(llm.calls) == 1
     assert "max_tokens" not in llm.calls[0][1]
     assert llm.calls[0][1]["response_format"]["json_schema"]["strict"] is True
+    wire_schema = llm.calls[0][1]["response_format"]["json_schema"]["schema"]
+    assert "oneOf" not in wire_schema
+    assert set(wire_schema["required"]) == set(validator_result_schema_v3()["required"])
     assert response.metadata["validator_api_call_count"] == 1
+
+
+def test_validator_provider_schema_keeps_full_shape_without_gateway_hostile_oneof() -> None:
+    contract = validator_result_schema_v3()
+    provider = validator_result_provider_schema_v3()
+
+    assert "oneOf" in contract
+    assert "oneOf" not in provider
+    assert provider["required"] == contract["required"]
+    assert set(provider["properties"]) == set(contract["properties"])
+
+
+def test_validator_provider_schema_enforces_candidate_missing_fact_policy() -> None:
+    exhausted = validator_result_provider_schema_v3(allowed_missing_fact_kinds=[])
+    requestable = validator_result_provider_schema_v3(
+        allowed_missing_fact_kinds=["value_range", "guard_dominance", "not-a-kind"]
+    )
+
+    assert exhausted["properties"]["missing_fact_request"]["type"] == "null"
+    assert "missing_fact" not in exhausted["properties"]["stop_reason"]["enum"]
+    assert requestable["properties"]["missing_fact_request"]["properties"]["fact_kind"]["enum"] == [
+        "guard_dominance",
+        "value_range",
+    ]
+
+
+def test_validator_provider_schema_enumerates_candidate_evidence_refs() -> None:
+    scoped = validator_result_provider_schema_v3(
+        allowed_evidence_refs=["FACT_1", "path-edge:0:entry->sink", "FACT_1"]
+    )
+    empty = validator_result_provider_schema_v3(allowed_evidence_refs=[])
+
+    assert scoped["properties"]["evidence_refs"]["items"]["enum"] == [
+        "FACT_1",
+        "path-edge:0:entry->sink",
+    ]
+    assert empty["properties"]["evidence_refs"]["maxItems"] == 0
+
+
+def test_validator_direct_schema_and_prompt_close_exhausted_provider_requests() -> None:
+    llm = _DirectLLM([{"content": json.dumps(_result())}])
+    evidence_slice = _slice()
+    evidence_slice["allowed_missing_fact_kinds"] = []
+
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "validation_pass": "initial",
+            "evidence_slice": evidence_slice,
+        }
+    )
+
+    assert response.success
+    wire_schema = llm.calls[0][1]["response_format"]["json_schema"]["schema"]
+    assert wire_schema["properties"]["missing_fact_request"]["type"] == "null"
+    assert wire_schema["properties"]["evidence_refs"]["items"]["enum"] == ["FACT_1"]
+    prompt = llm.calls[0][0][-1]["content"]
+    assert "stop_reason=no_evidence_gain" in prompt
+    assert "never use decision_complete for an uncertain verdict" in prompt
 
 
 def test_validator_v3_does_not_add_tool_fallback_after_structured_call_failure() -> None:
@@ -292,12 +357,14 @@ def test_validator_v3_never_accepts_reasoning_metadata_as_terminal_output() -> N
     assert response.success is True
     assert response.data["verdict"] == "uncertain"
     assert response.data["stop_reason"] == "malformed_output"
-    assert len(llm.calls) == 1
-    assert response.metadata["validator_repair_attempted"] == 0
+    assert len(llm.calls) == 2
+    assert response.metadata["validator_repair_attempted"] == 1
+    assert response.metadata["validator_repair_accepted"] == 0
+    assert response.metadata["validator_first_attempt_audit"]["parse_status"] == "malformed"
 
 
-def test_validator_v3_malformed_output_stays_single_call_for_v3_escalation() -> None:
-    llm = _DirectLLM([{"content": "not-json"}])
+def test_validator_v3_malformed_output_gets_one_strict_repair_attempt() -> None:
+    llm = _DirectLLM([{"content": "not-json"}, {"content": "still-not-json"}])
     response = ValidatorAgent(llm, []).run(
         {
             "finding_uid": "CAND_1",
@@ -309,8 +376,34 @@ def test_validator_v3_malformed_output_stays_single_call_for_v3_escalation() -> 
     assert response.success
     assert response.data["verdict"] == "uncertain"
     assert response.data["stop_reason"] == "malformed_output"
-    assert len(llm.calls) == 1
-    assert response.metadata["validator_repair_attempted"] == 0
+    assert len(llm.calls) == 2
+    assert response.metadata["validator_repair_attempted"] == 1
+    assert response.metadata["validator_repair_accepted"] == 0
+    assert "protocol_retry=1" in llm.calls[1][1]["trace_label"]
+
+
+def test_validator_v3_malformed_output_can_be_repaired_once() -> None:
+    llm = _DirectLLM(
+        [
+            {"content": '<DSML><invoke name="final">broken</invoke></DSML>'},
+            {"content": json.dumps(_result())},
+        ]
+    )
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "evidence_slice": _slice(),
+        }
+    )
+
+    assert response.success
+    assert response.data["verdict"] == "verified"
+    assert len(llm.calls) == 2
+    assert response.metadata["validator_repair_attempted"] == 1
+    assert response.metadata["validator_repair_accepted"] == 1
+    assert response.metadata["validator_first_attempt_audit"]["parse_status"] == "malformed"
+    assert "protocol_retry=1" in llm.calls[1][1]["trace_label"]
 
 
 def test_validator_v3_length_retries_once_with_doubled_output_ceiling() -> None:
@@ -335,8 +428,10 @@ def test_validator_v3_length_retries_once_with_doubled_output_ceiling() -> None:
     # only the length retry carries the doubled output ceiling.
     assert "max_tokens" not in llm.calls[0][1]
     assert llm.calls[1][1]["max_tokens"] >= 8192
+    assert llm.calls[1][1]["thinking"] == {"type": "disabled"}
     assert "length_retry=1" in llm.calls[1][1]["trace_label"]
     assert response.metadata["validator_length_retry_count"] == 1
+    assert response.metadata["validator_repair_thinking_disabled"] == 1
     assert response.metadata["validator_api_call_count"] == 2
     assert response.metadata["finish_reason"] == "stop"
 
@@ -530,6 +625,36 @@ def test_validator_v3_investigation_stops_after_two_no_gain_rounds_and_rejects_d
     assert stopped["error"] == "validator_v3_no_new_evidence_fact_stop; emit the final result"
     assert response.metadata["validator_no_new_evidence_fact_stop"] is True
     assert response.metadata["consecutive_no_new_evidence_fact_iterations"] == 2
+
+
+def test_validator_window_failure_keeps_facts_but_cannot_accept_earlier_decision() -> None:
+    class WindowLimitedLLM(_InvestigationLLM):
+        def run_conversation_with_tools(self, **kwargs):
+            result = super().run_conversation_with_tools(**kwargs)
+            # Even schema-valid, evidence-backed text from before the stop
+            # cannot become a completed verdict after an incomplete session.
+            result["content"] = result["message"]["tool_calls"][0]["function"]["arguments"]
+            result.update(
+                finish_reason="context_window_exceeded", truncated=True, api_call_count=3
+            )
+            return result
+
+    evidence_slice = _slice()
+    evidence_slice["decision_facts"] = {"missing_fact_kinds": ["value_range"]}
+    response = ValidatorAgent(WindowLimitedLLM(), [_ReadOnlyEvidenceTool()]).investigate(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "validation_pass": "investigation_synthesis",
+            "evidence_slice": evidence_slice,
+        }
+    )
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["stop_reason"] == "investigation_exhausted"
+    assert response.metadata["validator_context_window_exceeded"] is True
+    assert response.metadata["validator_api_call_count"] == 3
+    assert len(response.metadata["validator_tool_fact_catalog"]) == 2
+    assert len(response.metadata["validator_investigation_facts"]) == 1
 
 
 def test_dynamic_reproduction_v4_contract_is_reserved_but_not_dispatched() -> None:

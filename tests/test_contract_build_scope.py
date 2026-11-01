@@ -24,7 +24,7 @@ def context(build="a", **facts):
     }
     body = {
         "complete": True,
-        "fact_version": "zscope.program-events.v5",
+        "fact_version": "zscope.program-events.v7",
         "lifecycle_value_facts_version": "zscope.lifecycle-value-facts.v1",
         "owner": {"name": "dispose", "usr": "c:@F@dispose", "file": "unit.c"},
         "parameters": [parameter],

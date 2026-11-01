@@ -8,17 +8,14 @@ version 3.
 
 Semantics that intentionally differ from public v2:
 
-* ``project.root`` resolves relative to the configuration file directory
-  (v2 resolves it against the loading process CWD).  Every other project
-  path anchors to the resolved root, so one file loads to one project from
-  any working directory.
+* Both v2/v3 use the loaded YAML directory as the only project root;
+  public root/source_root keys are rejected even when they equal '.'.
 * ``project.targets`` keeps an explicit identity for every declared build
   target.  Composing the current single-target execution chain refuses a
   multi-target document instead of silently treating the first target as
   the whole project.
-* ``scan.preset`` is the user-facing quality tier.  Until U01/S08 replace
-  the legacy depth tiers, the temporary internal mapping to a legacy depth
-  is recorded explicitly on the parsed intent; a preset never enables the
+* ``scan.preset`` is the user-facing quality tier.  Its fast/balanced/deep values are identical to execution depth;
+  a preset never enables the
   internal shadow experiments.
 * ``execution.stop_at`` resolves the next occurrence of the local wall
   clock in the configured IANA timezone and holds one absolute,
@@ -65,6 +62,7 @@ from .v2 import (
     _string_list,
     load_runtime_spec,
     load_yaml_unique,
+    reject_legacy_project_roots,
 )
 
 # --- Single-source field tables -------------------------------------------------
@@ -74,12 +72,12 @@ from .v2 import (
 # section guard raises if a field table drifts away from its key tuple.
 
 V3_TOP_LEVEL_KEYS = ("config_version", "llms", "project", "scan", "execution")
-PROJECT_KEYS = ("root", "language", "platform", "targets")
+PROJECT_KEYS = ("language", "platform", "targets", "semantics_file")
 TARGET_KEYS = ("id", "compile_commands")
 SCAN_KEYS = ("preset", "focus", "reproduction")
 EXECUTION_KEYS = ("timezone", "stop_at", "max_workers")
 
-SCAN_PRESETS = ("overnight", "quick")
+SCAN_PRESETS = ("deep", "balanced", "fast")
 FOCUS_AREAS = ("memory", "resources", "async_lifecycle")
 REPRODUCTION_MODES = ("auto",)
 PROJECT_PLATFORMS = ("linux_user",)
@@ -90,7 +88,16 @@ LANGUAGE_DISPLAY_NAMES = {"c_cpp": "C/C++", "java": "Java"}
 TARGET_DATABASE_RULE = {"c_cpp": "required", "java": "forbidden"}
 
 # Temporary internal mapping until U01/S08 replace the legacy depth tiers.
-PRESET_DEPTH_MAPPING: Dict[str, str] = {"quick": "fast", "overnight": "deep"}
+PRESET_DEPTH_MAPPING: Dict[str, str] = {"fast": "fast", "balanced": "balanced", "deep": "deep"}
+
+# Public v3 deliberately has no tool-tuning surface.  Its internal SVF cap
+# therefore has to be a broadly admissible per-process default rather than the
+# legacy v2 expert default of 32 GiB: admission reserves the full cap for each
+# worker, and a 32 GiB cap cannot start even one worker on a 32 GiB host after
+# the runtime safety margin.  Explicit v2 configurations retain their chosen
+# value; v3 uses this conservative cap and still fails closed if the bitcode
+# size estimate cannot fit it.
+V3_SVF_HEAP_LIMIT_MB = 8192
 
 STOP_AT_PATTERN = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 
@@ -104,8 +111,8 @@ LOADER_ENFORCED_CONSTRAINTS = (
     "execution.stop_at must resolve to an unambiguous, existing local wall-clock "
     "time; daylight-saving gaps and folds are rejected at resolution time",
     "project.targets ids must be unique across the list",
-    "project.root anchors to the configuration file directory and target "
-    "compile_commands anchor to the resolved root (filesystem semantics)",
+    "the configuration directory is the only project root and target "
+    "compile_commands anchor to that directory (filesystem semantics)",
     "string values are whitespace-normalized (stripped) before validation",
     "${VAR} environment expansion applies before validation",
     "YAML documents with duplicate mapping keys are rejected by the loader",
@@ -136,6 +143,10 @@ class ProjectModel:
     language: str
     platform: str
     targets: Tuple[TargetSpec, ...]
+    # Optional at document-parse time so an existing v3 file can receive the
+    # actionable migration error from prepare/discovery/scan.  New C/C++
+    # documents always declare it; Java documents reject it.
+    semantics_file: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -254,18 +265,29 @@ def _parse_v3_model(
 
 def _parse_project_v3(config_path: Path, raw: Any) -> ProjectModel:
     data = _mapping(raw, "project", required=True)
+    reject_legacy_project_roots(data)
     _check_keys(data, PROJECT_KEYS, "project")
     language = data.get("language")
     if language not in PROJECT_LANGUAGES:
         raise ValueError("project.language must be exactly 'c_cpp' or 'java'")
 
-    root_value = _string(data.get("root", "."), "project.root")
-    root = Path(root_value)
-    if not root.is_absolute():
-        # v3 anchors the root to the configuration file directory, not the
-        # loading process CWD; all other project paths anchor to this root.
-        root = config_path.parent / root
-    root = root.resolve()
+    root = config_path.resolve().parent
+
+    raw_semantics = data.get("semantics_file")
+    semantics_file: Optional[Path] = None
+    if language == "java":
+        if raw_semantics is not None:
+            raise ValueError("project.semantics_file is not valid for Java")
+    elif raw_semantics is not None:
+        semantics_value = _string(raw_semantics, "project.semantics_file")
+        semantics_candidate = Path(semantics_value)
+        if semantics_candidate.is_absolute():
+            raise ValueError("project.semantics_file must be relative to the YAML directory")
+        semantics_file = (root / semantics_candidate).resolve()
+        try:
+            semantics_file.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("project.semantics_file must stay inside the project root") from exc
 
     platform = _string(data.get("platform", PROJECT_PLATFORMS[0]), "project.platform")
     if platform not in PROJECT_PLATFORMS:
@@ -304,13 +326,23 @@ def _parse_project_v3(config_path: Path, raw: Any) -> ProjectModel:
                 database = root / database
             resolved = database.resolve()
         targets.append(TargetSpec(id=target_id, compile_commands=resolved))
-    return ProjectModel(root=root, language=language, platform=platform, targets=tuple(targets))
+    return ProjectModel(
+        root=root,
+        language=language,
+        platform=platform,
+        targets=tuple(targets),
+        semantics_file=semantics_file,
+    )
 
 
 def _parse_scan_v3(raw: Any, *, language: str) -> ScanIntent:
     data = _mapping(raw, "scan")
     _check_keys(data, SCAN_KEYS, "scan")
     preset = _string(data.get("preset", SCAN_PRESETS[0]), "scan.preset")
+    if preset in {"quick", "overnight"}:
+        raise ValueError(
+            "scan.preset quick/overnight removed; run zscope-config migrate (quick -> fast, overnight -> deep)"
+        )
     if preset not in SCAN_PRESETS:
         raise ValueError("scan.preset must be one of: " + ", ".join(SCAN_PRESETS))
 
@@ -335,12 +367,10 @@ def _parse_scan_v3(raw: Any, *, language: str) -> ScanIntent:
     if depth not in allowed:
         raise ValueError(
             f"scan.preset {preset!r} is not currently available for "
-            f"project.language={language!r}; use 'quick'"
+            f"project.language={language!r}; use 'fast'"
         )
     note = (
-        "temporary internal mapping: preset "
-        f"{preset!r} -> legacy scan depth {depth!r}; U01/S08 will replace the "
-        "user-facing depth tiers, and no preset enables shadow experiments"
+        f"scan.preset {preset!r} uses the same execution depth; experimental rules remain unchanged"
     )
     return ScanIntent(
         preset=preset,
@@ -481,13 +511,28 @@ def compose_effective_config(model: UserConfigV3) -> EffectiveConfig:
     target = targets[0]
 
     runtime = load_runtime_spec()
+    # Public v3 has one C/C++ semantic authority.  Reuse the existing
+    # UserConfigStore injection seam for validation feedback and evidence
+    # renderers, but point its semantic reads at the reviewed YAML instead of
+    # allowing individual analyzers to fall back to the legacy XLSX workbook.
+    if model.project.language == "c_cpp" and model.project.semantics_file is not None:
+        runtime.analysis.user_config_db = str(model.project.semantics_file)
     project = ProjectConfig(
         project_root=model.project.root,
-        source_root=Path("."),
         project_id="",
+        target_id=target.id,
         language=model.project.language,
         compile_commands_path=target.compile_commands,
+        semantics_file=model.project.semantics_file,
     )
+    # Public v3 intentionally removed the legacy entry_function and
+    # entry_functions_list knobs. A generated v3 document must nevertheless
+    # be directly scannable: entry discovery supplies reachability attribution
+    # while the C/C++ fast planner still analyzes every current function
+    # instance exactly once. Without this composition default, zscope-init
+    # produced a document that prepare called startable but an ordinary scan
+    # rejected with "No entry function".
+    project.entry_discovery.enabled = True
     scan = ScanConfig(
         task="",
         depth=model.scan.mapped_depth,
@@ -497,6 +542,8 @@ def compose_effective_config(model: UserConfigV3) -> EffectiveConfig:
     indexing = _parse_indexing(
         {"backend": backend}, language=model.project.language, runtime=runtime
     )
+    if model.project.language == "c_cpp":
+        indexing.svf_heap_limit_mb = V3_SVF_HEAP_LIMIT_MB
     concurrency = ConcurrencyConfig()
     indexing.max_clangd_threads = concurrency.index_workers
     rules = RulesConfig()
@@ -504,6 +551,7 @@ def compose_effective_config(model: UserConfigV3) -> EffectiveConfig:
     project.agents = _agents_from_runtime(runtime, scan)
 
     return EffectiveConfig(
+        config_path=model.config_path,
         llm=model.llms["default"],
         llms=model.llms,
         indexing=indexing,
@@ -573,10 +621,10 @@ def _wiring_notes(
             "profiles compose directly into the effective LLM configuration",
         ),
         WiringNote(
-            "project.root",
+            "config_path",
             WIRED,
-            "resolved relative to the configuration file directory; every "
-            "other project path anchors to the resolved root",
+            "the configuration file directory is the only project root; every "
+            "project-relative path anchors to that directory",
         ),
         WiringNote(
             "project.language",
@@ -682,10 +730,16 @@ def _target_database_conditionals() -> List[Dict[str, Any]]:
         rule = TARGET_DATABASE_RULE[language]
         if rule == "forbidden":
             then: Dict[str, Any] = {
-                "properties": {"targets": {"items": {"properties": {"compile_commands": False}}}}
+                "properties": {
+                    "targets": {"items": {"properties": {"compile_commands": False}}},
+                    "semantics_file": False,
+                }
             }
         else:
-            then = {"properties": {"targets": {"items": {"required": list(TARGET_KEYS)}}}}
+            then = {
+                "required": ["semantics_file"],
+                "properties": {"targets": {"items": {"required": list(TARGET_KEYS)}}},
+            }
         branches.append(
             {
                 "if": _language_is(language),
@@ -741,15 +795,6 @@ def public_json_schema() -> Dict[str, Any]:
     """JSON Schema for the v3 document, generated from the parsing model."""
 
     project_fields: Dict[str, Dict[str, Any]] = {
-        "root": {
-            "type": "string",
-            "minLength": 1,
-            "default": ".",
-            "description": (
-                "Project root, resolved relative to the configuration file "
-                "directory (v3 semantics; v2 resolved against the process CWD)"
-            ),
-        },
         "language": {
             "type": "string",
             "enum": list(PROJECT_LANGUAGES),
@@ -765,7 +810,7 @@ def public_json_schema() -> Dict[str, Any]:
             "description": (
                 "Declared build targets; every id and path is retained. "
                 "'compile_commands' is required for c_cpp and resolves against "
-                "project.root; it is forbidden for java (both enforced by the "
+                "the configuration directory; it is forbidden for java (both enforced by the "
                 "language-conditional allOf in this section)"
             ),
             "items": _section_schema(
@@ -783,12 +828,20 @@ def public_json_schema() -> Dict[str, Any]:
                         "type": "string",
                         "minLength": 1,
                         "description": (
-                            "Path to the compile commands database, relative to project.root"
+                            "Path to the compile commands database, relative to the configuration directory"
                         ),
                     },
                 },
                 required=("id",),
                 description="One build target with explicit identity",
+            ),
+        },
+        "semantics_file": {
+            "type": "string",
+            "minLength": 1,
+            "description": (
+                "C/C++ project primitive contracts. The path is relative to the "
+                "configuration directory and must stay inside the project root"
             ),
         },
     }
@@ -872,8 +925,20 @@ def public_json_schema() -> Dict[str, Any]:
         "max_tokens": {
             "type": "integer",
             "minimum": 1,
-            "default": 4096,
+            "default": LLMConfig().max_tokens,
             "description": "Per-response token ceiling",
+        },
+        "context_window": {
+            "type": "integer",
+            "minimum": 1,
+            "default": LLMConfig().context_window,
+            "description": "Input plus output capacity; configure for the actual endpoint",
+        },
+        "model_context_windows": {
+            "type": "object",
+            "propertyNames": {"minLength": 1},
+            "additionalProperties": {"type": "integer", "minimum": 1},
+            "description": "Context capacity overrides keyed by exact request model name",
         },
         "timeout": {
             "type": ["number", "null"],

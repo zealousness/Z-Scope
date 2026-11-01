@@ -43,6 +43,64 @@ def default_local_semantics() -> LocalPatternSemantics:
 # a factory receipt and does not verify native origins, scope or currentness.
 INSTANCE_CONSUMER_POLICY = "zscope.instance-builtin-consumers.v1"
 
+# Compiler-reserved operations are not C/POSIX library declarations, so they
+# intentionally do not live in the system-header primitive catalog.  They are
+# nevertheless safe semantic roots when the current native AST binds the
+# reserved spelling to Clang's canonical builtin USR and finds no definition.
+_COMPILER_INTRINSIC_OPERATIONS = frozenset(
+    {
+        "__atomic_fetch_add",
+        "__atomic_fetch_sub",
+        "__atomic_store_n",
+        "__builtin_add_overflow",
+        "__builtin_bswap",
+        "__builtin_bswap16",
+        "__builtin_bswap32",
+        "__builtin_bswap64",
+        "__builtin_ctz",
+        "__builtin_ctzll",
+        "__builtin_mul_overflow",
+        "__sync_bool_compare_and_swap",
+    }
+)
+
+
+def current_compiler_intrinsic_names(program_facts: Any) -> frozenset[str]:
+    """Return compiler intrinsics proven by the current exact native facts."""
+
+    if not isinstance(program_facts, dict):
+        return frozenset()
+    names: set[str] = set()
+    for function in program_facts.get("functions") or []:
+        if not isinstance(function, dict):
+            continue
+        for event in function.get("events") or []:
+            if not isinstance(event, dict) or event.get("event_kind") not in {
+                "call",
+                "compiler_intrinsic",
+            }:
+                continue
+            callee = event.get("callee")
+            if not isinstance(callee, dict):
+                continue
+            emitted_name = str(callee.get("name") or callee.get("qualified_name") or "")
+            name = re.sub(r"_(?:1|2|4|8|16)$", "", emitted_name)
+            if name not in _COMPILER_INTRINSIC_OPERATIONS:
+                continue
+            usr = str(callee.get("usr") or callee.get("referenced_usr") or "")
+            if (
+                usr == f"c:@F@{emitted_name}"
+                and callee.get("external_linkage") is True
+                and callee.get("has_definition") is False
+                and str(callee.get("canonical_signature") or "")
+                and (
+                    event.get("event_kind") == "call"
+                    or callee.get("compiler_intrinsic") is True
+                )
+            ):
+                names.add(name)
+    return frozenset(names)
+
 
 def _restricted_semantics(semantics: Optional[LocalPatternSemantics]) -> LocalPatternSemantics:
     """Own a filtered copy; never fill missing instance roles from defaults."""
@@ -52,16 +110,35 @@ def _restricted_semantics(semantics: Optional[LocalPatternSemantics]) -> LocalPa
         raise ValueError("restrict_to_semantics requires explicit instance semantics")
     result = deepcopy(semantics)
     registry = result.contracts
+    # Generator construction happens before a function's BuildContext is
+    # bound.  Calling ``registry.find`` here used the empty ambient scope and
+    # silently discarded every exact project contract carrying a
+    # ``build_context_id``.  Preserve all trusted published identities at this
+    # stage; ``find_for_call``/``match_call`` still require the current native
+    # BuildContext and callee USR at each actual call site.  This keeps custom
+    # wrappers and macros executable without turning a name into authority.
+    nondefault_names = {
+        contract.symbol.name
+        for contract in registry.contracts
+        if contract.source != "builtin_defaults"
+    }
     eligible = [
         contract
         for contract in registry.contracts
-        if contract.effects_trusted and contract in registry.find(contract.symbol.name)
+        if contract.effects_trusted
+        and not (
+            contract.source == "builtin_defaults"
+            and (
+                contract.symbol.name in nondefault_names
+                or contract.symbol.name in registry.shadowed_symbols
+            )
+        )
     ]
     registry.contracts = eligible
     for attr, role in CATEGORY_BY_ATTR.items():
         bucket = getattr(result, attr)
         for name in list(bucket):
-            if not any(c.role == role for c in registry.find(name)):
+            if not any(c.symbol.name == name and c.role == role for c in eligible):
                 del bucket[name]
     names = {contract.symbol.name for contract in eligible}
     registry.pairs = [
@@ -71,10 +148,14 @@ def _restricted_semantics(semantics: Optional[LocalPatternSemantics]) -> LocalPa
 
 
 def _semantic_call_allowed(
-    semantics: LocalPatternSemantics, restricted: bool, name: str, *roles: str
+    semantics: LocalPatternSemantics,
+    restricted: bool,
+    name: str,
+    *roles: str,
+    exact_compiler_intrinsics: Iterable[str] = (),
 ) -> bool:
     """Restriction only: missing or shadowed contracts never authorize a call."""
-    return not restricted or any(
+    return not restricted or name in set(exact_compiler_intrinsics) or any(
         contract.effects_trusted and (not roles or contract.role in roles)
         for contract in semantics.contracts.find(name)
     )
@@ -188,7 +269,12 @@ def _builtin_pattern_roles() -> Dict[str, frozenset[str]]:
 
 
 def _consumer_api_pattern(
-    pattern: str, semantics: LocalPatternSemantics, restricted: bool, *, expand_slots: bool = True
+    pattern: str,
+    semantics: LocalPatternSemantics,
+    restricted: bool,
+    *,
+    expand_slots: bool = True,
+    exact_compiler_intrinsics: Iterable[str] = (),
 ) -> str:
     from ...semantics.contracts import expand_api_pattern, return_acquisition_names
 
@@ -208,6 +294,7 @@ def _consumer_api_pattern(
     }
     roots = _builtin_pattern_roles()
     denied = semantics.contracts.shadowed_symbols
+    native_intrinsics = set(exact_compiler_intrinsics)
 
     def replace(match: re.Match[str]) -> str:
         name = match[0]
@@ -226,7 +313,13 @@ def _consumer_api_pattern(
         if name in roots:
             return (
                 "(?-i:" + re.escape(name) + ")"
-                if _semantic_call_allowed(semantics, True, name, *roots[name])
+                if _semantic_call_allowed(
+                    semantics,
+                    True,
+                    name,
+                    *roots[name],
+                    exact_compiler_intrinsics=native_intrinsics,
+                )
                 else "(?!)"
             )
         return "(?!)" if name in denied else name
@@ -351,15 +444,30 @@ class RegexCandidateGenerator(
         )
 
     def _semantic_api_pattern(self, pattern: str) -> str:
-        return _consumer_api_pattern(pattern, self.semantics, self.restrict_to_semantics)
+        return _consumer_api_pattern(
+            pattern,
+            self.semantics,
+            self.restrict_to_semantics,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self.program_facts),
+        )
 
     def _literal_api_pattern(self, pattern: str) -> str:
         return _consumer_api_pattern(
-            pattern, self.semantics, self.restrict_to_semantics, expand_slots=False
+            pattern,
+            self.semantics,
+            self.restrict_to_semantics,
+            expand_slots=False,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self.program_facts),
         )
 
     def _semantic_call_allowed(self, name: str, *roles: str) -> bool:
-        return _semantic_call_allowed(self.semantics, self.restrict_to_semantics, name, *roles)
+        return _semantic_call_allowed(
+            self.semantics,
+            self.restrict_to_semantics,
+            name,
+            *roles,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self.program_facts),
+        )
 
     def _bound_api_calls(self, text: str, roles: set[str]) -> List[Tuple[str, str]]:
         names = {c.symbol.name for c in self.semantics.contracts.contracts if c.role in roles}
@@ -445,6 +553,7 @@ class RegexCandidateGenerator(
         *,
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
+        self._function_name = str(func_name)
         self.program_facts = (
             self.program_facts_provider(func_name, file_path) if self.program_facts_provider else {}
         )

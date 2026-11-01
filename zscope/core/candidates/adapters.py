@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Set, cast
+from typing import Any, Dict, List, Mapping, Optional, Set, cast
 
 from ...common.issue_identity import (
     issue_call_path_signature,
@@ -66,6 +66,173 @@ def clang_tooling_matcher_candidates_from_evidence(
             )
         )
     return issues
+
+
+def clang_native_matcher_candidates_from_program_facts(
+    func_name: str,
+    file_path: str,
+    program_facts: Mapping[str, Any],
+    semantics: Any,
+    *,
+    allowed_skills: Optional[List[str]] = None,
+    rule_policy: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Adapt exact native call identities into stable matcher candidates.
+
+    The optional textual Clang tooling pass used to be the only producer for
+    ``clang_ast_same_argument_released_twice``.  Fast already owns stronger
+    batch-indexer facts, so requiring a second AST process both wasted time and
+    made the stable rule disappear when that optional process was disabled.
+    This adapter grants no semantics by spelling: every release must resolve
+    through the current instance ContractRegistry using the native callee USR,
+    and the released object must have an exact native declaration identity.
+    """
+
+    registry = getattr(semantics, "contracts", None)
+    if registry is None or not isinstance(program_facts, Mapping):
+        return []
+
+    events: List[Dict[str, Any]] = []
+    seen_events: Set[tuple[Any, ...]] = set()
+    for function in program_facts.get("functions") or []:
+        if not isinstance(function, Mapping):
+            continue
+        for raw_event in function.get("events") or []:
+            if not isinstance(raw_event, dict) or raw_event.get("event_kind") != "call":
+                continue
+            callee = _as_dict(raw_event.get("callee"))
+            location = _as_dict(raw_event.get("location"))
+            key = (
+                str(callee.get("usr") or callee.get("referenced_usr") or ""),
+                int(location.get("offset") or 0),
+                int(location.get("line") or 0),
+                int(location.get("column") or 0),
+                str(raw_event.get("expression") or raw_event.get("operation") or ""),
+            )
+            if key in seen_events:
+                continue
+            seen_events.add(key)
+            events.append(raw_event)
+    events.sort(key=_native_event_source_order)
+
+    released: Dict[str, Dict[str, Any]] = {}
+    matcher_facts: List[Dict[str, Any]] = []
+    for event in events:
+        callee = _as_dict(event.get("callee"))
+        name = str(callee.get("name") or callee.get("qualified_name") or "")
+        usr = str(callee.get("usr") or callee.get("referenced_usr") or "")
+        if not name or not usr:
+            continue
+        contracts = registry.find_for_call(name, "deallocator", usr=usr)
+        arguments = [str(value) for value in event.get("arguments") or []]
+        trusted = [
+            contract
+            for contract in contracts
+            if getattr(contract, "effects_trusted", False)
+            and contract.applicability(arguments, str(event.get("return_value") or ""), event)
+            != "does_not_apply"
+        ]
+        if not trusted:
+            continue
+        argument_objects = event.get("argument_objects") or []
+        resource = argument_objects[0] if argument_objects else {}
+        if not isinstance(resource, Mapping) or resource.get("identity_complete") is False:
+            continue
+        resource_usr = str(resource.get("usr") or resource.get("referenced_usr") or "")
+        if not resource_usr:
+            continue
+        location = _as_dict(event.get("location"))
+        previous = released.get(resource_usr)
+        if previous is not None:
+            previous_location = _as_dict(previous.get("location"))
+            matcher_facts.append(
+                {
+                    "rule_id": "clang_ast_same_argument_released_twice",
+                    "category": "double_free",
+                    "callee": name,
+                    "callee_usr": usr,
+                    "line": int(location.get("line") or 0),
+                    "resource_symbol": str(
+                        resource.get("qualified_name")
+                        or resource.get("name")
+                        or resource.get("expression")
+                        or resource_usr
+                    ),
+                    "resource_usr": resource_usr,
+                    "first_release_line": int(previous_location.get("line") or 0),
+                    "second_release_line": int(location.get("line") or 0),
+                    "first_event_id": str(previous.get("event_id") or ""),
+                    "second_event_id": str(event.get("event_id") or ""),
+                    "semantic_authority": "current_instance_contract_and_native_usr",
+                    "validation": (
+                        "Native call identities show the same exact object released twice; "
+                        "Validator must confirm control-flow feasibility."
+                    ),
+                }
+            )
+        released[resource_usr] = event
+
+    if not matcher_facts:
+        return []
+    first_line = min(int(fact.get("line") or 0) for fact in matcher_facts)
+    evidence = {
+        "schema": "zscope.clang-native-matcher-evidence.v1",
+        "status": "current",
+        "execution_enabled": True,
+        "compile_command_found": True,
+        "range": {"start_line": first_line},
+        "ast_dump": {
+            "summary": {
+                "target_function": {
+                    "name": func_name,
+                    "line": first_line,
+                    "matcher_facts": matcher_facts,
+                }
+            }
+        },
+        "cfg_dump": {"summary": {"parse_ok": True}},
+    }
+    issues = clang_tooling_matcher_candidates_from_evidence(
+        func_name,
+        file_path,
+        evidence,
+        allowed_skills=allowed_skills,
+        rule_policy=rule_policy,
+    )
+    for issue in issues:
+        issue["candidate_source"] = "clang_native_fact"
+        issue["finding_kind"] = "clang_native_fact_candidate"
+        issue["evidence_checker"] = "clang_native_fact_checker"
+        issue["candidate_priority_group"] = "semantic_suspicious_point"
+        issue["validation_budget_class"] = "exact"
+        issue["validation_required"] = True
+        issue["must_validate"] = True
+        issue["confidence"] = 0.82
+        issue["rule_confidence"] = 0.82
+        pack = _as_dict(issue.get("evidence_pack"))
+        pack["candidate_source"] = "clang_native_fact"
+        pack["checker"] = "clang_native_fact_checker"
+        pack["candidate_priority_group"] = "semantic_suspicious_point"
+        pack["validation_budget_class"] = "exact"
+        pack["validation_required"] = True
+        pack["rule_confidence"] = 0.82
+        pack["native_matcher_evidence"] = evidence
+        path = _as_dict(pack.get("path"))
+        path["backend"] = "current native AST call/object identities"
+        path["complete_in_function"] = False
+    return issues
+
+
+def _native_event_source_order(event: Mapping[str, Any]) -> tuple[int, int, int, str]:
+    location = event.get("location")
+    location = location if isinstance(location, Mapping) else {}
+    offset = int(location.get("offset") or 0)
+    return (
+        0 if offset else 1,
+        offset if offset else int(location.get("line") or 0),
+        int(location.get("column") or 0),
+        str(event.get("event_id") or ""),
+    )
 
 
 def defect_class_from_clang_matcher_fact(fact: Dict[str, Any]) -> str:

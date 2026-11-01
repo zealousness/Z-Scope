@@ -139,7 +139,15 @@ def test_linked_candidate_replay_is_current_and_reopens_after_artifact_change(li
     (issue,) = candidates((index, root / "a.c", registry), "failure_unreleased")
     attach_decision_facts(issue)
     assessment = assess_protocol_candidate(issue, index, registry)
+    # The dedicated obligation consumes the current linked path while keeping
+    # business responsibility unconfirmed; replay alone never confirms a defect.
     assert assessment["state"] == "conditional", assessment
+    assert assessment["technical_gaps"] == []
+    assert {a["fact_kind"] for a in assessment["assumptions"]} == {
+        "event:business_release_requirement",
+        "event:responsibility_endpoint",
+    }
+    assert all(a["status"] == "unconfirmed" for a in assessment["assumptions"])
     assert assessment["technical_witness_current"]
     assert assessment["link_target"]["target_id"] == receipt["target_id"]
     assert {r["symbol"]["build_context_id"] for r in assessment["source_refs"]} == set(

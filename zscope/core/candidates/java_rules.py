@@ -17,6 +17,7 @@ from .cpp_domains import (
     resolve_emitter_descriptor,
     resolve_rule_descriptor,
 )
+from .cpp_domains.source_events import has_terminating_guard, strip_comments_preserve_literals
 
 if TYPE_CHECKING:
     from ...orchestration.subagents import SubAgentTicket
@@ -90,7 +91,7 @@ class JavaRuleCandidateGenerator:
             skill="java_injection",
             cwe="CWE-89",
             pattern=re.compile(
-                r"\b(?:String\s+)?\w*sql\w*\s*=\s*\"[^\"]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^\"]*\"\s*\+",
+                r"\b(?:String\s+)?[A-Za-z_]\w*\s*=\s*\"[^\"]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^\"]*\"\s*\+",
                 re.I,
             ),
             sink_label="concatenated JDBC SQL string",
@@ -111,7 +112,7 @@ class JavaRuleCandidateGenerator:
             defect_class="sql_injection",
             skill="java_injection",
             cwe="CWE-89",
-            pattern=re.compile(r"\b\w+\.prepareStatement\s*\(\s*\w*sql\w*\s*\)", re.I),
+            pattern=re.compile(r"\b\w+\.prepareStatement\s*\(\s*[A-Za-z_]\w*\s*\)", re.I),
             sink_label="PreparedStatement from dynamic SQL variable",
             description="PreparedStatement 使用已经拼接好的 SQL 变量创建，可能是伪预编译。",
             root_cause="SQL 字符串在 prepareStatement 之前已拼接外部输入，未使用占位符绑定。",
@@ -745,7 +746,7 @@ class JavaRuleCandidateGenerator:
             skill="java_web_security",
             cwe="CWE-22",
             pattern=re.compile(
-                r"\b(?:ZipInputStream|ZipFile)\b|\.getNextEntry\s*\(|\.entries\s*\(\)|\.getName\s*\(\)"
+                r"\b(?:ZipInputStream|ZipFile)\b|\.getNextEntry\s*\(|\.entries\s*\(\)"
             ),
             sink_label="archive entry path",
             description="压缩包条目名可能包含 `../` 或绝对路径，解压时造成 Zip Slip。",
@@ -1325,14 +1326,16 @@ class JavaRuleCandidateGenerator:
 
     def _parse_lines(self, code: str) -> List[JavaLine]:
         result: List[JavaLine] = []
-        for idx, raw in enumerate(str(code or "").splitlines(), start=1):
-            match = self._LINE_RE.match(raw)
+        raw_lines = str(code or "").splitlines()
+        clean_lines = strip_comments_preserve_literals(str(code or "")).splitlines()
+        for idx, (raw, clean) in enumerate(zip(raw_lines, clean_lines), start=1):
+            match = self._LINE_RE.match(clean)
             if match:
                 number = int(match.group(1))
                 text = match.group(2).strip()
             else:
                 number = idx
-                text = raw.strip()
+                text = clean.strip()
             result.append(JavaLine(number=number, raw=raw, text=text, index=len(result)))
         return result
 
@@ -1475,7 +1478,132 @@ class JavaRuleCandidateGenerator:
         return 0
 
     @staticmethod
+    def _xml_factory_receiver(line: JavaLine) -> tuple[str, str] | None:
+        text = line.text
+        factory = re.search(
+            r"\b(?P<kind>DocumentBuilderFactory|SAXParserFactory|XMLInputFactory|"
+            r"XMLReader|SAXReader)\b",
+            text,
+        )
+        if not factory or not re.search(
+            r"\b(?:newInstance|newFactory|createXMLReader)\s*\(|\bnew\s+", text
+        ):
+            return None
+        assignment = re.search(
+            r"\b(?:DocumentBuilderFactory|SAXParserFactory|XMLInputFactory|XMLReader|SAXReader)\s+"
+            r"(?P<receiver>[A-Za-z_]\w*)\s*=",
+            text,
+        )
+        if assignment is None:
+            assignment = re.search(r"\b(?P<receiver>[A-Za-z_]\w*)\s*=", text)
+        # Inline factory chains have no receiver to configure and therefore
+        # remain candidates; imports/type mentions without construction were
+        # rejected above.
+        return (factory.group("kind"), assignment.group("receiver") if assignment else "")
+
+    @classmethod
+    def _xml_factory_is_hardened(cls, lines: List[JavaLine], line: JavaLine) -> bool:
+        identity = cls._xml_factory_receiver(line)
+        if identity is None:
+            return False
+        kind, receiver = identity
+        if not receiver:
+            return False
+        receiver_pattern = re.compile(
+            rf"\b{re.escape(receiver)}\s*\.\s*set(?:Feature|Property)\s*\("
+        )
+        controls: list[tuple[str, bool]] = []
+        for item in lines[line.index + 1 : min(len(lines), line.index + 14)]:
+            if re.search(r"\.parse\s*\(|\.read\s*\(|\.createXMLStreamReader\s*\(", item.text):
+                # Configuration after parser consumption cannot protect it.
+                break
+            if not receiver_pattern.search(item.text):
+                continue
+            lowered = item.text.lower()
+            value = re.search(r",\s*(true|false)\s*\)", lowered)
+            if value:
+                controls.append((lowered, value.group(1) == "true"))
+
+        def configured(token: str, expected: bool) -> bool:
+            return any(token.lower() in text and value is expected for text, value in controls)
+
+        if configured("disallow-doctype-decl", True):
+            return True
+        external_entities_disabled = configured("external-general-entities", False) and configured(
+            "external-parameter-entities", False
+        )
+        if kind == "XMLInputFactory":
+            return configured("support_dtd", False) and (
+                configured("issupportingexternalentities", False)
+                or configured("is_supporting_external_entities", False)
+            )
+        return external_entities_disabled
+
+    @staticmethod
+    def _object_lookup_identifiers(text: str) -> set[str]:
+        calls = re.findall(r"\(([^()]*)\)", str(text or ""))
+        if not calls:
+            return set()
+        ignored = {"true", "false", "null", "this", "class"}
+        return {
+            name
+            for name in re.findall(r"\b[A-Za-z_]\w*\b", calls[-1])
+            if name not in ignored and not name[0].isupper()
+        }
+
+    @classmethod
+    def _has_object_authorization_guard(cls, lines: List[JavaLine], line: JavaLine) -> bool:
+        identifiers = cls._object_lookup_identifiers(line.text)
+        subject = re.compile(
+            r"\b(?:principal|authentication|currentUser|securityContext|tenant|owner)\b",
+            re.IGNORECASE,
+        )
+        subject_aliases = {
+            match.group("alias")
+            for item in lines[: line.index]
+            for match in re.finditer(
+                r"\b(?:Principal|Authentication|SecurityContext)\s+" r"(?P<alias>[A-Za-z_]\w*)\b",
+                item.text,
+            )
+        }
+
+        def references_subject(text: str) -> bool:
+            return bool(
+                subject.search(text)
+                or any(re.search(rf"\b{re.escape(alias)}\b", text) for alias in subject_aliases)
+            )
+
+        # Binding the current subject/tenant in the lookup itself is an
+        # object-level authorization constraint rather than mere nearby text.
+        if identifiers and references_subject(line.text) and len(identifiers) >= 2:
+            return True
+
+        annotation_window = lines[max(0, line.index - 16) : line.index]
+        for item in annotation_window:
+            if "@PreAuthorize" not in item.text:
+                continue
+            if references_subject(item.text) and any(
+                re.search(rf"#\s*{re.escape(identifier)}\b", item.text)
+                for identifier in identifiers
+            ):
+                return True
+
+        def rejects(condition: str) -> bool:
+            if not references_subject(condition):
+                return False
+            return bool(
+                re.search(r"\b(?:owner|tenant|authorize|permission|access)\b", condition, re.I)
+                or any(
+                    re.search(rf"\b{re.escape(identifier)}\b", condition)
+                    for identifier in identifiers
+                )
+            )
+
+        return has_terminating_guard(lines, line.index, rejects, lookback=16)
+
+    @classmethod
     def _rule_applies_to_line(
+        cls,
         rule: JavaRule,
         file_path: str,
         lines: List[JavaLine],
@@ -1499,32 +1627,24 @@ class JavaRuleCandidateGenerator:
                 keyword in lowered for keyword in ("select", "insert", "update", "delete")
             )
         if rule.rule_id == "java_jdbc_fake_prepared_statement":
-            window = " ".join(
-                item.text
-                for item in lines[max(0, line.index - 8) : min(len(lines), line.index + 5)]
-            ).lower()
-            return (
-                "preparestatement" in line.text.lower()
-                and any(keyword in window for keyword in ("select", "insert", "update", "delete"))
-                and "+" in window
-                and any(
-                    token in window
-                    for token in (
-                        "executeupdate(sql",
-                        "executequery(sql",
-                        ".execute(sql",
-                        "preparestatement(sql",
-                    )
-                )
+            prepared = re.search(
+                r"\.prepareStatement\s*\(\s*(?P<query>[A-Za-z_]\w*)\s*\)", line.text
+            )
+            if not prepared:
+                return False
+            query = prepared.group("query")
+            assignment = re.compile(
+                rf"\b(?:String\s+)?{re.escape(query)}\s*=\s*\"[^\"]*"
+                r"\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^\"]*\"\s*\+",
+                re.I,
+            )
+            return any(
+                assignment.search(item.text) for item in lines[max(0, line.index - 16) : line.index]
             )
         if rule.rule_id == "java_xxe_factory":
-            window = " ".join(
-                item.text
-                for item in lines[max(0, line.index - 4) : min(len(lines), line.index + 12)]
-            ).lower()
-            if any(token.lower() in window for token in rule.guard_terms):
-                return False
-            return True
+            return cls._xml_factory_receiver(line) is not None and not cls._xml_factory_is_hardened(
+                lines, line
+            )
         if rule.rule_id == "java_xmldecoder_readobject":
             window = " ".join(
                 item.text
@@ -1606,7 +1726,7 @@ class JavaRuleCandidateGenerator:
                 item.text
                 for item in lines[max(0, line.index - 12) : min(len(lines), line.index + 4)]
             ).lower()
-            if any(token.lower() in context for token in rule.guard_terms):
+            if cls._has_object_authorization_guard(lines, line):
                 return False
             return any(
                 token in context

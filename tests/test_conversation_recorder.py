@@ -5,6 +5,13 @@ import pytest
 from zscope.framework.conversation_recorder import ConversationRecorder
 
 
+@pytest.mark.parametrize(
+    "text,budget,expected", [("中", 1, ""), ("🙂", 3, ""), ("a中b", 3, "a"), ("a中b", 4, "a中")]
+)
+def test_utf8_truncation_handles_incomplete_code_points(text, budget, expected):
+    assert ConversationRecorder._fit_text(text, budget) == expected
+
+
 @pytest.fixture(autouse=True)
 def _clean_recorder_env(monkeypatch):
     for name in (

@@ -16,11 +16,19 @@ from zscope.semantics.native_wrappers import infer_native_wrapper
 CODE = """
 #define _POSIX_C_SOURCE 200112L
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 typedef struct Box { void *slot; } Box;
 void opaque(void *);
+void note(int);
 void *saved;
 void *direct(void) { return malloc(8); }
 void *sized(size_t n) { return malloc(n); }
+void *logged_failure(size_t n) { void *p=malloc(n); if(!p && n>0) {note(1); return NULL;} return p; }
+void *resize(void *old,size_t n) {void *p=realloc(old,n); if(!p && n>0) {note(2); return NULL;} return p;}
+char *duplicate(const char *s) {if(!s) return NULL; size_t n=strlen(s)+1; char *p=malloc(n); if(p) memcpy(p,s,n); return p;}
+char *duplicate_nested(const char *s) {if(!s) return NULL; size_t n=strlen(s)+1; char *p=logged_failure(n); if(p) memcpy(p,s,n); return p;}
+char *duplicate_cast(const char *s) {if(!s) return NULL; size_t n=strlen(s)+1; char *p=(char*)logged_failure(n); if(p) memcpy(p,s,n); return p;}
 void *alias(void) { void *p=malloc(8); void *q=p; p=0; return q; }
 void *cleanup(int bad) { void *p=malloc(8); if(!p) return NULL; if(bad) {free(p); return NULL;} return p; }
 int make(void **out, int bad) {void *p=malloc(8); if(!p) return 1; if(bad) {free(p); return 2;} *out=p; return 0;}
@@ -46,6 +54,7 @@ void *narrow(int n) {void *p=malloc(8); unsigned char c=n; if(c) free(p); return
 void dispose(int enabled,void *p) {void *q=p; p=0; if(enabled) free(q);}
 void repeat(void *p) {free(p); free(p);}
 void use_status(void) {void *p; int status=make(&p,0); if(status != 0) return; free(p);}
+int path_exists(const char *path) {if(!path) return 0; struct stat st; return stat(path,&st)==0;}
 """
 
 
@@ -89,6 +98,8 @@ def checked(project, name, registry=None):
         ("field", "argument", 0, "->slot"),
         ("aligned", "return", None, ""),
         ("sized", "return", None, ""),
+        ("logged_failure", "return", None, ""),
+        ("duplicate", "return", None, ""),
         ("alias_out", "output_argument", 0, ""),
         ("field_aligned", "argument", 0, "->slot"),
     ],
@@ -104,10 +115,80 @@ def test_native_positive_carrier_and_success(wrapper_project, name, kind, index,
         contract.carrier.argument_index,
         contract.carrier.member_path,
     ) == (kind, index, path)
-    assert contract.verification["checker"] == "native_wrapper_value_flow.v1"
+    assert contract.verification["checker"] == "native_wrapper_value_flow.v2"
     assert not contract.verification["fresh_no_alias"]
     assert raw["evidence"][0]["function_usr"] == "c:@F@" + name
     assert raw["evidence"][0]["build_context_id"] == ctx["program_facts"]["build_context_id"]
+
+
+def test_native_reallocator_preserves_replace_and_failure_protocol(wrapper_project):
+    _, result = checked(wrapper_project, "resize")
+    assert result["attempted"] and not result["reasons"], result
+    (raw,) = result["contracts"]
+    contract = ApiContract.from_row({"contract": raw})
+    assert contract.effects_trusted and contract.role == "reallocator"
+    assert contract.carrier.kind == "return"
+    actions = [
+        action
+        for transition in contract.protocol["transitions"]
+        for action in transition["actions"]
+    ]
+    replacement = next(action for action in actions if action["kind"] == "replace")
+    preservation = next(action for action in actions if action["kind"] == "preserve")
+    assert replacement["old"] == {"kind": "argument", "index": 0}
+    assert replacement["new"] == {"kind": "return"}
+    assert preservation["object"] == {"kind": "argument", "index": 0}
+
+
+def test_native_allocator_wrapper_fixed_point_supports_copying_wrapper(wrapper_project):
+    registry = default_local_pattern_semantics().contracts
+    _, inner = checked(wrapper_project, "logged_failure", registry)
+    registry.add(ApiContract.from_row({"contract": inner["contracts"][0]}))
+    _, outer = checked(wrapper_project, "duplicate_nested", registry)
+    assert outer["attempted"] and not outer["reasons"], outer
+    contract = ApiContract.from_row({"contract": outer["contracts"][0]})
+    assert contract.effects_trusted and contract.role == "allocator"
+
+
+def test_native_wrapper_uses_exact_callee_usr_without_scan_call_context(wrapper_project):
+    registry = default_local_pattern_semantics().contracts
+    context, inner = checked(wrapper_project, "logged_failure", registry)
+    row = deepcopy(inner["contracts"][0])
+    row["symbol"]["usr"] = context["program_facts"]["functions"][0]["owner"]["usr"]
+    registry.add(ApiContract.from_row({"contract": row}))
+    _, result = checked(wrapper_project, "duplicate_nested", registry)
+    assert result["contracts"] and not result["reasons"], result
+    other = default_local_pattern_semantics().contracts
+    row["symbol"]["usr"] = "c:@F@different_function"
+    other.add(ApiContract.from_row({"contract": row}))
+    _, rejected = checked(wrapper_project, "duplicate_nested", other)
+    assert not rejected["contracts"] and rejected["reasons"]
+
+
+def test_native_standard_operation_wrapper_preserves_argument_guard(wrapper_project):
+    _, result = checked(wrapper_project, "path_exists")
+
+    assert result["attempted"] and not result["reasons"], result
+    contract = ApiContract.from_row({"contract": result["contracts"][0]})
+    assert contract.effects_trusted and contract.role == "standard_operation"
+    assert contract.carrier.kind == "argument" and contract.carrier.argument_index == 0
+    assert contract.applicability(["path"], facts={"path": None}) == "does_not_apply"
+    assert contract.applicability(["path"], facts={"path": "/tmp/key"}) == "applies"
+    assert contract.verification["checker"] == "native_standard_wrapper_value_flow.v1"
+
+
+def test_native_allocator_wrapper_preserves_exact_call_identity_through_pointer_cast(
+    wrapper_project,
+):
+    registry = default_local_pattern_semantics().contracts
+    _, inner = checked(wrapper_project, "logged_failure", registry)
+    registry.add(ApiContract.from_row({"contract": inner["contracts"][0]}))
+
+    _, outer = checked(wrapper_project, "duplicate_cast", registry)
+
+    assert outer["attempted"] and not outer["reasons"], outer
+    contract = ApiContract.from_row({"contract": outer["contracts"][0]})
+    assert contract.effects_trusted and contract.role == "allocator"
 
 
 @pytest.mark.parametrize(

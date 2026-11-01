@@ -431,7 +431,7 @@ class QueryStaticFindingsTool(ContractTool):
     def _validation_state(disposition: str, status: str) -> str:
         if disposition == "confirmed":
             return "confirmed"
-        if disposition == "rejected_with_proof":
+        if disposition in {"rejected_with_proof", "rejected_with_evidence"}:
             return "rejected"
         if disposition in {
             "needs_review",

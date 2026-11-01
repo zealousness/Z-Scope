@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+from zscope.framework.base import validate_function_arguments
+from zscope.agents.semantic_modeler.validation import schema_errors
 from zscope.framework.llm_client import LLMClient
 from zscope.tools.registry import build_tool_registry
 
@@ -52,6 +56,109 @@ def test_strict_schema_makes_optional_fields_nullable_and_required() -> None:
         None,
     ]
     assert schema["parameters"]["additionalProperties"] is False
+
+
+def test_optional_union_and_const_preserve_original_non_null_constraints():
+    tool = {"type": "function", "function": {
+        "name": "select", "parameters": {
+            "type": "object", "required": [], "additionalProperties": False,
+            "properties": {
+                "selection": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+                "fixed": {"type": "string", "const": "fixed"},
+            },
+        },
+    }}
+    strict = LLMClient._strict_tool_schemas([tool])[0]
+    for selection in ("entry", 3, None):
+        assert validate_function_arguments(strict, {"selection": selection, "fixed": None}) is None
+    for selection in (True, [], {}, 1.5):
+        assert validate_function_arguments(strict, {"selection": selection, "fixed": None})
+    assert validate_function_arguments(strict, {"selection": None, "fixed": "wrong"})
+    assert validate_function_arguments(strict, {"selection": None, "fixed": "fixed"}) is None
+    assert LLMClient._restore_portable_tool_args(
+        "select", {"selection": None, "fixed": None}, [tool]
+    ) == {}
+    # Adapting a schema never modifies its portable source.
+    assert tool["function"]["parameters"]["required"] == []
+
+
+@pytest.mark.parametrize("keyword", ["anyOf", "oneOf"])
+def test_nested_union_object_is_strict_and_restores_only_artificial_nulls(keyword):
+    object_branch = {
+        "type": "object", "required": ["kind"], "additionalProperties": False,
+        "properties": {
+            "kind": {"type": "string", "const": "entry"},
+            "note": {"type": "string"},
+            "keep": {"type": ["string", "null"]},
+        },
+    }
+    tool = {"type": "function", "function": {
+        "name": "select", "parameters": {
+            "type": "object", "required": ["choice"], "additionalProperties": False,
+            "properties": {"choice": {keyword: [object_branch, {"type": "string"}]}},
+        },
+    }}
+    strict = LLMClient._strict_tool_schemas([tool])[0]
+    branch = strict["function"]["parameters"]["properties"]["choice"][keyword][0]
+    assert branch["required"] == ["kind", "note", "keep"]
+    assert branch["additionalProperties"] is False
+    arguments = {"choice": {"kind": "entry", "note": None, "keep": None}}
+    assert validate_function_arguments(strict, arguments) is None
+    restored = LLMClient._restore_portable_tool_args("select", arguments, [tool])
+    assert restored == {"choice": {"kind": "entry", "keep": None}}
+    assert validate_function_arguments(tool, restored) is None
+    assert validate_function_arguments(strict, {"choice": "entry"}) is None
+    assert validate_function_arguments(strict, {"choice": {"kind": "entry"}})
+    assert validate_function_arguments(strict, {"choice": {
+        "kind": "entry", "note": 7, "keep": None,
+    }})
+
+
+def test_restoration_respects_enum_that_excludes_explicit_null():
+    tool = {"type": "function", "function": {
+        "name": "select", "parameters": {
+            "type": "object", "required": [],
+            "properties": {"choice": {"type": ["string", "null"], "enum": ["entry"]}},
+        },
+    }}
+    assert LLMClient._restore_portable_tool_args("select", {"choice": None}, [tool]) == {}
+
+
+def test_recursive_local_defs_keep_root_scope_during_strict_restoration():
+    predicate = {
+        "type": "object", "required": ["kind"], "additionalProperties": False,
+        "properties": {
+            "kind": {"enum": ["and", "atom"]},
+            "note": {"type": "string"},
+            "items": {"type": "array", "items": {"$ref": "#/$defs/predicate"}},
+            "nullable": {"type": ["string", "null"]},
+        },
+    }
+    tool = {"type": "function", "function": {
+        "name": "select", "parameters": {
+            "type": "object", "required": ["choice"], "additionalProperties": False,
+            "$defs": {"predicate": predicate},
+            "properties": {"choice": {"anyOf": [
+                {"$ref": "#/$defs/predicate"}, {"type": "string"},
+            ]}},
+        },
+    }}
+    arguments = {"choice": {
+        "kind": "and", "note": None, "nullable": None,
+        "items": [{"kind": "atom", "note": None, "items": None, "nullable": None}],
+    }}
+    strict = LLMClient._strict_tool_schemas([tool])[0]["function"]["parameters"]
+    definition = strict["$defs"]["predicate"]
+    assert definition["required"] == ["kind", "note", "items", "nullable"]
+    assert definition["additionalProperties"] is False
+    assert schema_errors(arguments, strict) == []
+    restored = LLMClient._restore_portable_tool_args("select", arguments, [tool])
+    assert restored == {"choice": {
+        "kind": "and", "nullable": None,
+        "items": [{"kind": "atom", "nullable": None}],
+    }}
+    assert schema_errors(restored, tool["function"]["parameters"]) == []
+    assert predicate["required"] == ["kind"]
 
 
 def test_tool_argument_normalization_applies_defaults_only_at_the_root() -> None:

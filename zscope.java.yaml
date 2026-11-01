@@ -1,6 +1,6 @@
 # Z-SCOPE Java 配置 v3。复制为目标项目的 zscope.yaml 后修改。
-# v3 是当前唯一用户配置入口：project.root 相对本配置文件所在目录解析，
-# 其余项目路径相对解析后的 root，同一份文件从任意工作目录加载到同一工程。
+# 本 YAML 所在目录就是唯一工程根，不允许 project.root/source_root。
+# 所有项目相对路径基于该目录，从任意工作目录加载都指向同一工程。
 # 所有字符串支持 ${VAR} 环境变量展开；字段合法性以 zscope-config validate 为准。
 config_version: 3
 
@@ -15,14 +15,13 @@ llms:
 
 project:
   language: java # 只能是 c_cpp 或 java
-  root: . # 相对本配置文件所在目录解析（v3 语义）；绝对路径也接受
   platform: linux_user # 当前仅接受 linux_user；平台专属行为尚未接线
   targets:
     # Java 目标没有编译数据库概念：compile_commands 对 Java 是禁止字段。
     - id: main
 
 scan:
-  preset: quick # Java 当前仅开放 quick；overnight 对应深度尚未通过该语言门禁。
+  preset: fast # Java 当前仅开放 fast；balanced/deep 尚未通过该语言门禁。
   # focus: [memory, resources, async_lifecycle] # 已校验保留；尚未驱动 Skill 领域选择
   # reproduction: auto # 声明复现意图；不启用内部动态复现实验
 

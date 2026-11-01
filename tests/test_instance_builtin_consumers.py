@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from zscope.config.project_semantics import compiled_project_contracts, empty_project_semantics
 from zscope.core.candidates.regex import RegexCandidateGenerator
 from zscope.core.candidates.graph import GraphCandidateGenerator, FunctionView
 from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
@@ -882,12 +883,6 @@ REGEX_EFFECT_CASES = [
     ),
     Case(
         "regex",
-        "calloc_product_overflow",
-        ("calloc",),
-        "int entry(size_t count, size_t stride) {\n void *p = calloc(count, stride);\n}",
-    ),
-    Case(
-        "regex",
         "derived_protocol_length_reaches_copy_without_input_bound",
         ("memcpy",),
         "int entry(size_t packet_len) {\n size_t length = count * 8;\n memcpy(dst, src, length);\n}",
@@ -959,7 +954,7 @@ REGEX_EFFECT_CASES = [
         "regex",
         "write_without_sigpipe_handling",
         ("write",),
-        "int entry(void) {\n write(fd, data, size);\n}",
+        "int entry(void) {\n write(peer_fd, data, size);\n}",
     ),
     Case(
         "regex",
@@ -1012,10 +1007,10 @@ def test_unknown_delete_call_does_not_fake_tree_rollback():
         ),
     ],
 )
-def test_unknown_overflow_intrinsic_cannot_discharge_arithmetic(statement, rule):
+def test_unrelated_overflow_intrinsic_cannot_discharge_arithmetic(statement, rule):
     code = f"int entry(size_t body_len, size_t body_length, size_t extra) {{\n __builtin_add_overflow(a, b, &out);\n {statement}\n}}"
     local = controlled_local()
-    assert rule not in emitted("clang", local, code)
+    assert rule in emitted("clang", local, code)
     assert rule in emitted("clang", without(local, ("__builtin_add_overflow",)), code)
 
 
@@ -1050,6 +1045,164 @@ def test_current_native_access_atomicity_still_controls_shared_access_leads(
     code = "void entry(void) {\n shared++; atomic_magic(&other);\n}"
     rule = ("clang_cfg_" if engine == "clang" else "") + "unsynchronized_shared_flag_or_counter"
     assert any(i["rule"] == rule for i in g.generate_issues("entry", code, "a.c")) == expected
+
+
+@pytest.mark.parametrize(
+    ("engine", "expected_rule"),
+    [
+        ("regex", "path_check_before_open"),
+        ("clang", "clang_cfg_path_check_before_open"),
+    ],
+)
+def test_exact_native_path_query_wrapper_reaches_toctou_consumers(engine, expected_rule):
+    build = "build-path-query"
+    wrapper_usr = "c:@F@_file_exists"
+    local = controlled_local()
+    document = empty_project_semantics()
+    document["interfaces"] = [
+        {
+            "id": "project:function:_file_exists:test",
+            "primitive": False,
+            "selector": {
+                "kind": "function",
+                "name": "_file_exists",
+                "file": "src/path.c",
+                "signature": "int (const char *)",
+                "usr": wrapper_usr,
+            },
+            "basis": "derived_wrapper",
+            "status": "confirmed",
+            "cases": [
+                {
+                    "when": {
+                        "op": "compare",
+                        "left": {"kind": "argument", "index": 0},
+                        "operator": "!=",
+                        "right": {"kind": "literal", "value": None},
+                    },
+                    "effect": "applies",
+                },
+                {
+                    "when": {
+                        "op": "compare",
+                        "left": {"kind": "argument", "index": 0},
+                        "operator": "==",
+                        "right": {"kind": "literal", "value": None},
+                    },
+                    "effect": "no_effect",
+                },
+            ],
+            "effects": [
+                {
+                    "domain": "protocol",
+                    "role": "standard_operation",
+                    "operation": "standard_operation",
+                    "carrier": {
+                        "root": "argument",
+                        "index": 0,
+                        "phase": "post",
+                        "dereference": 0,
+                        "members": [],
+                    },
+                    "resource_family": "",
+                    "strength": "must_under_guard",
+                    "protocol": {},
+                }
+            ],
+            "otherwise": "unknown",
+            "pairs": [],
+            "derived_from": ["builtin:stat"],
+            "evidence_summary": "Current exact native wrapper proof.",
+            "evidence_ref": "evidence.json#file-exists",
+            "evidence_digest": "d" * 64,
+            "variants": [
+                {
+                    "target_id": "main",
+                    "build_context_id": build,
+                    "usr": wrapper_usr,
+                    "signature": "int (const char *)",
+                    "file": "src/path.c",
+                    "source_sha256": "a" * 64,
+                    "evidence_sha256": "b" * 64,
+                    "native_input_hash": "c" * 64,
+                    "identity_status": "exact",
+                }
+            ],
+        }
+    ]
+    payload = compiled_project_contracts(document, build_context_id=build)[0]
+    contract = ApiContract.from_row(
+        {
+            "source": payload["source"],
+            "kind": payload["role"],
+            "contract": payload,
+        }
+    )
+    assert contract is not None and contract.effects_trusted
+    local.contracts.add(contract)
+    local.contracts.build_context_id = build
+    facts = {
+        "complete": True,
+        "build_context_id": build,
+        "function_identity": {"usr": "c:@F@entry", "build_context_id": build},
+        "functions": [
+            {
+                "complete": True,
+                "owner": {"name": "entry", "usr": "c:@F@entry"},
+                "events": [
+                    {
+                        "event_kind": "call",
+                        "expression": "_file_exists(path)",
+                        "arguments": ["path"],
+                        "callee": {
+                            "name": "_file_exists",
+                            "usr": wrapper_usr,
+                            "canonical_signature": "int (const char *)",
+                        },
+                        "location": {"line": 2},
+                    }
+                ],
+            }
+        ],
+    }
+    cls = RegexCandidateGenerator if engine == "regex" else ClangAstCfgCandidateGenerator
+    code = """
+int entry(const char *path) {
+    if (!_file_exists(path)) return -1;
+    return open(path, 0);
+}
+"""
+    exact = cls(
+        local,
+        program_facts_provider=lambda *_: facts,
+        restrict_to_semantics=True,
+    ).generate_issues("entry", code, "src/demo.c")
+    unknown_identity = cls(
+        local,
+        program_facts_provider=lambda *_: {**facts, "functions": []},
+        restrict_to_semantics=True,
+    ).generate_issues("entry", code, "src/demo.c")
+
+    assert expected_rule in {issue["rule"] for issue in exact}
+    assert expected_rule not in {issue["rule"] for issue in unknown_identity}
+    if engine == "clang":
+        key_code = """
+int entry(const char *path) {
+    if (!_file_exists(path)) return -1;
+    int key = hash_path(path);
+    pthread_mutex_lock(&g_lock); if (find_zone(path)) return -1;
+    pthread_mutex_unlock(&g_lock);
+    return key;
+}
+"""
+        key_rules = cls(
+            local,
+            program_facts_provider=lambda *_: facts,
+            restrict_to_semantics=True,
+        ).generate_issues("entry", key_code, "src/demo.c")
+        assert "clang_cfg_path_state_key_generation_before_locked_registration" in {
+            issue["rule"] for issue in key_rules
+        }
 
 
 REVISED_RULES = [
@@ -1554,8 +1707,8 @@ def test_exact_clang_unknown_acquirer_does_not_create_owned_member_effect():
     local = without(controlled_local(), ("malloc",))
     code = "void entry(Node *parent) {\n parent->opaque = malloc(8);\n free(parent);\n}"
     assert rule not in emitted("clang", local, code)
-    # Structural child ownership remains an independent candidate source.
-    assert rule in emitted("clang", local, code.replace("opaque", "children"))
+    # A child-like member spelling is not independent ownership evidence.
+    assert rule not in emitted("clang", local, code.replace("opaque", "children"))
 
 
 def test_legacy_clang_owned_member_case_insensitive_acquirer_is_preserved():

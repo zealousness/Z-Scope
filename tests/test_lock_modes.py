@@ -9,6 +9,43 @@ from test_wrapper_contract_compiler import context, compile_all, publish
 
 
 @pytest.mark.parametrize(
+    "api",
+    ["pthread_mutex_lock", "pthread_rwlock_rdlock", "pthread_mutex_unlock", "free", "realloc"],
+)
+def test_reviewed_may_effect_never_becomes_certain_under_a_satisfied_guard(api):
+    from zscope.semantics.contracts import CONTRACT_COMPILER_VERSION
+    from zscope.semantics.defaults import default_local_pattern_semantics
+
+    registry = default_local_pattern_semantics().contracts
+    (base,) = registry.find(api)
+    possible = replace(
+        base,
+        source="inferred:project_semantics:possible",
+        verification={
+            "method": "source_composition",
+            "compiler_version": CONTRACT_COMPILER_VERSION,
+            "source_hash": "current-source",
+            "identity_verified": True,
+            "authority": "native_current",
+            "effect_strength": "may",
+        },
+    )
+    arguments = ["object", "8"]
+    returned = "new_object" if api == "realloc" else "0"
+    facts = {"object": 1, "new_object": 2}
+    assert base.applicability(arguments, returned, facts) == "applies"
+    if api == "realloc":
+        assert registry.allocation_extent(api, arguments) == "8"
+    assert possible.effects_trusted  # usable as a possible candidate signal
+    assert possible.applicability(arguments, returned, facts) == "unknown"
+    assert possible.structural()["effect_authority"] == "may"
+    registry.add(possible)
+    transitions = registry.resolved_transitions(api, arguments, returned, facts=facts)
+    assert all(event["applicability"] != "applies" for event in transitions)
+    assert registry.allocation_extent(api, arguments) == ""
+
+
+@pytest.mark.parametrize(
     "name,mode",
     [
         ("pthread_mutex_lock", "exclusive"),

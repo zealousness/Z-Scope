@@ -1,7 +1,7 @@
 /* Public v3 document editing. Keep original values until a field is edited. */
 window.ZScopeConfigEditor = {
   configRequest: 0, configEditRevision: 0, configLoading: false, configSaving: false,
-  configError: '', v3Form: null, v3InitialForm: null,
+  configError: '', configExecutionError: '', v3Form: null, v3InitialForm: null,
   modelNumberFields: ['max_tokens', 'timeout', 'max_retries', 'base_url_rate_limit_per_minute', 'base_url_max_concurrent_requests'],
   modelBooleanFields: ['retry_until_available', 'supports_structured_output'],
   cloneConfig(value) { return JSON.parse(JSON.stringify(value)); },
@@ -46,7 +46,8 @@ window.ZScopeConfigEditor = {
       if (![2, 3].includes(cfg.config_version)) throw new Error('此配置版本尚不支持编辑，请检查配置文件。');
       this.structuredConfig = this.cloneConfig(cfg);
       this.populateConfigForm(cfg); this.structuredConfigAvailable = true;
-      this.configDirty = false; this.structuredConfigStatus = '配置已载入';
+      this.configDirty = false; this.structuredConfigStatus = data.execution_error ? '配置已载入，执行条件尚未就绪' : '配置已载入';
+      this.configExecutionError = data.execution_error || '';
     } catch (error) {
       if (request === this.configRequest) {
         if (!this.configDirty) this.structuredConfigAvailable = false;
@@ -68,9 +69,9 @@ window.ZScopeConfigEditor = {
   populateV3Form(cfg) {
     const project = cfg.project || {}, scan = cfg.scan || {}, execution = cfg.execution || {};
     this.v3Form = {
-      project: {root: project.root ?? '.', language: project.language, platform: project.platform ?? 'linux_user'},
+      project: {language: project.language, platform: project.platform ?? 'linux_user', semantics_file: project.semantics_file || ''},
       targets: (project.targets || []).map(target => ({...target, _key: this.workbenchId()})),
-      scan: {preset: scan.preset ?? 'overnight', focus: this.configLines(scan.focus ?? ['memory', 'resources', 'async_lifecycle']), reproduction: scan.reproduction ?? 'auto'},
+      scan: {preset: scan.preset ?? 'deep', focus: this.configLines(scan.focus ?? ['memory', 'resources', 'async_lifecycle']), reproduction: scan.reproduction ?? 'auto'},
       execution: {timezone: execution.timezone ?? '', stop_at: execution.stop_at ?? '', max_workers: String(execution.max_workers ?? '')},
       profiles: Object.entries(cfg.llms || {}).map(([name, profile]) => {
         const row = {name, base_urls: this.configLines(profile.base_urls), models: this.configLines(profile.models), api_key: ''};
@@ -79,6 +80,10 @@ window.ZScopeConfigEditor = {
       }),
     };
     this.v3InitialForm = this.cloneConfig(this.v3Form);
+  },
+  changeV3Language() {
+    if (this.v3Form.project.language === 'java') this.v3Form.scan.preset = 'fast';
+    this.markConfigDirty();
   },
   addV3Target() {
     this.v3Form.targets.push({_key: this.workbenchId(), id: '', compile_commands: ''});
@@ -98,7 +103,10 @@ window.ZScopeConfigEditor = {
       if (optional && value === '') delete cfg[section][name];
       else cfg[section][name] = convert(value);
     };
-    for (const name of ['root', 'language', 'platform']) patch('project', name, form.project[name], initial.project[name]);
+    for (const name of ['language', 'platform']) patch('project', name, form.project[name], initial.project[name]);
+    if (form.project.language === 'java') delete cfg.project.semantics_file;
+    else if (initial.project.language === 'java') cfg.project.semantics_file = form.project.semantics_file || 'zscope.semantics.yaml';
+    else patch('project', 'semantics_file', form.project.semantics_file, initial.project.semantics_file, value => value || 'zscope.semantics.yaml');
     cfg.project.targets = form.targets.map(target => {
       const {_key, ...raw} = target;
       if (form.project.language === 'java' && raw.compile_commands !== null) delete raw.compile_commands;
@@ -146,6 +154,7 @@ window.ZScopeConfigEditor = {
       if (request !== this.configRequest) return;
       if (!data.success) throw new Error(data.error || '保存失败');
       this.structuredConfig = this.cloneConfig(data.config || config);
+      this.configExecutionError = data.execution_error || '';
       if (revision === this.configEditRevision) {
         this.populateConfigForm(this.structuredConfig); this.configDirty = false;
         this.structuredConfigStatus = '项目配置已保存';

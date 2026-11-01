@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 from .contract_conditions import compare, negate
 
-STANDARD_API_VERSION = "zscope.standard-api.v7"
+STANDARD_API_VERSION = "zscope.standard-api.v9"
 POSIX_REFERENCE = "https://pubs.opengroup.org/onlinepubs/9799919799/functions/contents.html"
 
 
@@ -106,7 +106,7 @@ def standard_contracts() -> list[dict[str, Any]]:
         behavior="null_is_noop",
     )
     add(
-        "open openat creat socket accept accept4 dup dup2 dup3",
+        "open openat creat shm_open socket accept accept4 dup dup2 dup3",
         "io_acquire",
         "descriptor",
         "close",
@@ -114,6 +114,7 @@ def standard_contracts() -> list[dict[str, Any]]:
     )
     add("fopen fdopen freopen", "io_acquire", "file", "fclose", success=pointer)
     add("opendir fdopendir", "io_acquire", "directory", "closedir", success=pointer)
+    add("popen", "io_acquire", "file", "pclose", success=pointer)
     add(
         "close",
         "io_release",
@@ -136,6 +137,52 @@ def standard_contracts() -> list[dict[str, Any]]:
     # diagnostic (for example EBADF), not evidence that a valid stream remains
     # owned by the caller and should be reported as leaked.
     add("closedir", "io_release", "directory", argument=0)
+    add("pclose", "io_release", "file", argument=0)
+    add(
+        "epoll_create epoll_create1 inotify_init inotify_init1 eventfd timerfd_create signalfd mq_open",
+        "io_acquire",
+        "descriptor",
+        "close",
+        success=descriptor,
+    )
+    # POSIX message-queue descriptors have their own release primitive.
+    for row in rows[-9:]:
+        if row["symbol"]["name"] == "mq_open":
+            row["pairs"] = ["mq_close"]
+            row["resource_family"] = "message_queue"
+    add("mq_close", "io_release", "message_queue", argument=0, success=zero)
+    add(
+        "mmap",
+        "allocator",
+        "mapping",
+        "munmap",
+        success=compare(ret, "!=", {"kind": "constant", "name": "MAP_FAILED"}),
+        behavior="mapping_return; MAP_FAILED_is_failure",
+    )
+    add("munmap", "deallocator", "mapping", argument=0, success=zero)
+    add(
+        "dlopen dlmopen",
+        "allocator",
+        "dynamic_library",
+        "dlclose",
+        success=pointer,
+        behavior="dynamic_loader_handle",
+    )
+    add("dlclose", "deallocator", "dynamic_library", argument=0, success=zero)
+    add(
+        "iconv_open",
+        "allocator",
+        "iconv_descriptor",
+        "iconv_close",
+        success=compare(ret, "!=", -1),
+    )
+    add("iconv_close", "deallocator", "iconv_descriptor", argument=0, success=zero)
+    add("regcomp", "io_acquire", "regex_state", "regfree", argument=0, success=zero)
+    add("regfree", "io_release", "regex_state", argument=0)
+    add("glob", "io_acquire", "glob_state", "globfree", argument=3, success=zero)
+    add("globfree", "io_release", "glob_state", argument=0)
+    add("shmat", "allocator", "sysv_mapping", "shmdt", success=compare(ret, "!=", -1))
+    add("shmdt", "deallocator", "sysv_mapping", argument=0, success=zero)
     add(
         "pthread_mutex_lock pthread_mutex_trylock pthread_mutex_timedlock pthread_mutex_clocklock",
         "lock",
@@ -211,6 +258,18 @@ def standard_contracts() -> list[dict[str, Any]]:
         success=zero,
     )
     add("pthread_spin_destroy", "lock_destroy", "spinlock", argument=0, success=zero)
+    add(
+        "mtx_lock mtx_trylock mtx_timedlock",
+        "lock",
+        "c11_mutex",
+        "mtx_unlock",
+        argument=0,
+        success=zero,
+        lock_mode="exclusive",
+    )
+    add("mtx_unlock", "unlock", "c11_mutex", argument=0, success=zero)
+    add("mtx_init", "lock_init", "c11_mutex", "mtx_destroy", argument=0, success=zero)
+    add("mtx_destroy", "lock_destroy", "c11_mutex", argument=0)
     wait_success = {
         "op": "any",
         "items": [
@@ -247,6 +306,17 @@ def standard_contracts() -> list[dict[str, Any]]:
         argument=0,
         success=zero,
     )
+    add("cnd_init", "condition_init", "c11_condition", "cnd_destroy", argument=0, success=zero)
+    add("cnd_destroy", "condition_destroy", "c11_condition", argument=0)
+    add("cnd_signal cnd_broadcast", "condition_signal", "c11_condition", argument=0, success=zero)
+    add(
+        "cnd_wait cnd_timedwait",
+        "lock_wait",
+        "c11_mutex",
+        argument=1,
+        success=zero,
+        behavior="release_then_reacquire",
+    )
     add(
         "pthread_create",
         "thread_create",
@@ -257,6 +327,8 @@ def standard_contracts() -> list[dict[str, Any]]:
         behavior="callback_argument_2; context_argument_3",
     )
     add("pthread_join pthread_detach", "thread_release", "thread", argument=0, success=zero)
+    add("thrd_create", "thread_create", "c11_thread", argument=0, output=True, success=zero)
+    add("thrd_join thrd_detach", "thread_release", "c11_thread", argument=0, success=zero)
     add(
         "pthread_cancel",
         "standard_operation",
@@ -278,14 +350,38 @@ def standard_contracts() -> list[dict[str, Any]]:
         "thread",
         behavior="deferred_cancellation_point; pending_request_runs_lifo_cleanup_without_return",
     )
+    add(
+        "signal",
+        "callback_register",
+        argument=1,
+        behavior="process_signal_handler_registration; previous_handler_returned",
+    )
+    add(
+        "sigaction kill raise shm_unlink",
+        "standard_operation",
+        argument=0,
+        behavior="process_or_named_object_state_transition; no_local_resource_ownership_transfer",
+    )
     add("memcpy memmove memset strcpy strncpy strcat strncat", "copy", argument=0)
     add("read recv recvfrom", "recv_source", argument=1)
+    add("readv preadv preadv2 recvmsg mq_receive mq_timedreceive", "recv_source", argument=1)
     add("fread", "recv_source", argument=0)
     add("write send sendto sendmsg", "send_sink", argument=1)
+    add("writev pwritev pwritev2 mq_send mq_timedsend", "send_sink", argument=1)
     add("printf vprintf", "format_sink", argument=0)
     add("fprintf vfprintf syslog", "format_sink", argument=1)
     add("sprintf vsprintf", "format_sink", argument=1)
     add("snprintf vsnprintf", "format_sink", argument=2)
+    add("asprintf vasprintf", "format_sink", argument=1)
+    add("dprintf vdprintf", "format_sink", argument=1)
+    add("asprintf vasprintf", "allocator", "malloc", "free", argument=0, output=True, success=descriptor)
+    add("getline getdelim", "allocator", "malloc", "free", argument=0, output=True, success=descriptor)
+    add(
+        "system popen execl execlp execle execv execvp execve fexecve execvpe posix_spawn posix_spawnp dlopen dlmopen",
+        "command_sink",
+        argument=0,
+        behavior="process_or_dynamic_loader_execution_sink",
+    )
     add(
         "bind listen connect shutdown setsockopt getsockopt getsockname getpeername",
         "standard_operation",
@@ -323,6 +419,12 @@ def standard_contracts() -> list[dict[str, Any]]:
         "standard_operation",
         argument=0,
         behavior="no_resource_ownership_transition",
+    )
+    add(
+        "sem_init sem_destroy sem_wait sem_trywait sem_timedwait sem_clockwait sem_post sem_getvalue pthread_barrier_init pthread_barrier_destroy pthread_barrier_wait shmget shmctl mq_unlink dlsym",
+        "standard_operation",
+        argument=0,
+        behavior="protocol_or_namespace_state_transition; no_generic_lockset_or_ownership_claim",
     )
 
     # Composite effects are machine-readable; role summaries alone cannot
@@ -428,6 +530,7 @@ def standard_contracts() -> list[dict[str, Any]]:
             "realloc": [1],
             "reallocarray": [1, 2],
             "posix_memalign": [2],
+            "mmap": [1],
         }
         if transitions or name in extent_indices:
             row["protocol"] = {
@@ -440,4 +543,9 @@ def standard_contracts() -> list[dict[str, Any]]:
                 row["protocol"]["allocation_extent"] = [
                     {"kind": "argument", "index": i} for i in extent_indices[name]
                 ]
+        from .c_linux_catalog import catalog_sources_for
+
+        row["evidence"] = [
+            {"source": source, "api": name} for source in catalog_sources_for(name)
+        ]
     return rows

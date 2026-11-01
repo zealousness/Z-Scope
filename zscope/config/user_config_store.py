@@ -8,8 +8,9 @@ import json
 import logging
 import sqlite3
 import threading
+from types import SimpleNamespace
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, cast
 
 from ..common.issue_identity import (
     ensure_source_context_fingerprint,
@@ -17,16 +18,34 @@ from ..common.issue_identity import (
     stable_issue_fingerprint,
 )
 from .user_config_workbook import UserConfigWorkbook
+from .project_semantics import ProjectSemanticsStore
 
 logger = logging.getLogger(__name__)
 _SQLITE_PRAGMA_LOCK = threading.Lock()
 
 
 class UserConfigStore:
-    """Workbook-backed user configuration with SQLite state for scan metadata."""
+    """Project-semantics facade with SQLite state for scan metadata.
+
+    XLSX is retained only as a legacy/migration backend.  Public v3 execution
+    passes ``zscope.semantics.yaml`` and all interface reads then come from the
+    reviewed YAML authority.
+    """
 
     def __init__(self, user_config_path: Path):
         raw_path = Path(user_config_path)
+        self.project_semantics: ProjectSemanticsStore | None = None
+        self.workbook: Any
+        if raw_path.suffix.lower() in {".yaml", ".yml"}:
+            if raw_path.exists() and not raw_path.is_file():
+                raise ValueError("project semantics path must be a YAML file")
+            self.project_semantics = ProjectSemanticsStore(raw_path)
+            self.db_dir = raw_path.parent / ".zscope_snapshots"
+            self.workbook = SimpleNamespace(path=raw_path)
+            self.db_dir.mkdir(parents=True, exist_ok=True)
+            self.db_path = self.db_dir / "user_config.state.db"
+            self._init_db()
+            return
         if raw_path.suffix.lower() == ".xlsx":
             if raw_path.exists() and raw_path.is_dir():
                 raise ValueError("user_config path must be an .xlsx workbook or a directory.")
@@ -60,7 +79,8 @@ class UserConfigStore:
     def _init_db(self) -> None:
         conn = self._connect()
         try:
-            conn.executescript("""
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS config_warnings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     warning_type TEXT NOT NULL,
@@ -91,8 +111,11 @@ class UserConfigStore:
                     issue_json TEXT NOT NULL DEFAULT '{}',
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
-            """)
-            self._ensure_column(conn, "finding_baselines", "stable_fingerprint", "TEXT NOT NULL DEFAULT ''")
+            """
+            )
+            self._ensure_column(
+                conn, "finding_baselines", "stable_fingerprint", "TEXT NOT NULL DEFAULT ''"
+            )
             from .protocol_feedback import initialize
 
             initialize(conn)
@@ -115,7 +138,7 @@ class UserConfigStore:
 
         conn = self._connect()
         try:
-            return latest(conn, keys)
+            return cast(Dict[str, Dict[str, Any]], latest(conn, keys))
         finally:
             conn.close()
 
@@ -128,7 +151,7 @@ class UserConfigStore:
 
         conn = self._connect()
         try:
-            return save(conn, updates)
+            return cast(Dict[str, Dict[str, Any]], save(conn, updates))
         finally:
             conn.close()
 
@@ -143,6 +166,8 @@ class UserConfigStore:
         concurrency_behavior: Optional[Dict] = None,
         return_semantics: str = "",
     ) -> None:
+        if self.project_semantics is not None:
+            raise ValueError("edit zscope.semantics.yaml or use primitive discovery")
         self.workbook.upsert_external_function(
             func_name,
             description,
@@ -153,60 +178,89 @@ class UserConfigStore:
         )
 
     def get_external_function(self, func_name: str) -> Optional[Dict[str, Any]]:
-        for item in self.workbook.list_external_functions():
+        for item in self.list_external_functions():
             if item.get("func_name") == func_name:
                 return item
         return None
 
     def list_external_functions(self) -> List[Dict[str, Any]]:
-        return self.workbook.list_external_functions()
+        if self.project_semantics is not None:
+            return self.project_semantics.list_external_functions()
+        return cast(List[Dict[str, Any]], self.workbook.list_external_functions())
 
     def delete_external_function(self, func_name: str) -> None:
+        if self.project_semantics is not None:
+            raise ValueError("edit zscope.semantics.yaml directly")
         self.workbook.delete_external_function(func_name)
 
     # ── Paired Functions ──
 
-    def upsert_paired_function(self, category: str, acquire_func: str,
-                               release_func: str, description: str = "") -> None:
+    def upsert_paired_function(
+        self, category: str, acquire_func: str, release_func: str, description: str = ""
+    ) -> None:
+        if self.project_semantics is not None:
+            raise ValueError("edit interface pairs in zscope.semantics.yaml directly")
         self.workbook.upsert_paired_function(category, acquire_func, release_func, description)
 
     def list_paired_functions(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
-        return self.workbook.list_paired_functions(category)
+        if self.project_semantics is not None:
+            return self.project_semantics.list_paired_functions(category)
+        return cast(List[Dict[str, Any]], self.workbook.list_paired_functions(category))
 
     def delete_paired_function(self, id: int) -> None:
+        if self.project_semantics is not None:
+            raise ValueError("edit interface pairs in zscope.semantics.yaml directly")
         self.workbook.delete_paired_function(id)
 
     # ── Function Pointer Targets ──
 
-    def upsert_pointer_target(self, pointer_location: str, scope: str,
-                              target_functions: List[str], context: str = "") -> None:
+    def upsert_pointer_target(
+        self, pointer_location: str, scope: str, target_functions: List[str], context: str = ""
+    ) -> None:
+        if self.project_semantics is not None:
+            raise ValueError("edit function_pointer_bindings in zscope.semantics.yaml directly")
         self.workbook.upsert_pointer_target(pointer_location, scope, target_functions, context)
 
-    def get_pointer_targets(self, pointer_location: Optional[str] = None,
-                            context: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_pointer_targets(
+        self, pointer_location: Optional[str] = None, context: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        if self.project_semantics is not None:
+            return self.project_semantics.get_pointer_targets(pointer_location, context)
         rows = self.workbook.list_pointer_targets()
         if pointer_location:
             rows = [row for row in rows if row.get("pointer_location") == pointer_location]
         if context:
             rows = [row for row in rows if row.get("context") == context]
-        return rows
+        return cast(List[Dict[str, Any]], rows)
 
     def delete_pointer_target(self, id: int) -> None:
+        if self.project_semantics is not None:
+            raise ValueError("edit function_pointer_bindings in zscope.semantics.yaml directly")
         self.workbook.delete_pointer_target(id)
 
     # ── Function Intent ──
 
     def list_dispatchers(self) -> List[Dict[str, Any]]:
-        return self.workbook.list_dispatchers()
+        if self.project_semantics is not None:
+            return self.project_semantics.list_dispatchers()
+        return cast(List[Dict[str, Any]], self.workbook.list_dispatchers())
 
     def list_module_lifecycle(self) -> List[Dict[str, Any]]:
-        return self.workbook.list_module_lifecycle()
+        if self.project_semantics is not None:
+            return []
+        return cast(List[Dict[str, Any]], self.workbook.list_module_lifecycle())
 
-    def upsert_function_intent(self, func_name: str, file_path: str = "",
-                               caller_constraints: Optional[Dict] = None,
-                               concurrency_group: str = "",
-                               concurrent_with: Optional[List[str]] = None,
-                               notes: str = "") -> None:
+    def upsert_function_intent(
+        self,
+        func_name: str,
+        file_path: str = "",
+        caller_constraints: Optional[Dict] = None,
+        concurrency_group: str = "",
+        concurrent_with: Optional[List[str]] = None,
+        notes: str = "",
+    ) -> None:
+        if self.project_semantics is not None:
+            raise ValueError("function intents belong to LLM Wiki, not project semantics")
         self.workbook.upsert_function_intent(
             func_name,
             file_path=file_path,
@@ -216,26 +270,36 @@ class UserConfigStore:
             notes=notes,
         )
 
-    def get_function_intent(self, func_name: str,
-                            file_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        return self.workbook.get_function_intent(func_name, file_path)
+    def get_function_intent(
+        self, func_name: str, file_path: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        if self.project_semantics is not None:
+            return None
+        return cast(
+            Optional[Dict[str, Any]],
+            self.workbook.get_function_intent(func_name, file_path),
+        )
 
     def list_function_intents(self) -> List[Dict[str, Any]]:
-        return self.workbook.list_function_intents()
+        if self.project_semantics is not None:
+            return []
+        return cast(List[Dict[str, Any]], self.workbook.list_function_intents())
 
     def delete_function_intent(self, func_name: str, file_path: str = "") -> None:
+        if self.project_semantics is not None:
+            raise ValueError("function intents belong to LLM Wiki, not project semantics")
         self.workbook.delete_function_intent(func_name, file_path)
 
     # ── Config Warnings ──
 
-    def add_config_warning(self, warning_type: str, context: str,
-                           message: str) -> None:
+    def add_config_warning(self, warning_type: str, context: str, message: str) -> None:
         conn = self._connect()
         try:
             conn.execute(
                 """INSERT INTO config_warnings (warning_type, context, message)
                    VALUES (?, ?, ?)""",
-                (warning_type, context, message))
+                (warning_type, context, message),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -243,8 +307,7 @@ class UserConfigStore:
     def list_config_warnings(self) -> List[Dict[str, Any]]:
         conn = self._connect()
         try:
-            rows = conn.execute(
-                "SELECT * FROM config_warnings ORDER BY created_at DESC").fetchall()
+            rows = conn.execute("SELECT * FROM config_warnings ORDER BY created_at DESC").fetchall()
             return [self._row_to_dict(r) for r in rows]
         finally:
             conn.close()
@@ -259,14 +322,17 @@ class UserConfigStore:
 
     # False-positive suppressions and baselines
 
-    def add_false_positive_suppression(self, func_name: str = "",
-                                       location: str = "",
-                                       category: str = "",
-                                       reason: str = "",
-                                       scope: str = "",
-                                       rule: str = "",
-                                       note: str = "",
-                                       expires_at: str = "") -> None:
+    def add_false_positive_suppression(
+        self,
+        func_name: str = "",
+        location: str = "",
+        category: str = "",
+        reason: str = "",
+        scope: str = "",
+        rule: str = "",
+        note: str = "",
+        expires_at: str = "",
+    ) -> None:
         """Persist a false-positive suppression.
 
         Empty fields act as wildcards during lookup, so callers can suppress by
@@ -312,8 +378,9 @@ class UserConfigStore:
         finally:
             conn.close()
 
-    def upsert_finding_baseline(self, dedup_key: str, status: str,
-                                issue: Optional[Dict[str, Any]] = None) -> None:
+    def upsert_finding_baseline(
+        self, dedup_key: str, status: str, issue: Optional[Dict[str, Any]] = None
+    ) -> None:
         issue_payload = dict(issue or {})
         fingerprint = stable_issue_fingerprint(issue_payload)
         if fingerprint:
@@ -422,8 +489,10 @@ class UserConfigStore:
         for cat, items in by_cat.items():
             lines.append(f"  类别: {cat}")
             for it in items:
-                lines.append(f"    {it['acquire_func']} <-> {it['release_func']}"
-                             + (f"  ({it['description']})" if it.get("description") else ""))
+                lines.append(
+                    f"    {it['acquire_func']} <-> {it['release_func']}"
+                    + (f"  ({it['description']})" if it.get("description") else "")
+                )
         return "\n".join(lines)
 
     def get_pointer_targets_context(self) -> str:
@@ -446,8 +515,7 @@ class UserConfigStore:
             )
         return "\n".join(lines)
 
-    def get_function_intent_context(self, func_name: str,
-                                    file_path: Optional[str] = None) -> str:
+    def get_function_intent_context(self, func_name: str, file_path: Optional[str] = None) -> str:
         """Format function intent as context string for agent prompts."""
         intent = self.get_function_intent(func_name, file_path)
         if not intent:

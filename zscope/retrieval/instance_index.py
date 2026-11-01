@@ -346,6 +346,21 @@ class ScopedCodeIndex:
 
         return self.__dict__["_base"]
 
+    def has_scoped_function_body(self, func_name: str) -> bool:
+        """Whether current native receipts name one body in this instance.
+
+        This is a negative preflight for graph traversal: system/external
+        callees are ordinary non-project edges and must not be reported as a
+        blocked body consumer.  A positive answer is not authority by itself;
+        ``get_function_impl`` still performs all currentness, navigation and
+        source-range checks.
+        """
+
+        return (
+            not self._receipt_scope_problem()
+            and self._resolve_instance_identity(str(func_name or "").strip()) is not None
+        )
+
     def coverage_index(self) -> Any:
         """The unwrapped index a coverage consumer must read.
 
@@ -467,6 +482,16 @@ class ScopedCodeIndex:
                 ),
             )
             return _incomplete_facts(GAP_IDENTITY_CONTEXT_UNVERIFIED)
+        # Macro calls keep their source spelling while Clang's CallExpr names
+        # the expanded wrapper.  Carry the exact per-function macro-reference
+        # receipts beside the AST/CFG facts so contract consumers can bind
+        # ``LOCK(x)``/``SAFE_FREE(x)`` to the reviewed macro USR instead of
+        # guessing from a name.  These rows have already passed the same
+        # BuildContext and (USR,file,line) owner checks as the function body.
+        symbol_receipts = self._receipt_symbol_members_from_current_facts(facts)
+        facts = dict(facts)
+        facts["referenced_macros"] = list(symbol_receipts["referenced_macros"])
+        facts["referenced_globals"] = list(symbol_receipts["referenced_globals"])
         self.__dict__["_entry_facts_complete"] = True
         return facts
 
@@ -478,18 +503,35 @@ class ScopedCodeIndex:
         include_context: bool = True,
         file_path: str = "",
     ) -> Optional[Dict[str, Any]]:
-        """Return the pinned entry body only; never another overload or file.
+        """Return a body authorized by this exact compilation instance.
 
-        The name-only navigation projection can resolve a same-name overload or
-        an explicit foreign file.  Here the body is emitted only when the query
-        names the pinned entry, the file hint is the instance source, and the
-        navigation record resolves to exactly one identity that the returned
-        body reproduces.  Ambiguity stays an explicit gap.
+        The pinned entry is resolved directly.  A reachable same-instance
+        callee is resolved through a child scope only when native receipts name
+        one unique ``(BuildContext, USR, file, line)`` owner.  The child then
+        performs the same navigation/body-range checks as an entry.  Unknown,
+        external, cross-TU, or ambiguous callees remain empty; the shared
+        navigation projection is never used as authority by itself.
         """
 
         if not self._entry_query_matches(func_name, file_path):
-            self._record_blocked("get_function_impl", detail="body outside the pinned entry")
-            return None
+            child = self._scoped_callee_view(func_name, file_path)
+            if child is None:
+                self._record_blocked(
+                    "get_function_impl",
+                    detail="body has no unique same-instance native function receipt",
+                )
+                return None
+            impl = child.get_function_impl(
+                func_name,
+                max_lines=max_lines,
+                warn_missing=warn_missing,
+                include_context=include_context,
+                file_path=child.scope.source,
+            )
+            self._absorb_child_scope(child)
+            if impl is not None:
+                self._record_served("get_function_impl", 1)
+            return impl
         if not self._file_matches_source(file_path):
             self._record_blocked(
                 "get_function_impl", detail="explicit file is not the instance source"
@@ -566,7 +608,91 @@ class ScopedCodeIndex:
                 detail="declaration context has no per-instance receipt",
             )
         self.__dict__["_entry_body_resolved"] = True
+        self._record_served("get_function_impl", 1)
         return impl
+
+    def _scoped_callee_view(
+        self, func_name: str, file_path: str = ""
+    ) -> Optional["ScopedCodeIndex"]:
+        """Build an exact child scope for one function defined in this TU.
+
+        A call target alone is insufficient: the same BuildContext must also
+        contain exactly one complete native function owner for the target.  The
+        child facade re-runs the normal currentness, native-facts, navigation
+        identity, and source-range checks before returning source.
+        """
+
+        problem = self._receipt_scope_problem()
+        if problem:
+            self._record_gap(
+                problem,
+                func_name,
+                detail="no current exact native instance receipt for callee body",
+            )
+            return None
+        owner = self._resolve_instance_identity(str(func_name or "").strip())
+        if owner is None:
+            return None
+        usr = str(owner.get("usr") or "")
+        name = str(owner.get("name") or "")
+        source = str(owner.get("file") or "")
+        line = _as_positive_int(owner.get("line"))
+        if not usr or not name or not source or not line:
+            self._record_gap(
+                GAP_IDENTITY_CONTEXT_UNVERIFIED,
+                func_name,
+                detail="callee native owner is incomplete",
+                severity="consumer",
+            )
+            return None
+        if file_path and not _same_text_path(
+            self._resolved_source(file_path) or file_path,
+            self._resolved_source(source) or source,
+        ):
+            self._record_gap(
+                GAP_IDENTITY_CONTEXT_MISMATCH,
+                func_name,
+                detail="explicit callee file does not match its native owner",
+                severity="consumer",
+            )
+            return None
+        identity = f"{self.scope.build_context_id}:{usr}"
+        cached = self.__dict__.setdefault("_scoped_callee_views", {})
+        child = cached.get(identity)
+        if isinstance(child, ScopedCodeIndex):
+            return child
+        child = ScopedCodeIndex(
+            self.__dict__["_base"],
+            InstanceScope(
+                build_context_id=self.scope.build_context_id,
+                usr=usr,
+                identity=identity,
+                source=source,
+                function_names=tuple(dict.fromkeys((name, str(func_name or "").strip()))),
+                selected_by="same_instance_native_callee",
+            ),
+        )
+        cached[identity] = child
+        return child
+
+    def _absorb_child_scope(self, child: "ScopedCodeIndex") -> None:
+        """Retain callee query coverage on the parent entry's scope report."""
+
+        report = child.scope_report()
+        self.__dict__["_fact_queries"].extend(
+            dict(item) for item in (report.get("fact_queries") or []) if isinstance(item, dict)
+        )
+        self.__dict__["_scope_gaps"].extend(
+            dict(item) for item in (report.get("scope_gaps") or []) if isinstance(item, dict)
+        )
+        blocked = self.__dict__["_blocked_calls"]
+        for consumer in report.get("blocked_consumers") or []:
+            name = str(consumer or "")
+            if name:
+                blocked[name] = blocked.get(name, 0) + 1
+        served = self.__dict__.setdefault("_served_calls", {})
+        for consumer, count in (report.get("served_consumers") or {}).items():
+            served[str(consumer)] = served.get(str(consumer), 0) + int(count or 0)
 
     def _resolved_source(self, file_path: str) -> str:
         resolver = getattr(self._base, "_resolve_file_path", None)
@@ -685,8 +811,22 @@ class ScopedCodeIndex:
         """
 
         if not self._entry_query_matches(func_name, file_path):
-            self._record_blocked("find_function_infos", detail="metadata outside the pinned entry")
-            return []
+            child = self._scoped_callee_view(func_name, file_path)
+            if child is None:
+                self._record_blocked(
+                    "find_function_infos",
+                    detail="metadata has no unique same-instance native function receipt",
+                )
+                return []
+            infos = child._scoped_function_infos(
+                func_name,
+                child.scope.source,
+                include_type_context=include_type_context,
+            )
+            self._absorb_child_scope(child)
+            if infos:
+                self._record_served("find_function_infos", len(infos))
+            return infos
         if not self._file_matches_source(file_path):
             self._record_blocked(
                 "find_function_infos", detail="explicit file is not the instance source"
@@ -797,6 +937,13 @@ class ScopedCodeIndex:
             items = result.get(key)
             if not isinstance(items, list):
                 continue
+            # Optional member collections use presence to signal that there is
+            # evidence to consume.  Keep the required referenced_types array,
+            # but do not leak present-but-empty optional arrays into the
+            # semantic snapshot contract (which deliberately rejects them).
+            if not items and drop_empty_optional and key != "referenced_types":
+                result.pop(key, None)
+                continue
             kept = [item for item in items if self._member_receipt_ok(item)]
             if len(kept) == len(items):
                 continue
@@ -824,10 +971,21 @@ class ScopedCodeIndex:
 
         empty: Dict[str, Any] = {"referenced_types": []}
         if not self._entry_query_matches(func_name, file_path):
-            self._record_blocked(
-                "get_function_type_context", detail="types outside the pinned entry"
+            child = self._scoped_callee_view(func_name, file_path)
+            if child is None:
+                self._record_blocked(
+                    "get_function_type_context",
+                    detail="types have no unique same-instance native function receipt",
+                )
+                return empty
+            value = child.get_function_type_context(
+                func_name,
+                child.scope.source,
+                start_line,
             )
-            return empty
+            self._absorb_child_scope(child)
+            self._record_served("get_function_type_context", 1)
+            return value
         if not self._file_matches_source(file_path):
             self._record_blocked(
                 "get_function_type_context", detail="explicit file is not the instance source"
@@ -852,7 +1010,13 @@ class ScopedCodeIndex:
                 severity="consumer",
             )
             return empty
-        value = self._filter_member_facts(value, func_name)
+        # The canonical semantic-model input treats optional collections as a
+        # presence contract: if unresolved types/macros/globals are present,
+        # they must contain evidence.  Type context is merged over the already
+        # filtered navigation record, so remove empty optional arrays here as
+        # well; otherwise that second merge can reintroduce an invalid empty
+        # unresolved_referenced_types field.
+        value = self._filter_member_facts(value, func_name, drop_empty_optional=True)
         items = list(value.get("referenced_types") or [])
         items.extend(self._receipt_type_items())
         if items:
@@ -870,10 +1034,17 @@ class ScopedCodeIndex:
             "referenced_macros": [],
         }
         if not self._entry_query_matches(func_name, file_path):
-            self._record_blocked(
-                "get_function_symbol_context", detail="symbols outside the pinned entry"
-            )
-            return empty
+            child = self._scoped_callee_view(func_name, file_path)
+            if child is None:
+                self._record_blocked(
+                    "get_function_symbol_context",
+                    detail="symbols have no unique same-instance native function receipt",
+                )
+                return empty
+            value = child.get_function_symbol_context(func_name, child.scope.source)
+            self._absorb_child_scope(child)
+            self._record_served("get_function_symbol_context", 1)
+            return value
         if not self._file_matches_source(file_path):
             self._record_blocked(
                 "get_function_symbol_context", detail="explicit file is not the instance source"
@@ -1092,11 +1263,6 @@ class ScopedCodeIndex:
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Callees of one symbol from the pinned instance's own call receipts."""
-
-        self._record_blocked(
-            "get_callees",
-            detail="served from per-instance receipts; navigation projection not used",
-        )
         requested = max(0, int(limit))
         if requested == 0:
             return []
@@ -1160,11 +1326,6 @@ class ScopedCodeIndex:
         callee_file: str = "",
     ) -> List[Dict[str, Any]]:
         """Callers of one symbol from the pinned instance's own call receipts."""
-
-        self._record_blocked(
-            "get_callers",
-            detail="served from per-instance receipts; navigation projection not used",
-        )
         requested = max(0, int(limit))
         query = str(func_name or "").strip()
         if requested == 0 or not query:
@@ -1226,11 +1387,6 @@ class ScopedCodeIndex:
         offset: int = 0,
     ) -> List[str]:
         """Functions that actually have facts in the pinned compilation instance."""
-
-        self._record_blocked(
-            "list_functions",
-            detail="served from per-instance receipts; navigation projection not used",
-        )
         del file_root  # the instance is already a single translation unit
         problem = self._receipt_scope_problem()
         if problem:
@@ -1262,6 +1418,55 @@ class ScopedCodeIndex:
         if parsed <= 0:
             return ordered[start:]
         return ordered[start : start + parsed]
+
+    def list_function_instances(self) -> List[InstanceScope]:
+        """Enumerate exact function identities in the pinned compilation unit.
+
+        Fast project analysis needs an identity stronger than a bare function
+        name so overloaded symbols and compile variants never share facts or
+        cache entries.  The returned scopes are derived only from current
+        native ``program_function``/``function`` owner receipts in this build;
+        the navigation projection is not used to invent members.
+        """
+
+        problem = self._receipt_scope_problem()
+        if problem:
+            self._record_gap(
+                problem,
+                "",
+                detail="no current exact native instance receipt for function instances",
+            )
+            return []
+        instances: Dict[Tuple[str, str, int], InstanceScope] = {}
+        for row in self._context_rows(self._FUNCTION_RECEIPT_KINDS):
+            owner = self._row_owner(row)
+            usr = str(owner.get("usr") or "")
+            name = str(owner.get("name") or "")
+            source = str(owner.get("file") or "")
+            line = _as_positive_int(owner.get("line"))
+            if not usr or not name or not source or not line:
+                self._record_gap(
+                    GAP_IDENTITY_CONTEXT_UNVERIFIED,
+                    name,
+                    detail="function owner receipt is incomplete",
+                    severity="consumer",
+                )
+                continue
+            key = (usr, source, line)
+            instances.setdefault(
+                key,
+                InstanceScope(
+                    build_context_id=self.scope.build_context_id,
+                    usr=usr,
+                    identity=f"{self.scope.build_context_id}:{usr}",
+                    source=source,
+                    function_names=(name,),
+                    selected_by="fast_static_function_inventory",
+                ),
+            )
+        ordered = [instances[key] for key in sorted(instances)]
+        self._record_served("list_function_instances", len(ordered))
+        return ordered
 
     def _receipt_symbol_members(self, func_name: str) -> Dict[str, List[Dict[str, Any]]]:
         """Macro/global references produced by the pinned entry, with receipts."""
@@ -1302,6 +1507,54 @@ class ScopedCodeIndex:
                 globals_.append(member)
         del func_name
         self._record_served("get_function_symbol_context", len(macros) + len(globals_))
+        return {"referenced_macros": macros, "referenced_globals": globals_}
+
+    def _receipt_symbol_members_from_current_facts(
+        self, facts: Dict[str, Any]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Attach symbol receipts after the caller verified this exact body.
+
+        Unlike the public symbol-context accessor, this helper must not run a
+        second native body probe: ``get_function_program_facts`` has already
+        checked the complete function identity and BuildContext immediately
+        before calling it.  Receipt owners are still required to equal the
+        verified body owner in all of (USR,file,line).
+        """
+
+        bodies = [body for body in facts.get("functions", []) or [] if isinstance(body, dict)]
+        if len(bodies) != 1:
+            return {"referenced_macros": [], "referenced_globals": []}
+        raw_owner = bodies[0].get("owner")
+        expected_owner = raw_owner if isinstance(raw_owner, dict) else {}
+        macros: List[Dict[str, Any]] = []
+        globals_: List[Dict[str, Any]] = []
+        for row in self._context_rows(self._SYMBOL_RECEIPT_KINDS):
+            owner = self._row_owner(row)
+            if not self._same_owner(owner, expected_owner):
+                continue
+            target = self._row_target(row)
+            name = self._target_name(target)
+            if not name:
+                continue
+            location = row.get("location")
+            location = location if isinstance(location, dict) else {}
+            member = {
+                "name": name,
+                "qualified_name": name,
+                "usr": str(target.get("usr") or ""),
+                "kind": str(row.get("kind") or ""),
+                "access_kind": str(row.get("access_kind") or ""),
+                "line": _as_positive_int(location.get("line")),
+                "function_identity": self._owner_receipt(owner),
+            }
+            if str(row.get("kind") or "") == "macro_reference":
+                replacement = row.get("invocation")
+                if isinstance(replacement, str) and replacement:
+                    member["replacement_text"] = replacement
+                macros.append(member)
+            else:
+                globals_.append(member)
+        self._record_served("get_function_program_facts.symbols", len(macros) + len(globals_))
         return {"referenced_macros": macros, "referenced_globals": globals_}
 
     def _receipt_type_items(self) -> List[Dict[str, Any]]:
@@ -1419,7 +1672,16 @@ class ScopedCodeIndex:
         # The facade refuses a raw ``db`` handle on purpose. This accessor reads
         # the base handle itself and applies the instance filter below, so no
         # unscoped store ever reaches a caller.
-        db = getattr(self.__dict__["_base"], "db", None)
+        base = self.__dict__["_base"]
+        db = getattr(base, "db", None)
+        if db is None:
+            # Production ``CodeIndex`` owns the configured backend rather than
+            # publishing its raw KnowledgeDB as a public attribute.  Resolve
+            # that owner only inside this scoped accessor; callers still never
+            # receive the unscoped store.  Test/minimal indexes may continue to
+            # expose ``db`` directly.
+            backend = getattr(base, "_backend", None)
+            db = getattr(backend, "db", None) if backend is not None else None
         if db is None or not hasattr(db, "get_instance_taint_signals"):
             payload.update(status="unavailable", reason="signal_store_unavailable")
             return payload

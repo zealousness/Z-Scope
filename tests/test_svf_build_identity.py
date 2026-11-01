@@ -16,6 +16,7 @@ contract:
 
 from __future__ import annotations
 
+import sqlite3
 import json
 from pathlib import Path
 
@@ -88,6 +89,21 @@ class _BaseIndex:
 
     def __init__(self, db: KnowledgeDB, manifests: list[dict]) -> None:
         self.db = db
+        self._manifests = manifests
+
+    def get_build_contexts(self, file_path: str = "") -> list[dict]:
+        return [
+            dict(manifest)
+            for manifest in self._manifests
+            if not file_path or str(manifest.get("source") or "") == file_path
+        ]
+
+
+class _ProductionShapedBaseIndex:
+    """Production CodeIndex keeps the database behind its backend."""
+
+    def __init__(self, db: KnowledgeDB, manifests: list[dict]) -> None:
+        self._backend = type("Backend", (), {"db": db})()
         self._manifests = manifests
 
     def get_build_contexts(self, file_path: str = "") -> list[dict]:
@@ -249,7 +265,11 @@ def test_command_context_map_reports_every_owner(tmp_path: Path) -> None:
     )
     db.commit()
 
-    mapping = db.get_command_context_map(["command-shared", "command-sole"])
+    db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    db._conn.execute("PRAGMA query_only=ON")
+    mapping = db.get_command_context_map(
+        [f"absent-{index}" for index in range(1200)] + ["command-shared", "command-sole"]
+    )
     assert mapping["command-shared"] == ["ctx-a", "ctx-b"]
     assert mapping["command-sole"] == ["ctx-c"]
 
@@ -285,6 +305,27 @@ def test_scoped_accessor_serves_only_the_pinned_command(tmp_path: Path) -> None:
     assert payload["command_id"] == "command-base"
     assert [row["command_id"] for row in payload["rows"]] == ["command-base"]
     assert payload["status"] != "ambiguous_command"
+
+
+def test_scoped_accessor_resolves_production_backend_signal_store(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    manifest = _current_instance(tmp_path, db, context_id="ctx-a", command_id="command-base")
+    _saber_row(db, command_id="command-base", attribution="exact")
+    db.commit()
+    scope = InstanceScope(
+        build_context_id="ctx-a",
+        usr="c:@F@main",
+        identity="ctx-a|c:@F@main",
+        source="src/unit.c",
+        function_names=("main",),
+    )
+    scoped = ScopedCodeIndex(_ProductionShapedBaseIndex(db, [manifest]), scope)
+
+    payload = scoped.get_instance_backend_signals(func_names=[])
+
+    assert payload["status"] == "complete", payload
+    assert payload["command_id"] == "command-base"
+    assert [row["command_id"] for row in payload["rows"]] == ["command-base"]
 
 
 def test_scoped_accessor_refuses_a_foreign_build_context(tmp_path: Path) -> None:

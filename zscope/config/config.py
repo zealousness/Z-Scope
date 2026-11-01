@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, TYPE_CHECKING
 import logging
 
+from ..framework.context_window import (
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_MAX_TOKENS,
+    validate_context_windows,
+)
+
 if TYPE_CHECKING:
     # Import cycle guard: v3 imports this module at runtime; this import only
     # exists for the ``user_config_v3`` annotation below.
@@ -205,13 +211,18 @@ class LLMConfig:
     base_url_rate_limit_per_minute: Optional[int] = None
     base_url_max_concurrent_requests: Optional[int] = None
     models: List[str] = field(default_factory=list)
-    max_tokens: int = 4096
+    max_tokens: int = DEFAULT_MAX_TOKENS
     timeout: Optional[float] = 120.0
     max_retries: int = 2
     retry_until_available: bool = False
     supports_structured_output: bool = False
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+    model_context_windows: Dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.model_context_windows = validate_context_windows(
+            self.context_window, self.model_context_windows
+        )
         self.base_urls = _normalize_llm_base_urls(self.base_urls or self.base_url)
         self.base_url = self.base_urls[0]
         self.base_url_rate_limit_per_minute = _optional_positive_int(
@@ -742,8 +753,8 @@ class ProjectConfig:
     """Configuration for the C/C++ or Java project being analyzed."""
 
     project_root: Path
-    source_root: Path
     project_id: str = ""
+    target_id: str = ""
     language: str = "auto"
     entry_function: Optional[str] = None
     entry_file_path: Optional[str] = None
@@ -753,6 +764,11 @@ class ProjectConfig:
     entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
     entry_diff_focus: Optional[Dict[str, Any]] = None
     user_config_file: Optional[Path] = None
+    # The only human-maintained C/C++ semantic authority.  The legacy
+    # ``user_config_file`` remains on the internal v2 model solely so the
+    # explicit XLSX -> YAML migration command can read old projects; scanners
+    # never compile effects from that workbook.
+    semantics_file: Optional[Path] = None
     include_paths: List[str] = field(default_factory=list)
     exclude_paths: List[str] = field(default_factory=list)
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
@@ -764,25 +780,15 @@ class ProjectConfig:
         self.project_root = Path(self.project_root).resolve()
         self.project_id = str(self.project_id or self.project_root.name or "project").strip()
 
-        # Resolve source_root: relative to project_root if not absolute
-        if not self.source_root:
-            self.source_root = self.project_root
-        else:
-            self.source_root = Path(self.source_root)
-            if not self.source_root.is_absolute():
-                self.source_root = (self.project_root / self.source_root).resolve()
-            else:
-                self.source_root = self.source_root.resolve()
-
         self.language = normalize_project_language(self.language)
         if self.language == "auto":
-            self.language = detect_project_language(self.source_root)
-        # Resolve include/exclude paths relative to source_root
+            self.language = detect_project_language(self.project_root)
+        # Resolve include/exclude paths relative to the single project root
         resolved_includes = []
         for p in self.include_paths or []:
             path_obj = Path(p)
             if not path_obj.is_absolute():
-                resolved_includes.append((self.source_root / path_obj).absolute())
+                resolved_includes.append((self.project_root / path_obj).absolute())
             else:
                 resolved_includes.append(path_obj.absolute())
         self.include_paths = resolved_includes
@@ -791,14 +797,14 @@ class ProjectConfig:
         for p in self.exclude_paths or []:
             path_obj = Path(p)
             if not path_obj.is_absolute():
-                resolved_excludes.append((self.source_root / path_obj).absolute())
+                resolved_excludes.append((self.project_root / path_obj).absolute())
             else:
                 resolved_excludes.append(path_obj.absolute())
         self.exclude_paths = resolved_excludes
 
         # Resolve compile_commands_path:
         #   1. 显式配置 → 相对路径基于 project_root 解析
-        #   2. 自动发现 → 依次查找 project_root、source_root
+        #   2. 自动发现 → 仅查找唯一 project_root
         if self.compile_commands_path:
             self.compile_commands_path = Path(self.compile_commands_path)
             if not self.compile_commands_path.is_absolute():
@@ -808,12 +814,9 @@ class ProjectConfig:
             else:
                 self.compile_commands_path = self.compile_commands_path.resolve()
         else:
-            # 自动发现：project_root 优先（compile_commands.json 通常在构建/任务目录）
-            for root in [self.project_root, self.source_root]:
-                candidate = root / "compile_commands.json"
-                if candidate.exists():
-                    self.compile_commands_path = candidate
-                    break
+            candidate = self.project_root / "compile_commands.json"
+            if candidate.exists():
+                self.compile_commands_path = candidate
 
         # Resolve entry_functions_list path relative to project root
         if self.entry_functions_list:
@@ -830,11 +833,17 @@ class ProjectConfig:
                 user_config_file = self.project_root / user_config_file
             self.user_config_file = user_config_file.resolve()
 
+        if self.semantics_file:
+            semantics_file = Path(self.semantics_file)
+            if not semantics_file.is_absolute():
+                semantics_file = self.project_root / semantics_file
+            self.semantics_file = semantics_file.resolve()
+
         if self.entry_discovery.search_root:
-            # 相对 search_root 固定基于 source_root 解析（CLI / Web / MCP 共用同一条规则）。
+            # 相对 search_root 固定基于 project_root 解析（CLI / Web / MCP 共用同一条规则）。
             search_root = Path(self.entry_discovery.search_root)
             if not search_root.is_absolute():
-                search_root = self.source_root / search_root
+                search_root = self.project_root / search_root
             search_root = search_root.resolve()
             if not search_root.is_dir():
                 raise ValueError(
@@ -872,6 +881,7 @@ class ZScopeConfig:
     # It is intentionally excluded from equality/serialization and is created
     # at the effective-config boundary.
     scan_token_usage_ledger: Any = field(default=None, repr=False, compare=False)
+    config_path: Optional[Path] = field(default=None, repr=False, compare=False)
 
 
 # Public names used by the v2 loader and developer documentation.  The

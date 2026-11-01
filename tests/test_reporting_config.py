@@ -15,7 +15,7 @@ def _base_config(tmp_path):
                 "api_key": "unit-key",
             }
         },
-        "project": {"root": str(tmp_path), "source_root": ".", "language": "c_cpp"},
+        "project": {"language": "c_cpp"},
         "scan": {"task": ""},
         "indexing": {"backend": "regex"},
         "concurrency": {

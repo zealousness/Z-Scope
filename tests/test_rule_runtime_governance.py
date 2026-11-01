@@ -142,8 +142,6 @@ def _config(root: Path, *, disabled_ids: list[str] | None = None) -> dict[str, A
             }
         },
         "project": {
-            "root": str(root),
-            "source_root": ".",
             "language": "c_cpp",
             "entry_discovery": {
                 "enabled": True,
@@ -518,7 +516,11 @@ def test_rule_driven_report_keeps_catalog_provenance_and_backend_signal_boundary
 
 def test_rule_driven_validator_rejection_is_explicit_needs_review(tmp_path: Path) -> None:
     class RejectingValidator:
+        def __init__(self) -> None:
+            self.calls = 0
+
         def run(self, input_data: dict[str, Any]) -> AgentResponse:
+            self.calls += 1
             return AgentResponse(
                 success=True,
                 data=_rule_validator_result(
@@ -528,7 +530,8 @@ def test_rule_driven_validator_rejection_is_explicit_needs_review(tmp_path: Path
                 ),
             )
 
-    analyzer = _rule_validation_analyzer(tmp_path, RejectingValidator())
+    validator = RejectingValidator()
+    analyzer = _rule_validation_analyzer(tmp_path, validator)
     issues = analyzer._validate_matches(
         "entry",
         [
@@ -545,12 +548,16 @@ def test_rule_driven_validator_rejection_is_explicit_needs_review(tmp_path: Path
 
     assert len(issues) == 1
     issue = issues[0]
-    assert issue["model_verdict"] == "rejected"
+    assert validator.calls == 0
+    assert issue.get("model_verdict") is None
     assert issue["candidate_disposition"] == "needs_review"
     assert issue["validation_status"] == "needs_review"
+    assert issue["validator_decision_readiness"]["reason"] == (
+        "validation_obligation_profile_missing"
+    )
     assert issue["attribution"]["discovered_by"] == ["backend_signal"]
     assert issue["attribution"]["decided_by"] == "unresolved"
-    assert issue["attribution"]["decision_level"] == "V1"
+    assert issue["attribution"]["decision_level"] == "none"
 
 
 def test_rule_driven_deduplicates_equivalent_cross_rule_backend_signals(
@@ -601,7 +608,7 @@ def test_rule_driven_deduplicates_equivalent_cross_rule_backend_signals(
         ],
     )
 
-    assert validator.calls == 1
+    assert validator.calls == 0
     assert len(issues) == 1
     issue = issues[0]
     aliases = issue["backend_signal_provenance_aliases"]
@@ -611,7 +618,8 @@ def test_rule_driven_deduplicates_equivalent_cross_rule_backend_signals(
     }
     assert issue["grouped_candidate_count"] == 2
     assert issue["validation_group_alias_count"] == 1
-    assert issue["validator_invocation_count"] == 1
+    assert issue["validator_invocation_count"] == 0
+    assert issue["validator_decision_ready"] is False
     assert issue["attribution"]["discovered_by"] == ["backend_signal"]
     assert {item["native_rule_id"] for item in issue["attribution"]["discovery_details"]} == {
         "joern.native.query.a",
@@ -756,6 +764,9 @@ def test_rule_driven_uses_fact_resolution_v2_and_eligible_v3(tmp_path: Path) -> 
                         }
                     ]
                 },
+                "allowed_missing_fact_kinds": ["caller_contract"],
+                "obligation_required_fact_kinds": ["caller_contract"],
+                "missing_fact_kinds": ["caller_contract"],
             }
         ],
     )
@@ -763,7 +774,7 @@ def test_rule_driven_uses_fact_resolution_v2_and_eligible_v3(tmp_path: Path) -> 
     assert validator.passes == ["initial", "evidence_recheck"]
     assert validator.investigations == 1
     issue = issues[0]
-    assert issue["validator_fact_resolution"]["status"] == "completed_partial"
+    assert issue["validator_fact_resolution"]["status"] == "resolved"
     assert issue["validator_result_pass"] == "investigation_synthesis"
     assert issue["validator_invocation_count"] == 3
     assert issue["attribution"]["discovered_by"] == ["backend_signal"]

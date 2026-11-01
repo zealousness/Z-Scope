@@ -126,6 +126,94 @@ def test_timeout_attempt_then_success_records_attempt_and_exchange(
     assert session_end["finish_reason"] == "stop"
 
 
+@pytest.mark.parametrize("transport", ["curl", "requests"])
+def test_exchange_records_provider_token_counts(recorder, monkeypatch, transport):
+    client = LLMClient(
+        api_key="test", base_url="http://example.invalid/v1", models=["unit"], max_retries=0
+    )
+    client._transport = transport
+    result = (
+        {"role": "assistant", "content": "ok"},
+        "stop",
+        {"prompt_tokens": 1234, "completion_tokens": 567, "total_tokens": 1801},
+    )
+    monkeypatch.setattr(client, "_curl_chat_completion", lambda *_args: result)
+    monkeypatch.setattr(client, "_assemble_chat_response_with_usage", lambda *_args: result)
+    monkeypatch.setattr(
+        client, "_session_for_thread", lambda: _ScriptedSession([_CompletedResponse()])
+    )
+    try:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+        exchange = next(event for event in _events_by_type(recorder) if event["event"] == "exchange")
+        assert exchange["prompt_tokens"] == 1234
+        assert exchange["completion_tokens"] == 567
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("transport", ["curl", "requests"])
+def test_usage_without_provider_counts_includes_tool_schema(monkeypatch, transport):
+    client = LLMClient(
+        api_key="test", base_url="http://example.invalid/v1", models=["unit"], max_retries=0
+    )
+    client._transport = transport
+    result = ({"role": "assistant", "content": "ok"}, "stop", None)
+    monkeypatch.setattr(client, "_curl_chat_completion", lambda *_args: result)
+    monkeypatch.setattr(client, "_assemble_chat_response_with_usage", lambda *_args: result)
+    monkeypatch.setattr(
+        client, "_session_for_thread", lambda: _ScriptedSession([_CompletedResponse()])
+    )
+    messages = [{"role": "user", "content": "hello"}]
+    tools = [{"type": "function", "function": {
+        "name": "read_code", "description": "Schema context " * 100,
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+    try:
+        response = client.chat_completion(messages, tools=tools)
+        assert response["usage"]["estimated"] is True
+        assert response["usage"]["prompt_tokens"] == client._estimate_request_prompt_tokens(
+            messages, tools=tools, response_format=None
+        )
+        assert response["usage"]["prompt_tokens"] > client.estimate_tokens(messages)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("transport", ["curl", "requests"])
+def test_partial_provider_usage_does_not_zero_missing_completion(monkeypatch, transport):
+    client = LLMClient(
+        api_key="test", base_url="http://example.invalid/v1", models=["unit"], max_retries=0
+    )
+    client._transport = transport
+    message = {"role": "assistant", "content": "completed analysis"}
+    result = (message, "stop", {"prompt_tokens": 4321})
+    monkeypatch.setattr(client, "_curl_chat_completion", lambda *_args: result)
+    monkeypatch.setattr(client, "_assemble_chat_response_with_usage", lambda *_args: result)
+    monkeypatch.setattr(
+        client, "_session_for_thread", lambda: _ScriptedSession([_CompletedResponse()])
+    )
+    try:
+        usage = client.chat_completion([{"role": "user", "content": "hello"}])["usage"]
+        assert usage["prompt_tokens"] == 4321
+        assert usage["completion_tokens"] == client.estimate_tokens([message]) > 0
+        assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+        assert usage["estimated"] is True
+    finally:
+        client.close()
+
+
+def test_nonfinite_provider_usage_falls_back_to_estimates():
+    usage = LLMClient._normalized_provider_usage(
+        {"prompt_tokens": float("inf"), "completion_tokens": 7},
+        estimated_prompt_tokens=20,
+        estimated_completion_tokens=30,
+    )
+    assert usage["prompt_tokens"] == 20
+    assert usage["completion_tokens"] == 7
+    assert usage["total_tokens"] == 27
+    assert usage["estimated"] is True
+
+
 def test_model_fallback_records_http_and_fallback_attempts(recorder, monkeypatch):
     client = LLMClient(
         api_key="test",
@@ -150,7 +238,8 @@ def test_model_fallback_records_http_and_fallback_attempts(recorder, monkeypatch
     assert [attempt["outcome"] for attempt in attempts] == ["http_400", "model_fallback"]
     assert attempts[0]["model"] == "model-a"
     assert attempts[1]["model"] == "model-a"
-    assert "bad request" in attempts[1]["error"]
+    assert attempts[1]["error"] == "HTTP 400: request rejected"
+    assert "bad request" not in json.dumps(attempts)
     exchanges = [event for event in events if event["event"] == "exchange"]
     assert len(exchanges) == 1
     assert exchanges[0]["model"] == "model-b"
@@ -441,7 +530,7 @@ def test_loop_guard_records_guard_event(recorder, monkeypatch):
     guards = [event for event in events if event["event"] == "loop_guard"]
     assert len(guards) == 1
     assert guards[0]["tool"] == "get_file_snippet"
-    assert guards[0]["repeat_count"] == 3
+    assert guards[0]["repeat_count"] == 2
     assert guards[0]["disabled_tools"] == ["get_file_snippet"]
     blocked_results = [
         event

@@ -39,7 +39,7 @@ rules:
   cwe: CWE-89
   skill: java_injection
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: concatenated JDBC SQL string
   summary: JDBC/JdbcTemplate SQL 字符串由外部参数拼接构造。
@@ -55,7 +55,7 @@ rules:
   cwe: CWE-89
   skill: java_injection
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: PreparedStatement from dynamic SQL variable
   summary: PreparedStatement 使用已经拼接好的 SQL 变量创建，可能是伪预编译。
@@ -215,7 +215,7 @@ rules:
   cwe: CWE-611
   skill: java_deserialization
   default_severity: medium
-  revision: 1
+  revision: 2
   status: stable
   title: XML parser factory
   summary: XML 解析器工厂可能未禁用外部实体，存在 XXE 风险。
@@ -359,7 +359,7 @@ rules:
   cwe: CWE-639
   skill: java_authz
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: object lookup without owner check
   summary: 对象级查询可能直接使用外部传入的用户、订单或账户标识，缺少 owner/tenant/principal 校验。
@@ -679,7 +679,7 @@ rules:
   cwe: CWE-22
   skill: java_web_security
   default_severity: medium
-  revision: 1
+  revision: 2
   status: stable
   title: archive entry path
   summary: 压缩包条目名可能包含 `../` 或绝对路径，解压时造成 Zip Slip。
@@ -791,7 +791,7 @@ rules:
   cwe: CWE-190
   skill: bounds_and_integer
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Arithmetic Size Before Sink
   summary: Built-in cpp_regex detector for integer overflow.
@@ -836,7 +836,7 @@ rules:
   cwe: CWE-190
   skill: bounds_and_integer
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Calloc Product Overflow
   summary: Built-in cpp_regex detector for integer overflow.
@@ -927,10 +927,10 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 9
+  revision: 10
   status: stable
   title: Error Path Allocation Not Released
-  summary: Built-in cpp_regex detector for memory leak.
+  summary: Detects C allocation failures and raw C++ new owners transferred only on a successful returned-status path.
   required_capabilities:
   - source_text
   aliases: []
@@ -942,7 +942,7 @@ rules:
   cwe: CWE-252
   skill: null_and_failure
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Error Probe Can Return Success
   summary: Built-in cpp_regex detector for unchecked return.
@@ -972,7 +972,7 @@ rules:
   cwe: CWE-672
   skill: resource_lifecycle
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Fd Closed Without Invalidation
   summary: Built-in cpp_regex detector for stale fd.
@@ -1048,7 +1048,7 @@ rules:
   cwe: CWE-190
   skill: bounds_and_integer
   default_severity: high
-  revision: 8
+  revision: 11
   status: stable
   title: Inline Allocation Size Overflow
   summary: Built-in cpp_regex detector for integer overflow.
@@ -1078,7 +1078,7 @@ rules:
   cwe: CWE-416
   skill: temporal_memory
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Mapping Unmapped Without Pointer Clear
   summary: Built-in cpp_regex detector for use after free.
@@ -1213,7 +1213,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Refcount Update After Unlock
   summary: Built-in cpp_regex detector for refcount race.
@@ -1395,7 +1395,7 @@ rules:
   cwe: CWE-121
   skill: bounds_and_integer
   default_severity: high
-  revision: 6
+  revision: 7
   status: stable
   title: Unbounded Vla Or Stack Array
   summary: Built-in cpp_regex detector for stack overflow.
@@ -1456,7 +1456,7 @@ rules:
   cwe: CWE-404
   skill: resource_lifecycle
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Write Without Sigpipe Handling
   summary: Built-in cpp_regex detector for sigpipe unhandled.
@@ -1471,7 +1471,7 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 11
+  revision: 12
   status: experimental
   default_enabled: false
   title: Acquire Without Release On Exit
@@ -1537,7 +1537,7 @@ rules:
   cwe: CWE-190
   skill: bounds_and_integer
   default_severity: high
-  revision: 7
+  revision: 9
   status: stable
   title: Allocation Size Arithmetic Without Overflow Guard
   summary: Allocation size arithmetic reaches an allocator without a visible overflow guard.
@@ -1602,7 +1602,7 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 8
+  revision: 10
   status: stable
   title: Container Unlink Without Release
   summary: Built-in cpp_clang_cfg detector for memory leak.
@@ -1682,7 +1682,7 @@ rules:
   cwe: CWE-775
   skill: resource_lifecycle
   default_severity: high
-  revision: 10
+  revision: 11
   status: stable
   title: Fd Open Return Without Close
   summary: Built-in cpp_clang_cfg detector for fd leak.
@@ -1858,7 +1858,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Global State Written With And Without Lock
   summary: Built-in cpp_clang_cfg detector for unsynchronized shared state.
@@ -1970,7 +1970,7 @@ rules:
   cwe: CWE-190
   skill: bounds_and_integer
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Narrowing Size Cast Without Range Guard
   summary: Built-in cpp_clang_cfg detector for integer overflow.
@@ -2067,7 +2067,7 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Parent Release Without Owned Member Cleanup
   summary: Built-in cpp_clang_cfg detector for memory leak.
@@ -2131,7 +2131,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Path State Key Generation Before Locked Registration
   summary: Built-in cpp_clang_cfg detector for key generation race.
@@ -2145,9 +2145,10 @@ rules:
   engine: cpp_clang_cfg
   defect_class: uninitialized_pointer
   cwe: CWE-824
+  additional_cwes: [CWE-457]
   skill: bounds_and_integer
   default_severity: high
-  revision: 6
+  revision: 9
   status: stable
   title: Pointer May Be Uninitialized Before Use
   summary: Built-in cpp_clang_cfg detector for uninitialized pointer.
@@ -2244,7 +2245,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Refcount Update After Unlock
   summary: Built-in cpp_clang_cfg detector for refcount race.
@@ -2260,7 +2261,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Registry Unlink Free After Unlock
   summary: Built-in cpp_clang_cfg detector for race.
@@ -2276,7 +2277,7 @@ rules:
   cwe: CWE-732
   skill: ownership_contract
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Requested Permission Not Applied To Mode
   summary: Built-in cpp_clang_cfg detector for permission.
@@ -2341,7 +2342,7 @@ rules:
   cwe: CWE-772
   skill: resource_lifecycle
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Shared Resource Freed Without Refcount Protocol
   summary: Built-in cpp_clang_cfg detector for missing refcount.
@@ -2373,7 +2374,7 @@ rules:
   cwe: CWE-190
   skill: bounds_and_integer
   default_severity: high
-  revision: 7
+  revision: 9
   status: stable
   title: Size Addition Without Overflow Guard
   summary: Built-in cpp_clang_cfg detector for integer overflow.
@@ -2405,7 +2406,7 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Slot Overwrite Without Existing Owner Cleanup
   summary: Built-in cpp_clang_cfg detector for memory leak.
@@ -2501,7 +2502,7 @@ rules:
   cwe: CWE-121
   skill: bounds_and_integer
   default_severity: high
-  revision: 6
+  revision: 7
   status: stable
   title: Unbounded Vla Or Stack Array
   summary: Built-in cpp_clang_cfg detector for stack overflow.
@@ -2565,7 +2566,7 @@ rules:
   cwe: CWE-476
   skill: null_and_failure
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Unchecked Strchr Result
   summary: Built-in cpp_clang_cfg detector for null pointer dereference.
@@ -2581,7 +2582,7 @@ rules:
   cwe: CWE-832
   skill: concurrency_lock_order
   default_severity: high
-  revision: 10
+  revision: 11
   status: stable
   title: Unlock Without Matching Lock
   summary: Built-in cpp_clang_cfg detector for lock protocol violation.
@@ -2624,6 +2625,24 @@ rules:
   - clang_structure
   aliases: []
   legacy_id: true
+- id: zscope.c_cpp.cpp_clang_cfg.waitpid_status_read_without_success_check
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: uninitialized_read
+  cwe: CWE-457
+  additional_cwes: [CWE-252]
+  skill: bounds_and_integer
+  default_severity: medium
+  default_enabled: false
+  revision: 1
+  status: experimental
+  title: Waitpid Status Read Without Success Check
+  summary: Detects wait-status macro reads after an unchecked waitpid call may leave status uninitialized.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: false
 - id: clang_cfg_wide_count_before_magic_reaches_memory_sink
   language: c_cpp
   engine: cpp_clang_cfg
@@ -2724,10 +2743,10 @@ rules:
   cwe: CWE-416
   skill: temporal_memory
   default_severity: high
-  revision: 2
+  revision: 3
   status: stable
   title: Release Then Call Argument Use
-  summary: Built-in cpp_clang_matcher detector for use after free.
+  summary: Detects a released value reused by a later call, including a released member alias whose owner is handed to a pthread worker without clearing the retained member.
   required_capabilities:
   - clang_structure
   aliases: []
@@ -2754,10 +2773,10 @@ rules:
   cwe: CWE-415
   skill: temporal_memory
   default_severity: high
-  revision: 2
+  revision: 3
   status: stable
   title: Same Argument Released Twice
-  summary: Built-in cpp_clang_matcher detector for double free.
+  summary: Built-in matcher detector for double free using current native object identities or an explicit Clang AST matcher receipt.
   required_capabilities:
   - clang_structure
   aliases: []
@@ -2816,7 +2835,7 @@ rules:
   cwe: CWE-416
   skill: temporal_memory
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Callback Can Free Current Event Before Reacquire
   summary: Built-in cpp_graph detector for callback self destroy race.
@@ -2848,7 +2867,7 @@ rules:
   cwe: CWE-125
   skill: bounds_and_integer
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Caller Limit Indexes Fixed Local Array
   summary: Built-in cpp_graph detector for bounds.
@@ -2880,7 +2899,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Cas Result Ignored Before Slot Publication
   summary: Built-in cpp_graph detector for slot race.
@@ -2912,7 +2931,7 @@ rules:
   cwe: CWE-843
   skill: ownership_contract
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Cleanup Contract Type Mismatch
   summary: Built-in cpp_graph detector for type confusion.
@@ -2960,7 +2979,7 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 8
+  revision: 10
   status: stable
   title: Container Unlink Without Release
   summary: Built-in cpp_graph detector for memory leak.
@@ -2992,7 +3011,7 @@ rules:
   cwe: CWE-833
   skill: concurrency_lock_order
   default_severity: high
-  revision: 9
+  revision: 10
   status: stable
   title: Cross Function Lock Order Inversion
   summary: Built-in cpp_graph detector for deadlock.
@@ -3008,7 +3027,7 @@ rules:
   cwe: CWE-833
   skill: concurrency_lock_order
   default_severity: high
-  revision: 9
+  revision: 10
   status: stable
   title: Cross Function Recursive Lock
   summary: Built-in cpp_graph detector for deadlock.
@@ -3088,7 +3107,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 8
+  revision: 10
   status: stable
   title: Global Registration Slot Checked Before Lock
   summary: Built-in cpp_graph detector for registration race.
@@ -3152,7 +3171,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Lookup Before Insert Lock
   summary: Built-in cpp_graph detector for shared memory race.
@@ -3216,10 +3235,10 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 9
+  revision: 11
   status: stable
   title: Paired Free Wrapper Omits Dynamic Member
-  summary: Built-in cpp_graph detector for memory leak.
+  summary: Detects omitted cleanup for dynamically owned members across paired wrappers and C++ factory/constructor/destructor chains.
   required_capabilities:
   - source_text
   - call_graph
@@ -3344,7 +3363,7 @@ rules:
   cwe: CWE-404
   skill: resource_lifecycle
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Peer Write Without Sigpipe Handling
   summary: Built-in cpp_graph detector for sigpipe unhandled.
@@ -3488,7 +3507,7 @@ rules:
   cwe: CWE-479
   skill: shared_state_race
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Signal Path Mutates Shared State Or Logs
   summary: Built-in cpp_graph detector for signal race.
@@ -3520,7 +3539,7 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Single Reader Field Under Shared Reader Count
   summary: Built-in cpp_graph detector for reader state race.
@@ -3536,7 +3555,7 @@ rules:
   cwe: CWE-833
   skill: concurrency_lock_order
   default_severity: high
-  revision: 8
+  revision: 9
   status: stable
   title: Timer Callback Cascade Wait
   summary: Built-in cpp_graph detector for deadlock.
@@ -3584,7 +3603,7 @@ rules:
   cwe: CWE-682
   skill: bounds_and_integer
   default_severity: high
-  revision: 7
+  revision: 8
   status: stable
   title: Wire Bitmap Ctz Without Endian Normalization
   summary: Built-in cpp_graph detector for byte order logic.
@@ -3653,7 +3672,7 @@ rules:
   additional_cwes: [CWE-672, CWE-772, CWE-911, CWE-416]
   skill: ownership_contract
   default_severity: high
-  revision: 14
+  revision: 15
   status: experimental
   default_enabled: false
   title: Object Protocol Across a Concrete Call Path

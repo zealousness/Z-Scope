@@ -181,6 +181,48 @@ def test_exact_publication_sink_attaches_confirmed_observation_to_proved_root() 
     assert primary[0]["occurrence_uids"] == ["OCC_pub_clang", "OCC_pub_graph"]
 
 
+def test_attachment_updates_its_own_primary_when_another_bucket_is_processed() -> None:
+    first_primary = _publication_outcome("first", deterministic=True)
+    first_review = _publication_outcome("first-review")
+    first_review["candidate_disposition"] = "needs_review"
+    first_review["security_obligation"]["decision_region_uid"] = first_primary[
+        "security_obligation"
+    ]["decision_region_uid"]
+    # Sort after the first attachment signature so the loop-local `primary`
+    # from another bucket cannot receive the first group's root labels.
+    later_primary = _publication_outcome(
+        "later",
+        sink_line=80,
+        sink_operation="zz_registry.head = entry;",
+        deterministic=True,
+    )
+    later_review = _publication_outcome(
+        "later-review",
+        sink_line=80,
+        sink_operation="zz_registry.head = entry;",
+    )
+    later_review["candidate_disposition"] = "needs_review"
+    later_review["security_obligation"]["decision_region_uid"] = later_primary[
+        "security_obligation"
+    ]["decision_region_uid"]
+
+    projection = project_finding_roots(
+        [first_primary, first_review, later_primary, later_review]
+    )
+    by_uid = {item["candidate_uid"]: item for item in projection.outcomes}
+
+    assert by_uid["CAND_pub_first"]["candidate_disposition"] == "confirmed"
+    assert by_uid["CAND_pub_first"]["finding_root_alias_uids"] == [
+        "CAND_pub_first-review"
+    ]
+    assert by_uid["CAND_pub_first-review"]["finding_root_primary_candidate_uid"] == (
+        "CAND_pub_first"
+    )
+    assert by_uid["CAND_pub_later"]["finding_root_alias_uids"] == [
+        "CAND_pub_later-review"
+    ]
+
+
 def test_exact_publication_sink_does_not_merge_different_sink_or_code() -> None:
     different_code = """\
 20 | Entry *entry = allocate_entry();

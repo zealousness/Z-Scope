@@ -45,13 +45,13 @@ tests:
 
 ## 职责与边界
 
-本模块从配置解析后的 `project.root` 递归发现 Markdown，确定性地区分说明性文档、生成物、运行时指令、benchmark truth、敏感内容和未知文件。只有 explanatory 文档进入 source index 或 Wiki 编译输入；原始文档只读。
+本模块从所加载 YAML 的父目录（唯一工程根）递归发现 Markdown，确定性地区分说明性文档、生成物、运行时指令、benchmark truth、敏感内容和未知文件。只有 explanatory 文档进入 source index 或 Wiki 编译输入；原始文档只读。
 
 模块还负责按 heading 和行号建立稳定 source section、生成 manifest、执行无 LLM 的候选相关文档查询，并为后续 Wiki revision/compiler 提供版本化来源身份。它不负责漏洞证明、candidate 终态、Validator verdict 或修改原始项目文档。
 
 ## 主数据流
 
-`project.root -> discovery -> classification -> Markdown sections -> source-manifest/source-index -> WikiStore/direct fallback -> session-pinned ProjectKnowledgeService -> entry analysis/Validator/Web/MCP`
+`YAML directory -> discovery -> classification -> Markdown sections -> source-manifest/source-index -> WikiStore/direct fallback -> session-pinned ProjectKnowledgeService -> entry analysis/Validator/Web/MCP`
 
 扫描 workflow 将 Wiki 编译作为 session 级前置阶段：入口发现完成后执行一次 `wiki_compile`，等待编译、发布或 direct-source fallback 准备全部结束，再启动入口分析和验证。批量入口、辅助 Analyzer 与 scan-level Validator 共享同一个只读服务；单个入口结束不得释放共享资源，由 session 在扫描结束时统一关闭。
 

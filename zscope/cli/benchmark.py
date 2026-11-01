@@ -26,7 +26,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="run a bundled benchmark")
     run.add_argument("--language", choices=("c_cpp", "java"), required=True)
-    run.add_argument("--mode", choices=("smoke", "trial", "formal"), required=True)
+    run.add_argument("--mode", choices=("smoke", "prepare", "trial", "formal"), required=True)
     run.add_argument("--runs", type=int)
     run.add_argument(
         "--scan-depth",
@@ -41,6 +41,13 @@ def _parser() -> argparse.ArgumentParser:
         help="New absolute directory for persistent, cold run-NN workspaces; never cleaned automatically.",
     )
     run.add_argument("--dry-run", action="store_true")
+    semantics = commands.add_parser(
+        "semantics", help="evaluate discovery output assuming all rows are confirmed"
+    )
+    semantics.set_defaults(language="c_cpp")
+    semantics.add_argument("--output", type=Path, required=True)
+    semantics.add_argument("--work-directory", type=Path)
+    semantics.add_argument("--dry-run", action="store_true")
     clean = commands.add_parser("clean", help="preview or remove generated fixture artifacts")
     clean.add_argument("--scope", choices=("c_cpp", "java", "all"), required=True)
     clean.add_argument("--apply", action="store_true")
@@ -125,15 +132,25 @@ def main(argv: Optional[List[str]] = None) -> None:
                 environment["WSLENV"] += ":Z_SCOPE_BENCHMARK_IN_WSL"
                 completed = subprocess.run(_wsl_argv(arguments), env=environment, check=False)
                 raise SystemExit(completed.returncode)
-            payload = run_benchmark(
-                args.language,
-                args.mode,
-                runs=args.runs,
-                output=args.output,
-                dry_run=args.dry_run,
-                scan_depth=args.scan_depth,
-                work_directory=args.work_directory,
-            )
+            if args.command == "semantics":
+                from zscope.benchmarking.semantic_runner import run_semantic_benchmark
+
+                payload = run_semantic_benchmark(
+                    output=args.output,
+                    work_directory=args.work_directory,
+                    discovery=True,
+                    dry_run=args.dry_run,
+                )
+            else:
+                payload = run_benchmark(
+                    args.language,
+                    args.mode,
+                    runs=args.runs,
+                    output=args.output,
+                    dry_run=args.dry_run,
+                    scan_depth=args.scan_depth,
+                    work_directory=args.work_directory,
+                )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     except BenchmarkError as exc:
         parser.error(str(exc))

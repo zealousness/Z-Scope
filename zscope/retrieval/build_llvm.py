@@ -56,7 +56,7 @@ class BitcodeBuilder:
     }
     _DEFAULT_EXCLUSIVE_POOL = "default"
     _MANIFEST_VERSION = 3
-    _LINK_MANIFEST_VERSION = 2
+    _LINK_MANIFEST_VERSION = 3
 
     def __init__(
         self,
@@ -101,6 +101,9 @@ class BitcodeBuilder:
         self._tools_identity: Optional[Dict[str, Any]] = None
         self._group_inputs: Dict[str, List[Path]] = {}
         self._linked_inputs_by_path: Dict[str, List[Path]] = {}
+        self._physical_link_inputs: Dict[str, List[Path]] = {}
+        self._identical_variant_aliases: Dict[str, List[Dict[str, str]]] = {}
+        self._link_duplicate_symbols: Dict[str, List[Dict[str, Any]]] = {}
         self.failed_links: List[str] = []
         self.cancel = threading.Event()
         self._compile_preparation: Any = None
@@ -173,6 +176,9 @@ class BitcodeBuilder:
         self._manifest_dirty = False
         self._bc_to_src.clear()
         self._bc_compile_index.clear()
+        self._physical_link_inputs.clear()
+        self._identical_variant_aliases.clear()
+        self._link_duplicate_symbols.clear()
         self.reused_linked_groups.clear()
         self.failed_tus.clear()
         self._compilers.clear()
@@ -424,10 +430,24 @@ class BitcodeBuilder:
                         selected_bcs,
                         selected_group_name,
                         previous_selected_bcs=reuse_bcs,
+                        symbol_reader=symbol_reader,
                     )
                     if merged:
                         results[selected_group_name] = merged
                     if selected_plan:
+                        duplicate_symbols = self._link_duplicate_symbols.get(
+                            selected_group_name, []
+                        )
+                        if duplicate_symbols:
+                            selected_plan.duplicate_symbols = duplicate_symbols
+                            selected_plan.skipped_variants.append(
+                                {
+                                    "group_name": selected_group_name,
+                                    "exclusive_pool": "",
+                                    "reason": "observed_link_target_required",
+                                    "duplicate_symbols": duplicate_symbols,
+                                }
+                            )
                         self._write_scope_plan(selected_plan)
                     continue
                 link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
@@ -466,19 +486,27 @@ class BitcodeBuilder:
                         previous_selected_bcs=(
                             reuse_bcs if variant_name == selected_group_name else None
                         ),
+                        symbol_reader=symbol_reader,
                     )
                     if merged:
                         results[variant_name] = merged
                         continue
                     if selected_plan:
+                        remaining_duplicates = self._link_duplicate_symbols.get(
+                            variant_name, []
+                        )
                         selected_plan.skipped_variants.append(
                             {
                                 "group_name": variant_name,
                                 "exclusive_pool": variant.get("exclusive_pool", ""),
-                                "reason": "llvm-link_failed",
-                                "duplicate_symbols": self._duplicate_external_symbols(
-                                    variant_bcs,
-                                    symbol_reader,
+                                "reason": (
+                                    "observed_link_target_required"
+                                    if remaining_duplicates
+                                    else "llvm-link_failed"
+                                ),
+                                "duplicate_symbols": remaining_duplicates
+                                or self._duplicate_external_symbols(
+                                    variant_bcs, symbol_reader
                                 ),
                             }
                         )
@@ -1492,6 +1520,12 @@ class BitcodeBuilder:
                 "bitcode_hash": self._file_hash(resolved_merged),
                 "path": str(resolved_merged),
                 "inputs": [str(p) for p in self._group_inputs.get(group_name, [])],
+                "physical_inputs": [
+                    str(p) for p in self._physical_link_inputs.get(group_name, [])
+                ],
+                "identical_source_variant_aliases": list(
+                    self._identical_variant_aliases.get(group_name, [])
+                ),
                 "command_ids": list(identities["command_ids"]),
             }
             self._manifest.setdefault("linked_artifacts", {})[fingerprint] = dict(
@@ -1636,16 +1670,51 @@ class BitcodeBuilder:
         group_name: str,
         *,
         previous_selected_bcs: Optional[set[str]] = None,
+        symbol_reader: Any = None,
     ) -> Optional[Path]:
-        self._group_inputs[group_name] = list(bc_files)
-        if not bc_files:
+        logical_inputs = [Path(path).resolve() for path in bc_files]
+        self._group_inputs[group_name] = logical_inputs
+        if not logical_inputs:
             self.failed_links.append(group_name)
             return None
-        fingerprint = self._linked_group_fingerprint(bc_files)
+        physical_inputs, identical_aliases = self._deduplicate_identical_source_variants(
+            logical_inputs
+        )
+        self._physical_link_inputs[group_name] = physical_inputs
+        self._identical_variant_aliases[group_name] = identical_aliases
+        if identical_aliases:
+            logger.info(
+                "SVF group '%s' preserved %d logical BuildContext input(s) while "
+                "deduplicating %d byte-identical same-source link input(s)",
+                group_name,
+                len(logical_inputs),
+                len(identical_aliases),
+            )
+        fingerprint = self._linked_group_fingerprint(logical_inputs)
         merged = self.output_dir / f"merged_{group_name}_{fingerprint[:16]}.bc"
-        self._linked_inputs_by_path[str(merged.resolve())] = list(bc_files)
-        if self._reuse_linked_bitcode_if_current(merged, group_name, fingerprint, bc_files):
+        # Logical inputs retain every command identity for signal attribution.
+        # Only the byte-identical physical alias is omitted from llvm-link.
+        self._linked_inputs_by_path[str(merged.resolve())] = logical_inputs
+        if self._reuse_linked_bitcode_if_current(
+            merged, group_name, fingerprint, logical_inputs
+        ):
             return merged
+        duplicate_symbols = (
+            self._duplicate_external_symbols(physical_inputs, symbol_reader)
+            if symbol_reader is not None and len(physical_inputs) > 1
+            else []
+        )
+        self._link_duplicate_symbols[group_name] = duplicate_symbols
+        if duplicate_symbols:
+            self.failed_links.append(group_name)
+            logger.error(
+                "SVF group '%s' contains %d multiply-defined strong external "
+                "symbol(s) without a closed observed link target; refusing a "
+                "synthetic cross-target link",
+                group_name,
+                len(duplicate_symbols),
+            )
+            return None
         # Never overwrite the published artifact until the complete link succeeds.
         temporary = merged.with_suffix(".partial.bc")
         temporary.unlink(missing_ok=True)
@@ -1671,18 +1740,18 @@ class BitcodeBuilder:
         try:
             # Chunking changes only command transport; preserve input order and
             # never split the analysis group into separate solver invocations.
-            argument_bytes = sum(len(str(p).encode()) + 1 for p in bc_files)
+            argument_bytes = sum(len(str(p).encode()) + 1 for p in physical_inputs)
             if argument_bytes > 100000:
                 chunks = []
-                for start in range(0, len(bc_files), 200):
+                for start in range(0, len(physical_inputs), 200):
                     chunk = merged.with_name(merged.stem + f".chunk{start}.bc")
                     chunk.unlink(missing_ok=True)
-                    link(bc_files[start : start + 200], chunk)
+                    link(physical_inputs[start : start + 200], chunk)
                     chunks.append(chunk)
                 link(chunks, temporary)
             else:
-                link(bc_files, temporary)
-            if fingerprint != self._linked_group_fingerprint(bc_files):
+                link(physical_inputs, temporary)
+            if fingerprint != self._linked_group_fingerprint(logical_inputs):
                 raise RuntimeError("link input changed while llvm-link was running")
             temporary.replace(merged)
             self._record_linked_bitcode_manifest(merged, group_name, fingerprint)
@@ -1693,6 +1762,44 @@ class BitcodeBuilder:
             self.failed_links.append(group_name)
             logger.error("llvm-link failed for %s: %s", group_name, exc)
             return None
+
+    def _deduplicate_identical_source_variants(
+        self, bc_files: Sequence[Path]
+    ) -> tuple[List[Path], List[Dict[str, str]]]:
+        """Collapse only byte-identical bitcode for the same source at link transport.
+
+        A compile database can contain the same source once per final target.  Passing
+        byte-identical variants to one synthetic SVF link produces an impossible ELF
+        duplicate definition even though each real target links only one variant.  We
+        keep every logical input in ``_group_inputs`` so command attribution remains
+        ambiguous/build-scoped, but send one physical copy to llvm-link.  Different
+        sources or different bitcode bytes are never collapsed.
+        """
+
+        physical: List[Path] = []
+        aliases: List[Dict[str, str]] = []
+        representative_by_identity: Dict[tuple[str, str], Path] = {}
+        for raw_path in bc_files:
+            bc_path = Path(raw_path).resolve()
+            source = self._bc_to_src.get(bc_path)
+            if source is None:
+                physical.append(bc_path)
+                continue
+            identity = (str(Path(source).resolve()), self._file_hash(bc_path))
+            representative = representative_by_identity.get(identity)
+            if representative is None:
+                representative_by_identity[identity] = bc_path
+                physical.append(bc_path)
+                continue
+            aliases.append(
+                {
+                    "source": identity[0],
+                    "representative_bc": str(representative),
+                    "alias_bc": str(bc_path),
+                    "bitcode_sha256": identity[1],
+                }
+            )
+        return physical, aliases
 
     def _link_in_chunks(
         self,

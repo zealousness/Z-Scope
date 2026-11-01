@@ -1332,8 +1332,6 @@ llms:
     base_urls: [http://localhost]
     models: [test-model]
 project:
-  root: {str(tmp_path).replace(chr(92), "/")}
-  source_root: .
   language: c_cpp
   diff_impact:
     strategy: semantic_obligation

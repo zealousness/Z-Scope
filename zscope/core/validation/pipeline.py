@@ -11,8 +11,10 @@ from ...common.issue_identity import (
     canonical_issue_key,
     issue_build_context_id,
     parse_issue_location,
+    parse_issue_location_preserving_path_case,
 )
 from ...memory import ReviewMemory
+from .claims import replay_counter_claim, replay_positive_claim
 from .proofs import deterministic_decision_proof
 
 FALSE_POSITIVE_BASELINE_STATUSES = {"false_positive", "suppressed"}
@@ -140,46 +142,31 @@ def _confirmed_evidence_gap_texts(
     promotion tier condition failed instead of a generic "not promoted".
     """
 
-    gaps: List[str] = []
-    if _has_missing_decision_facts(issue):
-        gaps.append("关键决策义务尚未闭合，模型评分不能替代缺失事实")
-    final_score = _score_text(score_data, "final_score")
-    path = _score_text(score_data, "path_completeness")
-    contract = _score_text(score_data, "contract_consistency")
-    validator_conf = _score_text(score_data, "validation_confidence")
-    negative = val_data.get("negative_evidence")
-    has_negative = (
-        bool(negative) if isinstance(negative, list) else bool(str(negative or "").strip())
-    )
-    if float(score_data.get("final_score", 0.0) or 0.0) < 0.60:
-        gaps.append(f"综合评分 {final_score} 低于自动确认线 0.60")
-    if float(score_data.get("path_completeness", 0.0) or 0.0) < 0.75:
-        gaps.append(f"路径完整度 {path} 低于 0.75")
-    if float(score_data.get("contract_consistency", 0.0) or 0.0) < 0.55:
-        gaps.append(f"调用契约一致度 {contract} 低于 0.55")
-    if float(score_data.get("validation_confidence", 0.0) or 0.0) < 0.80:
-        gaps.append(f"模型验证置信度 {validator_conf} 低于 0.80")
-    if has_negative:
-        gaps.append("存在未关闭的负面证据")
-    context_version = str(issue.get("decision_context_version") or "")
-    if context_version in {
-        "zscope.decision-context.v3.1",
-        "zscope.decision-context.v3.2",
-        "zscope.decision-context.v3.3",
-    }:
-        fact_slice = issue.get("decision_fact_slice")
-        if not isinstance(fact_slice, dict) or not (fact_slice.get("fact_uids") or []):
-            gaps.append("缺少可审计的确定性决策事实切片")
-        coverage = str(issue.get("decision_fact_coverage") or "")
-        if coverage not in {"complete", "partial"}:
-            gaps.append("决策事实覆盖率不足")
-        blocking = val_data.get("blocking_negative_evidence")
-        if not isinstance(blocking, bool):
-            gaps.append("模型未给出阻断性负面证据的明确结论")
-        if issue.get("source") in (None, "", {}, []) or issue.get("sink") in (None, "", {}, []):
-            gaps.append("缺少明确的 source/sink 定位")
+    replay = replay_positive_claim(issue, val_data)
+    issue["validator_claim_replay"] = replay.to_dict()
+    labels = {
+        "validation_obligation_profile_missing": "当前规则缺少类型化验证义务",
+        "validator_protocol_not_current": "Validator 结果不是当前严格协议",
+        "validator_verdict_not_verified": "Validator 未返回 verified",
+        "validator_decision_not_complete": "Validator 尚未完成裁决",
+        "validator_still_requests_fact": "Validator 仍请求关键事实",
+        "blocking_counterfact_present_or_unspecified": "存在阻断性负面证据/反证或其状态未明确",
+        "positive_claim_missing": "缺少明确的正向证据主张",
+        "evidence_conflict": "当前正反证发生冲突",
+        "build_context_not_current": "构建上下文未通过当前性检查",
+        "decision_fact_slice_empty": "缺少可重放的决策事实",
+        "dependency_code_hash_missing": "缺少依赖源码摘要",
+        "positive_claim_has_no_evidence_refs": "正向主张没有引用事实或路径边",
+        "evidence_ref_catalog_missing": "缺少候选级证据引用目录",
+        "no_authoritative_fact_or_edge_cited": "未引用当前事实、路径边或源码位置",
+        "investigation_evidence_closure_incomplete": "调查阶段的证据闭环不完整",
+    }
+    gaps = []
+    for failure in replay.failures:
+        prefix = failure.split(":", 1)[0]
+        gaps.append(labels.get(prefix, failure))
     if not gaps:
-        gaps.append("未满足完整证据层级要求")
+        gaps.append("正向主张未通过当前事实重放")
     return gaps
 
 
@@ -189,23 +176,14 @@ def _uncertain_promotion_gap_texts(
     final_score: float,
     threshold: Optional[float],
 ) -> List[str]:
-    """List the unmet high-confidence-band conditions for an ``uncertain`` verdict."""
+    """Explain why ``uncertain`` cannot enter the precision view.
 
-    gaps: List[str] = []
-    if threshold is None:
-        gaps.append(
-            "高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）"
-        )
-    else:
-        confidence = val_data.get("confidence_score", issue.get("confidence", 0.5))
-        try:
-            confidence = float(confidence)
-        except (TypeError, ValueError):
-            confidence = -1.0
-        if confidence < threshold:
-            gaps.append(f"模型置信度 {confidence:.2f} 低于自动确认阈值 {threshold:.2f}")
-    if final_score < 0.6:
-        gaps.append(f"综合评分 {final_score:.2f} 低于 0.60")
+    Scores and model confidence are ranking telemetry only.  They therefore
+    never appear here as missing promotion conditions.
+    """
+
+    del val_data, final_score, threshold
+    gaps: List[str] = ["Validator 未返回 verified，不能形成正向主张重放"]
     missing = issue.get("missing_fact_kinds")
     if isinstance(missing, list) and missing:
         gaps.append("仍缺少关键决策事实：" + "、".join(str(kind) for kind in missing))
@@ -218,8 +196,6 @@ def _uncertain_promotion_gap_texts(
             len(issue["negative_evidence"]) if isinstance(issue["negative_evidence"], list) else 1
         )
         gaps.append(f"存在 {count} 条未关闭的负面证据")
-    if not gaps:
-        gaps.append("未满足自动确认条件")
     return gaps
 
 
@@ -285,15 +261,10 @@ def promotion_review_reason(
         )
     if kind == "corrected_category_review":
         category = corrected_category or str(issue.get("category") or "")
-        confidence = val_data.get("confidence_score", issue.get("confidence", 0.5))
-        try:
-            confidence_text = f"{float(confidence):.2f}"
-        except (TypeError, ValueError):
-            confidence_text = "未知"
         return (
             f"模型否决了原类别，但在同一代码证据上识别出具体的 `{category}` 问题；"
-            f"自动确认还需模型置信度与综合评分达标（当前置信度 {confidence_text}、"
-            f"综合评分 {final_score:.2f}）。因此保留待人工复核。"
+            "修正后的机制必须重新绑定类型化义务，并由 verified 正向主张在当前事实上重放。"
+            "模型置信度和综合评分只用于排序，不能授权确认；因此保留待人工复核。"
         )
     if kind == "unvalidated":
         return (
@@ -447,6 +418,7 @@ class ValidationPipeline:
         final_score = self._final_score(score_data)
         preserve_issue_location(issue)
         issue["score_components"] = score_data
+        issue["score_role"] = "ranking_only"
         issue["final_score"] = final_score
         issue["validator_avoided"] = True
 
@@ -660,6 +632,7 @@ class ValidationPipeline:
             issue["candidate_disposition"] = "shadow_observation"
             issue["finding_kind"] = "rollout_shadow_observation"
             issue["score_components"] = score_data
+            issue["score_role"] = "ranking_only"
             final_score = self._final_score(score_data)
             issue["final_score"] = final_score
             issue["validation_reasoning"] = "Validator 已被禁用，影子发现候选仅保留记录而未晋级。"
@@ -674,6 +647,7 @@ class ValidationPipeline:
         issue["needs_review_sub_state"] = needs_review_sub_state(issue)
         issue["promotion_review_reason"] = promotion_review_reason(issue, kind="unvalidated")
         issue["score_components"] = score_data
+        issue["score_role"] = "ranking_only"
         final_score = self._final_score(score_data)
         issue["final_score"] = final_score
         return ValidationOutcome(
@@ -681,41 +655,6 @@ class ValidationPipeline:
             verdict="needs_review",
             final_score=final_score,
         )
-
-    def _high_confidence_uncertain_confirms(
-        self,
-        issue: Dict[str, Any],
-        val_data: Dict[str, Any],
-        final_score: float,
-    ) -> bool:
-        """Return True when the R3 ``high_confidence_band`` rung may confirm.
-
-        Enabled only via ``validation_uncertain_confirm_threshold``.  A model
-        ``uncertain`` verdict confirms solely when its confidence clears the
-        threshold, the security obligation has no missing decision facts, and
-        no negative evidence contradicts the finding.  Any doubt keeps the
-        shipped needs_review disposition.
-        """
-
-        threshold = self.uncertain_confirm_threshold
-        if threshold is None:
-            return False
-        if final_score < 0.6:
-            return False
-        confidence = val_data.get("confidence_score", issue.get("confidence", 0.5))
-        try:
-            confidence = float(confidence)
-        except (TypeError, ValueError):
-            return False
-        if confidence < threshold:
-            return False
-        if _has_missing_decision_facts(issue):
-            return False
-        if issue.get("blocking_negative_evidence") is True:
-            return False
-        if issue.get("negative_evidence"):
-            return False
-        return True
 
     def apply_validator_result(
         self,
@@ -728,6 +667,7 @@ class ValidationPipeline:
         """Apply the normalized Validator result and return its report bucket."""
         preserve_issue_location(issue)
         issue["score_components"] = score_data
+        issue["score_role"] = "ranking_only"
         final_score = self._final_score(score_data)
         issue["final_score"] = final_score
         issue["validator_verdict"] = verdict
@@ -874,7 +814,7 @@ class ValidationPipeline:
                 verdict="needs_review",
                 final_score=final_score,
             )
-        if verdict == "verified" and (final_score >= 0.6 or confirmation_proof is not None):
+        if verdict == "verified":
             if confirmation_proof is not None or self._has_confirmed_evidence(
                 issue,
                 score_data,
@@ -886,6 +826,8 @@ class ValidationPipeline:
                 if confirmation_proof is not None:
                     issue["decision_proof"] = confirmation_proof.to_dict()
                     issue["promotion_reason"] = "deterministic_confirmation_proof"
+                else:
+                    issue["promotion_reason"] = "validator_positive_claim_replayed"
                 report_bucket = "issues"
             else:
                 issue["validation_status"] = "needs_review"
@@ -915,43 +857,9 @@ class ValidationPipeline:
                 final_score=final_score,
             )
 
-        if verdict == "verified":
-            issue["validation_status"] = "needs_review"
-            issue["candidate_disposition"] = "needs_review"
-            issue["finding_kind"] = "needs_review"
-            issue["needs_review_sub_state"] = needs_review_sub_state(issue)
-            issue["promotion_review_reason"] = promotion_review_reason(
-                issue,
-                kind="verified_unpromoted",
-                final_score=final_score,
-                val_data=val_data,
-                score_data=score_data,
-            )
-            issue["validation_reasoning"] = val_data.get("reasoning")
-            preserve_issue_location(issue, val_data)
-            return ValidationOutcome(
-                report_bucket="observations",
-                memory_status="needs_review",
-                verdict=verdict,
-                final_score=final_score,
-            )
-
         if verdict == "uncertain":
             issue["validation_reasoning"] = val_data.get("reasoning")
             self._copy_validator_detail_fields(issue, val_data)
-            if self._high_confidence_uncertain_confirms(issue, val_data, final_score):
-                issue["validation_status"] = "validated"
-                issue["candidate_disposition"] = "confirmed"
-                issue["finding_kind"] = val_data.get("finding_kind") or "verified_vulnerability"
-                issue["promotion_reason"] = "model_high_confidence_confirmation"
-                issue["confirmed_via"] = "high_confidence_band"
-                preserve_issue_location(issue, val_data)
-                return ValidationOutcome(
-                    report_bucket="issues",
-                    memory_status="validated",
-                    verdict=verdict,
-                    final_score=final_score,
-                )
             issue["validation_status"] = "needs_review"
             issue["candidate_disposition"] = "needs_review"
             issue["finding_kind"] = "needs_review"
@@ -1006,11 +914,11 @@ class ValidationPipeline:
             )
             self._copy_validator_detail_fields(issue, val_data)
             preserve_issue_location(issue, val_data)
-            corrected_status = (
-                "validated"
-                if self._corrected_category_is_high_confidence(val_data, final_score)
-                else "needs_review"
-            )
+            # A rejected verdict cannot become a confirmed finding merely by
+            # assigning another category with a high heuristic score.  Keep
+            # the useful correction, but require a fresh typed obligation and
+            # verified claim before any later confirmation.
+            corrected_status = "needs_review"
             issue["validation_status"] = corrected_status
             issue["candidate_disposition"] = (
                 "confirmed" if corrected_status == "validated" else "needs_review"
@@ -1057,12 +965,25 @@ class ValidationPipeline:
                 final_score=final_score,
             )
 
-        if rejection_proof is not None or self._has_deterministic_rejection_proof(issue, val_data):
+        external_rejection_proof = self._has_deterministic_rejection_proof(issue, val_data)
+        counter_replay = replay_counter_claim(
+            issue,
+            val_data,
+            deterministic_counterfact_replayed=external_rejection_proof,
+        )
+        issue["validator_counter_claim_replay"] = counter_replay.to_dict()
+        issue["evidence_gate"] = {
+            **counter_replay.to_dict(),
+            "score_role": "ranking_only",
+        }
+        if counter_replay.accepted and (rejection_proof is not None or external_rejection_proof):
             issue["validation_status"] = "rejected"
             issue["candidate_disposition"] = "rejected_with_proof"
             issue["finding_kind"] = "rejected"
             issue["rejection_source"] = "deterministic_validator_proof"
             issue["deterministic_rejection"] = True
+            issue["validator_rejection_proof_status"] = "replayed"
+            issue.pop("validator_rejection_proof_failure", None)
             if rejection_proof is not None:
                 issue["decision_proof"] = rejection_proof.to_dict()
             issue["validation_reasoning"] = val_data.get("reasoning")
@@ -1078,7 +999,27 @@ class ValidationPipeline:
         issue["candidate_disposition"] = "needs_review"
         issue["finding_kind"] = "needs_review"
         issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+        from .claims import replay_semantic_counter_claim
+
+        semantic_replay = replay_semantic_counter_claim(issue, val_data)
+        issue["validator_semantic_counter_claim_replay"] = semantic_replay.to_dict()
+        if semantic_replay.accepted:
+            issue.update({
+                "validation_status": "rejected",
+                "candidate_disposition": "rejected_with_evidence",
+                "finding_kind": "rejected",
+                "rejection_source": "evidence_grounded_llm",
+                "deterministic_rejection": False,
+                "decision_basis": "llm_evidence",
+                "validation_reasoning": val_data.get("reasoning"),
+                "evidence_gate": semantic_replay.to_dict(),
+            })
+            preserve_issue_location(issue, val_data)
+            return ValidationOutcome(report_bucket=None, memory_status="rejected",
+                                     verdict=verdict, final_score=final_score)
         issue["rejection_source"] = "validator_without_deterministic_proof"
+        issue["validator_rejection_proof_status"] = "not_reproduced"
+        issue["validator_rejection_proof_failure"] = "no_current_deterministic_rejection_proof"
         issue["promotion_review_reason"] = promotion_review_reason(issue, kind="rejected_unproven")
         issue["validation_reasoning"] = (
             "模型否决该候选但未给出确定性反驳证明，候选保留待人工复核。"
@@ -1155,90 +1096,16 @@ class ValidationPipeline:
         score_data: Dict[str, float],
         val_data: Dict[str, Any],
     ) -> bool:
-        """Return whether a verified result has a complete promotion tier.
+        """Replay a verified claim; heuristic scores never authorize it."""
 
-        A missing inter-procedural contract is not negative evidence.  The
-        legacy score nevertheless assigns it the neutral value ``0.55`` and
-        used to block every otherwise structured v3.1 verification.  Preserve
-        the legacy tier for old candidates, and let v3.1 use an explicit,
-        auditable tier that requires a hashed decision-fact slice and an
-        explicit Validator statement that no *blocking* counter-fact exists.
-        Free-form uncertainty remains reportable evidence; it is not treated
-        as a deterministic contradiction.
-        """
-        if _has_missing_decision_facts(issue):
-            return False
-        try:
-            final_score = float(score_data.get("final_score", 0.0) or 0.0)
-            path = float(score_data.get("path_completeness", 0.0) or 0.0)
-            contract = float(score_data.get("contract_consistency", 0.0) or 0.0)
-            validator = float(score_data.get("validation_confidence", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            return False
-        negative = val_data.get("negative_evidence")
-        has_negative = (
-            bool(negative) if isinstance(negative, list) else bool(str(negative or "").strip())
-        )
-        if str(val_data.get("pass") or "") == "investigation_synthesis":
-            closure = issue.get("v3_evidence_closure")
-            if not isinstance(closure, dict) or closure.get("complete") is not True:
-                return False
-            closure_fact_uids = closure.get("fact_uids")
-            resolved_kinds = closure.get("resolved_fact_kinds")
-            if (
-                not isinstance(closure_fact_uids, list)
-                or not closure_fact_uids
-                or not isinstance(resolved_kinds, list)
-                or not resolved_kinds
-            ):
-                return False
-        legacy_tier = bool(
-            final_score >= 0.70
-            and path >= 0.75
-            and contract >= 0.70
-            and validator >= 0.80
-            and not has_negative
-        )
-        if legacy_tier:
-            return True
-
-        # v3.1 only: a structured fact slice means that a future report can
-        # audit exactly the code snapshot that supported promotion.  Older
-        # candidates cannot opt into this route by merely setting a score.
-        if str(issue.get("decision_context_version") or "") not in {
-            "zscope.decision-context.v3.1",
-            "zscope.decision-context.v3.2",
-            "zscope.decision-context.v3.3",
-        }:
-            return False
-        fact_slice = issue.get("decision_fact_slice")
-        if not isinstance(fact_slice, dict):
-            return False
-        fact_ids = fact_slice.get("fact_uids") or []
-        code_hashes = fact_slice.get("dependency_code_hashes") or []
-        coverage = str(issue.get("decision_fact_coverage") or fact_slice.get("coverage") or "")
-        source = (
-            issue.get("source_identity") or issue.get("canonical_source") or issue.get("source")
-        )
-        sink = issue.get("sink_identity") or issue.get("canonical_sink") or issue.get("sink")
-        blocking = val_data.get("blocking_negative_evidence")
-        if not isinstance(blocking, bool):
-            return False
-        return bool(
-            final_score >= 0.75
-            and path >= 0.75
-            # 0.55 is the neutral default emitted when no cross-procedure
-            # contract is available.  A lower value remains a negative signal.
-            and contract >= 0.55
-            and validator >= 0.80
-            and blocking is False
-            and coverage in {"complete", "partial"}
-            and fact_ids
-            and code_hashes
-            and source not in (None, "", {}, [])
-            and sink not in (None, "", {}, [])
-            and not bool(issue.get("evidence_conflict"))
-        )
+        del score_data  # Ranking telemetry only; never a promotion authority.
+        replay = replay_positive_claim(issue, val_data)
+        issue["validator_claim_replay"] = replay.to_dict()
+        issue["evidence_gate"] = {
+            **replay.to_dict(),
+            "score_role": "ranking_only",
+        }
+        return replay.accepted
 
     def _has_deterministic_rejection_proof(
         self,
@@ -1507,22 +1374,6 @@ class ValidationPipeline:
         }
         category = aliases.get(category, category)
         return category if category in _CWE_BY_CORRECTED_CATEGORY else ""
-
-    @staticmethod
-    def _corrected_category_is_high_confidence(
-        val_data: Dict[str, Any], final_score: float
-    ) -> bool:
-        text = ValidationPipeline._flatten_for_validation(val_data).lower()
-        try:
-            validator_confidence = float(val_data.get("confidence_score", 0) or 0)
-        except (TypeError, ValueError):
-            validator_confidence = 0.0
-        strong_language = re.search(
-            r"(?:confirmed|definite|actual|real|must|always|必然|明确|实际存在|真正存在|固定传入)",
-            text,
-            re.IGNORECASE,
-        )
-        return bool(strong_language and (validator_confidence >= 0.8 or final_score >= 0.72))
 
     def _normalized_category(self, issue: Dict[str, Any]) -> str:
         category = self.suppression_category(issue)
@@ -1911,7 +1762,12 @@ def _parse_location_text(value: str) -> _LocationCandidate:
     text = value.replace("\\", "/").strip()
     if not text:
         return _LocationCandidate()
-    file_path, line = parse_issue_location(text)
+    # ``parse_issue_location`` intentionally case-folds paths for stable
+    # finding identity.  A report coordinate is also used as a physical Linux
+    # lookup, however, where that folded spelling may name a different file or
+    # no file at all.  Keep the source spelling here; identity normalization
+    # remains confined to issue-key/dedup helpers.
+    file_path, line = _parse_location_preserving_path_case(text)
     end_line = None
     if file_path and line is not None:
         match = re.search(r":\s*\d+\s*-\s*(\d+)", text)
@@ -1932,7 +1788,7 @@ def _parse_location_text(value: str) -> _LocationCandidate:
     )
     if match:
         return _LocationCandidate(
-            file_path=match.group(1).lower(),
+            file_path=match.group(1),
             start_line=_coerce_int(match.group(2)),
             end_line=_coerce_int(match.group(3)),
         )
@@ -1958,9 +1814,13 @@ def _format_location(location: _LocationCandidate) -> str:
 def _coerce_file(value: Any) -> str:
     text = str(value or "").replace("\\", "/").strip()
     if re.search(r"\.[chp]+$", text, flags=re.IGNORECASE):
-        return text.lower()
-    parsed_file, _line = parse_issue_location(text)
+        return text
+    parsed_file, _line = _parse_location_preserving_path_case(text)
     return parsed_file
+
+
+def _parse_location_preserving_path_case(value: str) -> tuple[str, Optional[int]]:
+    return parse_issue_location_preserving_path_case(value)
 
 
 def _coerce_int(value: Any) -> Optional[int]:

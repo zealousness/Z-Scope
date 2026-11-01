@@ -3,11 +3,13 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from zscope.retrieval.clang_backend import ClangBackend
 from zscope.retrieval.clang_batch import BatchIndexer, find_indexer
+from zscope.retrieval.knowledge_db import KnowledgeDB
 
 
 def test_import_cleanup_retains_reusable_facts_and_failure_diagnostics(tmp_path):
@@ -21,6 +23,39 @@ def test_import_cleanup_retains_reusable_facts_and_failure_diagnostics(tmp_path)
     for name in retained:
         assert (tmp_path / name).read_text(encoding="utf-8") == name
     assert not any((tmp_path / name).exists() for name in disposable)
+
+
+def test_publish_base_coalesces_absolute_and_relative_tu_identities(tmp_path):
+    source = tmp_path / "src" / "unit.c"
+    source.parent.mkdir()
+    source.write_text("int unit(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        digest = "a" * 64
+        db._conn.execute(
+            "INSERT INTO translation_units(file_path,file_hash,status) VALUES (?,?, 'indexed')",
+            ("src/unit.c", digest),
+        )
+        db._conn.execute(
+            "INSERT INTO translation_units(file_path,file_hash,status) VALUES (?,?, 'indexed')",
+            (str(source), digest),
+        )
+        db.commit()
+        indexer = BatchIndexer.__new__(BatchIndexer)
+        indexer.root = tmp_path
+        indexer.backend = SimpleNamespace()
+        indexer._native_sources = None
+        indexer._native_cache = None
+        indexer._rows = lambda *_args, **_kwargs: iter(())
+
+        indexer._publish_base(db, {str(source.resolve()): digest}, set())
+
+        rows = db.get_all_tus()
+        assert [(row["file_path"], row["status"]) for row in rows] == [
+            ("src/unit.c", "indexed")
+        ]
+    finally:
+        db.close()
 
 
 @pytest.fixture
@@ -126,7 +161,13 @@ def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
         "void comma_release(int *p) { free(p), free(p); }\n"
         "void private_fields() { State local; local.total++; thread_local State tls; tls.total++; }\n"
         "struct Guard { ~Guard(); };\nvoid cleanup() { Guard guard; }\n"
-        "int conditional(int n) { if (n > 0) return n; return 0; }\n",
+        "int conditional(int n) { if (n > 0) return n; return 0; }\n"
+        "unsigned atomic_add(volatile unsigned *p) { "
+        "return __atomic_fetch_add(p, 1u, __ATOMIC_RELAXED); }\n"
+        "bool atomic_cas(volatile unsigned *p) { "
+        "return __sync_bool_compare_and_swap(p, 0u, 1u); }\n"
+        "template <typename Key> struct DependentEnum { "
+        "enum { limit = 12 }; int read() const { return limit; } };\n",
         encoding="utf-8",
     )
     cdb = tmp_path / "compile_commands.json"
@@ -147,7 +188,7 @@ def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
         assert backend.initialize(str(tmp_path), compile_commands_path=str(cdb))
         facts = backend.get_function_program_facts("demo", "events.cpp")
         assert facts["complete"]
-        assert facts["functions"][0]["fact_version"] == "zscope.program-events.v5"
+        assert facts["functions"][0]["fact_version"] == "zscope.program-events.v7"
         assert facts["functions"][0]["parameters"][0]["value_kind"] == "parameter"
         total_values = [
             value
@@ -182,6 +223,33 @@ def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
         assert {
             event["return_value"] for event in branches["events"] if event["event_kind"] == "return"
         } == {"n", "0"}
+        for function, operation in (
+            ("atomic_add", "__atomic_fetch_add"),
+            ("atomic_cas", "__sync_bool_compare_and_swap"),
+        ):
+            atomic = backend.get_function_program_facts(function, "events.cpp")
+            event = next(
+                (
+                    row
+                    for row in atomic["events"]
+                    if str(row.get("callee", {}).get("name") or "").startswith(operation)
+                ),
+                None,
+            )
+            assert event is not None, [
+                (
+                    row.get("event_kind"),
+                    row.get("ast_kind"),
+                    row.get("expression"),
+                    row.get("callee", {}).get("name"),
+                )
+                for row in atomic["events"]
+            ]
+            emitted_operation = event["callee"]["name"]
+            assert event["callee"]["usr"] == f"c:@F@{emitted_operation}"
+            if function == "atomic_add":
+                assert event["event_kind"] == "compiler_intrinsic"
+                assert event["callee"]["compiler_intrinsic"] is True
         calls = backend.get_function_program_facts("macro_release", "events.cpp")
         assert any(
             event.get("callee", {}).get("usr") and event["arguments"] == ["p"]

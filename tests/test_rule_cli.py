@@ -20,8 +20,6 @@ def _write_config(root: Path) -> Path:
             }
         },
         "project": {
-            "root": str(root),
-            "source_root": ".",
             "language": "c_cpp",
             "entry_discovery": {
                 "enabled": True,

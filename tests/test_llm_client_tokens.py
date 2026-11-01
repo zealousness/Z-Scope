@@ -465,7 +465,7 @@ def test_terminal_tool_required_reprompts_prose_until_budget(monkeypatch) -> Non
     assert result["terminal_tool_call_count"] == 0
 
 
-def test_xml_terminal_invoke_uses_terminal_handler(monkeypatch) -> None:
+def test_xml_terminal_invoke_does_not_satisfy_terminal_protocol(monkeypatch) -> None:
     client = LLMClient(api_key="test", base_url="http://example.invalid", models=["unit-model"])
 
     def fake_chat_completion(messages, **kwargs):
@@ -496,9 +496,9 @@ def test_xml_terminal_invoke_uses_terminal_handler(monkeypatch) -> None:
         max_iterations=3,
     )
 
-    assert result["terminal_tool_payload"] == {"value": 7}
-    assert result["terminal_tool_valid"] is True
-    assert result["terminal_tool_call_count"] == 1
+    assert result["terminal_tool_payload"] is None
+    assert result["terminal_tool_valid"] is False
+    assert result["terminal_tool_call_count"] == 0
 
 
 def test_mixed_terminal_and_regular_calls_reject_terminal_then_continue(monkeypatch) -> None:
@@ -606,17 +606,15 @@ def test_duplicate_terminal_calls_are_rejected_before_single_retry(monkeypatch) 
 
 
 def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> None:
-    # The default keep-recent window (50 rounds) would retain every tool
-    # result in this short conversation; pin it to 1 to exercise compaction.
-    monkeypatch.setattr(LLMClient, "MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS", 1)
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",
         models=["unit-model"],
+        context_window=40000,
     )
     calls = []
-    huge_one = "A" * 6000
-    huge_two = "B" * 6000
+    huge_one = "A" * 60000
+    huge_two = "B" * 60000
 
     def fake_chat_completion(messages, **kwargs):
         calls.append(list(messages))
@@ -690,7 +688,13 @@ def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> N
             },
         }
 
-    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    def fake_transport(_url, payload):
+        response = fake_chat_completion(payload["messages"])
+        choice = response["choices"][0]
+        return choice["message"], choice["finish_reason"], response["usage"]
+
+    client._transport = "curl"
+    monkeypatch.setattr(client, "_curl_chat_completion", fake_transport)
 
     result = client.run_conversation_with_tools(
         messages=[{"role": "user", "content": "start"}],
@@ -709,7 +713,7 @@ def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> N
     assert huge_one not in old_tool["content"]
     assert len(old_tool["content"]) < 2200
     assert huge_two in latest_tool["content"]
-    assert all("reasoning_content" not in msg for msg in third_prompt)
+    assert any(msg.get("reasoning_content") == "hidden reasoning" * 200 for msg in third_prompt)
 
     full_transcript = json.dumps(result["conversation"], ensure_ascii=False)
     assert huge_one in full_transcript
@@ -772,7 +776,7 @@ def test_bounded_conversation_can_replay_provider_reasoning_metadata(monkeypatch
     assert any(message.get("reasoning_content") == "provider-chain-state" for message in calls[1])
 
 
-def test_length_continuation_replays_latest_provider_reasoning_by_default(monkeypatch) -> None:
+def test_length_continuation_preserves_all_provider_reasoning_by_default(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",
@@ -826,8 +830,8 @@ def test_length_continuation_replays_latest_provider_reasoning_by_default(monkey
         message.get("reasoning_content") == "latest-provider-chain-state"
         for message in second_request
     )
-    assert all(
-        message.get("reasoning_content") != "older-provider-chain-state"
+    assert any(
+        message.get("reasoning_content") == "older-provider-chain-state"
         for message in second_request
     )
 
@@ -855,7 +859,7 @@ def test_run_conversation_disables_only_repeated_tool_after_loop_guard(
 
     def fake_chat_completion(messages, **kwargs):
         chat_calls.append(list(messages))
-        if len(chat_calls) == 4:
+        if len(chat_calls) == 3:
             assert [schema["function"]["name"] for schema in kwargs["tools"]] == ["lookup"]
             assert "get_file_snippet" in messages[-1]["content"]
             assert "Other tools remain available" in messages[-1]["content"]
@@ -914,19 +918,19 @@ def test_run_conversation_disables_only_repeated_tool_after_loop_guard(
     assert result["loop_guard_triggered"] is True
     assert result["loop_guard_recovered"] is True
     assert "truncated" not in result
-    assert result["iterations"] == 4
-    assert len(chat_calls) == 4
-    assert len(tool_calls) == 1
+    assert result["iterations"] == 3
+    assert len(chat_calls) == 3
+    assert len(tool_calls) == 2
     assert result["content"].endswith("done")
     assert result["repeated_tool_call"]["tool"] == "get_file_snippet"
-    assert result["repeated_tool_call"]["repeat_count"] == 3
+    assert result["repeated_tool_call"]["repeat_count"] == 2
     assert result["repeated_tool_call"]["disabled_tools"] == ["get_file_snippet"]
     cached_tool_messages = [
         msg
         for msg in result["conversation"]
         if msg.get("role") == "tool" and "cached_tool_result" in str(msg.get("content", ""))
     ]
-    assert cached_tool_messages
+    assert cached_tool_messages == []
 
 
 def test_other_tool_remains_executable_after_loop_guard(monkeypatch) -> None:
@@ -957,13 +961,13 @@ def test_other_tool_remains_executable_after_loop_guard(monkeypatch) -> None:
 
     def fake_chat_completion(messages, **kwargs):
         chat_calls.append(list(messages))
-        if len(chat_calls) <= 3:
+        if len(chat_calls) <= 2:
             call = tool_call(
                 f"call_{len(chat_calls)}",
                 "get_file_snippet",
                 {"file_path": "src/demo.c", "start_line": 1, "end_line": 10},
             )
-        elif len(chat_calls) == 4:
+        elif len(chat_calls) == 3:
             assert [schema["function"]["name"] for schema in kwargs["tools"]] == ["lookup"]
             call = tool_call("call_lookup", "lookup", {"name": "demo"})
         else:
@@ -1001,8 +1005,8 @@ def test_other_tool_remains_executable_after_loop_guard(monkeypatch) -> None:
     )
 
     assert result["loop_guard_triggered"] is True
-    assert result["iterations"] == 5
-    assert [name for name, _args in tool_calls] == ["get_file_snippet", "lookup"]
+    assert result["iterations"] == 4
+    assert [name for name, _args in tool_calls] == ["get_file_snippet", "get_file_snippet", "lookup"]
     assert result["content"].endswith("done")
 
 

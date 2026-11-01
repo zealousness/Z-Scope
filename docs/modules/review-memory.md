@@ -99,7 +99,7 @@ Web save_validation_feedback
 
 ## Store、Schema 与审计
 
-默认目录相对 `project.root`：
+默认目录相对 YAML 所在工程目录：
 
 ```text
 .zscope/review-memory/
@@ -187,7 +187,7 @@ zscope-review-memory -c zscope.yaml replay PATTERN_ID --input report.json --outp
 zscope-review-memory -c zscope.yaml export --output review-memory.json
 ```
 
-所有命令显式指定配置。`project.root` 仍按进程工作目录解析，跨目录执行宜使用绝对项目根。`--enqueue` 只存任务，需另行执行 `--job-id`；没有自动消费。`extract` 可能向配置模型服务发送完整 ReviewRecord（含 snippet 和人工说明），并非所有源码都只留本机。导出文件同样可能包含敏感源码，应在发送、共享或提交前审查。
+所有命令显式指定配置。YAML 父目录是唯一工程根，跨目录执行宜使用绝对配置路径；工程内相对路径从该目录解析，不再填写独立根目录字段。`--enqueue` 只存任务，需另行执行 `--job-id`；没有自动消费。`extract` 可能向配置模型服务发送完整 ReviewRecord（含 snippet 和人工说明），并非所有源码都只留本机。导出文件同样可能包含敏感源码，应在发送、共享或提交前审查。
 
 ## Replay 与测量边界
 
@@ -206,7 +206,7 @@ zscope-review-memory -c zscope.yaml export --output review-memory.json
 - 反馈 API：`web/services.py`；CLI 命令：`cli/review_memory.py`。
 - 抽取 Agent 契约位于 `zscope/agents/review_memory/AGENT.md`；CLI 使用 compact extraction projection，并通过 `emit_review_pattern` final tool 提交。final tool/schema 校验失败最多重试两次，LLM 网络重试仍由共享 `LLMClient` 管理。
 - CLI 抽取通过共享 conversation recorder 将完整 LLM 会话归档到
-  `<project.root>/.zscope_conversations/`，与其他 Agent 使用相同的 JSONL/Markdown
+  `<YAML 所在工程目录>/.zscope_conversations/`，与其他 Agent 使用相同的 JSONL/Markdown
   格式；`records/` 和 `proposals/` 仍分别保存原始反馈与结构化抽取结果。
 - 公共配置：`config/config.py`、`config/v2.py`；不要向用户 YAML 暴露 RuntimeSpec 私有字段。
 - 运行时能力变化同步本文及对应跨模块文档；本次文档建立不修复上述实现限制。

@@ -60,6 +60,13 @@ class ScanRequestService:
         if depth is not None and (not isinstance(depth, str) or depth not in SCAN_DEPTHS):
             raise ScanRequestError("scan_depth must be fast, balanced, or deep")
         effective = ConfigLoader.load(str(self.config_path), scan_depth=depth)
+        from ..config.semantics_workflow import require_workflow, project_activity
+
+        try:
+            with project_activity(effective.project.project_root, wait_seconds=0.5):
+                require_workflow(effective)
+        except (ValueError, OSError) as exc:
+            raise ScanRequestError(str(exc)) from exc
         with self._lock:
             self._refresh_locked()
             if any(run["status"] == "running" for run in self._runs.values()):

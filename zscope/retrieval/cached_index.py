@@ -21,7 +21,7 @@ class CachedCodeIndex:
 
     def __init__(self, config: Any):
         self.project_root = Path(config.project.project_root).resolve()
-        self.source_root = Path(config.project.source_root).resolve()
+        self.source_root = Path(config.project.project_root).resolve()
         self.exclude_paths = config.project.exclude_paths
         self.backend_name = config.indexing.backend
         self.language = config.project.language

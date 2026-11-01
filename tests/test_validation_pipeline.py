@@ -294,7 +294,7 @@ def test_conditional_shadow_cannot_create_visible_review_children() -> None:
     assert state == {"observations": [], "pending_new_issues": []}
 
 
-def test_validation_pipeline_reports_high_score_verified_issue() -> None:
+def test_validation_pipeline_does_not_promote_legacy_high_score_verified_issue() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {"id": "ISSUE_3", "confidence": 0.4}
     val_data = {
@@ -312,16 +312,14 @@ def test_validation_pipeline_reports_high_score_verified_issue() -> None:
         score_data=_score(0.85),
     )
 
-    assert outcome.report_bucket == "issues"
-    assert outcome.memory_status == "validated"
-    assert issue["validation_status"] == "validated"
-    assert issue["finding_kind"] == "verified_double_free"
-    assert issue["confidence"] == 0.9
-    assert issue["source"] == "alloc"
-    assert issue["sink"] == "free"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["evidence_gate"]["score_role"] == "ranking_only"
+    assert "validator_protocol_not_current" in issue["evidence_gate"]["failures"]
 
 
-def test_validation_pipeline_promotes_v31_verified_fact_slice_with_neutral_contract() -> None:
+def test_validation_pipeline_does_not_promote_uncited_v31_verified_fact_slice() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {
         "id": "ISSUE_V31_TIER",
@@ -354,8 +352,9 @@ def test_validation_pipeline_promotes_v31_verified_fact_slice_with_neutral_contr
         score_data=score,
     )
 
-    assert outcome.report_bucket == "issues"
-    assert issue["candidate_disposition"] == "confirmed"
+    assert outcome.report_bucket == "observations"
+    assert issue["candidate_disposition"] == "needs_review"
+    assert "validator_protocol_not_current" in issue["evidence_gate"]["failures"]
 
 
 def test_validation_pipeline_requires_explicit_nonblocking_flag_for_v31_promotion() -> None:
@@ -685,14 +684,47 @@ def test_validation_pipeline_accepts_engine_verified_rejection_proof() -> None:
     )
     issue = {
         "id": "ISSUE_SAFE",
+        "candidate_uid": "ISSUE_SAFE",
+        "validation_cluster_uid": "VAL_ISSUE_SAFE",
+        "build_context_id": "build-safe",
         "engine_proof_id": "CFG_PROOF_1",
+        "rule_id": "clang_cfg_acquire_without_release_on_exit",
+        "rule_revision": 11,
+        "decision_fact_slice": {
+            "fact_uids": ["FACT_GUARD"],
+            "edge_uids": [],
+            "dependency_code_hashes": ["sha256:guard"],
+            "facts": [
+                {
+                    "fact_uid": "FACT_GUARD",
+                    "fact_kind": "guard_dominance",
+                    "summary": "the guard dominates the sink",
+                }
+            ],
+        },
+        "validator_evidence_ref_catalog": {
+            "FACT_GUARD": {
+                "kind": "decision_fact",
+                "summary": "the guard dominates the sink",
+            }
+        },
     }
 
     outcome = pipeline.apply_validator_result(
         issue,
         {
+            "schema_version": "zscope.validator-result.v3",
+            "candidate_uid": "ISSUE_SAFE",
+            "validation_cluster_uid": "VAL_ISSUE_SAFE",
+            "pass": "initial",
+            "verdict": "rejected",
             "reasoning": "The guard dominates the sink.",
             "proof_kind": "guard_dominates_sink",
+            "negative_evidence": ["the guard dominates the sink"],
+            "evidence_refs": ["FACT_GUARD"],
+            "blocking_negative_evidence": True,
+            "missing_fact_request": None,
+            "stop_reason": "decision_complete",
         },
         verdict="rejected",
         score_data=_score(0.9),
@@ -795,14 +827,14 @@ def test_validation_pipeline_corrects_rejected_allocator_mismatch_to_memory_leak
         score_data=_score(0.78),
     )
 
-    assert outcome.report_bucket == "issues"
-    assert outcome.memory_status == "validated"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
     assert issue["category"] == "memory_leak"
     assert issue["defect_class"] == "memory_leak"
     assert issue["original_category"] == "alloc_free_mismatch"
     assert issue["evidence_pack"]["original_category"] == "alloc_free_mismatch"
     assert "alloc_free_mismatch" in issue["evidence_pack"]["alternate_categories"]
-    assert issue["validation_status"] == "validated"
+    assert issue["validation_status"] == "needs_review"
     assert issue["validator_verdict"] == "corrected"
 
 

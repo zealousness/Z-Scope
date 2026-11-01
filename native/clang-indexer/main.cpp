@@ -32,6 +32,7 @@
 #include "llvm/Support/SHA256.h"
 #include "llvm/ADT/StringExtras.h"
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <map>
 #include <set>
@@ -51,7 +52,17 @@ static std::string absolute(llvm::StringRef path) {
   if (path.empty() || path.starts_with("<")) return "";
   llvm::SmallString<256> result(path);
   llvm::sys::fs::make_absolute(result);
-  llvm::sys::path::remove_dots(result, true);
+  // Resolve symlinks before '..': /lib -> /usr/lib on usr-merged Linux.
+  // Lexical removal turns /lib/gcc/.../../../../../include into /include,
+  // recording hashes for files that do not exist and rejecting valid C++ TUs.
+  llvm::SmallString<256> resolved;
+  if (!llvm::sys::fs::real_path(result, resolved)) return std::string(resolved);
+  // Compiler-configured search roots may be absent. Resolve their existing
+  // prefix before normalizing the suffix; the receipt separately preserves
+  // the original configured spelling for lookup/currentness checks.
+  std::error_code error;
+  auto weak = std::filesystem::weakly_canonical(std::string(result), error);
+  if (!error) return weak.string();
   return std::string(result);
 }
 
@@ -430,22 +441,121 @@ class Preprocessing : public PPCallbacks {
   State &state;
   Preprocessor &pp;
   SourceLocation pendingProbeFilename;
+  SourceLocation pendingProbeExpansion;
   std::string pendingProbeOperator;
+  std::string pendingProbeExpansionOperator;
+
+  std::string exactObjectLikeProbe(const MacroInfo *info) {
+    if (!info || info->isBuiltinMacro() || info->isFunctionLike() ||
+        info->getNumTokens() < 4)
+      return {};
+    const auto begin = info->tokens_begin();
+    const auto end = info->tokens_end();
+    const auto operation = Lexer::getSpelling(*begin, *state.sm, pp.getLangOpts());
+    if (operation != "__has_include" && operation != "__has_include_next")
+      return {};
+    if ((begin + 1)->isNot(tok::l_paren) || (end - 1)->isNot(tok::r_paren))
+      return {};
+    // Only authenticate a direct literal/header-name operand.  A second
+    // parenthesis, comma or identifier macro would turn this into expression
+    // inference rather than an exact preprocessor receipt.
+    const auto operand = begin + 2;
+    const auto operandEnd = end - 1;
+    if (operand + 1 == operandEnd && operand->is(tok::string_literal))
+      return operation;
+    if (operand->isNot(tok::less) || (operandEnd - 1)->isNot(tok::greater))
+      return {};
+    for (auto item = operand + 1; item != operandEnd - 1; ++item)
+      if (item->is(tok::l_paren) || item->is(tok::r_paren) || item->is(tok::comma))
+        return {};
+    return operation;
+  }
+
+  std::string recoverProbeAlias(SourceLocation filename) {
+    // MacroExpands for an object-like alias used inside a preprocessor
+    // condition is not emitted consistently by Clang 18. Recover only the
+    // direct `ALIAS(<...>)` spelling at the exact HasInclude filename token,
+    // then authenticate ALIAS through the current MacroDefinition.
+    if (filename.isInvalid() || !filename.isFileID()) return {};
+    auto file = state.sm->getFileID(filename);
+    auto buffer = state.sm->getBufferData(file);
+    size_t cursor = state.sm->getFileOffset(filename);
+    while (cursor && (buffer[cursor - 1] == ' ' || buffer[cursor - 1] == '\t')) --cursor;
+    if (!cursor || buffer[cursor - 1] != '(') return {};
+    --cursor;
+    while (cursor && (buffer[cursor - 1] == ' ' || buffer[cursor - 1] == '\t')) --cursor;
+    const size_t end = cursor;
+    auto identifierCharacter = [](char value) {
+      return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+             (value >= '0' && value <= '9') || value == '_';
+    };
+    while (cursor && identifierCharacter(buffer[cursor - 1])) --cursor;
+    if (cursor == end || (buffer[cursor] >= '0' && buffer[cursor] <= '9')) return {};
+    auto alias = buffer.slice(cursor, end);
+    const auto *info = pp.getIdentifierInfo(alias);
+    const auto definition = pp.getMacroDefinition(info);
+    const auto *macro = definition.getMacroInfo();
+    if (!macro) return {};
+    // HasInclude may report the operand's spelling location inside an
+    // object-like macro body such as
+    // `#define USE_TBB __has_include(<tbb/tbb.h>)`.  In that case the exact
+    // source immediately preceding the callback location is the builtin
+    // operator itself, but MacroExpands observed the outer object-like macro
+    // and could not populate pendingProbeOperator.  Authenticate the direct
+    // reserved spelling against the current builtin MacroInfo before falling
+    // through to the bounded one-token alias case.
+    if (alias == "__has_include" || alias == "__has_include_next")
+      return macro->isBuiltinMacro() ? alias.str() : std::string();
+    if (macro->isBuiltinMacro() || macro->isFunctionLike() || macro->getNumTokens() != 1)
+      return {};
+    const auto replacement = Lexer::getSpelling(*macro->tokens_begin(), *state.sm, pp.getLangOpts());
+    return replacement == "__has_include" || replacement == "__has_include_next"
+        ? replacement : std::string();
+  }
 
   void rememberProbeOperator(const Token &token, const MacroDefinition &definition) {
     const auto *identifier = token.getIdentifierInfo();
     if (!identifier) return;
     const auto name = identifier->getName();
-    if (name != "__has_include" && name != "__has_include_next") return;
+    const auto *info = definition.getMacroInfo();
+    if (!info) return;
+    std::string probeOperator;
+    if (name == "__has_include" || name == "__has_include_next") {
+      if (!info->isBuiltinMacro()) return;
+      probeOperator = name.str();
+    } else if (const auto exact = exactObjectLikeProbe(info); !exact.empty()) {
+      // Clang reports HasInclude at the expansion of an object-like macro such
+      // as `#define HAVE_TBB __has_include(<tbb/tbb.h>)`, not at the spelling
+      // of the builtin in its definition.  Bind that callback to this exact
+      // expansion.  Keep it separate from the direct filename binding because
+      // a nested builtin MacroExpands callback can occur before HasInclude.
+      const auto operation = token.getLocation();
+      if (operation.isValid() && operation.isFileID() && !token.needsCleaning()) {
+        pendingProbeExpansion = operation;
+        pendingProbeExpansionOperator = exact;
+      }
+      return;
+    } else {
+      // Accept only the exact object-like one-token alias used by projects such
+      // as xxHash (`#define XXH_HAS_INCLUDE __has_include`).  Function-like,
+      // multi-token and chained aliases remain unsupported rather than being
+      // inferred by spelling.
+      if (info->isBuiltinMacro() || info->isFunctionLike() || info->getNumTokens() != 1)
+        return;
+      const auto &replacement = *info->tokens_begin();
+      const auto replacementName = Lexer::getSpelling(replacement, *state.sm, pp.getLangOpts());
+      if (replacementName != "__has_include" && replacementName != "__has_include_next")
+        return;
+      probeOperator = replacementName;
+    }
     // Builtin MacroExpands precedes ExpandBuiltinMacro in Clang 18. HasInclude
     // later receives the filename token, never the operator token. Bind those
-    // two callbacks only for a direct builtin and its exact direct operand.
+    // callbacks only to an exact direct invocation (of the builtin or the
+    // bounded one-token alias above) and its exact direct operand.
     pendingProbeFilename = SourceLocation();
     pendingProbeOperator.clear();
-    const auto *info = definition.getMacroInfo();
     const auto operation = token.getLocation();
-    if (!info || !info->isBuiltinMacro() || operation.isInvalid() ||
-        operation.isMacroID() || token.needsCleaning()) return;
+    if (operation.isInvalid() || operation.isMacroID() || token.needsCleaning()) return;
     Token raw;
     if (Lexer::getRawToken(operation, raw, *state.sm, pp.getLangOpts()) ||
         raw.getLocation() != operation || raw.isNot(tok::raw_identifier) ||
@@ -458,7 +568,7 @@ class Preprocessing : public PPCallbacks {
         (filename->isNot(tok::string_literal) && filename->isNot(tok::less)) ||
         state.sm->getFileID(operation) != state.sm->getFileID(filename->getLocation())) return;
     pendingProbeFilename = filename->getLocation();
-    pendingProbeOperator = name.str();
+    pendingProbeOperator = probeOperator;
   }
 public:
   Preprocessing(State &state, Preprocessor &pp) : state(state), pp(pp) {}
@@ -483,7 +593,8 @@ public:
     auto position = state.location(loc);
     std::string mode = directive.is(tok::identifier) && directive.getIdentifierInfo()
         ? directive.getIdentifierInfo()->getName().str() : "unknown";
-    if (mode != "include") state.unsupportedLookupReasons.insert("unsupported_directive:" + mode);
+    if (mode != "include" && mode != "include_next")
+      state.unsupportedLookupReasons.insert("unsupported_directive:" + mode);
     if (imported) state.unsupportedLookupReasons.insert("module_import");
     if (position.file.empty()) state.unsupportedLookupReasons.insert("unknown_including_file");
     if (!file) state.unsupportedLookupReasons.insert("unresolved_include");
@@ -512,11 +623,19 @@ public:
     std::string mode;
     if (loc.isValid() && loc.isFileID() && loc == pendingProbeFilename)
       mode = pendingProbeOperator;
+    const auto expansion = loc.isValid() ? state.sm->getExpansionLoc(loc) : SourceLocation();
+    if (mode.empty() && expansion.isValid() && expansion.isFileID() &&
+        expansion == pendingProbeExpansion)
+      mode = pendingProbeExpansionOperator;
+    if (mode.empty()) mode = recoverProbeAlias(loc);
     // A filename macro, operator macro, unmatched callback or missing source
     // position cannot borrow a previous builtin's identity.
     pendingProbeFilename = SourceLocation();
+    pendingProbeExpansion = SourceLocation();
     pendingProbeOperator.clear();
-    if (mode != "__has_include") state.unsupportedLookupReasons.insert("unsupported_probe_operator:" + mode);
+    pendingProbeExpansionOperator.clear();
+    if (mode != "__has_include" && mode != "__has_include_next")
+      state.unsupportedLookupReasons.insert("unsupported_probe_operator:" + mode);
     state.probeLookups.push_back(Object{{"name", name.str()}, {"angled", angled},
       {"including_file", state.location(loc).file}, {"found", bool(file)},
       {"target_file", file ? absolute(file->getName()) : ""}, {"operator", mode},

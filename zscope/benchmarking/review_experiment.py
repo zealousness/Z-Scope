@@ -120,8 +120,10 @@ def compare_paired_replays(
         items = _outcomes(run)
         ids = {str(i["candidate_uid"]) for i in items}
         aliases = {str(uid) for i in items for uid in i.get("alias_candidate_uids", [])}
-        rejections = [i for i in items if i.get("candidate_disposition") == "rejected_with_proof"]
-        proof_replay = all(replay_proof(i) for i in rejections)
+        rejections = [i for i in items if i.get("candidate_disposition") in {
+            "rejected_with_proof", "rejected_with_evidence"}]
+        proof_replay = all(replay_proof(i) for i in rejections
+                           if i.get("candidate_disposition") == "rejected_with_proof")
         audited_defect_rejected = any(classification(i) == "true_defect" for i in rejections)
         unlabelled = [str(i["candidate_uid"]) for i in items if classification(i) == "unknown"]
         confirmed_truth = set(run.get("confirmed_truth_ids") or [])
@@ -153,6 +155,8 @@ def compare_paired_replays(
                 ),
                 "rejections_replayed": proof_replay,
                 "audited_defect_rejected": audited_defect_rejected,
+                "semantic_rejected_true_fp": count(items, "rejected_with_evidence", "provable_fp"),
+                "semantic_rejected_true_defect": count(items, "rejected_with_evidence", "true_defect"),
                 "unresolved_audit_ids": unlabelled,
                 "new_confirmed_truth_ids": sorted(confirmed_truth - base_confirmed_truth),
                 "conditional_review_count": sum(

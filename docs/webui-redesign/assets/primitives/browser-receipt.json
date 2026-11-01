@@ -1,0 +1,47 @@
+{
+  "captured_at": "2026-10-27T04:57:41.037Z",
+  "sources": {
+    "index.html": "2d41b30ec98fab07c7fc03a9c3ea00f26b3fcb93091e2c85c2528a5266af67d4",
+    "dashboard_semantics.js": "522f7fe46ab5e74edfa9cfc273960e4e29d00a6bebf1c0b6a943929039ab88ab",
+    "dashboard_semantics.css": "37dacca2e241c78b1273cbe34525ace799fe320fb2f89cfcf91a8f234cf47056",
+    "dashboard_navigation.js": "6dff748a5972c459b7453e2bc093e9b03d27e50f7a1a15ba3833ba0f6ea81c62"
+  },
+  "images": {
+    "first-primitives-1440.png": "f48c9efba2137ff108b899b54b9b9ac630605d0cc2941b119a14ad6a71b3edfc",
+    "first-primitives-390.png": "f0295e65488614f69c73f0916bf40a2c855a5b195ee6470fea162be6f1ed041a",
+    "discover-review-1440.png": "e27f4ca46e42b323f8918e223bbaf98e8dc7931969765a3b72b73658e32ca56a",
+    "discover-review-390.png": "d8db1d504ca8ec623b76e6d2dc1071d1d670ab4c67d39480209c2d5494f0d144",
+    "interface-update-1440.png": "16062924461f98034d21e07db2229e0844cb5fc2f91f59c5a345ee0bd0637843",
+    "interface-update-390.png": "4c3129172734a9b1bc3f80936698363cb97fdd10c386034c0aee2b49fd753b8f"
+  },
+  "scope": "Real HTML/CSS/JS and HTTP; synthetic 95-candidate evidence; no scanner or model",
+  "widths": [
+    390,
+    1280,
+    1440,
+    1920
+  ],
+  "captures": [
+    "first-primitives-1440.png",
+    "first-primitives-390.png",
+    "discover-review-1440.png",
+    "discover-review-390.png",
+    "interface-update-1440.png",
+    "interface-update-390.png"
+  ],
+  "checks": [
+    "explicit none declaration",
+    "pagination",
+    "keyboard entry selection",
+    "refresh and back navigation",
+    "draft survives reload",
+    "individual review",
+    "invalid batch atomic rejection",
+    "search",
+    "project isolation",
+    "two-tab conflict preserves draft",
+    "offline local resources"
+  ],
+  "errors": [],
+  "external": []
+}

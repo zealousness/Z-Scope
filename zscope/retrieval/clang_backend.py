@@ -178,6 +178,15 @@ class ClangBackend(CodeBackend):
             release_scheduler(scheduler)
             self._type_ref_scheduler = None
 
+    def settle_type_references(self, *, timeout_seconds: float = 300.0) -> Dict[str, Any]:
+        """Publish all pending function type facts before receipt freezing."""
+
+        scheduler = getattr(self, "_type_ref_scheduler", None)
+        if scheduler is None:
+            return {"status": "not_required"}
+        result = scheduler.drain_background(timeout_seconds=timeout_seconds)
+        return {"status": "complete", **result}
+
     def pause_type_references(self) -> Any:
         from .clang_type_scheduler import pause_registered_scheduler
 

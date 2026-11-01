@@ -41,6 +41,7 @@ _RESOURCE_KINDS = {
     "send_sink",
     "recv_source",
     "format_sink",
+    "command_sink",
     "callback_register",
 }
 _LOCK_KINDS = {"lock", "unlock"}

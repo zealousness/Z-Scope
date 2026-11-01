@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, cast
 
+from ...rules.validation_obligations import binding_for_issue
 from .evidence import normalize_missing_fact_kinds
 from .execution_context import current_execution_context, rebound_execution_context
 from .proofs import deterministic_decision_proof
@@ -143,7 +144,8 @@ class EvidenceCompletionQueue:
             missing_fact=fact_kind,
             reason=str(raw_request.get("reason") or "deterministic evidence incomplete"),
         )
-        if fact_kind not in SUPPORTED_FACT_KINDS:
+        allowed = set(self.allowed_missing_fact_kinds(issue))
+        if fact_kind not in SUPPORTED_FACT_KINDS or fact_kind not in allowed:
             return self._resolution(issue, request, "unsupported", fact_kind, {})
 
         attempt_key = hashlib.sha256(
@@ -163,18 +165,29 @@ class EvidenceCompletionQueue:
             attempted = []
             issue["evidence_completion_request_hashes"] = attempted
         if attempt_key in attempted:
-            return self._resolution(issue, request, "duplicate_request", fact_kind, {})
+            issue["evidence_completion_error"] = "duplicate_request"
+            issue["evidence_completion_terminal_status"] = "failed"
+            return self._resolution(issue, request, "failed", fact_kind, {})
         attempted.append(attempt_key)
         issue["evidence_completion_attempt_count"] = (
             int(issue.get("evidence_completion_attempt_count") or 0) + 1
         )
+
+        if not self._requested_fact_payloads(
+            fact_kind, issue, validation_evidence
+        ) and not self._has_requested_fact_provider(fact_kind):
+            issue["evidence_completion_status"] = "unsupported"
+            issue["evidence_completion_terminal_status"] = "unsupported"
+            issue["evidence_completion_missing_fact"] = fact_kind
+            issue["evidence_completion_error"] = "no_registered_provider"
+            return self._resolution(issue, request, "unsupported", fact_kind, {})
 
         provider_status, generated, provider_error = self._run_requested_fact_providers(
             fact_kind,
             issue,
             validation_evidence,
         )
-        if provider_status != "completed":
+        if provider_status != "resolved":
             issue["evidence_completion_status"] = provider_status
             issue["evidence_completion_terminal_status"] = provider_status
             issue["evidence_completion_missing_fact"] = fact_kind
@@ -230,13 +243,13 @@ class EvidenceCompletionQueue:
                 if identity not in known:
                     existing.append(proof)
                     known.add(identity)
-            issue["evidence_completion_status"] = "completed"
-            issue["evidence_completion_terminal_status"] = "completed_with_proof"
+            issue["evidence_completion_status"] = "resolved"
+            issue["evidence_completion_terminal_status"] = "resolved"
             issue["evidence_completion_missing_fact"] = fact_kind
             return self._resolution(
                 issue,
                 request,
-                "completed_with_proof",
+                "resolved",
                 fact_kind,
                 delta,
                 proof_added=True,
@@ -247,15 +260,86 @@ class EvidenceCompletionQueue:
                 existing_facts = []
                 issue["evidence_completion_facts"] = existing_facts
             existing_facts.extend(facts)
-            issue["evidence_completion_status"] = "completed_partial"
-            issue["evidence_completion_terminal_status"] = "completed_partial"
+            issue["evidence_completion_status"] = "resolved"
+            issue["evidence_completion_terminal_status"] = "resolved"
             issue["evidence_completion_missing_fact"] = fact_kind
-            return self._resolution(issue, request, "completed_partial", fact_kind, delta)
+            return self._resolution(issue, request, "resolved", fact_kind, delta)
 
-        issue["evidence_completion_status"] = "exhausted"
-        issue["evidence_completion_terminal_status"] = "exhausted"
+        absence_fact = self._normalize_resolved_facts(
+            fact_kind,
+            [
+                {
+                    "fact_kind": "provider_absence",
+                    "requested_fact_kind": fact_kind,
+                    "provider_outcome": "proven_absent",
+                    "exhaustive": True,
+                    "satisfies_fact_kinds": [],
+                    # A completed exhaustive provider query closes the fact
+                    # request even though it does not establish the positive
+                    # semantic role. Keep this separate from
+                    # ``satisfies_fact_kinds`` so claim replay cannot mistake
+                    # absence of ownership/cleanup/lock evidence for presence.
+                    "resolves_fact_kinds": [fact_kind],
+                    "summary": (
+                        f"The deterministic provider completed an exhaustive {fact_kind} "
+                        "query and found no current fact that closes the obligation."
+                    ),
+                }
+            ],
+            issue,
+            validation_evidence,
+        )
+        absence_delta = {
+            "fact_kind": fact_kind,
+            "facts": absence_fact,
+            "proofs": [],
+            "evidence_refs": [
+                str(value.get("fact_uid") or "")
+                for value in absence_fact
+                if str(value.get("fact_uid") or "")
+            ],
+            "provider_outcome": "proven_absent",
+        }
+        issue["evidence_completion_status"] = "proven_absent"
+        issue["evidence_completion_terminal_status"] = "proven_absent"
         issue["evidence_completion_missing_fact"] = fact_kind
-        return self._resolution(issue, request, "exhausted", fact_kind, {})
+        return self._resolution(issue, request, "proven_absent", fact_kind, absence_delta)
+
+    def allowed_missing_fact_kinds(self, issue: Mapping[str, Any]) -> tuple[str, ...]:
+        """Return the candidate-scoped fact vocabulary backed by providers.
+
+        The global protocol enum describes wire compatibility.  This narrower
+        list is what the current obligation may ask for, and every listed kind
+        has a deterministic provider in the active rollout configuration.
+        """
+
+        binding = binding_for_issue(issue)
+        if binding is None:
+            obligation = issue.get("security_obligation")
+            obligation = obligation if isinstance(obligation, Mapping) else {}
+            raw = (
+                issue.get("allowed_missing_fact_kinds")
+                or issue.get("obligation_required_fact_kinds")
+                or obligation.get("required_fact_kinds")
+            )
+            if not isinstance(raw, Sequence) or isinstance(raw, str):
+                return ()
+            return tuple(
+                sorted(
+                    {
+                        str(value).strip().lower()
+                        for value in raw
+                        if str(value).strip().lower() in SUPPORTED_FACT_KINDS
+                    }
+                )
+            )
+        return tuple(
+            sorted(
+                value
+                for value in binding.profile.allowed_missing_fact_kinds
+                if value in SUPPORTED_FACT_KINDS
+            )
+        )
 
     def resolve_required_facts(
         self,
@@ -353,15 +437,15 @@ class EvidenceCompletionQueue:
             for value in resolutions
         ]
         if proof_added:
-            aggregate_status = "completed_with_proof"
+            aggregate_status = "resolved"
+        elif resolutions and all(value.status == "proven_absent" for value in resolutions):
+            aggregate_status = "proven_absent"
         elif delta:
-            aggregate_status = "completed_partial"
-        elif any(value.status == "timeout" for value in resolutions):
-            aggregate_status = "timeout"
-        elif any(value.status == "provider_error" for value in resolutions):
-            aggregate_status = "provider_error"
-        elif resolutions:
-            aggregate_status = "exhausted"
+            aggregate_status = "resolved"
+        elif any(value.status == "failed" for value in resolutions):
+            aggregate_status = "failed"
+        elif any(value.status == "unsupported" for value in resolutions):
+            aggregate_status = "unsupported"
         else:
             aggregate_status = "not_applicable"
         issue["evidence_completion_status"] = aggregate_status
@@ -415,6 +499,9 @@ class EvidenceCompletionQueue:
             raw_satisfies = fact.get("satisfies_fact_kinds")
             if isinstance(raw_satisfies, Sequence) and not isinstance(raw_satisfies, str):
                 resolved.update(str(value) for value in raw_satisfies if str(value))
+            raw_resolves = fact.get("resolves_fact_kinds")
+            if isinstance(raw_resolves, Sequence) and not isinstance(raw_resolves, str):
+                resolved.update(str(value) for value in raw_resolves if str(value))
         remaining = sorted(missing - resolved)
         fact_slice.update(
             {
@@ -446,9 +533,34 @@ class EvidenceCompletionQueue:
             if normalized in SUPPORTED_FACT_KINDS and normalized not in ordered:
                 ordered.append(normalized)
 
+        binding = binding_for_issue(issue)
+        obligation_allowed = issue.get("security_obligation")
+        obligation_allowed = obligation_allowed if isinstance(obligation_allowed, Mapping) else {}
+        raw_allowed = (
+            issue.get("allowed_missing_fact_kinds")
+            or issue.get("obligation_required_fact_kinds")
+            or obligation_allowed.get("required_fact_kinds")
+            or ()
+        )
+        allowed = {
+            str(value).strip().lower()
+            for value in (
+                binding.profile.allowed_missing_fact_kinds
+                if binding is not None
+                else (
+                    raw_allowed
+                    if isinstance(raw_allowed, Sequence) and not isinstance(raw_allowed, str)
+                    else ()
+                )
+            )
+            if str(value).strip().lower() in SUPPORTED_FACT_KINDS
+        }
+
         raw_request = validator_data.get("missing_fact_request")
         if isinstance(raw_request, Mapping):
-            add(raw_request.get("fact_kind"))
+            requested = str(raw_request.get("fact_kind") or "").strip().lower()
+            if requested in allowed:
+                add(requested)
 
         obligation = issue.get("security_obligation")
         obligation = obligation if isinstance(obligation, Mapping) else {}
@@ -477,59 +589,18 @@ class EvidenceCompletionQueue:
         ):
             missing.extend(raw_required)
 
-        category = str(issue.get("defect_class") or issue.get("category") or "").lower()
         for raw_kind in missing:
             kind = str(raw_kind or "").strip().lower()
-            add(kind)
-            if kind in {"event:shared_state_access", "event:lock", "event:unlock"}:
-                add("lockset")
-                add("happens_before")
-            elif kind in {"event:acquire", "event:exit", "event:release"}:
-                add("cleanup_coverage")
-                add("ownership_transfer")
-                add("caller_contract")
-            elif kind in {
-                "event:release_effect_applies",
-                "event:same_allocation_generation",
-                "event:receiver_survives_release",
-                "event:business_release_requirement",
-                "event:responsibility_endpoint",
-            }:
-                # Schedule investigation of the open protocol obligations.
-                # Generic contract/cleanup results do not themselves supply
-                # these object- and generation-specific facts.
-                add("caller_contract")
-                add("cleanup_coverage")
-            elif kind in {"event:later_slot_access", "event:feasible_lifecycle_path"}:
-                add("caller_contract")
-                add("source_sink_reachability")
-            elif kind in {"source", "sink", "guard", "sanitizer"}:
-                add("source_controllability")
-                add("source_sink_reachability")
-                add("guard_dominance")
-                if any(token in category for token in ("bound", "overflow", "size", "index")):
-                    add("value_range")
-                    add("type_layout")
-
-        # Older candidates can carry a partial promotion status without an
-        # explicit missing-kind list.  Use the defect family only to select
-        # providers; it never creates a fact or proof by itself.
-        if not ordered and issue.get("candidate_promotion_eligible") is False:
-            if any(token in category for token in ("race", "lock", "thread", "concurr")):
-                add("lockset")
-                add("happens_before")
-            elif any(token in category for token in ("leak", "release", "ownership", "free")):
-                add("cleanup_coverage")
-                add("ownership_transfer")
-                add("caller_contract")
-            elif any(token in category for token in ("bound", "overflow", "size", "index")):
-                add("value_range")
-                add("guard_dominance")
-                add("source_sink_reachability")
-                add("type_layout")
-            else:
-                add("caller_contract")
-                add("source_sink_reachability")
+            normalized = normalize_missing_fact_kinds([kind])
+            for value in normalized:
+                if value in allowed:
+                    add(value)
+        # A bound profile is authoritative even when a legacy candidate did
+        # not serialize an explicit missing list.
+        if binding is not None:
+            for value in binding.profile.required_fact_kinds:
+                if value in allowed and value in missing:
+                    add(value)
         return tuple(ordered)
 
     @staticmethod
@@ -610,6 +681,37 @@ class EvidenceCompletionQueue:
             normalized.append(fact)
         return normalized
 
+    def _has_requested_fact_provider(self, fact_kind: str) -> bool:
+        """Report executable provider capability, not protocol vocabulary.
+
+        A wire-level fact kind is not automatically supported.  This mirrors
+        the dispatch tables below and prevents an empty provider list from
+        being misreported as an exhaustive ``proven_absent`` result.
+        """
+
+        always_supported = {
+            "guard_dominance",
+            "caller_contract",
+            "ownership_transfer",
+            "lockset",
+            "happens_before",
+            "object_identity",
+            "value_range",
+            "source_sink_reachability",
+            "type_layout",
+        }
+        v11_supported = {"cleanup_coverage"}
+        v12_supported = {
+            "source_controllability",
+            "signal_context",
+            "container_reachability",
+        }
+        return bool(
+            fact_kind in always_supported
+            or (self.enable_v11_providers and fact_kind in v11_supported)
+            or (self.enable_v12_providers and fact_kind in v12_supported)
+        )
+
     def _run_requested_fact_providers(
         self,
         fact_kind: str,
@@ -645,12 +747,12 @@ class EvidenceCompletionQueue:
 
         future = self._fact_provider_executor.submit(provider_task)
         try:
-            return "completed", future.result(timeout=self.fact_timeout_seconds), ""
+            return "resolved", future.result(timeout=self.fact_timeout_seconds), ""
         except FuturesTimeoutError:
             future.cancel()
-            return "timeout", [], "fact provider timed out"
+            return "failed", [], "fact provider timed out"
         except Exception as exc:
-            return "provider_error", [], f"{type(exc).__name__}: {exc}"[:500]
+            return "failed", [], f"{type(exc).__name__}: {exc}"[:500]
 
     @staticmethod
     def _resolution(
@@ -779,9 +881,7 @@ class EvidenceCompletionQueue:
             ),
             "source_sink_reachability": [self._cfg_obligation_confirmation_proof],
             "signal_context": [],
-            "container_reachability": (
-                [self._container_unlink_without_release_proof] if self.enable_v11_providers else []
-            ),
+            "container_reachability": [],
             "type_layout": [],
         }
         issue_only: Dict[str, list[IssueFactProvider]] = {
@@ -1117,12 +1217,6 @@ class EvidenceCompletionQueue:
             )
             if async_stack_proof is not None:
                 yield async_stack_proof
-            unlink_proof = EvidenceCompletionQueue._container_unlink_without_release_proof(
-                issue,
-                validation_evidence,
-            )
-            if unlink_proof is not None:
-                yield unlink_proof
             failure_lock_proof = EvidenceCompletionQueue._lock_held_on_failure_return_proof(
                 issue,
                 validation_evidence,
@@ -3194,78 +3288,6 @@ class EvidenceCompletionQueue:
         )
 
     @staticmethod
-    def _container_unlink_without_release_proof(
-        issue: Mapping[str, Any],
-        validation_evidence: Optional[Mapping[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        """Confirm an unlinked container owner that has no release or transfer path."""
-
-        rule = str(issue.get("rule") or "").lower()
-        if rule not in {
-            "container_unlink_without_release",
-            "clang_cfg_container_unlink_without_release",
-        }:
-            return None
-        ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
-        if path.get("complete_in_function") is not True:
-            return None
-        unlink_events = [
-            item
-            for item in events
-            if str(item.get("kind") or "").lower()
-            in {"container_unlink", "container_detach", "ownership_unlink"}
-        ]
-        if not unlink_events:
-            lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
-            if not lines:
-                return None
-            for index, text in enumerate(lines, start=1):
-                if re.search(r"\*\s*[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*->\s*next", text):
-                    unlink_events = [
-                        {"kind": "container_unlink", "line": index, "expression": text}
-                    ]
-                    break
-        if not unlink_events:
-            return None
-        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
-        if not lines:
-            return None
-        code = "\n".join(lines)
-        unlink_line = int(unlink_events[0].get("line") or 0)
-        remainder = "\n".join(lines[unlink_line:])
-        subject = EvidenceCompletionQueue._normalize_symbol(
-            unlink_events[0].get("variable") or issue.get("resource_identity")
-        )
-        if not subject:
-            assign = re.search(
-                r"\*\s*[A-Za-z_]\w*\s*=\s*([A-Za-z_]\w*)\s*->\s*next",
-                str(unlink_events[0].get("expression") or ""),
-            )
-            subject = assign.group(1) if assign else ""
-        if not subject:
-            return None
-        if re.search(
-            rf"\b(?:free)\s*\(\s*{re.escape(subject)}\b",
-            remainder,
-            re.IGNORECASE,
-        ):
-            return None
-        if re.search(rf"\b(?:return|\*)\s*{re.escape(subject)}\b", remainder):
-            return None
-        return EvidenceCompletionQueue._proof_from_code(
-            issue,
-            outcome="confirm",
-            proof_kind="container_unlink_without_release",
-            producer_engine="clang_ast_cfg_container_ownership",
-            code=code,
-            line_numbers=[unlink_line],
-            facts=["container_owner_unlinked", "ownership_not_transferred_or_released"],
-            summary="容器所有权链接被移除，其后对被分离对象没有任何释放或转移",
-            scope="完整的本地容器分离路径",
-            subject_identity=subject,
-        )
-
-    @staticmethod
     def _lock_held_on_failure_return_proof(
         issue: Mapping[str, Any],
         validation_evidence: Optional[Mapping[str, Any]],
@@ -3974,34 +3996,62 @@ class EvidenceCompletionQueue:
         # function names, descriptions, or model prose.  The rule-specific
         # contracts below prevent an otherwise identical low-level event from
         # being reinterpreted as a different vulnerability family.
-        obligation_shapes = (
-            {"uninitialized_pointer_decl", "uninitialized_pointer_use"},
-            {"header_length", "header_length_copy"},
-            {"wide_count_read", "wide_count_sink"},
-            {"length_field_load", "copy_length_use"},
-            {"offset_pointer", "offset_length_copy"},
-            {"unaligned_pointer_cast", "unaligned_deref"},
-            {"cond_wait"},
-            {"state_snapshot", "state_overwrite", "error_return_without_restore"},
-            {"path_check", "path_use"},
-            {"probe_status", "probe_error_condition", "success_possible_return"},
-        )
-        direct_contracts = {
+        # Confirmation authority is selected by canonical rule identity, not
+        # by a coincidentally matching event pair. A local declaration/use
+        # pair, size addition, or runtime-looking array expression is detector
+        # evidence rather than an all-path proof and remains in the typed
+        # Validator lane.
+        rule_contracts = {
+            "clang_cfg_header_length_reaches_copy_without_wire_bound": {
+                "header_length",
+                "header_length_copy",
+            },
+            "clang_cfg_wide_count_before_magic_reaches_memory_sink": {
+                "wide_count_read",
+                "wide_count_sink",
+            },
+            "clang_cfg_external_length_field_reaches_copy": {
+                "length_field_load",
+                "copy_length_use",
+            },
+            "clang_cfg_offset_length_copy_without_source_bound": {
+                "offset_pointer",
+                "offset_length_copy",
+            },
+            "clang_cfg_unaligned_integer_pointer_cast": {
+                "unaligned_pointer_cast",
+                "unaligned_deref",
+            },
+            "clang_cfg_global_state_not_restored_on_error": {
+                "state_snapshot",
+                "state_overwrite",
+                "error_return_without_restore",
+            },
+            "clang_cfg_path_check_before_open": {"path_check", "path_use"},
+            "clang_cfg_probe_error_branch_can_return_success_status": {
+                "probe_status",
+                "probe_error_condition",
+                "success_possible_return",
+            },
             "clang_cfg_unchecked_pointer_backtrack": {
                 "pointer_backtrack",
                 "backtracked_pointer_sink",
             },
-            "clang_cfg_timer_callback_object_lock_without_scheduler_lock": {
-                "global_scheduler_walk",
-                "object_lock_in_callback",
-            },
+            # A callback that traverses scheduler state and then takes an
+            # object lock is only one side of a possible lock-order cycle.
+            # The detector itself records that an opposite reachable path is
+            # still required, so these local events must remain review
+            # evidence rather than minting a V0 confirmation proof.
             "clang_cfg_free_derived_pointer_alias": {"pointer_derivation", "invalid_free_alias"},
             "clang_cfg_realloc_lost_original": {"realloc_assign"},
             "clang_cfg_fd_closed_without_owner_invalidation": {"fd_close"},
-            "clang_cfg_requested_permission_not_applied_to_mode": {
-                "hardcoded_permission",
-                "requested_permission_check",
-            },
+            # ``requested_permission_not_applied_to_mode`` is intentionally
+            # not a direct confirmation contract.  Its two local events prove
+            # only that a fixed mode is compared with a request; they do not
+            # distinguish an unsafe ignored request from a safe policy that
+            # rejects unsupported permissions.  Keep the events in the
+            # evidence pack and let the Validator adjudicate that semantic
+            # distinction.
             "clang_cfg_parsed_protocol_version_is_ignored": {
                 "protocol_version_parse",
                 "protocol_version_ignored",
@@ -4022,25 +4072,19 @@ class EvidenceCompletionQueue:
                 "dynamic_array_publish",
                 "dynamic_array_resize_guard",
             },
-            "clang_cfg_size_addition_without_overflow_guard": {"integer_size_arithmetic"},
             "clang_cfg_unchecked_param_indexes_fixed_global_array": {"global_array_index"},
             "clang_cfg_full_key_lookup_truncated_key_insert": {
                 "full_key_lookup",
                 "truncated_key_store",
             },
             "clang_cfg_slot_overwrite_without_existing_owner_cleanup": {"slot_overwrite"},
-            "clang_cfg_unbounded_vla_or_stack_array": {"runtime_stack_array"},
             "clang_cfg_role_specific_release_argument_mismatch": {"role_check", "role_release"},
             "clang_cfg_shell_command_concat_env": {"command_concat", "environment_source"},
             "clang_cfg_partial_aggregate_sent_with_sizeof": {"aggregate_decl", "aggregate_send"},
         }
         rule = str(issue.get("rule") or "").lower()
-        matched = next((shape for shape in obligation_shapes if shape.issubset(event_kinds)), None)
-        if matched is None:
-            contract = direct_contracts.get(rule)
-            if contract and contract.issubset(event_kinds):
-                matched = contract
-        if matched is None:
+        matched = rule_contracts.get(rule)
+        if not matched or not matched.issubset(event_kinds):
             return None
         code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
         # M3' guard: scoped to the acquire-without-release family

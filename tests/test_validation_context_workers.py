@@ -356,6 +356,7 @@ def test_provider_pool_threads_bind_and_finally_restore_the_captured_scope():
         "validation_cluster_uid": "VAL_POOL",
         "verdict_guard": True,
         "probe_marker": "frozen-pool",
+        "allowed_missing_fact_kinds": ["lockset"],
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
     try:
@@ -401,6 +402,7 @@ def test_provider_input_is_frozen_against_parent_thread_mutation():
     issue = {
         "validation_cluster_uid": "VAL_FREEZE",
         "probe_marker": "original-value",
+        "allowed_missing_fact_kinds": ["lockset"],
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
     try:
@@ -442,6 +444,7 @@ def test_provider_timeout_returns_honest_status_and_late_result_stays_isolated()
     issue = {
         "validation_cluster_uid": "VAL_TIMEOUT",
         "probe_marker": "timeout-input",
+        "allowed_missing_fact_kinds": ["lockset"],
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
     try:
@@ -456,8 +459,9 @@ def test_provider_timeout_returns_honest_status_and_late_result_stays_isolated()
                 validation_evidence=issue["evidence_pack"],
             )
         assert resolution is not None
-        assert live_issue["evidence_completion_status"] == "timeout"
-        assert live_issue["evidence_completion_terminal_status"] == "timeout"
+        assert live_issue["evidence_completion_status"] == "failed"
+        assert live_issue["evidence_completion_terminal_status"] == "failed"
+        assert "timed out" in str(live_issue.get("evidence_completion_error") or "").lower()
         # The late task still runs (and finishes) on the pool thread: it must
         # observe the captured scope while executing and restore afterwards.
         deadline = threading.Event()
@@ -489,6 +493,7 @@ def test_provider_exception_is_contained_and_pool_thread_restored():
     issue = {
         "validation_cluster_uid": "VAL_ERROR",
         "probe_marker": "error-input",
+        "allowed_missing_fact_kinds": ["lockset"],
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
     try:
@@ -503,7 +508,8 @@ def test_provider_exception_is_contained_and_pool_thread_restored():
                 validation_evidence=issue["evidence_pack"],
             )
         assert resolution is not None
-        assert live_issue["evidence_completion_status"] == "provider_error"
+        assert live_issue["evidence_completion_status"] == "failed"
+        assert live_issue["evidence_completion_terminal_status"] == "failed"
         assert "RuntimeError" in str(live_issue.get("evidence_completion_error") or "")
         probe: list[str] = []
         queue._fact_provider_executor.submit(lambda: probe.append(current_build_id())).result(

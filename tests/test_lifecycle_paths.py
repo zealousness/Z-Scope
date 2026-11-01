@@ -319,16 +319,28 @@ def test_s04_generic_completion_and_model_cannot_invent_responsibility(paths_pro
     from zscope.core.candidates.decision_facts import attach_decision_facts
     from zscope.core.validation.evidence_completion import EvidenceCompletionQueue
     from zscope.core.validation.pipeline import ValidationPipeline
+    from zscope.core.validation.protocol_assessment import BUSINESS, ENDPOINT
 
     (issue,) = candidates(paths_project, "failure_unreleased")
     attach_decision_facts(issue)
     missing = set(issue["missing_fact_kinds"])
+    business_missing = {BUSINESS, ENDPOINT}
+    assert business_missing == missing
+    assert issue["obligation_profile_id"] == "native_object_protocol"
     requested = EvidenceCompletionQueue.required_resolution_fact_kinds(issue, {})
-    assert set(requested) == {"caller_contract", "cleanup_coverage"}
+    assert requested == ()
     EvidenceCompletionQueue._apply_fact_delta_to_decision_context(
-        issue, [{"fact_kind": kind, "fact_uid": "FACT_" + kind} for kind in requested]
+        issue,
+        [
+            {"fact_kind": kind, "fact_uid": "FACT_" + kind}
+            for kind in ("caller_contract", "cleanup_coverage", "source_sink_reachability")
+        ],
     )
+    # Generic technical facts cannot invent the business release requirement
+    # or the party responsible for discharging it.
     assert set(issue["missing_fact_kinds"]) == missing
+    assert business_missing <= set(issue["missing_fact_kinds"])
+    assert issue["decision_fact_coverage"] == "partial"
     outcome = ValidationPipeline(
         FakeUserConfig(), uncertain_confirm_threshold=0.8
     ).apply_validator_result(

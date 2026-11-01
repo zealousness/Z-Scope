@@ -4,7 +4,9 @@ from zscope.orchestration.candidate_envelope import (
 )
 
 
-def _issue(*, rule: str, category: str, sink_expression: str, sink_line: int, entry: str = "entry_a") -> dict:
+def _issue(
+    *, rule: str, category: str, sink_expression: str, sink_line: int, entry: str = "entry_a"
+) -> dict:
     return {
         "rule": rule,
         "category": category,
@@ -60,7 +62,7 @@ def test_source_centric_null_check_aliases_multiple_uses() -> None:
 def test_source_centric_lifecycle_obligation_aliases_multiple_exit_sites() -> None:
     first = CandidateEnvelope.from_issue(
         _issue(
-            rule="graph_resource_lifecycle",
+            rule="error_path_allocation_not_released",
             category="memory_leak",
             sink_expression="return -1",
             sink_line=20,
@@ -70,7 +72,7 @@ def test_source_centric_lifecycle_obligation_aliases_multiple_exit_sites() -> No
     )
     second = CandidateEnvelope.from_issue(
         _issue(
-            rule="clang_cfg_cleanup_path",
+            rule="same_function_allocation_not_released",
             category="memory_leak",
             sink_expression="return 0",
             sink_line=24,
@@ -198,7 +200,11 @@ def test_complete_local_sink_obligation_ignores_wrapper_reachability() -> None:
         "ast_cfg": {"condition_guards": [{"line": 15, "condition": "path_ok"}], "events": []},
     }
     through_wrapper["evidence_pack"] = {
-        "path": {"complete_in_function": True, "entry_function": "wrapper_b", "complete_to_entry": True},
+        "path": {
+            "complete_in_function": True,
+            "entry_function": "wrapper_b",
+            "complete_to_entry": True,
+        },
         "ast_cfg": {"condition_guards": [{"line": 15, "condition": "path_ok"}], "events": []},
     }
 

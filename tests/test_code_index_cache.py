@@ -1,4 +1,5 @@
 import builtins
+import os
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -127,6 +128,33 @@ def test_function_impl_cache_reuses_file_content_and_returns_isolated_results(
 
     index.close()
     assert backend.closed is True
+
+
+def test_source_cache_reloads_replacement_with_preserved_size_and_mtime(tmp_path) -> None:
+    source_path = _write_source(tmp_path)
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=FakeBackend(source_path))
+    try:
+        first = index.get_function_impl("cached_api", warn_missing=False)
+        assert first is not None
+        original = source_path.stat()
+        replacement = tmp_path / "replacement.c"
+        replacement.write_text(
+            source_path.read_text(encoding="utf-8").replace("helper() + value", "helper() - value"),
+            encoding="utf-8",
+        )
+        os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+        replacement.replace(source_path)
+        assert source_path.stat().st_size == original.st_size
+        assert source_path.stat().st_mtime_ns == original.st_mtime_ns
+
+        second = index.get_function_impl("cached_api", warn_missing=False)
+        assert second is not None
+        assert "helper() - value" in second["code"]
+        snippet = index.get_file_snippet(str(source_path), 3, 5)
+        assert snippet is not None
+        assert "helper() - value" in snippet["code"]
+    finally:
+        index.close()
 
 
 def test_shared_source_cache_is_bounded_by_bytes(tmp_path) -> None:

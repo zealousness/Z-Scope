@@ -56,7 +56,7 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         llms={"default": llm},
         indexing=IndexingConfig(knowledge_db_path=str(tmp_path / "missing.db")),
         analysis=AnalysisConfig(snapshot_dir=str(tmp_path / "snapshots")),
-        project=ProjectConfig(project_root=tmp_path, source_root=tmp_path),
+        project=ProjectConfig(project_root=tmp_path),
     )
 
 
@@ -138,6 +138,14 @@ def test_streamable_http_tools_list_uses_provider_policy(
     names = {tool["name"] for tool in json.loads(body)["result"]["tools"]}
 
     assert names == {"zscope.code.search"}
+
+
+def test_streamable_http_rejects_empty_batch(unauthenticated_server: str) -> None:
+    response, body = _request(f"{unauthenticated_server}/mcp", [])
+    assert response.status == 200
+    payload = json.loads(body)
+    assert payload["id"] is None
+    assert payload["error"]["code"] == -32600
 
 
 def test_streamable_http_can_return_sse_for_post_response(

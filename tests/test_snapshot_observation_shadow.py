@@ -205,7 +205,7 @@ def test_recursive_condition_budget_and_nonfinite_number(tmp_path):
     }
     result, registrar, _, _, _ = setup_result(tmp_path, [point(conditions=nonfinite)])
     assert register(result, registrar) == []
-    assert "condition_unresolved" in reasons(result)
+    assert "invalid_observation_schema" in reasons(result)
 
 
 def test_symbolic_condition_is_kept_unknown_for_validator(tmp_path):
@@ -219,7 +219,19 @@ def test_symbolic_condition_is_kept_unknown_for_validator(tmp_path):
     issue = register(result, registrar)[0]
     assert issue["evidence_pack"]["condition_evaluation"] == "unknown"
     assert issue["evidence_pack"]["missing_facts"] == ["cleanup_on_error_path"]
-    assert issue["missing_fact_kinds"]  # Registrar keeps its canonical decision-fact gaps.
+    # A ruleless shadow observation has no governed obligation profile, so it
+    # must not invent canonical fact kinds from its category. Its producer's
+    # actual gaps and unproven condition must survive registration independently.
+    assert issue["obligation_profile_status"] == "unsupported"
+    assert issue["decision_fact_coverage"] == "partial"
+    assert issue["candidate_promotion_eligible"] is False
+    assert issue["candidate_disposition"] == "needs_review"
+    evidence = registrar.ledger.records()[0].ticket.evidence
+    assert evidence["conditions"] == condition
+    assert evidence["condition_evaluation"] == "unknown"
+    assert evidence["condition_proven"] is False
+    assert evidence["proof_authority"] is False
+    assert evidence["missing_facts"] == ["cleanup_on_error_path"]
 
 
 @pytest.mark.parametrize(

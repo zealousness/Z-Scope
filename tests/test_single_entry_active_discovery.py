@@ -32,6 +32,8 @@ class SingleEntryIndex:
 
 def _analyzer(tmp_path: Path, depth: str) -> Analyzer:
     value = object.__new__(Analyzer)
+    # These fixtures exercise the retained offline control, never production.
+    value._legacy_discovery_offline = True
     value.config = SimpleNamespace(
         analysis=SimpleNamespace(snapshot_dir=str(tmp_path / "snapshots")),
         project=SimpleNamespace(

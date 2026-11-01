@@ -466,21 +466,36 @@ class ClangAstCfgCandidateGenerator(
         self._callback_registrar_call_re = self._call_re(self._callback_registrar_names)
 
     def _semantic_api_pattern(self, pattern: str) -> str:
-        from .regex import _consumer_api_pattern
-
-        return _consumer_api_pattern(pattern, self.semantics, self.restrict_to_semantics)
-
-    def _literal_api_pattern(self, pattern: str) -> str:
-        from .regex import _consumer_api_pattern
+        from .regex import _consumer_api_pattern, current_compiler_intrinsic_names
 
         return _consumer_api_pattern(
-            pattern, self.semantics, self.restrict_to_semantics, expand_slots=False
+            pattern,
+            self.semantics,
+            self.restrict_to_semantics,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self.program_facts),
+        )
+
+    def _literal_api_pattern(self, pattern: str) -> str:
+        from .regex import _consumer_api_pattern, current_compiler_intrinsic_names
+
+        return _consumer_api_pattern(
+            pattern,
+            self.semantics,
+            self.restrict_to_semantics,
+            expand_slots=False,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self.program_facts),
         )
 
     def _semantic_call_allowed(self, name: str, *roles: str) -> bool:
-        from .regex import _semantic_call_allowed
+        from .regex import _semantic_call_allowed, current_compiler_intrinsic_names
 
-        return _semantic_call_allowed(self.semantics, self.restrict_to_semantics, name, *roles)
+        return _semantic_call_allowed(
+            self.semantics,
+            self.restrict_to_semantics,
+            name,
+            *roles,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self.program_facts),
+        )
 
     _FD_OPEN_EXCLUDED_NAMES = {"fopen", "fdopen", "freopen", "popen"}
 

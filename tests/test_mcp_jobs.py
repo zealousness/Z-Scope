@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Optional
 import pytest
 
 from test_scan_jobs import make_project
+from semantics_fixtures import reviewed_control_plane_project
 from zscope.config.config import ConfigLoader
 from zscope.mcp.jobs_adapter import McpJobsAdapter
 from zscope.mcp.provider import ZScopeMcpProvider
@@ -413,6 +414,7 @@ def test_input_change_revokes_the_previous_attempt_binding(job_env) -> None:
     (project / "src" / "main.c").write_text(
         "int main(void) { return 1; } // changed\n", encoding="utf-8"
     )
+    reviewed_control_plane_project(project / "zscope.yaml")
     resume = provider.call_tool(
         "zscope.jobs.resume",
         {
@@ -635,12 +637,11 @@ def _v3_document(targets: list) -> dict:
             }
         },
         "project": {
-            "root": ".",
             "language": "c_cpp",
             "platform": "linux_user",
             "targets": targets,
         },
-        "scan": {"preset": "quick"},
+        "scan": {"preset": "fast"},
     }
 
 
@@ -657,6 +658,7 @@ def test_v3_single_target_runs_and_multi_target_edit_is_refused(tmp_path: Path) 
         encoding="utf-8",
     )
     scanner = tmp_path / "scanner.py"
+    reviewed_control_plane_project(project / "zscope.yaml")
     scanner.write_text(SCANNER_SCRIPT, encoding="utf-8")
 
     # The v3 document composes the unified backend; this environment has no

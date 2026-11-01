@@ -51,6 +51,14 @@ def native_project(tmp_path_factory):
         ),
         encoding="utf-8",
     )
+    # The semantics authority is an ordinary project file.  It must exist
+    # before the native namespace receipt is captured; creating it afterwards
+    # is correctly treated as a new include-search member.
+    from zscope.config.project_semantics import render_empty_project_semantics
+
+    (tmp_path / "zscope.semantics.yaml").write_text(
+        render_empty_project_semantics(), encoding="utf-8"
+    )
     protected = pytest.MonkeyPatch()
     protected.setattr(ClangBackend, "_ensure_extractor", lambda self: pytest.fail("LSP"))
     backend = ClangBackend(frontend="batch", clang_indexer_path=executable, max_threads=1)
@@ -416,6 +424,11 @@ def test_native_without_standard_authority_does_not_require_unused_glibc_headers
             ]
         ),
         encoding="utf-8",
+    )
+    from zscope.config.project_semantics import render_empty_project_semantics
+
+    (tmp_path / "zscope.semantics.yaml").write_text(
+        render_empty_project_semantics(), encoding="utf-8"
     )
     monkeypatch.setattr(ClangBackend, "_ensure_extractor", lambda self: pytest.fail("LSP"))
     backend = ClangBackend(frontend="batch", clang_indexer_path=executable, max_threads=1)

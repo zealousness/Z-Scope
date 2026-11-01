@@ -21,7 +21,6 @@ def _config_with_task(task: str) -> ZScopeConfig:
         analysis=AnalysisConfig(),
         project=ProjectConfig(
             project_root=Path("."),
-            source_root=Path("."),
             agents=[AgentConfig(name="vulnerability_analyzer", task=task)],
         ),
     )

@@ -361,6 +361,46 @@ def test_direct_callee_fact_limit_is_reported_as_deferred_work() -> None:
     )
 
 
+def test_instance_direct_callee_scan_skips_edges_without_scoped_body() -> None:
+    class FakeIndex:
+        def __init__(self) -> None:
+            self.queries = []
+
+        def has_scoped_function_body(self, name: str) -> bool:
+            return name == "local_helper"
+
+        def get_function_impl(self, name: str, **kwargs):
+            self.queries.append(name)
+            return {
+                "file": "src/demo.c",
+                "code": "1 | int local_helper(void) { return 0; }",
+                "callees": [],
+            }
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FakeIndex()
+    analyzer.candidate_ledger = CandidateLedger(project_id="demo", revision="rev")
+    state = {
+        "entry_func": "entry",
+        "entry_identity": "src/demo.c::entry(void)",
+        "deferred_deterministic_work": [],
+    }
+
+    analyzer._detect_direct_callee_rule_candidates(
+        {"callees": ["malloc", "foreign_tu", "local_helper"]},
+        RegexCandidateGenerator(),
+        state=state,
+        entry_func="entry",
+    )
+
+    assert analyzer.code_index.queries == ["local_helper"]
+    assert state["deferred_deterministic_work"] == []
+    assert (
+        analyzer._runtime_engine_capabilities["deterministic_local_rules_callee_facts"]["status"]
+        == "complete"
+    )
+
+
 def test_direct_callee_scan_budget_expands_to_complete_indexed_project() -> None:
     class FakeIndex:
         def list_functions(self, limit=None):

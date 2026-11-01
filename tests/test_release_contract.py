@@ -31,6 +31,16 @@ SHIPPED_LOCKS = (
 SECURITY_FLOORS = {"urllib3": (2, 8, 0), "certifi": (2026, 10, 19)}
 
 
+def test_project_semantics_yaml_runtime_is_in_every_shipped_lock() -> None:
+    expected = {"ruamel-yaml": "0.18.17", "ruamel-yaml-clib": "0.2.15"}
+    policy = json.loads((ROOT / "requirements/license-policy.json").read_text())
+    for relative in SHIPPED_LOCKS:
+        pins = _locked_versions(ROOT / relative)
+        for package, version in expected.items():
+            assert pins.get(package) == version, f"Missing YAML runtime: {relative}: {package}"
+            assert policy["packages"][package] == "MIT"
+
+
 def _locked_versions(lock: Path) -> dict[str, str]:
     """Read `name==version` pins, including CRLF-generated locks."""
     pins: dict[str, str] = {}

@@ -33,7 +33,7 @@ def _settings(ctx: click.Context) -> Dict[str, Any]:
             raise click.UsageError(f"unable to load config: {exc}") from exc
         root = Path(config.project.project_root).resolve()
         if explicit_root is not None and explicit_root.resolve() != root:
-            raise click.UsageError("--root conflicts with project.root from --config")
+            raise click.UsageError("--root conflicts with the YAML directory from --config")
     elif explicit_root is not None:
         root = explicit_root.resolve()
     else:

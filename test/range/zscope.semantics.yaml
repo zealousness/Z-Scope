@@ -1,0 +1,3996 @@
+# Reviewed benchmark user input. Build receipts are regenerated in each isolated execution project.
+schema_version: zscope.project-semantics.v1
+interfaces:
+- id: range:safe_malloc
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _safe_malloc
+    usr: c:@F@_safe_malloc
+    signature: void *(unsigned long)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id001
+        kind: return
+      operator: '!='
+      right: &id002
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id001
+      operator: ==
+      right: *id002
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol:
+      kind: standard_api_effects
+      version: zscope.standard-api.v9
+      transitions: []
+      allocation_extent:
+      - kind: argument
+        index: 0
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - builtin:malloc
+  review_reason: src/utils.c:13-38 directly returns malloc result. Logging changes neither the returned object
+    nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure 
+    preservation and the conditional glibc zero-size release.
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_safe_malloc
+    signature: void *(unsigned long)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: e90f4f497f8ca700602a4b62bfdcde5d07a42365ee398b9d7425f1dd87dda35f
+    native_input_hash: e90f4f497f8ca700602a4b62bfdcde5d07a42365ee398b9d7425f1dd87dda35f
+    identity_status: exact
+- id: range:safe_calloc
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _safe_calloc
+    usr: c:@F@_safe_calloc
+    signature: void *(unsigned long, unsigned long)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id003
+        kind: return
+      operator: '!='
+      right: &id004
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id003
+      operator: ==
+      right: *id004
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: calloc
+    operation: calloc
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol:
+      kind: standard_api_effects
+      version: zscope.standard-api.v9
+      transitions: []
+      allocation_extent:
+      - kind: argument
+        index: 0
+      - kind: argument
+        index: 1
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - builtin:calloc
+  review_reason: src/utils.c:13-38 directly returns calloc result. Logging changes neither the returned object
+    nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure 
+    preservation and the conditional glibc zero-size release.
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_safe_calloc
+    signature: void *(unsigned long, unsigned long)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: 29355fbbabf85f1873eec44de84cd90aa3f663f08a60e03563c8ca30f0fee9a9
+    native_input_hash: 29355fbbabf85f1873eec44de84cd90aa3f663f08a60e03563c8ca30f0fee9a9
+    identity_status: exact
+- id: range:safe_realloc
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _safe_realloc
+    usr: c:@F@_safe_realloc
+    signature: void *(void *, unsigned long)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id005
+        kind: return
+      operator: '!='
+      right: &id006
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id005
+      operator: ==
+      right: *id006
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: reallocator
+    operation: reallocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol:
+      kind: standard_api_effects
+      version: zscope.standard-api.v9
+      transitions:
+      - when:
+          op: compare
+          left: &id007
+            kind: return
+          operator: '!='
+          right:
+            kind: literal
+            value:
+        actions:
+        - kind: replace
+          old:
+            kind: argument
+            argument_index: 0
+          new:
+            kind: return
+      - when:
+          op: all
+          items:
+          - op: compare
+            left:
+              kind: argument
+              index: 1
+            operator: '>'
+            right:
+              kind: literal
+              value: 0
+          - op: compare
+            left: *id007
+            operator: ==
+            right:
+              kind: literal
+              value:
+        actions:
+        - kind: preserve
+          object:
+            kind: argument
+            argument_index: 0
+      - when:
+          op: all
+          items:
+          - op: compare
+            left:
+              kind: target
+              name: target.libc
+            operator: ==
+            right:
+              kind: literal
+              value: glibc
+          - op: compare
+            left:
+              kind: argument
+              index: 1
+            operator: ==
+            right:
+              kind: literal
+              value: 0
+          - op: compare
+            left:
+              kind: argument
+              index: 0
+            operator: '!='
+            right:
+              kind: literal
+              value:
+        actions:
+        - kind: release
+          object:
+            kind: argument
+            argument_index: 0
+      allocation_extent:
+      - kind: argument
+        index: 1
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - builtin:realloc
+  review_reason: src/utils.c:13-38 directly returns realloc result. Logging changes neither the returned 
+    object nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure 
+    preservation and the conditional glibc zero-size release.
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_safe_realloc
+    signature: void *(void *, unsigned long)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: 1d894612bb90bc18a5fb88f30c8ddaae48c949d80c6920015cce8a737af6858e
+    native_input_hash: 1d894612bb90bc18a5fb88f30c8ddaae48c949d80c6920015cce8a737af6858e
+    identity_status: exact
+- id: range:str_dup
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _str_dup
+    usr: c:@F@_str_dup
+    signature: char *(const char *)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id008
+        kind: return
+      operator: '!='
+      right: &id009
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id008
+      operator: ==
+      right: *id009
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_malloc
+  review_reason: 'src/utils.c:40-48: NULL input returns NULL; otherwise the returned pointer is the _safe_malloc
+    allocation base, containing a copied NUL-terminated string. Caller releases it with free.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_str_dup
+    signature: char *(const char *)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: 2e4021a4784fa6d95559e8f06b29b47dcd0009a0ac26162f407435183997aa26
+    native_input_hash: 2e4021a4784fa6d95559e8f06b29b47dcd0009a0ac26162f407435183997aa26
+    identity_status: exact
+- id: range:str_copy_wrapper
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _str_copy_wrapper
+    usr: c:@F@_str_copy_wrapper
+    signature: int (char *, const char *, unsigned long)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id010
+        kind: return
+      operator: ==
+      right: &id011
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id010
+      operator: '!='
+      right: *id011
+    effect: no_effect
+  effects:
+  - domain: copy
+    role: copy
+    operation: copy
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:memcpy
+  review_reason: 'src/utils.c:50-61: return 0 writes destination, including a NUL for NULL source. A non-NULL destination
+    and positive supplied capacity are required; no claim that supplied capacity is the actual object bound.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_str_copy_wrapper
+    signature: int (char *, const char *, unsigned long)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: e98ec63c2ac1833c30b9a00e230aa94efd958297c9dc87fa650b9c67b13751a3
+    native_input_hash: e98ec63c2ac1833c30b9a00e230aa94efd958297c9dc87fa650b9c67b13751a3
+    identity_status: exact
+- id: range:lock_wrapper
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _lock_wrapper
+    usr: c:@F@_lock_wrapper
+    signature: void (pthread_mutex_t *, const char *, int)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id012
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id013
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id012
+      operator: ==
+      right: *id013
+    effect: no_effect
+  effects:
+  - domain: lock
+    role: lock
+    operation: lock
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: mutex
+    protocol:
+      lock_mode: exclusive
+  otherwise: unknown
+  pairs:
+  - builtin:pthread_mutex_unlock
+  derived_from:
+  - builtin:pthread_mutex_lock
+  review_reason: 'src/utils.c:88-130: NULL returns before pthread call; non-NULL forwards the same object. The void
+    wrapper discards the pthread result. The effect is MAY, never proof of acquisition/release. Read and write modes
+    remain distinct.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_lock_wrapper
+    signature: void (pthread_mutex_t *, const char *, int)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: 83b7b5f89f803995ae2b976561dce9c40bde488c9f7802f4fe91b1607ab4a8ab
+    native_input_hash: 83b7b5f89f803995ae2b976561dce9c40bde488c9f7802f4fe91b1607ab4a8ab
+    identity_status: exact
+- id: range:unlock_wrapper
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _unlock_wrapper
+    usr: c:@F@_unlock_wrapper
+    signature: void (pthread_mutex_t *, const char *, int)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id014
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id015
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id014
+      operator: ==
+      right: *id015
+    effect: no_effect
+  effects:
+  - domain: lock
+    role: unlock
+    operation: unlock
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: mutex
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:pthread_mutex_unlock
+  review_reason: 'src/utils.c:88-130: NULL returns before pthread call; non-NULL forwards the same object. The void
+    wrapper discards the pthread result. The effect is MAY, never proof of acquisition/release. Read and write modes
+    remain distinct.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_unlock_wrapper
+    signature: void (pthread_mutex_t *, const char *, int)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: 456b1aa495bd912ffecb92be8aa82b7bfe294292ed4b1d7a550745e9d31d19df
+    native_input_hash: 456b1aa495bd912ffecb92be8aa82b7bfe294292ed4b1d7a550745e9d31d19df
+    identity_status: exact
+- id: range:lock_read_wrapper
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _lock_read_wrapper
+    usr: c:@F@_lock_read_wrapper
+    signature: void (pthread_rwlock_t *, const char *, int)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id016
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id017
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id016
+      operator: ==
+      right: *id017
+    effect: no_effect
+  effects:
+  - domain: lock
+    role: lock
+    operation: lock
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: rwlock
+    protocol:
+      lock_mode: shared
+  otherwise: unknown
+  pairs:
+  - builtin:pthread_rwlock_unlock
+  derived_from:
+  - builtin:pthread_rwlock_rdlock
+  review_reason: 'src/utils.c:88-130: NULL returns before pthread call; non-NULL forwards the same object. The void
+    wrapper discards the pthread result. The effect is MAY, never proof of acquisition/release. Read and write modes
+    remain distinct.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_lock_read_wrapper
+    signature: void (pthread_rwlock_t *, const char *, int)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: be53ff59138b2dfb986389caaceeb21c93b585c7c62447f075544dd00fea30c4
+    native_input_hash: be53ff59138b2dfb986389caaceeb21c93b585c7c62447f075544dd00fea30c4
+    identity_status: exact
+- id: range:lock_write_wrapper
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _lock_write_wrapper
+    usr: c:@F@_lock_write_wrapper
+    signature: void (pthread_rwlock_t *, const char *, int)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id018
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id019
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id018
+      operator: ==
+      right: *id019
+    effect: no_effect
+  effects:
+  - domain: lock
+    role: lock
+    operation: lock
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: rwlock
+    protocol:
+      lock_mode: exclusive
+  otherwise: unknown
+  pairs:
+  - builtin:pthread_rwlock_unlock
+  derived_from:
+  - builtin:pthread_rwlock_wrlock
+  review_reason: 'src/utils.c:88-130: NULL returns before pthread call; non-NULL forwards the same object. The void
+    wrapper discards the pthread result. The effect is MAY, never proof of acquisition/release. Read and write modes
+    remain distinct.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_lock_write_wrapper
+    signature: void (pthread_rwlock_t *, const char *, int)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: fcb3e5facc27a57b166a7c59062c9ffe2a509cc8d835cebec23f125c52bb7e7e
+    native_input_hash: fcb3e5facc27a57b166a7c59062c9ffe2a509cc8d835cebec23f125c52bb7e7e
+    identity_status: exact
+- id: range:log_wrapper
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _log_wrapper
+    usr: c:@F@_log_wrapper
+    signature: void (int, const char *, int, const char *, ...)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id020
+        kind: argument
+        index: 0
+      operator: '>='
+      right: &id021
+        kind: global
+        name: g_log_level
+    effect: applies
+  - when:
+      op: compare
+      left: *id020
+      operator: <
+      right: *id021
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: format_sink
+    operation: format_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 3
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:vfprintf
+  review_reason: 'src/utils.c:63-86: level below g_log_level returns; otherwise fmt (argument 3) is passed to vfprintf.
+    The file argument is not the format string.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_log_wrapper
+    signature: void (int, const char *, int, const char *, ...)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: f05361b2d53b90548f7e647f2cbc8e6ed67efc44d7b2aea69a03ec87e34a331f
+    native_input_hash: f05361b2d53b90548f7e647f2cbc8e6ed67efc44d7b2aea69a03ec87e34a331f
+    identity_status: exact
+- id: range:create_directory
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _create_directory
+    usr: c:@F@_create_directory
+    signature: int (const char *)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id022
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id023
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id022
+      operator: ==
+      right: *id023
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: standard_operation
+    operation: standard_operation
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:mkdir
+  review_reason: 'src/utils.c:148-155: non-NULL path is passed to mkdir. No claim that returned boolean/permission
+    result is the raw system result or guarantees success.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_create_directory
+    signature: int (const char *)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: 8f73938fa64224cd04839ede795f0a0725bb5e716529bf997d6b091116336ddf
+    native_input_hash: 8f73938fa64224cd04839ede795f0a0725bb5e716529bf997d6b091116336ddf
+    identity_status: exact
+- id: range:file_exists
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _file_exists
+    usr: c:@F@_file_exists
+    signature: int (const char *)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id024
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id025
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id024
+      operator: ==
+      right: *id025
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: standard_operation
+    operation: standard_operation
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:stat
+  review_reason: 'src/utils.c:157-162: non-NULL path is passed to stat. No claim that returned boolean/permission
+    result is the raw system result or guarantees success.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_file_exists
+    signature: int (const char *)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: 16719d15a1840d4e8b20f068290a7f9a1f5fa729dc7cbc7f3799f31b8c80e1f4
+    native_input_hash: 16719d15a1840d4e8b20f068290a7f9a1f5fa729dc7cbc7f3799f31b8c80e1f4
+    identity_status: exact
+- id: range:check_file_permission
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _check_file_permission
+    usr: c:@F@_check_file_permission
+    signature: int (const char *, int)
+    file: src/utils.c
+  cases:
+  - when:
+      op: compare
+      left: &id026
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id027
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id026
+      operator: ==
+      right: *id027
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: standard_operation
+    operation: standard_operation
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:stat
+  review_reason: 'src/utils.c:163-174: non-NULL path is passed to stat. No claim that returned boolean/permission
+    result is the raw system result or guarantees success.'
+  variants:
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:@F@_check_file_permission
+    signature: int (const char *, int)
+    file: src/utils.c
+    source_sha256: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    evidence_sha256: b754c0e990aec9eb0f303ceef09426572899902899f1813b9113883a6deaae3f
+    native_input_hash: b754c0e990aec9eb0f303ceef09426572899902899f1813b9113883a6deaae3f
+    identity_status: exact
+- id: range:SAFE_FREE
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: SAFE_FREE
+    usr: c:common.h@537@macro@SAFE_FREE
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id028
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id029
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id028
+      operator: ==
+      right: *id029
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: deallocator
+    operation: deallocator
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:free
+  review_reason: 'include/common.h:24: evaluate non-NULL operand, free that pointer, then assign NULL. Contract
+    describes the original pointer consumption; repeated operand evaluation and lvalue write remain in the macro
+    body.'
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@537@macro@SAFE_FREE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    native_input_hash: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@537@macro@SAFE_FREE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    native_input_hash: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@537@macro@SAFE_FREE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    native_input_hash: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@537@macro@SAFE_FREE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    native_input_hash: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@537@macro@SAFE_FREE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    native_input_hash: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@537@macro@SAFE_FREE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    native_input_hash: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@537@macro@SAFE_FREE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    native_input_hash: 92993a0468d49b40ae9f7fa6ca332bf6d4ec59aab729b54557727ac205a07388
+    identity_status: exact
+- id: range:LOCK
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: LOCK
+    usr: c:common.h@1040@macro@LOCK
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id030
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id031
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id030
+      operator: ==
+      right: *id031
+    effect: no_effect
+  effects:
+  - domain: lock
+    role: lock
+    operation: lock
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: mutex
+    protocol:
+      lock_mode: exclusive
+  otherwise: unknown
+  pairs:
+  - builtin:pthread_mutex_unlock
+  derived_from:
+  - range:lock_wrapper
+  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread 
+    failures remain MAY; the macro does not strengthen its callee.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1040@macro@LOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    native_input_hash: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1040@macro@LOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    native_input_hash: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1040@macro@LOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    native_input_hash: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1040@macro@LOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    native_input_hash: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1040@macro@LOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    native_input_hash: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1040@macro@LOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    native_input_hash: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1040@macro@LOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    native_input_hash: ee649da414ac5db4f6061328c3e822e2986a354feadb2ab06cf04befe8809d57
+    identity_status: exact
+- id: range:UNLOCK
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: UNLOCK
+    usr: c:common.h@1111@macro@UNLOCK
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id032
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id033
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id032
+      operator: ==
+      right: *id033
+    effect: no_effect
+  effects:
+  - domain: lock
+    role: unlock
+    operation: unlock
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: mutex
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:unlock_wrapper
+  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread 
+    failures remain MAY; the macro does not strengthen its callee.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1111@macro@UNLOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    native_input_hash: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1111@macro@UNLOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    native_input_hash: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1111@macro@UNLOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    native_input_hash: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1111@macro@UNLOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    native_input_hash: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1111@macro@UNLOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    native_input_hash: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1111@macro@UNLOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    native_input_hash: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1111@macro@UNLOCK
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    native_input_hash: 0e09b536b81fbb38111020b017640d9646a3e36344fba52d3602ac4ac3ca25d8
+    identity_status: exact
+- id: range:LOCK_READ
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: LOCK_READ
+    usr: c:common.h@1184@macro@LOCK_READ
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id034
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id035
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id034
+      operator: ==
+      right: *id035
+    effect: no_effect
+  effects:
+  - domain: lock
+    role: lock
+    operation: lock
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: rwlock
+    protocol:
+      lock_mode: shared
+  otherwise: unknown
+  pairs:
+  - builtin:pthread_rwlock_unlock
+  derived_from:
+  - range:lock_read_wrapper
+  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread 
+    failures remain MAY; the macro does not strengthen its callee.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1184@macro@LOCK_READ
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    native_input_hash: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1184@macro@LOCK_READ
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    native_input_hash: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1184@macro@LOCK_READ
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    native_input_hash: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1184@macro@LOCK_READ
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    native_input_hash: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1184@macro@LOCK_READ
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    native_input_hash: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1184@macro@LOCK_READ
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    native_input_hash: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1184@macro@LOCK_READ
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    native_input_hash: c1a92c57c5bd03766cda9ca8952917ab41c3788ce6b40e592690a1171be067ae
+    identity_status: exact
+- id: range:LOCK_WRITE
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: LOCK_WRITE
+    usr: c:common.h@1261@macro@LOCK_WRITE
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id036
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id037
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id036
+      operator: ==
+      right: *id037
+    effect: no_effect
+  effects:
+  - domain: lock
+    role: lock
+    operation: lock
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: rwlock
+    protocol:
+      lock_mode: exclusive
+  otherwise: unknown
+  pairs:
+  - builtin:pthread_rwlock_unlock
+  derived_from:
+  - range:lock_write_wrapper
+  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread 
+    failures remain MAY; the macro does not strengthen its callee.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1261@macro@LOCK_WRITE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    native_input_hash: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1261@macro@LOCK_WRITE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    native_input_hash: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1261@macro@LOCK_WRITE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    native_input_hash: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1261@macro@LOCK_WRITE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    native_input_hash: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1261@macro@LOCK_WRITE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    native_input_hash: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1261@macro@LOCK_WRITE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    native_input_hash: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1261@macro@LOCK_WRITE
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    native_input_hash: ed635f4fac45a9923f04734cace3d901ac12985f482687b7f5315e56d43c5c54
+    identity_status: exact
+- id: range:LOG_DEBUG
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: LOG_DEBUG
+    usr: c:common.h@1340@macro@LOG_DEBUG
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id038
+        kind: literal
+        value: 0
+      operator: '>='
+      right: &id039
+        kind: global
+        name: g_log_level
+    effect: applies
+  - when:
+      op: compare
+      left: *id038
+      operator: <
+      right: *id039
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: format_sink
+    operation: format_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:log_wrapper
+  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to 
+    _log_wrapper argument 3. Filtering depends on g_log_level.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1340@macro@LOG_DEBUG
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    native_input_hash: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1340@macro@LOG_DEBUG
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    native_input_hash: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1340@macro@LOG_DEBUG
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    native_input_hash: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1340@macro@LOG_DEBUG
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    native_input_hash: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1340@macro@LOG_DEBUG
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    native_input_hash: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1340@macro@LOG_DEBUG
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    native_input_hash: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1340@macro@LOG_DEBUG
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    native_input_hash: 303a8d9f3dbbd8338b7f777a400cf2c5d3b8213f4b1f4a4b3a017c09df519b21
+    identity_status: exact
+- id: range:LOG_INFO
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: LOG_INFO
+    usr: c:common.h@1440@macro@LOG_INFO
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id040
+        kind: literal
+        value: 1
+      operator: '>='
+      right: &id041
+        kind: global
+        name: g_log_level
+    effect: applies
+  - when:
+      op: compare
+      left: *id040
+      operator: <
+      right: *id041
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: format_sink
+    operation: format_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:log_wrapper
+  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to 
+    _log_wrapper argument 3. Filtering depends on g_log_level.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1440@macro@LOG_INFO
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    native_input_hash: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1440@macro@LOG_INFO
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    native_input_hash: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1440@macro@LOG_INFO
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    native_input_hash: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1440@macro@LOG_INFO
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    native_input_hash: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1440@macro@LOG_INFO
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    native_input_hash: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1440@macro@LOG_INFO
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    native_input_hash: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1440@macro@LOG_INFO
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    native_input_hash: 1436cd44a355f533fb3108af442892d52b1598944df043602778ed7b6df0495d
+    identity_status: exact
+- id: range:LOG_WARN
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: LOG_WARN
+    usr: c:common.h@1539@macro@LOG_WARN
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id042
+        kind: literal
+        value: 2
+      operator: '>='
+      right: &id043
+        kind: global
+        name: g_log_level
+    effect: applies
+  - when:
+      op: compare
+      left: *id042
+      operator: <
+      right: *id043
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: format_sink
+    operation: format_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:log_wrapper
+  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to 
+    _log_wrapper argument 3. Filtering depends on g_log_level.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1539@macro@LOG_WARN
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    native_input_hash: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1539@macro@LOG_WARN
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    native_input_hash: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1539@macro@LOG_WARN
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    native_input_hash: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1539@macro@LOG_WARN
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    native_input_hash: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1539@macro@LOG_WARN
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    native_input_hash: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1539@macro@LOG_WARN
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    native_input_hash: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1539@macro@LOG_WARN
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    native_input_hash: c901ec7dae8648b3a1df231122f26bebe901bae9018cbd91e1221e2b38eee2c0
+    identity_status: exact
+- id: range:LOG_ERROR
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: LOG_ERROR
+    usr: c:common.h@1638@macro@LOG_ERROR
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id044
+        kind: literal
+        value: 3
+      operator: '>='
+      right: &id045
+        kind: global
+        name: g_log_level
+    effect: applies
+  - when:
+      op: compare
+      left: *id044
+      operator: <
+      right: *id045
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: format_sink
+    operation: format_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:log_wrapper
+  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to 
+    _log_wrapper argument 3. Filtering depends on g_log_level.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1638@macro@LOG_ERROR
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    native_input_hash: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1638@macro@LOG_ERROR
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    native_input_hash: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1638@macro@LOG_ERROR
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    native_input_hash: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1638@macro@LOG_ERROR
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    native_input_hash: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1638@macro@LOG_ERROR
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    native_input_hash: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1638@macro@LOG_ERROR
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    native_input_hash: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1638@macro@LOG_ERROR
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    native_input_hash: cad15f1be459d293f803c3cab534a9574c6b9ac952c232599aa8d2e6c16dbdf5
+    identity_status: exact
+- id: range:STR_COPY
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: macro
+    name: STR_COPY
+    usr: c:common.h@1903@macro@STR_COPY
+    signature: ''
+    file: include/common.h
+  cases:
+  - when:
+      op: compare
+      left: &id046
+        kind: return
+      operator: ==
+      right: &id047
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id046
+      operator: '!='
+      right: *id047
+    effect: no_effect
+  effects:
+  - domain: copy
+    role: copy
+    operation: copy
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:str_copy_wrapper
+  review_reason: include/common.h:47 forwards dst/src and sizeof(dst); operand 0 is written on successful 
+    _str_copy_wrapper return. sizeof on a pointer is not array capacity; no bounds-safety assertion.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:common.h@1903@macro@STR_COPY
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    native_input_hash: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:common.h@1903@macro@STR_COPY
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    native_input_hash: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    identity_status: exact
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:common.h@1903@macro@STR_COPY
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    native_input_hash: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    identity_status: exact
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:common.h@1903@macro@STR_COPY
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    native_input_hash: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    identity_status: exact
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:common.h@1903@macro@STR_COPY
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    native_input_hash: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    identity_status: exact
+  - target_id: range
+    build_context_id: 356ce038f64ca23a8c0afe3f4fd855055002c886a535ea54ddd25f08dc8a624c
+    usr: c:common.h@1903@macro@STR_COPY
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    native_input_hash: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    identity_status: exact
+  - target_id: range
+    build_context_id: 8c7908e112e8dcbd9915883852e7b2503a1a57f1f55205c364d7f614d6904735
+    usr: c:common.h@1903@macro@STR_COPY
+    signature: ''
+    file: include/common.h
+    source_sha256: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+    evidence_sha256: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    native_input_hash: 0a3adce8258dde49ad4320418ae160f82f311479aecdf4894966a80a7479568f
+    identity_status: exact
+- id: range:allocate_buffer
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _allocate_buffer
+    usr: c:@F@_allocate_buffer
+    signature: void *(unsigned long)
+    file: src/parser.c
+  cases:
+  - when:
+      op: compare
+      left: &id048
+        kind: return
+      operator: '!='
+      right: &id049
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id048
+      operator: ==
+      right: *id049
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_malloc
+  review_reason: 'src/parser.c:310-324: successful return is allocation base for wrapped size*2; extent is not asserted
+    because multiplication is not a simple argument.'
+  variants:
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:@F@_allocate_buffer
+    signature: void *(unsigned long)
+    file: src/parser.c
+    source_sha256: ac18a0b881fe02504794b8326ce25aae7389624b837c4ec2390d0ecf1836d62b
+    evidence_sha256: c57f67ee74cdd14cb824689f2ecce76889bf4932d62edc4cb1bf7e1b070ecada
+    native_input_hash: c57f67ee74cdd14cb824689f2ecce76889bf4932d62edc4cb1bf7e1b070ecada
+    identity_status: exact
+- id: range:parse_command_string
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _parse_command_string
+    usr: c:@F@_parse_command_string
+    signature: char *(const char *)
+    file: src/parser.c
+  cases:
+  - when:
+      op: compare
+      left: &id050
+        kind: return
+      operator: '!='
+      right: &id051
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id050
+      operator: ==
+      right: *id051
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:str_dup
+  review_reason: src/parser.c:263-283 returns the original duplicate base even after replacing its first 
+    whitespace with NUL.
+  variants:
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:@F@_parse_command_string
+    signature: char *(const char *)
+    file: src/parser.c
+    source_sha256: ac18a0b881fe02504794b8326ce25aae7389624b837c4ec2390d0ecf1836d62b
+    evidence_sha256: da6ae943462e51f995d73e95e53fbed2047b19bec5f107ae37626c7e7d35c3f6
+    native_input_hash: da6ae943462e51f995d73e95e53fbed2047b19bec5f107ae37626c7e7d35c3f6
+    identity_status: exact
+- id: range:parse_task_buffer
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _parse_task_buffer
+    usr: c:@F@_parse_task_buffer
+    signature: struct Task *(const void *, unsigned long)
+    file: src/parser.c
+  cases:
+  - when:
+      op: compare
+      left: &id052
+        kind: return
+      operator: '!='
+      right: &id053
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id052
+      operator: ==
+      right: *id053
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_calloc
+  review_reason: src/parser.c:28-102 returns a newly allocated Task root. Payload fields have separate 
+    optional allocations; root acquisition does not prove all child allocations succeed or all paths are safe.
+  variants:
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:@F@_parse_task_buffer
+    signature: struct Task *(const void *, unsigned long)
+    file: src/parser.c
+    source_sha256: ac18a0b881fe02504794b8326ce25aae7389624b837c4ec2390d0ecf1836d62b
+    evidence_sha256: d69d6636dac38812a896fc10a79d24078138077ca7b4d5ddd7d1c7add04e01fb
+    native_input_hash: d69d6636dac38812a896fc10a79d24078138077ca7b4d5ddd7d1c7add04e01fb
+    identity_status: exact
+- id: range:net_create_connection
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_create_connection
+    usr: c:@F@_net_create_connection
+    signature: Connection *(int)
+    file: src/network.c
+  cases:
+  - when:
+      op: compare
+      left: &id054
+        kind: return
+      operator: '!='
+      right: &id055
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id054
+      operator: ==
+      right: *id055
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_calloc
+  review_reason: src/network.c:123-140 returns the new Connection root and may also retain its address in 
+    g_connections; global aliasing is not a release or a separate allocation.
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:@F@_net_create_connection
+    signature: Connection *(int)
+    file: src/network.c
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    evidence_sha256: 3c2a0bffb6cb81b059b609fef1cba14ab10fe4ad6c2444dcf154d56528ff7e18
+    native_input_hash: 3c2a0bffb6cb81b059b609fef1cba14ab10fe4ad6c2444dcf154d56528ff7e18
+    identity_status: exact
+- id: range:net_recv_string
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_recv_string
+    usr: c:@F@_net_recv_string
+    signature: char *(int, unsigned long)
+    file: src/network.c
+  cases:
+  - when:
+      op: compare
+      left: &id056
+        kind: return
+      operator: '!='
+      right: &id057
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id056
+      operator: ==
+      right: *id057
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_malloc
+  review_reason: src/network.c:174-188 returns allocated buffer base on non-NULL return; negative receive 
+    result frees the buffer and returns NULL. No max_len+1 overflow safety assertion.
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:@F@_net_recv_string
+    signature: char *(int, unsigned long)
+    file: src/network.c
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    evidence_sha256: 0a45b0e540e8ec53f7db460a2f89dc69db3e086640a15025346539cfd0c75f0e
+    native_input_hash: 0a45b0e540e8ec53f7db460a2f89dc69db3e086640a15025346539cfd0c75f0e
+    identity_status: exact
+- id: range:executor_build_command_args
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _executor_build_command_args
+    usr: c:@F@_executor_build_command_args
+    signature: char *(const char *)
+    file: src/executor.c
+  cases:
+  - when:
+      op: compare
+      left: &id058
+        kind: return
+      operator: '!='
+      right: &id059
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id058
+      operator: ==
+      right: *id059
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_malloc
+  review_reason: src/executor.c:215-240 returns newly allocated command base after checked additions; getenv 
+    content is appended, not an ownership source.
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:@F@_executor_build_command_args
+    signature: char *(const char *)
+    file: src/executor.c
+    source_sha256: 0123d5f02f17d0a0905cc20fdc721bf5b4c21dda2814a475fa3b2a4723944f6e
+    evidence_sha256: 63111c7e31e71e139530e9b1366c40b1fad3fb926a4332f46de8bc7a474a5b62
+    native_input_hash: 63111c7e31e71e139530e9b1366c40b1fad3fb926a4332f46de8bc7a474a5b62
+    identity_status: exact
+- id: range:lifecycle_parse_control_message
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _lifecycle_parse_control_message
+    usr: c:@F@_lifecycle_parse_control_message
+    signature: char *(const char *)
+    file: src/lifecycle.c
+  cases:
+  - when:
+      op: compare
+      left: &id060
+        kind: return
+      operator: '!='
+      right: &id061
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id060
+      operator: ==
+      right: *id061
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_malloc
+  review_reason: src/lifecycle.c:90-106 returns newly allocated key base on defined normal completion. This is
+    not a claim that malformed delimiter input is safe.
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:@F@_lifecycle_parse_control_message
+    signature: char *(const char *)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: 10060d03bb23f1fa0f4fc41ff957bdb7fa0369e36427387243fb801c248d63f6
+    native_input_hash: 10060d03bb23f1fa0f4fc41ff957bdb7fa0369e36427387243fb801c248d63f6
+    identity_status: exact
+- id: range:service_alloc_node
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _service_alloc_node
+    usr: c:lifecycle.c@F@_service_alloc_node
+    signature: struct ServiceNode *(const char *, const char *)
+    file: src/lifecycle.c
+  cases:
+  - when:
+      op: compare
+      left: &id062
+        kind: return
+      operator: '!='
+      right: &id063
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id062
+      operator: ==
+      right: *id063
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_calloc
+  review_reason: src/lifecycle.c:1118-1129 returns newly allocated node root; name/payload allocations can 
+    independently fail, and mutex initialization result is discarded.
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:lifecycle.c@F@_service_alloc_node
+    signature: struct ServiceNode *(const char *, const char *)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: 6ec8f93054099c6af7246d15819b6a93175e6a9691ce1d1bbcda70739a3d793f
+    native_input_hash: 6ec8f93054099c6af7246d15819b6a93175e6a9691ce1d1bbcda70739a3d793f
+    identity_status: exact
+- id: range:service_alloc_child
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _service_alloc_child
+    usr: c:lifecycle.c@F@_service_alloc_child
+    signature: struct ServiceChild *(const char *, int)
+    file: src/lifecycle.c
+  cases:
+  - when:
+      op: compare
+      left: &id064
+        kind: return
+      operator: '!='
+      right: &id065
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id064
+      operator: ==
+      right: *id065
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_calloc
+  review_reason: src/lifecycle.c:1131-1140 returns newly allocated child root; fd is copied, not duplicated, 
+    and name allocation can fail.
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:lifecycle.c@F@_service_alloc_child
+    signature: struct ServiceChild *(const char *, int)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: ada57adbc4e207e936138980225e61972a8763b2d9c0b72be547c2ed86ba8968
+    native_input_hash: ada57adbc4e207e936138980225e61972a8763b2d9c0b72be547c2ed86ba8968
+    identity_status: exact
+- id: range:peer_create_task_from_frame
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _peer_create_task_from_frame
+    usr: c:lifecycle.c@F@_peer_create_task_from_frame
+    signature: struct PeerSessionTask *(int, int, int, const PeerSessionFrame *)
+    file: src/lifecycle.c
+  cases:
+  - when:
+      op: compare
+      left: &id066
+        kind: return
+      operator: '!='
+      right: &id067
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id066
+      operator: ==
+      right: *id067
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_calloc
+  review_reason: src/lifecycle.c:1903-1931 returns newly allocated task root; NULL frame releases it. This 
+    does not validate frame length or authorize the copy.
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:lifecycle.c@F@_peer_create_task_from_frame
+    signature: struct PeerSessionTask *(int, int, int, const PeerSessionFrame *)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: 751f9eaf6a335b04e17bf998074aed5fb98b9a271c8da535dd2fd303676af293
+    native_input_hash: 751f9eaf6a335b04e17bf998074aed5fb98b9a271c8da535dd2fd303676af293
+    identity_status: exact
+- id: range:runtime_map_linked_segment
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _runtime_map_linked_segment
+    usr: c:@F@_runtime_map_linked_segment
+    signature: void *(const char *, const char *, unsigned long)
+    file: src/lifecycle.c
+  cases:
+  - when:
+      op: compare
+      left: &id068
+        kind: return
+      operator: '!='
+      right: &id069
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id068
+      operator: ==
+      right: *id069
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_malloc
+  review_reason: src/lifecycle.c:2658-2678 returns a heap allocation base, not an mmap region, on its two 
+    successful return branches.
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:@F@_runtime_map_linked_segment
+    signature: void *(const char *, const char *, unsigned long)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: 02ac284d6899d9c8f251a5b231f121d30ba77d4c3b9661f470315eecb39726ea
+    native_input_hash: 02ac284d6899d9c8f251a5b231f121d30ba77d4c3b9661f470315eecb39726ea
+    identity_status: exact
+- id: range:td_alloc_worker_args
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _td_alloc_worker_args
+    usr: c:main.c@F@_td_alloc_worker_args
+    signature: struct TdRangeWorkerArgs *(const char *)
+    file: src/main.c
+  cases:
+  - when:
+      op: compare
+      left: &id070
+        kind: return
+      operator: '!='
+      right: &id071
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id070
+      operator: ==
+      right: *id071
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_calloc
+  review_reason: src/main.c:459-466 returns newly allocated worker argument root; subsequent thread submission
+    owns a separate lifecycle.
+  variants:
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:main.c@F@_td_alloc_worker_args
+    signature: struct TdRangeWorkerArgs *(const char *)
+    file: src/main.c
+    source_sha256: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+    evidence_sha256: 0f75b060aefcfc04a0c01445c8bae0ff18ec1e5e14e00e23b5364435949d94ee
+    native_input_hash: 0f75b060aefcfc04a0c01445c8bae0ff18ec1e5e14e00e23b5364435949d94ee
+    identity_status: exact
+- id: range:td_receive_string
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: td_receive_string
+    usr: c:@F@td_receive_string
+    signature: char *(int, unsigned long)
+    file: src/main.c
+  cases:
+  - when:
+      op: compare
+      left: &id072
+        kind: return
+      operator: '!='
+      right: &id073
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id072
+      operator: ==
+      right: *id073
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:net_recv_string
+  review_reason: src/main.c:313-315 directly forwards the returned buffer and its ownership from 
+    _net_recv_string.
+  variants:
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:@F@td_receive_string
+    signature: char *(int, unsigned long)
+    file: src/main.c
+    source_sha256: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+    evidence_sha256: f8e0a55297b534657c9ed68ba0b3943affb76357302c1a039cea28f02e772a0b
+    native_input_hash: f8e0a55297b534657c9ed68ba0b3943affb76357302c1a039cea28f02e772a0b
+    identity_status: exact
+- id: range:extract_payload
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _extract_payload
+    usr: c:@F@_extract_payload
+    signature: int (const void *, unsigned long, TaskHeader *, void **)
+    file: src/parser.c
+  cases:
+  - when:
+      op: compare
+      left: &id074
+        kind: return
+      operator: ==
+      right: &id075
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id074
+      operator: '!='
+      right: *id075
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: argument
+      phase: post
+      dereference: 1
+      members: []
+      index: 3
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_malloc
+  review_reason: 'src/parser.c:175-202: return 0 publishes allocated payload through argument 3; it does not allocate
+    or own the header argument.'
+  variants:
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:@F@_extract_payload
+    signature: int (const void *, unsigned long, TaskHeader *, void **)
+    file: src/parser.c
+    source_sha256: ac18a0b881fe02504794b8326ce25aae7389624b837c4ec2390d0ecf1836d62b
+    evidence_sha256: d726cb37479938af7c53a32a87324128a165d51f729b01208dd2b8011ffa56ef
+    native_input_hash: d726cb37479938af7c53a32a87324128a165d51f729b01208dd2b8011ffa56ef
+    identity_status: exact
+- id: range:serialize_task
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _serialize_task
+    usr: c:@F@_serialize_task
+    signature: int (const struct Task *, void **, unsigned long *)
+    file: src/parser.c
+  cases:
+  - when:
+      op: compare
+      left: &id076
+        kind: return
+      operator: ==
+      right: &id077
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id076
+      operator: '!='
+      right: *id077
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: argument
+      phase: post
+      dereference: 1
+      members: []
+      index: 1
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:safe_malloc
+  review_reason: 'src/parser.c:204-245: return 0 publishes allocated buffer through argument 1; argument 2 receives
+    size, not ownership.'
+  variants:
+  - target_id: range
+    build_context_id: 137cbc0370cdeada2d419d32c3e839cdfa6269821ecc8aa8d0ec4952988eb896
+    usr: c:@F@_serialize_task
+    signature: int (const struct Task *, void **, unsigned long *)
+    file: src/parser.c
+    source_sha256: ac18a0b881fe02504794b8326ce25aae7389624b837c4ec2390d0ecf1836d62b
+    evidence_sha256: 4921da7fcf042e96342c5d1afa3d35f0fe0db8c40ca8868a19b0ad4a29101f71
+    native_input_hash: 4921da7fcf042e96342c5d1afa3d35f0fe0db8c40ca8868a19b0ad4a29101f71
+    identity_status: exact
+- id: range:td_serialize_task_message
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: td_serialize_task_message
+    usr: c:@F@td_serialize_task_message
+    signature: int (const struct Task *, void **, unsigned long *)
+    file: src/main.c
+  cases:
+  - when:
+      op: compare
+      left: &id078
+        kind: return
+      operator: ==
+      right: &id079
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id078
+      operator: '!='
+      right: *id079
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: argument
+      phase: post
+      dereference: 1
+      members: []
+      index: 1
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:serialize_task
+  review_reason: src/main.c:329-331 forwards _serialize_task output ownership through argument 1 on return 0.
+  variants:
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:@F@td_serialize_task_message
+    signature: int (const struct Task *, void **, unsigned long *)
+    file: src/main.c
+    source_sha256: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+    evidence_sha256: 7a8a2cd7ff147ea9f6a815cbdc9c5e027591d96c97895ed6fb4f63cbd87f09ee
+    native_input_hash: 7a8a2cd7ff147ea9f6a815cbdc9c5e027591d96c97895ed6fb4f63cbd87f09ee
+    identity_status: exact
+- id: range:service_alloc_node.name
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _service_alloc_node
+    usr: c:lifecycle.c@F@_service_alloc_node
+    signature: struct ServiceNode *(const char *, const char *)
+    file: src/lifecycle.c
+  cases:
+  - when: &id080
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: return
+          member_path: ->name
+        operator: '!='
+        right:
+          kind: literal
+          value:
+      - op: compare
+        left:
+          kind: return
+        operator: '!='
+        right:
+          kind: literal
+          value:
+    effect: applies
+  - when:
+      op: not
+      item: *id080
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members:
+      - name
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:str_dup
+  review_reason: 'src/lifecycle.c:1118-1140: non-NULL returned member is a separate _str_dup allocation; a returned
+    outer object alone does not prove this member exists.'
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:lifecycle.c@F@_service_alloc_node
+    signature: struct ServiceNode *(const char *, const char *)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: 6ec8f93054099c6af7246d15819b6a93175e6a9691ce1d1bbcda70739a3d793f
+    native_input_hash: 6ec8f93054099c6af7246d15819b6a93175e6a9691ce1d1bbcda70739a3d793f
+    identity_status: exact
+- id: range:service_alloc_node.payload
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _service_alloc_node
+    usr: c:lifecycle.c@F@_service_alloc_node
+    signature: struct ServiceNode *(const char *, const char *)
+    file: src/lifecycle.c
+  cases:
+  - when: &id081
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: return
+          member_path: ->payload
+        operator: '!='
+        right:
+          kind: literal
+          value:
+      - op: compare
+        left:
+          kind: return
+        operator: '!='
+        right:
+          kind: literal
+          value:
+    effect: applies
+  - when:
+      op: not
+      item: *id081
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members:
+      - payload
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:str_dup
+  review_reason: 'src/lifecycle.c:1118-1140: non-NULL returned member is a separate _str_dup allocation; a returned
+    outer object alone does not prove this member exists.'
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:lifecycle.c@F@_service_alloc_node
+    signature: struct ServiceNode *(const char *, const char *)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: 6ec8f93054099c6af7246d15819b6a93175e6a9691ce1d1bbcda70739a3d793f
+    native_input_hash: 6ec8f93054099c6af7246d15819b6a93175e6a9691ce1d1bbcda70739a3d793f
+    identity_status: exact
+- id: range:service_alloc_child.name
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _service_alloc_child
+    usr: c:lifecycle.c@F@_service_alloc_child
+    signature: struct ServiceChild *(const char *, int)
+    file: src/lifecycle.c
+  cases:
+  - when: &id082
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: return
+          member_path: ->name
+        operator: '!='
+        right:
+          kind: literal
+          value:
+      - op: compare
+        left:
+          kind: return
+        operator: '!='
+        right:
+          kind: literal
+          value:
+    effect: applies
+  - when:
+      op: not
+      item: *id082
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: allocator
+    operation: allocator
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members:
+      - name
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:free
+  derived_from:
+  - range:str_dup
+  review_reason: 'src/lifecycle.c:1118-1140: non-NULL returned member is a separate _str_dup allocation; a returned
+    outer object alone does not prove this member exists.'
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:lifecycle.c@F@_service_alloc_child
+    signature: struct ServiceChild *(const char *, int)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: ada57adbc4e207e936138980225e61972a8763b2d9c0b72be547c2ed86ba8968
+    native_input_hash: ada57adbc4e207e936138980225e61972a8763b2d9c0b72be547c2ed86ba8968
+    identity_status: exact
+- id: range:net_init_server
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_init_server
+    usr: c:@F@_net_init_server
+    signature: int (unsigned short)
+    file: src/network.c
+  cases:
+  - when:
+      op: compare
+      left: &id083
+        kind: return
+      operator: '>='
+      right: &id084
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id083
+      operator: <
+      right: *id084
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: io_acquire
+    operation: io_acquire
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: descriptor
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:close
+  derived_from:
+  - builtin:socket
+  review_reason: 'src/network.c:18-67: nonnegative return is the newly created descriptor; server bind/listen failures
+    close their temporary descriptor and return -1. Global retention of server fd does not discharge it.'
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:@F@_net_init_server
+    signature: int (unsigned short)
+    file: src/network.c
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    evidence_sha256: f47afb165c0ca1ee13a40d2db5560bdb73f94578d0cb70e75d8d248d8746bddd
+    native_input_hash: f47afb165c0ca1ee13a40d2db5560bdb73f94578d0cb70e75d8d248d8746bddd
+    identity_status: exact
+- id: range:net_accept_connection
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_accept_connection
+    usr: c:@F@_net_accept_connection
+    signature: int (int)
+    file: src/network.c
+  cases:
+  - when:
+      op: compare
+      left: &id085
+        kind: return
+      operator: '>='
+      right: &id086
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id085
+      operator: <
+      right: *id086
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: io_acquire
+    operation: io_acquire
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: must_under_guard
+    resource_family: descriptor
+    protocol: {}
+  otherwise: unknown
+  pairs:
+  - builtin:close
+  derived_from:
+  - builtin:accept
+  review_reason: 'src/network.c:18-67: nonnegative return is the newly created descriptor; server bind/listen failures
+    close their temporary descriptor and return -1. Global retention of server fd does not discharge it.'
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:@F@_net_accept_connection
+    signature: int (int)
+    file: src/network.c
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    evidence_sha256: a197a49d6484329b62c1ca083b70df448c58d68a5ebd3a14374aee0be0ba4049
+    native_input_hash: a197a49d6484329b62c1ca083b70df448c58d68a5ebd3a14374aee0be0ba4049
+    identity_status: exact
+- id: range:net_close_connection
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_close_connection
+    usr: c:@F@_net_close_connection
+    signature: int (int)
+    file: src/network.c
+  cases:
+  - when:
+      op: compare
+      left: &id087
+        kind: argument
+        index: 0
+      operator: '>='
+      right: &id088
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id087
+      operator: <
+      right: *id088
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: io_release
+    operation: io_release
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: descriptor
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:close
+  review_reason: Nonnegative argument is passed to close, but the return value is discarded and the wrapper 
+    always returns 0. Record MAY consumption, never prove closure from wrapper return.
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:@F@_net_close_connection
+    signature: int (int)
+    file: src/network.c
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    evidence_sha256: dc7e922ab924d3dd3d2e28dd7957421928ab9309148333e478608b7416eca9df
+    native_input_hash: dc7e922ab924d3dd3d2e28dd7957421928ab9309148333e478608b7416eca9df
+    identity_status: exact
+- id: range:lifecycle_close_connection
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _lifecycle_close_connection
+    usr: c:@F@_lifecycle_close_connection
+    signature: int (int)
+    file: src/lifecycle.c
+  cases:
+  - when:
+      op: compare
+      left: &id089
+        kind: argument
+        index: 0
+      operator: '>='
+      right: &id090
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id089
+      operator: <
+      right: *id090
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: io_release
+    operation: io_release
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: descriptor
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:close
+  review_reason: Nonnegative argument is passed to close, but the return value is discarded and the wrapper 
+    always returns 0. Record MAY consumption, never prove closure from wrapper return.
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    usr: c:@F@_lifecycle_close_connection
+    signature: int (int)
+    file: src/lifecycle.c
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    evidence_sha256: 669b1f296d31d2c87e57e2b2d2aac6be28a163aa64e92b1e4dbe9f6c8892a20d
+    native_input_hash: 669b1f296d31d2c87e57e2b2d2aac6be28a163aa64e92b1e4dbe9f6c8892a20d
+    identity_status: exact
+- id: range:net_recv_data
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_recv_data
+    usr: c:@F@_net_recv_data
+    signature: int (int, void *, unsigned long)
+    file: src/network.c
+  cases:
+  - when: &id091
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: argument
+          index: 0
+        operator: '>='
+        right:
+          kind: literal
+          value: 0
+      - op: compare
+        left:
+          kind: argument
+          index: 1
+        operator: '!='
+        right:
+          kind: literal
+          value:
+      - op: compare
+        left:
+          kind: argument
+          index: 2
+        operator: '>'
+        right:
+          kind: literal
+          value: 0
+    effect: applies
+  - when:
+      op: not
+      item: *id091
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: recv_source
+    operation: recv_source
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 1
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:recv
+  review_reason: 'src/network.c:69-114: valid fd/buffer/length enters the I/O loop. Partial I/O can precede return
+    -1; a negative result does not mean no data was read/written. No total-length guarantee.'
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:@F@_net_recv_data
+    signature: int (int, void *, unsigned long)
+    file: src/network.c
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    evidence_sha256: 2ffe8060ec958d272e677e7a356d7ef0331b71830c4cb7fcf3853d06edad12d7
+    native_input_hash: 2ffe8060ec958d272e677e7a356d7ef0331b71830c4cb7fcf3853d06edad12d7
+    identity_status: exact
+- id: range:net_send_data
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_send_data
+    usr: c:@F@_net_send_data
+    signature: int (int, const void *, unsigned long)
+    file: src/network.c
+  cases:
+  - when: &id092
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: argument
+          index: 0
+        operator: '>='
+        right:
+          kind: literal
+          value: 0
+      - op: compare
+        left:
+          kind: argument
+          index: 1
+        operator: '!='
+        right:
+          kind: literal
+          value:
+      - op: compare
+        left:
+          kind: argument
+          index: 2
+        operator: '>'
+        right:
+          kind: literal
+          value: 0
+    effect: applies
+  - when:
+      op: not
+      item: *id092
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: send_sink
+    operation: send_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 1
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:send
+  review_reason: 'src/network.c:69-114: valid fd/buffer/length enters the I/O loop. Partial I/O can precede return
+    -1; a negative result does not mean no data was read/written. No total-length guarantee.'
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:@F@_net_send_data
+    signature: int (int, const void *, unsigned long)
+    file: src/network.c
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    evidence_sha256: 0e96e51947f631c26f603211a924989acf49703758b47884bcdec3f405cd01c1
+    native_input_hash: 0e96e51947f631c26f603211a924989acf49703758b47884bcdec3f405cd01c1
+    identity_status: exact
+- id: range:td_send_message
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: td_send_message
+    usr: c:@F@td_send_message
+    signature: int (int, const void *, unsigned long)
+    file: src/main.c
+  cases:
+  - when: &id093
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: argument
+          index: 0
+        operator: '>='
+        right:
+          kind: literal
+          value: 0
+      - op: compare
+        left:
+          kind: argument
+          index: 1
+        operator: '!='
+        right:
+          kind: literal
+          value:
+      - op: compare
+        left:
+          kind: argument
+          index: 2
+        operator: '>'
+        right:
+          kind: literal
+          value: 0
+    effect: applies
+  - when:
+      op: not
+      item: *id093
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: send_sink
+    operation: send_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 1
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:net_send_data
+  review_reason: src/main.c:302-307 forwards data argument 1 and length to _net_send_data; its partial-send 
+    behavior is preserved.
+  variants:
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:@F@td_send_message
+    signature: int (int, const void *, unsigned long)
+    file: src/main.c
+    source_sha256: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+    evidence_sha256: be52b2e6d9b02009cf54728d0c66e3af8e19dea253abf5d69c1fbfa0a2fac1fd
+    native_input_hash: be52b2e6d9b02009cf54728d0c66e3af8e19dea253abf5d69c1fbfa0a2fac1fd
+    identity_status: exact
+- id: range:net_destroy_connection
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_destroy_connection
+    usr: c:@F@_net_destroy_connection
+    signature: void (Connection *)
+    file: src/network.c
+  cases:
+  - when:
+      op: compare
+      left: &id094
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id095
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id094
+      operator: ==
+      right: *id095
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: deallocator
+    operation: deallocator
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:free
+  review_reason: src/network.c:142-153 frees the Connection root for non-NULL input; closing its descriptor is
+    separately conditional and can fail.
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    usr: c:@F@_net_destroy_connection
+    signature: void (Connection *)
+    file: src/network.c
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    evidence_sha256: 227af5768ae187facfe7c91c01b620fea0ea3ead847efccc999d2cffb689a2c8
+    native_input_hash: 227af5768ae187facfe7c91c01b620fea0ea3ead847efccc999d2cffb689a2c8
+    identity_status: exact
+- id: range:free_task
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _free_task
+    usr: c:main.c@F@_free_task
+    signature: void (struct Task *)
+    file: src/main.c
+  cases:
+  - when:
+      op: compare
+      left: &id096
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id097
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id096
+      operator: ==
+      right: *id097
+    effect: no_effect
+  effects:
+  - domain: resource
+    role: deallocator
+    operation: deallocator
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: malloc
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:free
+  review_reason: src/main.c:24-49 frees the non-NULL Task root after conditional payload cleanup. This 
+    assertion does not certify every nested payload or alias.
+  variants:
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:main.c@F@_free_task
+    signature: void (struct Task *)
+    file: src/main.c
+    source_sha256: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+    evidence_sha256: b4ba7d3a8a13b6abef9806d1815d5d2d1c14ffda25072c6ebcfd9ff8dd2c0d38
+    native_input_hash: b4ba7d3a8a13b6abef9806d1815d5d2d1c14ffda25072c6ebcfd9ff8dd2c0d38
+    identity_status: exact
+- id: range:platform_execute_task
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: platform_execute_task
+    usr: c:@F@platform_execute_task
+    signature: int (const char *)
+    file: src/platform_linux.c
+  cases:
+  - when:
+      op: compare
+      left: &id098
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id099
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id098
+      operator: ==
+      right: *id099
+    effect: no_effect
+  effects:
+  - domain: process
+    role: command_sink
+    operation: command_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:system
+  review_reason: 'src/platform_linux.c:30-47: non-NULL task is sent directly to system. -1 return does not undo
+    passing the command to the shell.'
+  variants:
+  - target_id: range
+    build_context_id: 9bb0f66e71cfe38b732272a90f2afce13280506a171c8117cc76d1aa8c01e857
+    usr: c:@F@platform_execute_task
+    signature: int (const char *)
+    file: src/platform_linux.c
+    source_sha256: e94d26e488e9fea3a7e8c075fc88365f97a6df2d38b8749a78eea51f61b2ffa5
+    evidence_sha256: af6673e7fe26d5a92ec4d89624be132452e43bc9f873946029fd74b13550d001
+    native_input_hash: af6673e7fe26d5a92ec4d89624be132452e43bc9f873946029fd74b13550d001
+    identity_status: exact
+- id: range:executor_execute_command
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _executor_execute_command
+    usr: c:@F@_executor_execute_command
+    signature: int (const char *)
+    file: src/executor.c
+  cases:
+  - when:
+      op: compare
+      left: &id100
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id101
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id100
+      operator: ==
+      right: *id101
+    effect: no_effect
+  effects:
+  - domain: process
+    role: command_sink
+    operation: command_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:system
+  review_reason: 'src/executor.c:70-92: command contributes to full_command passed to system after validation and
+    allocation. Early failures mean the sink is MAY, not unconditional; filtering is not a sanitization guarantee.'
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:@F@_executor_execute_command
+    signature: int (const char *)
+    file: src/executor.c
+    source_sha256: 0123d5f02f17d0a0905cc20fdc721bf5b4c21dda2814a475fa3b2a4723944f6e
+    evidence_sha256: a01e9fa08e3e9a8d49d5f880b6c4e6d6bd03a317bd39393c8cdf37f16de20e7e
+    native_input_hash: a01e9fa08e3e9a8d49d5f880b6c4e6d6bd03a317bd39393c8cdf37f16de20e7e
+    identity_status: exact
+- id: range:executor_fork_and_exec
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _executor_fork_and_exec
+    usr: c:@F@_executor_fork_and_exec
+    signature: int (const char *, char **)
+    file: src/executor.c
+  cases:
+  - when: &id102
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: argument
+          index: 0
+        operator: '!='
+        right:
+          kind: literal
+          value:
+      - op: compare
+        left:
+          kind: argument
+          index: 1
+        operator: '!='
+        right:
+          kind: literal
+          value:
+    effect: applies
+  - when:
+      op: not
+      item: *id102
+    effect: no_effect
+  effects:
+  - domain: process
+    role: command_sink
+    operation: command_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:execve
+  review_reason: 'src/executor.c:242-263: non-NULL program and argv can reach execve in the child; fork failure
+    and parent path do not execute it. MAY effect, no shell-escaping claim.'
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:@F@_executor_fork_and_exec
+    signature: int (const char *, char **)
+    file: src/executor.c
+    source_sha256: 0123d5f02f17d0a0905cc20fdc721bf5b4c21dda2814a475fa3b2a4723944f6e
+    evidence_sha256: c4bc290d1541dce7f0764e5251f6b56b85e7d6a4fe0832f312077ec89c7d2ff2
+    native_input_hash: c4bc290d1541dce7f0764e5251f6b56b85e7d6a4fe0832f312077ec89c7d2ff2
+    identity_status: exact
+- id: range:executor_log_message
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _executor_log_message
+    usr: c:@F@_executor_log_message
+    signature: void (const char *)
+    file: src/executor.c
+  cases:
+  - when:
+      op: compare
+      left: &id103
+        kind: argument
+        index: 0
+      operator: '!='
+      right: &id104
+        kind: literal
+        value:
+    effect: applies
+  - when:
+      op: compare
+      left: *id103
+      operator: ==
+      right: *id104
+    effect: no_effect
+  effects:
+  - domain: taint
+    role: format_sink
+    operation: format_sink
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 0
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:printf
+  review_reason: 'src/executor.c:171-196: message is copied/appended into g_log_buffer then used as printf format;
+    no sanitization takes place. The formatted bytes may include retained prior content.'
+  variants:
+  - target_id: range
+    build_context_id: 324c1e54c4d022cd40259f0a9e026616f53a00d89f9cd45bf1b4c1cdb834751c
+    usr: c:@F@_executor_log_message
+    signature: void (const char *)
+    file: src/executor.c
+    source_sha256: 0123d5f02f17d0a0905cc20fdc721bf5b4c21dda2814a475fa3b2a4723944f6e
+    evidence_sha256: 787b44f65ed74b573bb386f678610e96f5e2d2a5f4ebe34140cd8229dec622b2
+    native_input_hash: 787b44f65ed74b573bb386f678610e96f5e2d2a5f4ebe34140cd8229dec622b2
+    identity_status: exact
+- id: range:VOS_TaskCreate
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: VOS_TaskCreate
+    usr: c:@F@VOS_TaskCreate
+    signature: int (const char *, int, void *(*)(void *), void *)
+    file: src/main.c
+  cases:
+  - when:
+      op: compare
+      left: &id105
+        kind: return
+      operator: ==
+      right: &id106
+        kind: literal
+        value: 0
+    effect: applies
+  - when:
+      op: compare
+      left: *id105
+      operator: '!='
+      right: *id106
+    effect: no_effect
+  effects:
+  - domain: callback
+    role: callback_register
+    operation: callback_register
+    carrier:
+      root: argument
+      phase: pre
+      dereference: 0
+      members: []
+      index: 2
+    strength: must_under_guard
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - builtin:pthread_create
+  review_reason: 'src/main.c:444-457: return 0 means pthread_create accepted entry argument 2 and context argument
+    3. Detach is attempted but its result is discarded; this is not a join-completion or context-free promise.'
+  variants:
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    usr: c:@F@VOS_TaskCreate
+    signature: int (const char *, int, void *(*)(void *), void *)
+    file: src/main.c
+    source_sha256: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+    evidence_sha256: 28181298ca7bb0d5b4f97ba02644d14fee445f707c7a0b9213eb0b60a49589f5
+    native_input_hash: 28181298ca7bb0d5b4f97ba02644d14fee445f707c7a0b9213eb0b60a49589f5
+    identity_status: exact
+dispatchers: []
+function_pointer_bindings: []
+discovery_receipt:
+  declaration: none_known
+  benchmark_review:
+    schema: zscope.benchmark-source-review.v2
+    method: independent_source_review
+    sources:
+      CMakeLists.txt: 402fe51a8cd84500ef8a356e1fc50b1b3a133593bfe05e93303b3be428e8f002
+      include/common.h: 08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0
+      include/platform_impl.h: 56e3ce6870263dc8343116b0a19327c7a308a4f4de5d362c019612bd707aa657
+      include/task_dispatcher.h: 996b48257269b03b42b859574cc25d00da044f72b8209a13d0b031b8d92f2364
+      include/types.h: a4a3a9934956a4ee8d33b29a4ca3f6d48dda5af8c55a308aabc9695af29e4831
+      internal/executor.ph: bbbcaf09d9001342c3cc3c2f54be7ba8d3717128a4ca88cc7ec68ab5d0848f47
+      internal/lifecycle.ph: 786e01e164c2c1726c7a5f8e47893aa9f455aa0dfdb8856adc283a9718bfee14
+      internal/network.ph: 8ce44f253f2f7accfdea060049056dfbfe1d7ba9767ca050b78b37d57ca34d94
+      internal/parser.ph: d5b62709ad0961638de84c6a325763669fbaa78474295dc667e981c42809aa46
+      internal/plugin.ph: 77920150d7975305442b7d94938ac8364f49f3ad529a0ed894bc4c7b183a09fb
+      internal/types.ph: 097d27ddfe5b3942e4c945b39cf72b9d986f0f5776ebd9df88874d4f5a2dda48
+      src/demo_platform.c: 1790d0a80c03bb2e0b3083ca47bdbadcbec260d25a70674fe0cd92660347aaa4
+      src/executor.c: 0123d5f02f17d0a0905cc20fdc721bf5b4c21dda2814a475fa3b2a4723944f6e
+      src/lifecycle.c: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+      src/main.c: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+      src/network.c: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+      src/parser.c: ac18a0b881fe02504794b8326ce25aae7389624b837c4ec2390d0ecf1836d62b
+      src/platform_linux.c: e94d26e488e9fea3a7e8c075fc88365f97a6df2d38b8749a78eea51f61b2ffa5
+      src/platform_windows.c: b593e98f95ccdf1937dc3ffaae5df7a625c7e914dde05c1330fedd9d7d5459e0
+      src/plugin.c: 2a693fc1ec37b6af4229c6fe5214a8d7042a748aed34bcfbd128ded595d66bc9
+      src/utils.c: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
+    scope:
+      platform: Linux glibc, default CMake executable; all source files are hash-bound
+      positive_scope: Source-reviewed wrapper effects, returned allocation roots/members, output ownership, 
+        data-flow sinks and callback registration listed below. Each effect is a separate recall obligation.
+      outside_scope:
+      - General business-function summaries and whole-module lifecycle proofs
+      - Uncompiled Windows/demo variants
+      - Dynamic callback target sets and dispatcher branch inventories; these require per-callsite binding
+      - Interior-pointer pools and shared-registry ownership protocols that cannot be expressed faithfully by 
+        the current executable roles
+      unknown_outputs: Require independent source review; never automatically mark an unlisted valid contract 
+        false.
+      source_review:
+      - 'include/common.h and src/utils.c: every wrapper declaration and macro body'
+      - 'src/network.c and src/parser.c: returned roots, output ownership, I/O and cleanup paths'
+      - 'src/executor.c and src/platform_linux.c: allocation and sink paths'
+      - 'src/plugin.c: registry aliases, callbacks and cleanup ownership'
+      - 'src/main.c: facade forwarding, task destructor and thread submission'
+      - 'src/lifecycle.c: allocation helpers, borrowed lookups, hidden close result, interior-pointer/no-op pair
+        and shared caches'
+    negative_contracts:
+    - selector:
+        kind: function
+        name: _runtime_noop_free
+        usr: c:lifecycle.c@F@_runtime_noop_free
+        signature: void (void *)
+        file: src/lifecycle.c
+      forbidden_roles:
+      - deallocator
+      resource_family: malloc
+      reason: '2689-2691: body only casts its argument to void; it never consumes storage.'
+    - selector:
+        kind: function
+        name: _runtime_header_alloc
+        usr: c:lifecycle.c@F@_runtime_header_alloc
+        signature: void *(unsigned long)
+        file: src/lifecycle.c
+      forbidden_roles:
+      - allocator
+      - calloc
+      resource_family: malloc
+      reason: '2680-2687: returns raw+8, not a free-compatible allocation base. Interior-offset protocol is outside
+        this executable schema.'
+    - selector:
+        kind: function
+        name: _plugin_lookup
+        usr: c:@F@_plugin_lookup
+        signature: Plugin *(PluginRegistry *, const char *)
+        file: src/plugin.c
+      forbidden_roles:
+      - allocator
+      - calloc
+      resource_family: malloc
+      reason: '66-90: returns an interior borrowed Plugin slot, not newly owned heap storage.'
+    - selector:
+        kind: function
+        name: _plugin_get_by_handle
+        usr: c:@F@_plugin_get_by_handle
+        signature: Plugin *(PluginRegistry *, int)
+        file: src/plugin.c
+      forbidden_roles:
+      - allocator
+      - calloc
+      resource_family: malloc
+      reason: '213-229: returns an interior borrowed registry slot.'
+    - selector:
+        kind: function
+        name: _lifecycle_get_value
+        usr: c:@F@_lifecycle_get_value
+        signature: const char *(const char *)
+        file: src/lifecycle.c
+      forbidden_roles:
+      - allocator
+      - calloc
+      resource_family: malloc
+      reason: '135-145: returns borrowed entry->value; no allocation or ownership transfer.'
+    - selector:
+        kind: function
+        name: _find_entry_locked
+        usr: c:lifecycle.c@F@_find_entry_locked
+        signature: struct LifecycleEntry *(const char *)
+        file: src/lifecycle.c
+      forbidden_roles:
+      - allocator
+      - calloc
+      resource_family: malloc
+      reason: '58-65: borrowed list lookup.'
+    - selector:
+        kind: function
+        name: _service_find_locked
+        usr: c:lifecycle.c@F@_service_find_locked
+        signature: struct ServiceNode *(const char *)
+        file: src/lifecycle.c
+      forbidden_roles:
+      - allocator
+      - calloc
+      resource_family: malloc
+      reason: '1146-1153: borrowed registry lookup.'
+    - selector:
+        kind: function
+        name: _find_os_node_locked
+        usr: c:lifecycle.c@F@_find_os_node_locked
+        signature: struct OSNode *(const char *)
+        file: src/lifecycle.c
+      forbidden_roles:
+      - allocator
+      - calloc
+      resource_family: malloc
+      reason: '767-774: borrowed OS-node lookup.'
+    - selector:
+        kind: function
+        name: _runtime_find_shared_zone
+        usr: c:lifecycle.c@F@_runtime_find_shared_zone
+        signature: struct RuntimeMemzone *(const char *)
+        file: src/lifecycle.c
+      forbidden_roles:
+      - allocator
+      - calloc
+      resource_family: malloc
+      reason: '2608-2615: borrowed shared-zone lookup.'
+    decisions_digest: c81c8372617696cfb6422843b7712cf22147996fc9634f478f000574199fa893
+    scope_digest: 94d98a6566b20438275ddac604c23856a7be6da84d755717fd4f1342f4a377eb

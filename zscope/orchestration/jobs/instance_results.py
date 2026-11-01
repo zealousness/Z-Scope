@@ -344,6 +344,7 @@ _AUTHORITY_VALUES = frozenset(
         "verified_vulnerability",
         "rejected",
         "rejected_with_proof",
+        "rejected_with_evidence",
         "suppressed",
         "user_suppression",
     }

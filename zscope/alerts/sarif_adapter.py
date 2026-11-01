@@ -4,8 +4,9 @@ CodeQL SARIF adapter - parses SARIF v2.1.0 output into ExternalAlert format.
 
 import json
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from pathlib import Path, PureWindowsPath
+from typing import Dict, List, Optional
+from urllib.parse import unquote, urlsplit
 
 from .adapter import AlertAdapter, AlertSeverity, ExternalAlert
 
@@ -39,16 +40,26 @@ class SarifAdapter(AlertAdapter):
 
     def parse(self, source: str) -> List[ExternalAlert]:
         """解析 SARIF 文件，返回 ExternalAlert 列表。"""
-        path = Path(source)
-        if path.exists():
-            content = path.read_text(encoding="utf-8", errors="ignore")
-        else:
-            content = source
+        content = source
+        # Inline documents can exceed the filesystem's filename limit (or
+        # contain characters that are invalid in a Windows path).
+        if not source.lstrip().startswith(("{", "[")):
+            path = Path(source)
+            try:
+                is_file = path.is_file()
+            except OSError:
+                is_file = False
+            if is_file:
+                content = path.read_text(encoding="utf-8-sig")
 
         try:
             sarif = json.loads(content)
         except json.JSONDecodeError as e:
             logger.error("Failed to parse SARIF JSON: %s", e)
+            return []
+
+        if not isinstance(sarif, dict) or not isinstance(sarif.get("runs", []), list):
+            logger.error("Invalid SARIF document: expected an object with a runs array")
             return []
 
         alerts = []
@@ -133,13 +144,31 @@ class SarifAdapter(AlertAdapter):
         uri = physical_loc.get("artifactLocation", {}).get("uri", "")
         if not uri:
             return ""
-        # 去掉 file:// 前缀
-        if uri.startswith("file://"):
-            uri = uri[7:]
+        if not isinstance(uri, str):
+            return ""
+        if PureWindowsPath(uri).is_absolute():
+            return unquote(uri)
+        try:
+            parsed = urlsplit(uri)
+        except ValueError:
+            return ""
+        if parsed.scheme and parsed.scheme.lower() != "file":
+            return ""
+        uri = unquote(parsed.path)
+        if not uri:
+            return ""
+        if parsed.netloc and parsed.netloc.lower() != "localhost":
+            uri = f"//{parsed.netloc}{uri}"
+        elif parsed.scheme and len(uri) >= 3 and uri[0] == "/" and uri[2] == ":":
+            uri = uri[1:]
         # 相对路径解析
-        if self._source_root and not Path(uri).is_absolute():
+        if (
+            self._source_root
+            and not Path(uri).is_absolute()
+            and not PureWindowsPath(uri).is_absolute()
+        ):
             return str(self._source_root / uri)
-        return cast(str, uri)
+        return uri
 
     def _extract_code_flows(self, result: Dict) -> List[Dict]:
         """提取 SARIF codeFlows 为简化格式。"""

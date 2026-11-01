@@ -194,7 +194,10 @@ def predicate_errors(value: Any, *, parameter_count: int | None = None) -> list[
             not isinstance(ref["address_of"], bool)
             or (
                 ref["address_of"]
-                and (kind not in {"argument", "global"} or not ref.get("member_path"))
+                and (
+                    kind not in {"argument", "global"}
+                    or (kind == "argument" and not ref.get("member_path"))
+                )
             )
         ):
             errors.append("invalid_predicate_address_of")
@@ -282,8 +285,9 @@ def _operand(
         return None
     if re.fullmatch(r"[-+]?\d+", name):
         return int(name)
-    if re.fullmatch(r"&[A-Za-z_]\w*", name):
-        return facts.get(name[1:], object())
+    # A slot's value is not its address. Only the exact expression lookup
+    # above may supply address identity; neither a null pointee nor a fresh
+    # Python object proves equality or inequality between caller addresses.
     return UNKNOWN
 
 

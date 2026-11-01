@@ -30,7 +30,7 @@ def _value_name(value: Dict[str, Any]) -> str:
 class FlowQueryService:
     """Build bounded evidence paths without treating backend findings as data flow."""
 
-    FACT_VERSION = "zscope.program-events.v5"
+    FACT_VERSION = "zscope.program-events.v7"
 
     def __init__(self, code_index: Any, catalog: SymbolCatalog) -> None:
         self.code_index = code_index
@@ -957,7 +957,10 @@ class FlowQueryService:
     def _location_matches(location: Dict[str, Any], selector: Dict[str, Any]) -> bool:
         expected_file = normalize_project_path(selector.get("file_path"))
         actual_file = normalize_project_path(location.get("file"))
-        return int(location.get("line") or 0) == int(selector.get("line") or 0) and (
+        return (
+            selector.get("column") is None
+            or location.get("column") == selector["column"]
+        ) and int(location.get("line") or 0) == int(selector.get("line") or 0) and (
             not expected_file
             or actual_file == expected_file
             or actual_file.endswith("/" + expected_file)

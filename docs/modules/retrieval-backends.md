@@ -81,6 +81,8 @@ tests:
 
 # 代码检索与后端
 
+批量 native 工具记录依赖和 include 查询路径时先解析实际符号链接，再处理父目录语义；不能词法消去 `/lib` 等符号链接后的 `..`。usr-merged Linux 上 GCC 的 C++ 系统头搜索路径否则会被错误登记成 `/include/...`，使真实依赖摘要无法核验。尚不存在的配置搜索根按当前存在的前缀解析，收据另保留原拼写，不伪造已存在文件。此修复须实际重建工具，旧二进制不包含修复。
+
 ## 职责与非职责
 
 本子系统负责把 C/C++ 或 Java 源码、编译数据库和外部分析器转换为可查询事实：函数、类型、调用边、AST/CFG、间接调用、指针/值流、结构/信号 provider 和缓存状态。`CodeIndex` 为上层提供统一门面；C/C++ 使用 regex、Clang、Unified，Java 使用 java_source 或 java_unified。
@@ -96,6 +98,10 @@ tests:
 KnowledgeDB 的调用边查询枚举全部获取站点，不以同函数出现释放函数名过滤。名称查询仍可供检索使用；泄漏判断交由共享对象事实和 Validator。`claim_paths.py` 独立检查报告的操作是否能到达报告的观察点，不从互斥分支拼接锁状态，也不推断隐藏的加锁返回值。
 
 ## 主入口和数据流
+
+KnowledgeDB 的大规模可达函数过滤与编译命令归属查询保持 SQLite 3.8.10.2 兼容，不依赖 JSON1。查询不写临时表，可在 query-only 连接使用；大量命令标识按参数上限分批处理，仍返回每条命令的全部构建上下文。
+
+bitcode 编译以源码编译前后的文件身份、修改/变更时间及摘要核对当前性，允许原先已在未来的源码时间戳，但同内容改写并恢复 mtime 仍失效。该校验版本进入产物指纹；编译后才发现的头文件继续使用保守时间检查。同一源码因多个最终目标产生多条编译命令、且所得 bitcode 字节完全相同时，SVF 合并只向 `llvm-link` 传一份物理内容，但 link receipt 保留全部逻辑输入和 command identity，相关信号按多变体归属；不同源码或不同 bitcode 的重名定义仍失败，不能靠去重隐藏真实链接冲突。合并前若发现仍有强外部符号重复，则直接记录 `observed_link_target_required` 并拒绝构造跨最终目标的虚假链接；fast 仍执行本地/TU 静态分析，但 SVF/backend degraded 与 link coverage gap 会阻止 formal qualification。balanced/deep 不因此放宽后端要求。
 
 - `CodeIndex` 负责源码发现、缓存、后端创建和统一查询接口。
 - 函数查询的名称、限定名、模板变体和签名在内存索引构建时建立倒排索引；未命中及同名歧义查询只访问对应候选，不重新遍历全部函数。插入、替换、重建与关闭同步维护该索引；完整身份、候选排序、文件约束和歧义语义保持一致。该索引不属于可淘汰的查询缓存。
@@ -222,7 +228,9 @@ KnowledgeDB 的 IR 语句身份包含列号和事件序号，升级保留既有�
 
 语义建模阶段通过线程隔离的 `semantic_modeling_context` 读取完整 callee、宏、全局对象和类型定义，绕过工具展示用的数量与定义字节限制。作用域退出后恢复原查询预算；真实后端缺失或截断仍作为 partial 覆盖记录。
 
-宏体中的标识符只是检索线索；全局载体由索引中的声明或定义绑定，排除其他翻译单元的静态对象，歧义保持未知。无参锁宏因此携带实际全局对象进入建模及工作簿发布，不能从宏名称或描述推断锁身份。
+宏体中的标识符只是检索线索；discovery 只有取得当前 native `macro_reference` 的精确定义位置、USR 与 BuildContext 后才生成候选。全局载体由索引中的声明或定义绑定，排除其他翻译单元的静态对象，歧义保持未知。函数指针同样要求 exact slot/callsite/type/USR 与当前 SVF command attribution；源码子串中的 pointer name 不能授权目标。确认结果进入项目语义 YAML，不能从宏名称或描述推断锁身份。
+
+项目原语 discovery 枚举所有精确函数实例，不限入口可达范围，并复用项目级 `FunctionFactSummary`。直接/多层 wrapper 在真实 link group 调用图的 SCC 上传播；各 TU 仍保留自身 BuildContext，unknown build 不作通配。Dispatcher 候选记录精确 selector、分支 guard/key、handler USR 与 CFG 证据，必须人工确认后才能供 balanced/deep 扩展既有检索。
 
 契约源码组合包含条件表达式中的接口调用，并区分每次调用的结果。内部锁配对按成功路径检查，失败即返回的路径不等于对外持锁；无法解析的短路副作用不视为完整覆盖。声明左值、成员左值和输出参数分别解析，防止返回状态别名或载体路径丢失。
 
@@ -275,13 +283,17 @@ native v5 的附加 `zscope.c-linkage.v1` 提供函数 canonical signature、外
 
 ## 2026-10-15 受限逐实例符号消费者
 
-`CodeIndex.get_compilation_facts` 按精确 BuildContext 读取 native 成员收据；`ScopedCodeIndex` 逐次核对当前构建依赖和完整 native 入口身份，再解析 callee/caller 的唯一 USR、文件与位置。缺少 owner 文件、导航别名不符、歧义重载、外来 callee_file 或不完整事实均返回空与缺口。真实头文件变化会撤回已有调用、宏和类型缓存。默认索引的其他导航 API 不因此获得逐实例证明权限。
+`CodeIndex.get_compilation_facts` 按精确 BuildContext 读取 native 成员收据；`ScopedCodeIndex` 逐次核对当前构建依赖和完整 native 入口身份，再解析 callee/caller 的唯一 USR、文件与位置。宏调用的 AST callee 是展开后的 wrapper，因此 scoped program facts 还携带同一 owner 的精确 `macro_reference` 名称、USR 和 BuildContext；规则用该收据把源码中 `LOCK(x)`/`SAFE_FREE(x)` 绑定到 confirmed macro contract，不从名称猜测。缺少 owner 文件、导航别名不符、歧义重载、外来 callee_file 或不完整事实均返回空与缺口。真实头文件变化会撤回已有调用、宏和类型缓存。默认索引的其他导航 API 不因此获得逐实例证明权限。
 
-当前只提供已有收据能核验的引用；类型完整定义、复杂图/链接与其余消费端的共享调用链尚未闭合。已供给消费者仍保留保守 blocked 标签，并另记 served_consumers；这些标签不等于完整迁移或全扫描覆盖。真实 native C/C++ fixture 与受控模型回归不能代替真实项目效果验收。
+当前只提供已有收据能核验的引用；类型完整定义、复杂图/链接与其余消费端的共享调用链尚未闭合。精确调用边、函数清单以及同 TU 唯一 native owner 的完整正文记入 `served_consumers`，不再仅因消费成功而保留 blocked 标签；Graph 缓存以 BuildContext 为实例身份，外部/系统调用无项目正文时直接停止项目函数遍历。歧义、跨 TU 无链接依据、陈旧或缺失收据仍明确 blocked/incomplete。真实 native C/C++ fixture 与受控模型回归不能代替真实项目效果验收。
 
 普通 C/C++ `ScanSessionRunner` 已按实际 `EntryInstancePlan` 执行这些实例：索引就绪后枚举精确 `(BuildContext, USR)`，可解析时逐实例运行真实 Analyzer，并在冻结台账上集中运行一次扫描级验证；实例间共用候选台账、验证缓存和裁决队列，验证按唯一精确实例选择 scoped index，且不构建项目级语义模型。Java 与无实例场景保留各自 `legacy` 路径；C/C++ 若枚举不到可核验实例，报告 `instance_execution.mode=gap` 并保持 incomplete，不退回按名称分析未知构建。全建模、SVF、链接、全部消费端和逐实例 durable 仍未完成，本切片不代表全项目扫描覆盖。
 
-报告对计划与执行分开计量：`entry_instances` 的 `planned_instances` 是枚举出的实例数，`scheduled_instances`（未接入实例分析时为 null）是已提交调度的实例数，`instance_analysis` 的 `analyzed_instances` 才是状态为 analyzed 的实例数，另有 `instance_scope_complete`、`consumer_scope_complete`、`scan_coverage_complete`。本次实际分析和经作业队列从可信 checkpoint 复用而非重新分析是不同事实，计划枚举不等于已调度，已调度不等于已分析，复用也不等于本轮执行。`metadata.build_coverage` 记录实际提取覆盖与仍存缺口，其 `extraction_complete` 不能解释为 `scan_complete`，后者保持 false，不能据此承诺全项目扫描完成。按实例固定的 `ScopedCodeIndex` 只把 `get_build_contexts` 固定到一个上下文，覆盖统计改走 `coverage_index()` 读取未包裹索引，并标注 `view="instance"` 与 `pinned_build_context_id`；实例枚举保持不变是实例语义“恰好一个当前构建”的前提，因此不能靠放宽枚举来修覆盖统计。被计数的每个实例还会按 `context_input_status` 复核当前性：`status="indexed"` 只说明提取成功，输入已陈旧时记入 `uncurrent_instances` 并追加 `stale_compilation_instance_inputs`，没有收据的摘要记 `instance_input_status[build]="unmeasured"`，都不再冒充 current。一次覆盖统计共用一个 `InputValidator`，公共头文件只摘要一次。
+C/C++ fast 在冻结实例语义时额外为 compile database 中每个未被入口计划覆盖的当前 BuildContext 选择一个精确 `program_function` owner，因而入口外 TU 也进入静态发现。函数清单来自该上下文的 native owner 收据，执行去重只使用 `(BuildContext, USR)`，不能使用展示 identity、路径拼写或裸函数名。标准 API 效果按本构建真实 call receipt、系统头物理文件与摘要、USR、ABI 签名、target、native 工具及共享库收据授权；项目同名 shadow、用户头、过期头/工具和未知身份均拒绝。当前跨 TU 图仍只由真实 link record 授权，缺失记录会使 fast formal qualification 为 false。
+
+fast 缓存不另造事实：函数命中身份包含完整当前 program facts 与 BuildContext 收据、有效规则/实现摘要、RuntimeSpec 和实例语义摘要；TU 图键再包含本构建全部函数键和真实 link receipt，因此变化函数只直接重算自身、本 TU 图摘要随依赖前沿失效。候选取出后仍重新绑定本轮 `analysis_unit_id`、可达性、BuildContext 和 Validator 生命周期。缓存目录必须留在工程根内且路径组件不能是符号链接；读取失败、内容不匹配或无法原子写入均退回本轮分析。跨 TU SCC 和 backend/SVF 的持久增量边界尚未闭合，不能借函数/TU 图缓存宣称这些能力热命中。
+
+报告对计划与执行分开计量：`entry_instances` 的 `planned_instances` 是枚举出的实例数，`scheduled_instances`（未接入实例分析时为 null）是已提交调度的实例数，`instance_analysis` 的 `analyzed_instances` 才是状态为 analyzed 的实例数，另有 `instance_scope_complete`、`consumer_scope_complete`、`scan_coverage_complete`。本次实际分析和经作业队列从可信 checkpoint 复用而非重新分析是不同事实，计划枚举不等于已调度，已调度不等于已分析，复用也不等于本轮执行。`metadata.build_coverage` 记录实际提取覆盖与仍存缺口，其 `extraction_complete` 不能解释为 `scan_complete`，后者保持 false，不能据此承诺全项目扫描完成。按实例固定的 `ScopedCodeIndex` 只把 `get_build_contexts` 固定到一个上下文，覆盖统计改走 `coverage_index()` 读取未包裹索引，并标注 `view="instance"` 与 `pinned_build_context_id`；实例枚举保持不变是实例语义“恰好一个当前构建”的前提，因此不能靠放宽枚举来修覆盖统计。被计数的每个实例还会按 `context_input_status` 复核当前性：`status="indexed"` 只说明提取成功，输入已陈旧时记入 `uncurrent_instances` 并追加 `stale_compilation_instance_inputs`，没有收据的摘要记 `instance_input_status[build]="unmeasured"`，都不再冒充 current。覆盖检查会按各 BuildContext 自己的 `search_excludes` 分组复用 `InputValidator`：同组公共头文件只摘要一次，但不能用另一个上下文不同的排除集去判定当前实例过期。
 
 ### Native 源码根与导航路径
 

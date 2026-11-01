@@ -26,12 +26,13 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from .config import ConfigLoader
 from .preparation import prepare_project
 from .v2 import PUBLIC_CONFIG_VERSION_V3, _expand_env, _resolve_config_path, load_yaml_unique
 from .v3 import DECLARED_ONLY, WIRED, compose_effective_config, parse_user_config_v3
+from .project_semantics import load_project_semantics, semantics_readiness
 
 V3_PREPARATION_SCHEMA = "zscope.config-v3-preparation.v1"
 MULTI_TARGET_REASON = "multi_target_execution_unwired"
@@ -152,11 +153,63 @@ def _version3_block(model: Any, outputs: List[Dict[str, Any]], *, multi: bool) -
             }
         )
 
+    semantics_payload: Dict[str, Any]
+    semantics_reasons: List[Dict[str, str]] = []
+    semantics_path = model.project.semantics_file
+    if model.project.language == "java":
+        semantics_payload = {"applicable": False, "ready": True, "path": None, "reasons": []}
+    elif semantics_path is None:
+        semantics_reasons.append(
+            {
+                "code": "project_semantics_not_configured",
+                "message": "C/C++ requires project.semantics_file before discovery or scanning.",
+            }
+        )
+        semantics_payload = {
+            "applicable": True,
+            "ready": False,
+            "path": None,
+            "reasons": list(semantics_reasons),
+        }
+    else:
+        try:
+            readiness = semantics_readiness(
+                load_project_semantics(semantics_path), project_root=model.project.root
+            )
+        except (OSError, ValueError) as exc:
+            semantics_reasons.append(
+                {"code": "project_semantics_invalid", "message": str(exc)}
+            )
+            semantics_payload = {
+                "applicable": True,
+                "ready": False,
+                "path": str(semantics_path),
+                "reasons": list(semantics_reasons),
+            }
+        else:
+            from .semantics_workflow import workflow_status
+
+            workflow = workflow_status(
+                load_project_semantics(semantics_path), model.project.root, model.config_path
+            )
+            semantics_payload = {
+                "applicable": True,
+                "path": str(semantics_path),
+                **readiness.to_dict(),
+                "workflow": workflow,
+                "ready": workflow["ready"],
+            }
+            semantics_reasons.extend(
+                {"code": "project_semantics_not_ready", "message": reason}
+                for reason in (workflow["reasons"] or ([] if workflow["ready"] else ["请完成项目原语发现与人工审阅。"]))
+            )
+
     return {
         "schema": V3_PREPARATION_SCHEMA,
         "project_root": str(model.project.root),
         "platform": model.project.platform,
         "targets": targets,
+        "project_semantics": semantics_payload,
         "preset": {
             "preset": model.scan.preset,
             "mapped_depth": model.scan.mapped_depth,
@@ -199,12 +252,19 @@ def _version3_block(model: Any, outputs: List[Dict[str, Any]], *, multi: bool) -
             # execution block above for the exact scope.
             "stop_window_scheduler_wired": True,
         },
-        "start_capability": _start_capability(outputs, multi=multi),
+        "start_capability": _start_capability(
+            outputs, multi=multi, semantic_reasons=semantics_reasons
+        ),
     }
 
 
-def _start_capability(outputs: List[Dict[str, Any]], *, multi: bool) -> Dict[str, Any]:
-    reasons: List[Dict[str, str]] = []
+def _start_capability(
+    outputs: List[Dict[str, Any]],
+    *,
+    multi: bool,
+    semantic_reasons: Sequence[Dict[str, str]] = (),
+) -> Dict[str, Any]:
+    reasons: List[Dict[str, str]] = [dict(reason) for reason in semantic_reasons]
     if multi:
         reasons.append(
             {

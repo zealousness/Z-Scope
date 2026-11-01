@@ -174,6 +174,21 @@ class BatchIndexer:
             )
         self.validation_excludes.append(owner.parent / "clang_type_refs_report.json")
         self.validation_excludes.append(self.root / ".cache" / "clangd")
+        # The ordinary CLI publishes these fixed report names in the project
+        # root after the native input snapshot has been taken.  They are
+        # Z-SCOPE outputs, not compiler inputs; allowing their first creation
+        # to alter include-search membership would force an unrelated rebuild
+        # on the next scan.  Keep this list exact -- arbitrary report-like
+        # names must remain visible because C/C++ may include any filename.
+        self.validation_excludes.extend(
+            self.root / name
+            for name in (
+                "report.json",
+                "report.md",
+                "zscope_batch_report.json",
+                "zscope_batch_report.md",
+            )
+        )
         if backend._compile_commands_path:
             self.validation_excludes.append(
                 Path(backend._compile_commands_path).parent / ".cache" / "clangd"
@@ -250,7 +265,9 @@ class BatchIndexer:
                 and manifest.get("dependencies_complete")
                 and self.validator.dependencies(manifest.get("dependencies"))
                 and self.validator.searches(manifest.get("search_directories"))
-                and include_probes_current(manifest.get("include_probes"))
+                and include_probes_current(
+                    manifest.get("include_probes"), manifest.get("include_lookups")
+                )
                 and file_digest(artifact) == manifest.get("artifact_sha256")
             ):
                 return {**manifest, "artifact": str(artifact), "reused": True}
@@ -401,7 +418,8 @@ class BatchIndexer:
             dependencies
         )
         probes = footer.get("include_probes")
-        complete = complete and include_probes_current(probes)
+        lookups = footer.get("include_lookups")
+        complete = complete and include_probes_current(probes, lookups)
         search_roots = include_search_roots(job["arguments"], Path(job["directory"]), dependencies)
         search_roots.extend(Path(path) for path in footer.get("search_directories", []))
         searches = self.validator.directories(search_roots)
@@ -416,7 +434,7 @@ class BatchIndexer:
             "dependencies": dependencies,
             "dependencies_complete": complete,
             "include_probes": probes,
-            "include_lookups": footer.get("include_lookups"),
+            "include_lookups": lookups,
             "target_values": target_values,
             "search_directories": searches,
             "metrics": process.metrics,
@@ -760,7 +778,9 @@ class BatchIndexer:
                     or not final_validator.searches(p["search_directories"])
                     or (
                         p["dependencies_complete"]
-                        and not include_probes_current(p.get("include_probes"))
+                        and not include_probes_current(
+                            p.get("include_probes"), p.get("include_lookups")
+                        )
                     )
                     for p in packages.values()
                 ):
@@ -906,21 +926,41 @@ class BatchIndexer:
         for record in self._rows(stage, kinds=("function",)):
             if not record.get("is_declaration") and record.get("usr"):
                 definitions[str(record["usr"])] = record
-        existing = {
-            str((self.root / row["file_path"]).resolve()): row for row in stage.get_all_tus()
-        }
-        for source, row in existing.items():
+        existing: Dict[str, List[Dict[str, Any]]] = {}
+        for row in stage.get_all_tus():
+            source = str((self.root / row["file_path"]).resolve())
+            existing.setdefault(source, []).append(row)
+        for source, rows in existing.items():
             # File-owned query rows use project-relative paths. Older batch
-            # versions registered absolute TU paths, so purge missed root-level
-            # files (and retained old call sites after a line move).
+            # versions and clangd fallback registered absolute TU paths.  An
+            # interrupted/hot run can therefore leave both spellings for the
+            # same source.  Coalesce those identities before normalization so
+            # updating the absolute row cannot collide with the relative row's
+            # UNIQUE(file_path) key.
             relative = self._relative(source)
-            if row["file_path"] != relative:
+            if source not in hashes:
+                for row in rows:
+                    stage.delete_tu(int(row["id"]), commit=False)
+                continue
+            keeper = next(
+                (row for row in rows if str(row.get("file_path") or "") == relative),
+                min(rows, key=lambda row: int(row["id"])),
+            )
+            duplicates = [row for row in rows if int(row["id"]) != int(keeper["id"])]
+            for row in duplicates:
+                stage.delete_tu(int(row["id"]), commit=False)
+            if duplicates:
+                # Duplicate cleanup removes file-owned/path-keyed projections;
+                # force the survivor through the normal exact native republish.
+                stage._conn.execute(
+                    "UPDATE translation_units SET status='pending' WHERE id=?",
+                    (keeper["id"],),
+                )
+            if keeper["file_path"] != relative:
                 stage._conn.execute(
                     "UPDATE translation_units SET file_path=? WHERE id=?",
-                    (relative, row["id"]),
+                    (relative, keeper["id"]),
                 )
-            if source not in hashes:
-                stage.delete_tu(int(row["id"]))
         for source, digest in hashes.items():
             if source in fallback:
                 continue

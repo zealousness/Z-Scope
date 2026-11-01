@@ -165,7 +165,7 @@ def _uncertain_issue(**overrides) -> dict:
     return issue
 
 
-def test_uncertain_verdict_confirms_under_high_confidence_band() -> None:
+def test_uncertain_verdict_never_confirms_from_high_confidence_or_score() -> None:
     pipeline = ValidationPipeline(FakeUserConfig(), uncertain_confirm_threshold=0.9)
     issue = _uncertain_issue()
 
@@ -176,12 +176,12 @@ def test_uncertain_verdict_confirms_under_high_confidence_band() -> None:
         score_data=_score(0.8),
     )
 
-    assert outcome.report_bucket == "issues"
-    assert outcome.memory_status == "validated"
-    assert issue["candidate_disposition"] == "confirmed"
-    assert issue["finding_kind"] == "heap_double_free"
-    assert issue["promotion_reason"] == "model_high_confidence_confirmation"
-    assert issue["confirmed_via"] == "high_confidence_band"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["score_role"] == "ranking_only"
+    assert "promotion_reason" not in issue
+    assert "confirmed_via" not in issue
 
 
 def test_uncertain_verdict_stays_needs_review_when_rung_disabled() -> None:

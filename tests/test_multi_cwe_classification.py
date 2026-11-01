@@ -98,6 +98,61 @@ def test_ensure_issue_cwes_keeps_unknown_categories_untouched() -> None:
     assert "cwes" not in issue
 
 
+def test_uninitialized_pointer_rule_declares_variable_and_pointer_cwes() -> None:
+    descriptor = RuleCatalog.builtin(skill_languages=SKILL_LANGUAGES).get(
+        "clang_cfg_pointer_may_be_uninitialized_before_use"
+    )
+
+    assert descriptor is not None
+    assert descriptor.revision == 7
+    assert descriptor.cwes == ("CWE-824", "CWE-457")
+
+
+def test_uninitialized_pointer_manifestation_matches_compound_truth_cwe() -> None:
+    truth = {
+        "benchmark": "unit",
+        "vulnerabilities": [
+            {
+                "id": "T-UNINIT",
+                "cwe": "CWE-401/CWE-457",
+                "category": "partial_resource_leak",
+                "file": "src/lifecycle.c",
+                "function": "prepare_retry",
+                "line": 40,
+                "end_line": 55,
+            }
+        ],
+    }
+    report = {
+        "issues": [
+            {
+                "candidate_uid": "C-UNINIT",
+                "candidate_disposition": "confirmed",
+                "category": "uninitialized_pointer",
+                "defect_class": "uninitialized_pointer",
+                "cwe": "CWE-824",
+                "cwes": ["CWE-824", "CWE-457"],
+                "file": "src/lifecycle.c",
+                "function": "prepare_retry",
+                "line": 47,
+                "evidence_pack": {
+                    "sink": {
+                        "file": "src/lifecycle.c",
+                        "function": "prepare_retry",
+                        "line": 47,
+                        "operation": "return tag[0]",
+                    }
+                },
+            }
+        ]
+    }
+
+    score = score_report(report, truth)
+
+    assert score["true_positives"] == 1
+    assert score["false_positives"] == 0
+
+
 def _sink(file: str, line: int, operation: str = "memcpy") -> dict:
     return {"file": file, "line": line, "operation": operation}
 
@@ -152,6 +207,18 @@ def test_same_site_outcomes_aggregate_with_cwe_and_category_union() -> None:
     assert alias["candidate_disposition"] == "deduplicated_alias"
     assert alias["aggregation_uid"] == primary["aggregation_uid"]
     assert alias["aggregation_primary_candidate_uid"] == "C2"
+
+
+def test_same_site_confirmed_outcome_remains_primary_over_review_observation() -> None:
+    confirmed = _outcome("CONFIRMED", severity="medium")
+    review = _outcome("REVIEW", disposition="needs_review", severity="critical")
+
+    projection = project_issue_aggregation([review, confirmed])
+    by_uid = {item["candidate_uid"]: item for item in projection.items}
+
+    assert by_uid["CONFIRMED"]["candidate_disposition"] == "confirmed"
+    assert by_uid["REVIEW"]["candidate_disposition"] == "deduplicated_alias"
+    assert by_uid["REVIEW"]["aggregation_primary_candidate_uid"] == "CONFIRMED"
 
 
 def test_aggregation_respects_sink_line_tolerance_and_function_boundary() -> None:

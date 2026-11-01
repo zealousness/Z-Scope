@@ -96,8 +96,6 @@ def _v2_config(root: Path) -> dict:
             }
         },
         "project": {
-            "root": str(root),
-            "source_root": ".",
             "language": "c_cpp",
             "entry_function": "main",
             "include_paths": ["include"],
@@ -127,7 +125,7 @@ def test_structured_config_round_trips_yaml_document(tmp_path: Path, monkeypatch
 
     assert payload["config"]["project"]["entry_function"] == "main"
     assert payload["config"]["indexing"]["backend"] == "regex"
-    assert "Web UI 结构化配置编辑器" in (tmp_path / "zscope.yaml").read_text(encoding="utf-8")
+    assert "本文件由结构化配置编辑器生成" in (tmp_path / "zscope.yaml").read_text(encoding="utf-8")
 
 
 def test_workbook_import_normalizes_uploaded_xlsx(tmp_path: Path) -> None:
@@ -749,11 +747,11 @@ def test_source_snippet_service_resolves_only_configured_roots(tmp_path: Path) -
     project_config = type(
         "ProjectConfig",
         (),
-        {"project_root": tmp_path, "source_root": source_root, "include_paths": []},
+        {"project_root": tmp_path, "include_paths": []},
     )()
     service = SourceSnippetService(project_config)
 
-    status, payload = service.snippet_payload("path=demo.c&start=2&end=2&context=0")
+    status, payload = service.snippet_payload("path=src/demo.c&start=2&end=2&context=0")
 
     assert status == 200
     assert payload["lines"] == [{"no": 2, "text": "int b;"}]
@@ -841,7 +839,6 @@ def test_cpg_service_starts_async_build_when_backend_supports_it(tmp_path: Path)
         "ProjectConfig",
         (),
         {
-            "source_root": tmp_path / "src",
             "project_root": tmp_path,
             "compile_commands_path": tmp_path / "compile_commands.json",
         },
@@ -855,7 +852,7 @@ def test_cpg_service_starts_async_build_when_backend_supports_it(tmp_path: Path)
     assert status == 200
     assert payload == {"success": True, "status": "building"}
     assert calls["args"] == (
-        str(tmp_path / "src"),
+        str(tmp_path),
         str(tmp_path),
         str(tmp_path / "compile_commands.json"),
     )

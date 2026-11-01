@@ -574,7 +574,6 @@ def _session_config(tmp_path: Path):
         analysis=AnalysisConfig(snapshot_dir=str(tmp_path / ".zscope_snapshots")),
         project=ProjectConfig(
             project_root=tmp_path,
-            source_root=tmp_path,
             compile_commands_path=tmp_path / "compile_commands.json",
         ),
     )

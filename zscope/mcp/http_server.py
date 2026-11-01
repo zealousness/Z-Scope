@@ -167,6 +167,8 @@ class ZScopeMcpHttpHandler(BaseHTTPRequestHandler):
 
     def _handle_payload(self, payload: JsonRpcPayload) -> Optional[JsonRpcPayload]:
         if isinstance(payload, list):
+            if not payload:
+                return jsonrpc_error(None, -32600, "JSON-RPC batch must not be empty")
             responses: List[Dict[str, Any]] = []
             for item in payload:
                 response = handle_jsonrpc_request(

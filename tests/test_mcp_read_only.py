@@ -30,7 +30,7 @@ def project(root, *, indexed=False, language="c_cpp"):
                 "api_key": "unused",
             }
         },
-        "project": {"root": str(root), "source_root": ".", "language": language},
+        "project": {"language": language},
         "scan": {"task": ""},
         "indexing": {"backend": "unified" if language == "c_cpp" else "java_unified"},
         "concurrency": {

@@ -303,7 +303,12 @@ def test_formal_runner_routes_every_scan_phase_through_executor(
             log_path: Path,
             accepted_returncodes: tuple[int, ...] = (0,),
         ) -> SimpleNamespace:
-            del command, accepted_returncodes
+            del accepted_returncodes
+            if phase in {"health", "index", "scan"}:
+                option = "--config" if phase == "health" else "-c"
+                config = Path(command[command.index(option) + 1])
+                assert config.parent == Path("/zscope-cache/project")
+                assert (self.cache / "project" / config.name).is_file()
             phases.append(phase)
             log_path.write_text("ok\n", encoding="utf-8")
             if phase == "scan":
@@ -325,11 +330,10 @@ def test_formal_runner_routes_every_scan_phase_through_executor(
         (destination / "demo.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
         return benchmark_runner.scan_input_manifest(destination)
 
-    def write_config(
-        _spec: Any, project: Path, path: Path, *, scan_depth: str
-    ) -> dict[str, Any]:
+    def write_config(_spec: Any, project: Path, path: Path, *, scan_depth: str) -> dict[str, Any]:
         assert scan_depth == "fast"
-        raw = {"config_version": 2, "project": {"root": str(project), "source_root": "."}}
+        assert path.parent == project
+        raw = {"config_version": 2, "project": {"language": "c_cpp"}}
         path.write_text(benchmark_runner.yaml.safe_dump(raw), encoding="utf-8")
         return raw
 
@@ -410,7 +414,15 @@ def test_formal_runner_routes_every_scan_phase_through_executor(
         spec, run_dir, 1, mode="formal", workspace=workspace
     )
 
-    assert phases == ["build-configure", "build", "health", "index", "scan"]
+    assert phases == [
+        "build-configure",
+        "build",
+        "link-record",
+        "semantics-prepare",
+        "health",
+        "index",
+        "scan",
+    ]
     assert len(host_commands) == 1
     assert "_score" in host_commands[0]
     assert summary["isolation"]["execution_verified"] is True

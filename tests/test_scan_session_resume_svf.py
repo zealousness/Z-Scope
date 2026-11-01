@@ -28,7 +28,6 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         analysis=AnalysisConfig(snapshot_dir=str(tmp_path / ".zscope_snapshots")),
         project=ProjectConfig(
             project_root=tmp_path,
-            source_root=tmp_path,
             compile_commands_path=tmp_path / "compile_commands.json",
         ),
     )
@@ -120,7 +119,7 @@ class _ResumeCodeIndex:
         }
 
 
-def test_diff_repo_root_defaults_to_source_root(tmp_path: Path) -> None:
+def test_diff_repo_root_defaults_to_the_only_project_root(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     source_root = project_root / "src"
     source_root.mkdir(parents=True)
@@ -131,13 +130,14 @@ def test_diff_repo_root_defaults_to_source_root(tmp_path: Path) -> None:
         analysis=AnalysisConfig(snapshot_dir=str(project_root / ".zscope_snapshots")),
         project=ProjectConfig(
             project_root=project_root,
-            source_root=source_root,
+            include_paths=["src"],
         ),
     )
 
     runner = ScanSessionRunner(cfg, diff_base="base")
 
-    assert runner.diff_repo_root == source_root.resolve()
+    assert runner.diff_repo_root == project_root.resolve()
+    assert cfg.project.include_paths == [source_root.resolve()]
 
 
 def test_diff_repo_root_can_be_overridden(tmp_path: Path) -> None:
@@ -277,6 +277,39 @@ def test_default_svf_scope_uses_active_entries(tmp_path: Path) -> None:
     assert captured["entries"] == ["api_b"]
 
 
+def test_fast_continues_after_svf_failure_and_records_gap(tmp_path: Path) -> None:
+    runner = ScanSessionRunner(_config(tmp_path), resume=False)
+
+    class FakeCodeIndex:
+        def run_svf(self, entries):
+            raise RuntimeError("configured unified backend failed SVF enrichment")
+
+    state = {"code_index": FakeCodeIndex()}
+
+    runner._ensure_svf_for_entries(state, [FunctionEntry("api")])
+
+    assert state["svf_enrichment"] == {
+        "status": "failed",
+        "reason": "RuntimeError",
+        "detail": "configured unified backend failed SVF enrichment",
+    }
+
+
+def test_balanced_keeps_svf_failure_fatal(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.scan.depth = "balanced"
+    runner = ScanSessionRunner(config, resume=False)
+
+    class FakeCodeIndex:
+        def run_svf(self, entries):
+            raise RuntimeError("configured unified backend failed SVF enrichment")
+
+    state = {"code_index": FakeCodeIndex()}
+
+    with pytest.raises(RuntimeError, match="failed SVF enrichment"):
+        runner._ensure_svf_for_entries(state, [FunctionEntry("api")])
+
+
 def test_interrupted_entry_names_are_missing_result_entries(tmp_path: Path) -> None:
     runner = ScanSessionRunner(_config(tmp_path), resume=False)
     entries = [
@@ -301,6 +334,23 @@ def test_interrupted_entry_names_accept_materialized_java_entry(tmp_path: Path) 
     missing = runner._interrupted_entry_names(
         [entry],
         {ParallelAnalyzer._entry_result_key(entry): object()},
+    )
+
+    assert missing == []
+
+
+def test_interrupted_entry_names_accept_instance_scoped_result_key(tmp_path: Path) -> None:
+    runner = ScanSessionRunner(_config(tmp_path), resume=False)
+    entry = FunctionEntry(
+        "api_a",
+        file_path="src/api.c",
+        signature="int api_a(void)",
+    )
+    entry_key = ParallelAnalyzer._entry_result_key(entry)
+
+    missing = runner._interrupted_entry_names(
+        [entry],
+        {f"target:command:context::{entry_key}": object()},
     )
 
     assert missing == []

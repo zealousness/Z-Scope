@@ -189,33 +189,33 @@ def project_finding_roots(
                 ).hexdigest()[:32]
             )
             attached_primary["finding_root_version"] = FINDING_ROOT_VERSION
-            primary["finding_root_uid"] = root_uid
+            attached_primary["finding_root_uid"] = root_uid
         subjects = sorted(
             {
                 value
                 for value in [
-                    *list(primary.get("affected_subjects") or []),
+                    *list(attached_primary.get("affected_subjects") or []),
                     *[_subject_identity(alias) for alias in aliases],
                 ]
                 if value
             }
         )
-        primary["affected_subjects"] = subjects
-        primary["finding_root_alias_uids"] = _unique_strings(
-            list(primary.get("finding_root_alias_uids") or [])
+        attached_primary["affected_subjects"] = subjects
+        attached_primary["finding_root_alias_uids"] = _unique_strings(
+            list(attached_primary.get("finding_root_alias_uids") or [])
             + [
                 str(alias.get("candidate_uid") or alias.get("validation_cluster_uid") or "")
                 for alias in aliases
             ]
         )
-        primary["finding_root_alias_count"] = int(
-            primary.get("finding_root_alias_count") or 0
+        attached_primary["finding_root_alias_count"] = int(
+            attached_primary.get("finding_root_alias_count") or 0
         ) + len(aliases)
-        primary["occurrence_uids"] = _unique_strings(
-            list(primary.get("occurrence_uids") or [])
+        attached_primary["occurrence_uids"] = _unique_strings(
+            list(attached_primary.get("occurrence_uids") or [])
             + [occurrence for alias in aliases for occurrence in _occurrence_uids(alias)]
         )
-        primary["occurrence_count"] = len(primary["occurrence_uids"])
+        attached_primary["occurrence_count"] = len(attached_primary["occurrence_uids"])
         for item in aliases:
             alias = item
             alias["candidate_disposition"] = "deduplicated_alias"
@@ -223,9 +223,11 @@ def project_finding_roots(
             alias["validation_status"] = "deduplicated_alias"
             alias["finding_root_version"] = FINDING_ROOT_VERSION
             alias["finding_root_uid"] = root_uid
-            alias["finding_root_primary_candidate_uid"] = str(primary.get("candidate_uid") or "")
+            alias["finding_root_primary_candidate_uid"] = str(
+                attached_primary.get("candidate_uid") or ""
+            )
             alias["finding_root_primary_validation_cluster_uid"] = str(
-                primary.get("validation_cluster_uid") or ""
+                attached_primary.get("validation_cluster_uid") or ""
             )
             alias["affected_subjects"] = subjects
             projected.append(alias)

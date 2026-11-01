@@ -197,6 +197,8 @@ def callee_usr_observations(context: Mapping[str, Any]) -> dict[str, str]:
     unobserved names.  Incomplete or stale facts observe nothing.
     """
 
+    from .build_scope import context_build_id, context_symbol_usr
+
     facts = context.get("program_facts") or {}
     if not isinstance(facts, Mapping) or not facts.get("complete"):
         return {}
@@ -217,6 +219,25 @@ def callee_usr_observations(context: Mapping[str, Any]) -> dict[str, str]:
             if not name:
                 continue
             observed.setdefault(name, set()).add(str(callee.get("usr") or ""))
+    # Source-level macro invocations are not CallExpr callees: Clang records
+    # the expanded wrapper in the event stream.  The scoped index therefore
+    # attaches exact macro-reference receipts, already pinned to this body and
+    # BuildContext, so the original token can resolve to its reviewed macro
+    # contract without a name-only exception.
+    for item in facts.get("referenced_macros", []) or []:
+        if not isinstance(item, Mapping):
+            continue
+        identity = item.get("function_identity")
+        identity = identity if isinstance(identity, Mapping) else {}
+        if (
+            str(identity.get("usr") or "") != context_symbol_usr(context)
+            or str(identity.get("build_context_id") or "") != context_build_id(context)
+        ):
+            continue
+        name = str(item.get("name") or item.get("qualified_name") or "")
+        usr = str(item.get("usr") or "")
+        if name:
+            observed.setdefault(name, set()).add(usr)
     result: dict[str, str] = {}
     for name, usrs in observed.items():
         if len(usrs) == 1 and next(iter(usrs)):

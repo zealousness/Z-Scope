@@ -8,6 +8,8 @@ pipeline and are never accepted from a model response.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import re
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 VALIDATOR_RESULT_VERSION = "zscope.validator-result.v3"
@@ -51,12 +53,21 @@ VALIDATOR_STOP_REASONS = frozenset(
         "investigation_exhausted",
     }
 )
+VALIDATOR_UNCERTAIN_TERMINAL_REASONS = frozenset(
+    {
+        "unsupported_fact",
+        "fact_timeout",
+        "no_evidence_gain",
+        "duplicate_fact_request",
+        "output_truncated",
+    }
+)
 DYNAMIC_REPRODUCTION_REQUEST_VERSION = "zscope.dynamic-reproduction-request.v1"
 DYNAMIC_REPRODUCTION_RESULT_VERSION = "zscope.dynamic-reproduction-result.v1"
 
 
 def validator_result_schema_v3() -> Dict[str, Any]:
-    """Return the provider-facing strict JSON schema."""
+    """Return the complete conditional ValidatorResult v3 contract."""
 
     return {
         "type": "object",
@@ -134,11 +145,177 @@ def validator_result_schema_v3() -> Dict[str, Any]:
             "missing_fact_request",
             "stop_reason",
         ],
+        # Keep the provider contract aligned with the parser.  Previously a
+        # model could satisfy the field-level schema with a terminal verdict
+        # and a simultaneous missing-fact request; eight Range rejections
+        # were consequently discarded as malformed after generation.
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "verdict": {"enum": ["verified", "rejected"]},
+                    "missing_fact_request": {"const": None},
+                    "stop_reason": {"const": "decision_complete"},
+                },
+                "required": ["verdict", "missing_fact_request", "stop_reason"],
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "verdict": {"const": "uncertain"},
+                    "missing_fact_request": {"type": "object"},
+                    "stop_reason": {"const": "missing_fact"},
+                },
+                "required": ["verdict", "missing_fact_request", "stop_reason"],
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "verdict": {"const": "uncertain"},
+                    "missing_fact_request": {"const": None},
+                    "stop_reason": {
+                        "enum": [
+                            "unsupported_fact",
+                            "fact_timeout",
+                            "no_evidence_gain",
+                            "duplicate_fact_request",
+                            "output_truncated",
+                        ]
+                    },
+                },
+                "required": ["verdict", "missing_fact_request", "stop_reason"],
+            },
+        ],
         "additionalProperties": False,
     }
 
 
+def validator_result_provider_schema_v3(
+    *,
+    allowed_missing_fact_kinds: Optional[Iterable[str]] = None,
+    allowed_evidence_refs: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """Return the wire schema used with OpenAI-compatible providers.
+
+    A few compatible gateways incorrectly replace the enclosing object's
+    ``required`` list with the short lists from a top-level ``oneOf`` branch.
+    The resulting tool call contains only ``verdict``, ``stop_reason`` and
+    ``missing_fact_request`` even though the full object is required.  Keep the
+    conditional contract in :func:`validator_result_schema_v3` and in the
+    strict parser, but send providers the equivalent flat field schema.  The
+    cross-field conditions are still enforced after generation and are stated
+    explicitly in the Validator prompt.
+    """
+
+    schema = validator_result_schema_v3()
+    schema.pop("oneOf", None)
+    if allowed_evidence_refs is not None:
+        refs = sorted(
+            {
+                str(value).strip()
+                for value in allowed_evidence_refs
+                if 0 < len(str(value).strip()) <= 512
+            }
+        )
+        evidence_refs = dict(schema["properties"]["evidence_refs"])
+        if refs:
+            evidence_refs["items"] = {"type": "string", "enum": refs}
+        else:
+            evidence_refs["maxItems"] = 0
+        schema["properties"]["evidence_refs"] = evidence_refs
+    if allowed_missing_fact_kinds is not None:
+        allowed = sorted(
+            {
+                str(value).strip().lower()
+                for value in allowed_missing_fact_kinds
+                if str(value).strip().lower() in VALIDATOR_MISSING_FACT_KINDS
+            }
+        )
+        if not allowed:
+            schema["properties"]["missing_fact_request"] = {
+                "type": "null",
+                "description": (
+                    "No executable evidence provider remains for this candidate; "
+                    "this field must be null for every verdict."
+                ),
+            }
+            schema["properties"]["stop_reason"]["enum"] = sorted(
+                VALIDATOR_STOP_REASONS - {"missing_fact"}
+            )
+        else:
+            request = dict(schema["properties"]["missing_fact_request"])
+            request_properties = dict(request["properties"])
+            request_properties["fact_kind"] = {
+                "type": "string",
+                "enum": allowed,
+            }
+            request["properties"] = request_properties
+            schema["properties"]["missing_fact_request"] = request
+    return schema
+
+
 _REQUIRED_FIELDS = frozenset(validator_result_schema_v3()["required"])
+
+
+_DSML_PARAMETER = re.compile(
+    r'<｜DSML｜\s*parameter\s+name="(?P<name>[^"]+)"\s+'
+    r'string="(?P<string>true|false)">(?P<value>.*?)</parameter>',
+    re.DOTALL,
+)
+_DSML_TERMINAL = re.compile(r"<｜DSML｜\s*invoke>\s*$", re.DOTALL)
+
+
+def normalize_validator_provider_payload_v3(value: Any) -> Optional[Dict[str, Any]]:
+    """Normalize one known terminal-tool framing defect from a provider.
+
+    Some OpenAI-compatible gateways placed the complete terminal-tool DSML in
+    the ``schema_version`` argument.  This function accepts only that exact
+    one-key shape, the current schema version, the terminal invoke marker, and
+    the exact v3 field set.  It is not a general markup or loose JSON parser.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != {"schema_version"}:
+        return None
+    encoded = value.get("schema_version")
+    if not isinstance(encoded, str):
+        return None
+    first_marker = encoded.find("<｜DSML｜")
+    if first_marker < 0:
+        return None
+    prefix = encoded[:first_marker].strip()
+    if prefix != f"{VALIDATOR_RESULT_VERSION}</parameter>":
+        return None
+    if _DSML_TERMINAL.search(encoded) is None:
+        return None
+
+    payload: Dict[str, Any] = {"schema_version": VALIDATOR_RESULT_VERSION}
+    body = encoded[first_marker:]
+    matches = list(_DSML_PARAMETER.finditer(body))
+    if not matches:
+        return None
+    cursor = 0
+    for match in matches:
+        between = body[cursor : match.start()].strip()
+        if between:
+            return None
+        cursor = match.end()
+        name = str(match.group("name") or "")
+        if name in payload or name not in _REQUIRED_FIELDS:
+            return None
+        raw = match.group("value")
+        if match.group("string") == "true":
+            payload[name] = raw
+        else:
+            try:
+                payload[name] = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+    tail = body[cursor:]
+    if _DSML_TERMINAL.fullmatch(tail.strip()) is None:
+        return None
+    if set(payload) != _REQUIRED_FIELDS:
+        return None
+    return payload
 
 
 @dataclass(frozen=True)
@@ -359,6 +536,14 @@ def parse_validator_result_v3(
     elif normalized_request is not None:
         return None
     if stop_reason == "missing_fact" and normalized_request is None:
+        return None
+    if verdict in {"verified", "rejected"} and stop_reason != "decision_complete":
+        return None
+    if (
+        verdict == "uncertain"
+        and normalized_request is None
+        and stop_reason not in VALIDATOR_UNCERTAIN_TERMINAL_REASONS
+    ):
         return None
 
     try:

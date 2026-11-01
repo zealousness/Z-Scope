@@ -29,6 +29,23 @@ RANGE_GATE_NAMES = frozenset(
         "protocol_anomaly_count",
     }
 )
+RANGE_DEPTH_GATE_NAMES = MappingProxyType(
+    {
+        "fast": frozenset(
+            {
+                "confirmed_precision",
+                "confirmed_count",
+                "fast_static_active",
+                "fast_static_formal_qualified",
+                "fast_static_duplicate_local_executions",
+                "fast_static_unresolved_terminal_count",
+                "fast_static_backend_degraded",
+            }
+        ),
+        "balanced": frozenset(),
+        "deep": frozenset(),
+    }
+)
 SEALED_DELTA_GATE_NAMES = frozenset(
     {
         "sealed_confirmed_recall_delta_pp",
@@ -72,6 +89,7 @@ _POLICY_FIELDS = frozenset(
         "formal_schema_version",
         "minimum_formal_trials",
         "range_depth_token_expectations",
+        "range_depth_gates",
         "range_gates",
         "sealed_delta_gates",
         "non_regression_gates",
@@ -105,6 +123,7 @@ class BenchmarkPolicy:
     formal_schema_version: str
     minimum_formal_trials: int
     range_depth_token_expectations: Mapping[str, Mapping[str, float]]
+    range_depth_gates: Mapping[str, Mapping[str, Tuple[str, float]]]
     range_gates: Mapping[str, Tuple[str, float]]
     sealed_delta_gates: Mapping[str, Tuple[str, float]]
     non_regression_gates: Mapping[str, Tuple[str, float]]
@@ -130,6 +149,9 @@ class BenchmarkPolicy:
             "range_depth_token_expectations": {
                 depth: dict(expectations)
                 for depth, expectations in self.range_depth_token_expectations.items()
+            },
+            "range_depth_gates": {
+                depth: gates(depth_gates) for depth, depth_gates in self.range_depth_gates.items()
             },
             "range_gates": gates(self.range_gates),
             "sealed_delta_gates": gates(self.sealed_delta_gates),
@@ -209,6 +231,24 @@ def load_benchmark_policy(path: Optional[Path] = None) -> BenchmarkPolicy:
                 )
             normalized[name] = float(value)
         depth_expectations[depth] = MappingProxyType(normalized)
+    raw_depth_gates = payload["range_depth_gates"]
+    if not isinstance(raw_depth_gates, dict) or set(raw_depth_gates) != set(RANGE_DEPTH_GATE_NAMES):
+        raise BenchmarkPolicyError(
+            f"{resolved}: range_depth_gates must define fast, balanced, and deep"
+        )
+    depth_gates: Dict[str, Mapping[str, Tuple[str, float]]] = {}
+    for depth, values in raw_depth_gates.items():
+        parsed = _parse_gates(
+            values,
+            path=f"{resolved}:range_depth_gates.{depth}",
+            allow_empty=True,
+        )
+        _require_exact_names(
+            parsed,
+            RANGE_DEPTH_GATE_NAMES[depth],
+            path=f"{resolved}:range_depth_gates.{depth}",
+        )
+        depth_gates[depth] = MappingProxyType(parsed)
     sealed_gates = _parse_gates(
         payload["sealed_delta_gates"], path=f"{resolved}:sealed_delta_gates"
     )
@@ -267,6 +307,7 @@ def load_benchmark_policy(path: Optional[Path] = None) -> BenchmarkPolicy:
         formal_schema_version=formal_schema,
         minimum_formal_trials=minimum_trials,
         range_depth_token_expectations=MappingProxyType(depth_expectations),
+        range_depth_gates=MappingProxyType(depth_gates),
         range_gates=MappingProxyType(range_gates),
         sealed_delta_gates=MappingProxyType(sealed_gates),
         non_regression_gates=MappingProxyType(non_regression_gates),
@@ -277,9 +318,10 @@ def load_benchmark_policy(path: Optional[Path] = None) -> BenchmarkPolicy:
     )
 
 
-def _parse_gates(raw: Any, *, path: str) -> Dict[str, Tuple[str, float]]:
-    if not isinstance(raw, dict) or not raw:
-        raise BenchmarkPolicyError(f"{path}: gates must be a non-empty object")
+def _parse_gates(raw: Any, *, path: str, allow_empty: bool = False) -> Dict[str, Tuple[str, float]]:
+    if not isinstance(raw, dict) or (not raw and not allow_empty):
+        qualifier = "an object" if allow_empty else "a non-empty object"
+        raise BenchmarkPolicyError(f"{path}: gates must be {qualifier}")
     result: Dict[str, Tuple[str, float]] = {}
     for name, value in raw.items():
         if not isinstance(name, str) or not name or not isinstance(value, dict):

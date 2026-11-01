@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,7 @@ def config_file(tmp_path, tools=None):
         "llms": {
             "default": {"base_urls": ["http://localhost/v1"], "models": ["unit"], "api_key": "unit"}
         },
-        "project": {"root": str(tmp_path), "language": "c_cpp"},
+        "project": {"language": "c_cpp"},
         "indexing": {"backend": "unified"},
     }
     if tools is not None:
@@ -82,8 +83,12 @@ def test_explicit_configuration_survives_bundle_defaults_and_is_not_rewritten(
 ):
     bundle(tmp_path, monkeypatch)
     path = config_file(
-        tmp_path, {"clangd": "/experimental/missing-clangd", "svf_bin_dir": "/experimental/svf",
-                   "clang_indexer": "/experimental/missing-indexer"}
+        tmp_path,
+        {
+            "clangd": "/experimental/missing-clangd",
+            "svf_bin_dir": "/experimental/svf",
+            "clang_indexer": "/experimental/missing-indexer",
+        },
     )
     original = path.read_bytes()
     configured = ConfigLoader.load(str(path))
@@ -136,6 +141,31 @@ def test_source_install_keeps_path_discovery(monkeypatch):
     monkeypatch.delenv("Z_SCOPE_BUNDLE_ROOT", raising=False)
     assert default_tool("clangd") == "clangd"
     assert java_jar("structure-spoon") is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="ELF loader paths are Linux-only")
+def test_path_selected_svf_uses_libraries_from_the_same_install(tmp_path, monkeypatch):
+    from zscope.retrieval.llvm_toolchain import svf_environment
+
+    prefix = tmp_path / "selected"
+    foreign = tmp_path / "foreign"
+    svf_bin = prefix / "svf/bin"
+    svf_lib = prefix / "svf/lib"
+    llvm_lib = prefix / "llvm18/lib"
+    for directory in (svf_bin, svf_lib, llvm_lib, foreign):
+        directory.mkdir(parents=True)
+    wpa = svf_bin / "wpa"
+    wpa.write_text("#!/bin/sh\nexit 0\n")
+    wpa.chmod(0o755)
+    monkeypatch.delenv("Z_SCOPE_BUNDLE_ROOT", raising=False)
+    monkeypatch.setenv("PATH", str(svf_bin))
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(foreign))
+
+    environment = svf_environment("")
+
+    search = environment["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert search[:2] == [str(svf_lib.resolve()), str(llvm_lib.resolve())]
+    assert search[-1] == str(foreign)
 
 
 def test_compiler_selection_keeps_launcher_name_and_svf_checks_its_elf(tmp_path, monkeypatch):

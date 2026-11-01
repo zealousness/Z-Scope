@@ -95,7 +95,14 @@ class RuleEngine:
         return matches
 
     def run_configured_data_flow_checks(self) -> List[RuleMatch]:
-        """Check user-declared entry/source functions for flows into risky sinks."""
+        """Check reviewed semantic source effects for flows into risky sinks.
+
+        Historical ``function_intents`` were prose hints and are deliberately
+        no longer executable taint sources.  A source reaches this query only
+        through a confirmed project interface effect (currently
+        ``recv_source``), while sink rows follow the same reviewed contract
+        projection.
+        """
         if not self.user_config:
             return []
         sources = self._configured_source_functions()
@@ -308,7 +315,7 @@ class RuleEngine:
                             "sink": sink["name"],
                             "sink_category": sink["category"],
                             "path": path,
-                            "source_kind": "user_config:function_intents",
+                            "source_kind": "project_semantics:confirmed_effect",
                             "sink_kind": sink.get("kind", "configured_sink"),
                         }
                     ],
@@ -703,7 +710,7 @@ class RuleEngine:
         return 5.8
 
     def _configured_source_functions(self) -> List[str]:
-        method = getattr(self.user_config, "list_function_intents", None)
+        method = getattr(self.user_config, "list_external_functions", None)
         if not callable(method):
             return []
         try:
@@ -713,6 +720,8 @@ class RuleEngine:
         names = []
         for row in rows:
             if not isinstance(row, dict):
+                continue
+            if str(row.get("kind") or "") not in {"recv_source"}:
                 continue
             name = str(row.get("symbol_name") or row.get("func_name") or "").strip()
             if name and name not in names:

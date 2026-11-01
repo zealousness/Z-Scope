@@ -1,0 +1,75 @@
+{
+  "scope": "Actual shipped HTML/CSS/JS and real HTTP/SQLite; synthetic local projects; no scanner or model execution",
+  "source_sha256": {
+    "zscope/web/static/dashboard_config.js": "f06c34a3f154e25c15988da068a298c708c9dcd7b633189c452b3db07e3a7e8f",
+    "zscope/web/static/dashboard_navigation.js": "6dff748a5972c459b7453e2bc093e9b03d27e50f7a1a15ba3833ba0f6ea81c62",
+    "zscope/web/static/dashboard_projects.js": "80fe0aeeb418c9c5db96f9c474b8660a7acec0a0227dc9b7c26644a987903350",
+    "zscope/web/static/dashboard_reports.js": "554009551f76265cd3f096cded04e8fa5d06254f33d83883a604f1cb96320637",
+    "zscope/web/static/dashboard_schedules.js": "d07ff4a359a5471d060bcc86a968aa14974f627738d8c3f3e6635490b9bdf854",
+    "zscope/web/static/dashboard_semantics.js": "522f7fe46ab5e74edfa9cfc273960e4e29d00a6bebf1c0b6a943929039ab88ab",
+    "zscope/web/static/dashboard_workbench.js": "8661b05f930428c049f46052e64d5ed868753d1eae9da3bbc44b236d524573ef",
+    "zscope/web/static/offline_review.js": "9ca5d645541b30d820eb707d8c7c02311ff2c0565fd9d649262e0b2862508042",
+    "zscope/web/static/report_view.js": "ad0b93ea04440cfe7d6e2e1e73b12c51a9a1d49b101027451fd15a9d8bbe225a",
+    "zscope/web/static/dashboard_redesign.css": "3d2aaae50203febd1a6fa3407b621b346947e0d66a597d1ee0a640326827e3d0",
+    "zscope/web/static/dashboard_semantics.css": "37dacca2e241c78b1273cbe34525ace799fe320fb2f89cfcf91a8f234cf47056",
+    "zscope/web/static/dashboard_workbench.css": "88f6a8eddf8b89bf89a2ce27b281e8385ff509d15553e2ff98be066663822384",
+    "zscope/web/static/report_view.css": "d2e2a3c95d89c709bcaa91a737b9fa4bdf11cfea53f377fa6a24d9f918b90ad8",
+    "zscope/web/static/index.html": "2d41b30ec98fab07c7fc03a9c3ea00f26b3fcb93091e2c85c2528a5266af67d4",
+    "zscope/web/projects.py": "d7bb968b682d242e41e5657e381a8c2292f4e1dee2b4a24317b4d42ba1fe5104",
+    "zscope/web/server.py": "0ab3d27d172d02fa841f7e51f5b78d61720f2052d79e2243d90a7b8d9d1c4726",
+    "zscope/web/services.py": "a505d9ea7e8863995e479a007b4d452ca90d7d7f771ec243bd8146e2a750dfe5",
+    "zscope/config/editor.py": "4b8ebe0d43df962fe44644ca3b0cb5f7dd70bf7997180b21d2638460c3b6814c",
+    "zscope/config/v2.py": "38ee9577a5293f9c83e67ed96f7df2fcec19ad62f1b8a567b8f1b91468d16d18",
+    "zscope/config/v3.py": "63d1dca4de85a80d818ea21378d2d99dfbde268dbbd84af5293461c8448e20c7",
+    "zscope/orchestration/jobs/schedules.py": "a2813f275e1d4728174ea4c4e93d37353c822c0f6ae37e43170f8c4b234b4d0f",
+    "tests/test_web_project_picker_ui.py": "373a04c3fab9e976676af7eb2c02ebf2e671f65edf31d8bc2c0cfa1fa1bf29d2",
+    "tests/fixtures/web_project_picker_ui.cjs": "f51c467d0742cc556dde48cf7bbc841c5842fc6b55d3460dc03abdddc661f7cd"
+  },
+  "media_sha256": {
+    "jobs-1440.png": "40e0c71f4674970b98670300be2037d7c3197529763d15e17fd8a97918f853c4",
+    "jobs-390.png": "376a8afe060bdfc43370e86a723913cad81e9e9e60f138d050e00d0518d4b5b4",
+    "picker-1440.png": "46c8a4511b6c0ee082d269d1c6ff40dc44eeaa1a0d60bc50dcd1be1750611ade",
+    "picker-390.png": "c73bf5f52fd7da67f493efa489d709a96833a6b545b7c8d2f78d68891d4f5847",
+    "scans-1440.png": "4d31ed5303adcb562ef1624899d325c80636546b53bf728af63249366de2c69d",
+    "scans-390.png": "a7320d680bf75c605a9731e9c89aede5d040a05603dd7a5c49ebea9037929d62",
+    "settings-1440.png": "3f4f16db937dd56153725a9a47007eb4a1f52021614eb784b3c1fd266336492a",
+    "settings-390.png": "ff346a5ae8b5ea1fa11c023f436c22239f36f939ffb92a651297886da1a09681",
+    "wizard-1440.png": "62584e43ebddfc8c353a3de342961a30d1630c4a61dd18385e11974d5c9c9585",
+    "wizard-390.png": "601bdf1352d8321fe5ce96de9d20d899e7c9d2267c6f60f77a4e09144f3866c5"
+  },
+  "browser": {
+    "scope": "Actual shipped pages and real HTTP/SQLite over synthetic projects; no scanner/model execution",
+    "browser": "151.0.7922.34",
+    "captured_at": "2026-10-27T04:57:50.304Z",
+    "project_id": "885f16aff2587264a0ebd6d2",
+    "schedule_id": "schedule_d6f48ef0ba9d434fbc09cdb055ee1bb5",
+    "captures": [
+      "picker-1440.png",
+      "picker-390.png",
+      "wizard-1440.png",
+      "wizard-390.png",
+      "settings-1440.png",
+      "settings-390.png",
+      "scans-1440.png",
+      "scans-390.png",
+      "jobs-1440.png",
+      "jobs-390.png"
+    ],
+    "widths_checked": [
+      390,
+      1280,
+      1440,
+      1920
+    ],
+    "checks": [
+      "Java language switches the wizard to fast",
+      "Future SQLite schedule survives refresh and cancels without creating a job",
+      "Explicit picker bypasses the -c initial project; selected B survives refresh",
+      "Switch to a second project then reopen the first from recent projects"
+    ],
+    "page_errors": [],
+    "external_requests": []
+  },
+  "schedule_daemon_spawned": false,
+  "scanner_started": false
+}

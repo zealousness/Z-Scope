@@ -5,9 +5,13 @@ from __future__ import annotations
 import hashlib
 import re
 from copy import deepcopy
-from typing import Any, Callable, Dict, List, Mapping, Optional, cast
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, cast
 
-from ...common.issue_identity import canonical_issue_key, flatten_issue_text, parse_issue_location
+from ...common.issue_identity import (
+    canonical_issue_key,
+    flatten_issue_text,
+    parse_issue_location_preserving_path_case,
+)
 from ..candidates.evidence_models import build_evidence_models
 from ...snapshots.modeling_input import SemanticModelInputError, resolve_function_info
 from .context_budget import record_projection
@@ -201,7 +205,7 @@ def _caller_lock_states(
                     name = site[1]
                     if name not in semantics.lock_apis and name not in semantics.unlock_apis:
                         continue
-                    arguments = registry.call_arguments(name, text[site.start():])
+                    arguments = registry.call_arguments(name, text[site.start() :])
                     if arguments is None:
                         continue
                     role = "lock" if name in semantics.lock_apis else "unlock"
@@ -209,12 +213,23 @@ def _caller_lock_states(
                         operations.append(event.to_dict())
                         if event.applicability == "does_not_apply":
                             continue
-                        uncertain |= event.applicability == "unknown" or event.source.startswith("inferred")
+                        uncertain |= event.applicability == "unknown" or event.source.startswith(
+                            "inferred"
+                        )
                         if role == "lock" and event.object:
                             stack.append((name, event.object, event.lock_mode))
                         elif role == "unlock":
                             for index in range(len(stack) - 1, -1, -1):
-                                if stack[index][1] == event.object and registry.release_status(stack[index][0], name, arguments, acquired_object=event.object) == "applies":
+                                if (
+                                    stack[index][1] == event.object
+                                    and registry.release_status(
+                                        stack[index][0],
+                                        name,
+                                        arguments,
+                                        acquired_object=event.object,
+                                    )
+                                    == "applies"
+                                ):
                                     stack.pop(index)
                                     break
         states.append(
@@ -247,7 +262,9 @@ def build_validation_evidence_pack(
     """Build compact candidate evidence so the validator starts from facts."""
     issue_func = str(issue.get("function") or state["agent_context"]["func_name"])
     location = str(issue.get("location") or "")
-    file_path, line = parse_issue_location(location)
+    # Candidate identity case-folds paths, but evidence lookup opens the
+    # physical Linux path and therefore must preserve its source spelling.
+    file_path, line = parse_issue_location_preserving_path_case(location)
     snippet = None
     if file_path and line:
         snippet = code_index.get_file_snippet(
@@ -290,13 +307,21 @@ def build_validation_evidence_pack(
         "callback",
         "other_user_input",
     }
+    reachability = issue.get("reachability_attribution")
+    reachability = reachability if isinstance(reachability, Mapping) else {}
+    reachability_status = str(reachability.get("status") or "").strip().lower()
     reachable_from_entry = bool(
         issue.get("reachable_from_entry")
+        or reachability.get("reachable") is True
         or (analysis_entry and issue_func == analysis_entry)
         or issue_entry
         or candidate_evidence.get("entry_function")
         or (candidate_path_evidence.get("complete_to_entry"))
     )
+    if reachable_from_entry:
+        reachability_status = "reachable"
+    elif not reachability_status:
+        reachability_status = "unknown"
     validation_requirements = _base_validation_requirements()
     validation_requirements.extend(category_validation_requirements(issue))
     caller_lock_states: List[Dict[str, Any]] = []
@@ -305,7 +330,9 @@ def build_validation_evidence_pack(
             code_index,
             issue_func,
             _direct_callers_from_paths(issue),
-            semantic_contracts=issue.get("semantic_contracts") or candidate_evidence.get("semantic_contracts") or {},
+            semantic_contracts=issue.get("semantic_contracts")
+            or candidate_evidence.get("semantic_contracts")
+            or {},
         )
     return {
         "mode": "tri_state_exploitability_validation",
@@ -380,6 +407,8 @@ def build_validation_evidence_pack(
             ),
             "issue_entry_function": issue_entry,
             "reachable_from_entry": reachable_from_entry,
+            "reachability_status": reachability_status,
+            "reachability_coverage_gap": reachability.get("coverage_gap"),
             "internal_sink_lifted": bool(issue.get("internal_sink_lifted")),
             "call_path": candidate_path or candidate_evidence.get("call_path"),
             "candidate_path": candidate_path_evidence,
@@ -427,6 +456,9 @@ def build_validator_evidence_slice_v2(
     entry_context = pack.get("entry_context")
     if not isinstance(entry_context, Mapping):
         entry_context = {}
+    reachability = issue.get("reachability_attribution")
+    if not isinstance(reachability, Mapping):
+        reachability = {}
 
     def first_path(*values: Any) -> List[str]:
         for raw in values:
@@ -470,6 +502,7 @@ def build_validator_evidence_slice_v2(
         issue.get("entry_paths"),
         issue.get("call_paths"),
         issue.get("call_path"),
+        reachability.get("call_paths"),
         entry_context.get("call_path"),
     )
     code = str(issue_code or function_context.get("code") or "")
@@ -482,6 +515,25 @@ def build_validator_evidence_slice_v2(
         }
     elif location_snippet not in (None, ""):
         location_snippet = _trim_text(str(location_snippet), 1800)
+
+    reachability_status = str(reachability.get("status") or "").strip().lower()
+    reachability_positive = bool(
+        issue.get("reachable_from_entry")
+        or reachability.get("reachable") is True
+        or entry_context.get("reachable_from_entry")
+    )
+    if reachability_positive:
+        reachability_status = "reachable"
+        projected_reachability: Optional[bool] = True
+    elif reachability_status == "unreachable":
+        projected_reachability = False
+    elif not reachability_status and reachability.get("reachable") is False:
+        # Preserve legacy evidence that explicitly proved an unreachable path.
+        reachability_status = "unreachable"
+        projected_reachability = False
+    else:
+        reachability_status = "unknown"
+        projected_reachability = None
 
     result: Dict[str, Any] = {
         "schema_version": VALIDATOR_EVIDENCE_SLICE_VERSION,
@@ -500,14 +552,29 @@ def build_validator_evidence_slice_v2(
             "category": issue.get("category") or finding.get("category"),
             "subcategory": issue.get("subcategory") or finding.get("subcategory"),
             "cwe": issue.get("cwe") or finding.get("cwe"),
+            "obligation_profile_id": issue.get("obligation_profile_id"),
+            "obligation_profile_revision": issue.get("obligation_profile_revision"),
+            "obligation_binding_uid": issue.get("obligation_binding_uid"),
+            "required_claims": list(issue.get("obligation_required_roles") or []),
+            "positive_conditions": list(issue.get("obligation_positive_conditions") or []),
+            "counterfact_kinds": list(issue.get("obligation_counterfact_kinds") or []),
+            "mechanism_family": issue.get("obligation_mechanism_family"),
         },
         "canonical_occurrence": {
             "occurrence_uid": primary_occurrence,
-            "entry_identity": issue.get("entry_identity")
-            or entry_context.get("current_analysis_entry"),
-            "reachable_from_entry": bool(
-                issue.get("reachable_from_entry") or entry_context.get("reachable_from_entry")
+            "entry_identity": (
+                (
+                    issue.get("entry_identity")
+                    or next(iter(reachability.get("entries") or []), "")
+                    or entry_context.get("current_analysis_entry")
+                )
+                if projected_reachability is True
+                else None
             ),
+            "reachable_from_entry": projected_reachability,
+            "reachability_status": reachability_status,
+            "coverage_gap": reachability.get("coverage_gap")
+            or entry_context.get("reachability_coverage_gap"),
             "representative_call_path": representative_path,
         },
         "decision_facts": {
@@ -564,15 +631,39 @@ def build_validator_evidence_slice_v2(
         ("dependency_code_hashes", list(fact_slice.get("dependency_code_hashes") or [])),
         ("deterministic_proofs", deterministic_proofs),
     ):
-        record_projection(result, "decision_facts." + key, original, result["decision_facts"][key])
+        record_projection(
+            result,
+            "decision_facts." + key,
+            original,
+            result["decision_facts"][key],
+            decision_critical=True,
+        )
     for key, original in (
         ("positive", issue.get("positive_evidence") or pack.get("positive_evidence") or []),
         ("negative", issue.get("negative_evidence") or pack.get("negative_evidence") or []),
         ("path_constraints", issue.get("path_constraints") or []),
     ):
-        record_projection(result, "evidence." + key, original, result["evidence"][key])
-    record_projection(result, "code.location_snippet", pack.get("primary_location_snippet"), location_snippet)
-    record_projection(result, "validation_requirements", pack.get("validation_requirements") or [], result["validation_requirements"])
+        record_projection(
+            result,
+            "evidence." + key,
+            original,
+            result["evidence"][key],
+            decision_critical=True,
+        )
+    record_projection(
+        result,
+        "code.location_snippet",
+        pack.get("primary_location_snippet"),
+        location_snippet,
+        decision_critical=False,
+    )
+    record_projection(
+        result,
+        "validation_requirements",
+        pack.get("validation_requirements") or [],
+        result["validation_requirements"],
+        decision_critical=False,
+    )
     return result
 
 
@@ -582,9 +673,7 @@ def build_validator_project_knowledge_projection(
     """Project Wiki context into the compact shape shown to Validator LLMs."""
 
     target_value = knowledge.get("target")
-    target: Mapping[str, Any] = (
-        target_value if isinstance(target_value, Mapping) else {}
-    )
+    target: Mapping[str, Any] = target_value if isinstance(target_value, Mapping) else {}
     issue_file = (
         str(
             issue.get("candidate_file")
@@ -658,9 +747,7 @@ def build_validator_project_knowledge_projection(
             }
         )
     selection_value = knowledge.get("selection")
-    selection: Mapping[str, Any] = (
-        selection_value if isinstance(selection_value, Mapping) else {}
-    )
+    selection: Mapping[str, Any] = selection_value if isinstance(selection_value, Mapping) else {}
     return {
         "resolution_mode": knowledge.get("resolution_mode"),
         "wiki_revision_id": knowledge.get("wiki_revision_id"),
@@ -703,6 +790,7 @@ def build_validator_evidence_slice_v3(
     *,
     validation_pass: str = "initial",
     evidence_delta: Optional[Mapping[str, Any]] = None,
+    allowed_missing_fact_kinds: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """Build the readable, reference-addressable Validator v3 projection.
 
@@ -716,6 +804,9 @@ def build_validator_evidence_slice_v3(
     result["schema_version"] = VALIDATOR_EVIDENCE_SLICE_V3
     result["protocol_version"] = VALIDATOR_PROTOCOL_V3
     result["validation_pass"] = validation_pass
+    result["allowed_missing_fact_kinds"] = sorted(
+        {str(value) for value in (allowed_missing_fact_kinds or ()) if str(value)}
+    )
 
     pack = dict(evidence_pack or {})
     fact_slice = issue.get("decision_fact_slice")
@@ -730,14 +821,25 @@ def build_validator_evidence_slice_v3(
     )
     if isinstance(fact_payloads, Mapping):
         fact_payloads = [
-            {"fact_uid": str(key), "payload": value}
-            for key, value in fact_payloads.items()
+            {"fact_uid": str(key), "payload": value} for key, value in fact_payloads.items()
         ]
     elif not isinstance(fact_payloads, list):
         fact_payloads = []
     result["decision_facts"]["facts"] = [
         _compact_validation_value(item, max_list_items=12, max_string_chars=1600)
         for item in fact_payloads[:32]
+        if isinstance(item, Mapping)
+    ]
+    edge_payloads: Any = fact_slice.get("edges") or fact_slice.get("edge_payloads") or []
+    if isinstance(edge_payloads, Mapping):
+        edge_payloads = [
+            {"edge_uid": str(key), "payload": value} for key, value in edge_payloads.items()
+        ]
+    elif not isinstance(edge_payloads, list):
+        edge_payloads = []
+    result["decision_facts"]["edges"] = [
+        _compact_validation_value(item, max_list_items=8, max_string_chars=1200)
+        for item in edge_payloads[:32]
         if isinstance(item, Mapping)
     ]
 
@@ -780,12 +882,43 @@ def build_validator_evidence_slice_v3(
         max_list_items=24,
         max_string_chars=1800,
     )
-    record_projection(result, "decision_facts.facts", fact_payloads, result["decision_facts"]["facts"])
+    record_projection(
+        result,
+        "decision_facts.facts",
+        fact_payloads,
+        result["decision_facts"]["facts"],
+        decision_critical=True,
+    )
+    record_projection(
+        result,
+        "decision_facts.edges",
+        edge_payloads,
+        result["decision_facts"]["edges"],
+        decision_critical=True,
+    )
     for key in ("snapshot_summary", "callers", "callees"):
         original: Any = function_context.get(key) or ({} if key == "snapshot_summary" else [])
-        record_projection(result, "code." + key, original, result["code"][key])
-    record_projection(result, "semantic_claims", semantic_claims, result["semantic_claims"])
-    record_projection(result, "evidence_delta", dict(evidence_delta or {}), result["evidence_delta"])
+        record_projection(
+            result,
+            "code." + key,
+            original,
+            result["code"][key],
+            decision_critical=False,
+        )
+    record_projection(
+        result,
+        "semantic_claims",
+        semantic_claims,
+        result["semantic_claims"],
+        decision_critical=False,
+    )
+    record_projection(
+        result,
+        "evidence_delta",
+        dict(evidence_delta or {}),
+        result["evidence_delta"],
+        decision_critical=True,
+    )
 
     # Project knowledge keeps its full audit envelope in the evidence pack and
     # exposes only the decision-relevant projection to the Validator model.
@@ -809,13 +942,17 @@ def build_validator_evidence_slice_v3(
         normalized = str(ref or "").strip()
         if not normalized or len(catalog) >= 128:
             return
-        catalog.setdefault(
-            normalized,
-            {
-                "kind": kind,
-                "summary": _compact_validation_value(summary, max_string_chars=600),
-            },
-        )
+        compact = _compact_validation_value(summary, max_string_chars=600)
+        existing = catalog.get(normalized)
+        if existing is None:
+            catalog[normalized] = {"kind": kind, "summary": compact}
+            return
+        # UIDs are registered before their payloads are visited.  Upgrade the
+        # placeholder instead of leaving a valid reference with an empty
+        # human-readable summary.
+        if existing.get("summary") in (None, "", {}, []) and compact not in (None, "", {}, []):
+            existing["kind"] = kind
+            existing["summary"] = compact
 
     decision = result.get("decision_facts") or {}
     for ref in decision.get("fact_uids") or []:
@@ -831,6 +968,14 @@ def build_validator_evidence_slice_v3(
             fact.get("fact_uid") or fact.get("uid") or fact.get("id"),
             "decision_fact",
             fact,
+        )
+    for edge in decision.get("edges") or []:
+        if not isinstance(edge, Mapping):
+            continue
+        add_ref(
+            edge.get("edge_uid") or edge.get("uid") or edge.get("id"),
+            "path_edge",
+            edge,
         )
     for proof in decision.get("deterministic_proofs") or []:
         if not isinstance(proof, Mapping):

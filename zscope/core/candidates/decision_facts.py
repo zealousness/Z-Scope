@@ -18,10 +18,15 @@ from threading import RLock
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 from ...common.issue_identity import issue_build_context_id
+from ...rules.validation_obligations import (
+    attach_obligation_binding,
+    binding_for_issue,
+    issue_fact_extensions,
+)
 
 
-DECISION_FACT_VERSION = "zscope.decision-facts.v1.4"
-SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.3"
+DECISION_FACT_VERSION = "zscope.decision-facts.v1.6"
+SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.4"
 DECISION_CONTEXT_V31 = "zscope.decision-context.v3.1"
 DECISION_CONTEXT_V32 = "zscope.decision-context.v3.2"
 DECISION_CONTEXT_V33 = "zscope.decision-context.v3.3"
@@ -56,29 +61,6 @@ SUPPORTED_DECISION_FACT_RELATIONS = frozenset(
         "ensures_contract",
     }
 )
-_SOURCE_CENTRIC_LEGACY_RULES = {
-    "clang_cfg_allocation_result_used_without_null_check",
-    "clang_cfg_alloc_result_deref_without_null_guard",
-    "clang_cfg_acquire_without_release_on_exit",
-    "clang_cfg_unlock_without_matching_lock",
-    "clang_cfg_return_with_lock_held",
-}
-# This is a semantic obligation contract, not a detector-name allow-list.
-# These questions are about one acquisition or one lock protocol; later use
-# sites are provenance unless their guard/ownership facts differ.  UAF,
-# double-free, bounds and command sinks deliberately remain sink-sensitive.
-_SOURCE_CENTRIC_DEFECT_TOKENS = {
-    "unchecked_allocation",
-    "null_pointer_dereference",
-    "memory_leak",
-    "resource_leak",
-    "fd_leak",
-    "file_descriptor_leak",
-    "missing_unlock",
-    "unlock_without_matching_lock",
-    "return_with_lock_held",
-    "lock_leak",
-}
 
 
 def _stable_json(value: Any) -> str:
@@ -245,12 +227,22 @@ class DecisionFactSlice:
     coverage: str
     missing_fact_kinds: tuple[str, ...]
     assumptions: tuple[str, ...] = ()
+    # Validator v3 must receive readable, current-build facts rather than
+    # opaque UIDs.  The payloads live in the immutable slice so downstream
+    # projections cannot accidentally resolve an ID against another build.
+    facts: tuple[Mapping[str, Any], ...] = ()
+    edges: tuple[Mapping[str, Any], ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         value = asdict(self)
         for name in (
-            "fact_uids", "edge_uids", "dependency_code_hashes",
-            "missing_fact_kinds", "assumptions",
+            "fact_uids",
+            "edge_uids",
+            "dependency_code_hashes",
+            "missing_fact_kinds",
+            "assumptions",
+            "facts",
+            "edges",
         ):
             value[name] = list(value[name])
         return value
@@ -631,22 +623,23 @@ class DecisionFactGraph:
             coverage = "complete"
         else:
             coverage = "partial"
+        selected_edges = tuple(
+            edge
+            for edge in self.edges
+            if edge.source_fact_uid in selected_ids and edge.target_fact_uid in selected_ids
+        )
         return DecisionFactSlice(
             obligation_uid=obligation.obligation_uid,
             fact_uids=tuple(sorted(selected_ids)),
-            edge_uids=tuple(
-                sorted(
-                    edge.edge_uid
-                    for edge in self.edges
-                    if edge.source_fact_uid in selected_ids and edge.target_fact_uid in selected_ids
-                )
-            ),
+            edge_uids=tuple(sorted(edge.edge_uid for edge in selected_edges)),
             dependency_code_hashes=tuple(
                 sorted({fact.code_hash for fact in selected if fact.code_hash})
             ),
             coverage=coverage,
             missing_fact_kinds=missing,
             assumptions=(),
+            facts=tuple(fact.to_dict() for fact in selected),
+            edges=tuple(edge.to_dict() for edge in selected_edges),
         )
 
 
@@ -725,47 +718,38 @@ class DecisionFactGraphCache:
 
 
 def obligation_shape_for_issue(issue: Mapping[str, Any]) -> str:
-    pack = _mapping(issue.get("evidence_pack"))
-    explicit = str(issue.get("obligation_shape") or pack.get("obligation_shape") or "").lower()
-    if explicit in _SHAPES:
-        return explicit
-    rule = str(issue.get("rule") or pack.get("rule") or "").lower()
-    if rule in _SOURCE_CENTRIC_LEGACY_RULES:
-        return "source_centric"
-    defect = str(
-        issue.get("defect_class")
-        or issue.get("normalized_category")
-        or issue.get("subcategory")
-        or issue.get("category")
-        or pack.get("defect_class")
-        or ""
-    ).lower()
-    if defect in _SOURCE_CENTRIC_DEFECT_TOKENS:
-        return "source_centric"
-    # Existing detectors predate the explicit contract.  Their conservative
-    # compatibility shape is sink-sensitive, which preserves detector-neutral
-    # v3 identity.  New path-sensitive detectors must state the shape in their
-    # structured evidence rather than relying on a rule-name heuristic.
+    binding = binding_for_issue(issue)
+    if binding is not None and binding.profile.obligation_shape in _SHAPES:
+        return binding.profile.obligation_shape
+    # Unknown and extension rules do not inherit authority from a category or
+    # a name fragment.  Their candidate remains review-only until a catalog
+    # binding exists, and sink-sensitive identity avoids cross-sink merging.
     return "sink_sensitive"
 
 
 def required_fact_kinds_for_issue(issue: Mapping[str, Any]) -> tuple[str, ...]:
-    pack = _mapping(issue.get("evidence_pack"))
-    explicit = issue.get("obligation_required_fact_kinds") or pack.get(
-        "obligation_required_fact_kinds"
+    binding = binding_for_issue(issue)
+    if binding is None:
+        # Extension/backend producers may serialize an explicit typed
+        # obligation before their rule is admitted to the packaged catalog.
+        # Preserve those exact fact requirements for slicing and diagnostics;
+        # the missing catalog binding still prevents promotion.  This is not
+        # the removed name/category substring inference path.
+        raw = issue.get("obligation_required_fact_kinds")
+        if not isinstance(raw, Sequence) or isinstance(raw, str):
+            obligation = _mapping(issue.get("security_obligation"))
+            raw = obligation.get("required_fact_kinds")
+        if not isinstance(raw, Sequence) or isinstance(raw, str):
+            return ()
+        return tuple(sorted({str(value) for value in raw if str(value)}))
+    return tuple(
+        sorted(
+            {
+                *binding.profile.required_fact_kinds,
+                *issue_fact_extensions(issue),
+            }
+        )
     )
-    if isinstance(explicit, Sequence) and not isinstance(explicit, str):
-        return tuple(sorted({str(item) for item in explicit if str(item)}))
-    rule = str(issue.get("rule") or pack.get("rule") or "").lower()
-    defect = str(issue.get("defect_class") or issue.get("category") or "").lower()
-    text = f"{rule} {defect}"
-    if any(token in text for token in ("race", "lock", "thread", "concurr")):
-        return ("event:shared_state_access", "lockset")
-    if any(token in text for token in ("leak", "release", "acquire", "ownership", "free")):
-        return ("event:acquire", "event:exit")
-    if any(token in text for token in ("overflow", "bound", "length", "size", "index")):
-        return ("source", "sink")
-    return ()
 
 
 def _canonical_source_for_obligation(
@@ -1034,6 +1018,25 @@ def deterministic_proofs_from_facts(
             )
         )
 
+    # The owner allocation itself (not each element address handed to a
+    # worker) remains local and has no release event.  This exact event pair is
+    # emitted only by the qualified heap-thread-argument detectors after they
+    # have scanned the complete function for a matching release.  Treat it as
+    # a complete positive ownership proof; a generic rule name or prose cannot
+    # enter this branch.
+    if str(issue.get("rule_id") or issue.get("rule") or "") in {
+        "clang_cfg_heap_thread_argument_owner_not_released",
+        "heap_thread_argument_not_released",
+    } and {"heap_thread_arg_owner", "thread_arg_escape"}.issubset(event_kinds):
+        results.append(
+            proof(
+                "confirm",
+                "thread_argument_owner_without_release",
+                ("owner_allocation", "derived_address_escapes", "owner_release_missing"),
+                "线程仅接收持有者数组的派生地址；完整局部所有权作用域中没有释放该持有者分配",
+            )
+        )
+
     shared_accesses = [event for event in normalized_events if event[0] == "shared_state_access"]
     explicit_conflict = bool(
         concurrency.get("conflicting_accesses")
@@ -1097,6 +1100,73 @@ def deterministic_proofs_from_facts(
                 "所有权证据在所有完整出口上均记录了清理或转移",
             )
         )
+
+    # A narrow local false-positive proof for the same-function leak rules.
+    # It accepts only a complete numbered function snippet where the acquired
+    # variable is released before every post-acquisition return; the one
+    # permitted earlier return must be directly guarded by ``if (!var)`` and
+    # therefore represents allocation failure, not a live resource.  This is
+    # intentionally not a general text-based safety inference.
+    local_rule = str(issue.get("rule_id") or issue.get("rule") or "")
+    if local_rule in {
+        "same_function_allocation_not_released",
+        "error_path_allocation_not_released",
+        "clang_cfg_log_error_path_allocation_not_released",
+    }:
+        snippet = str(issue.get("code_snippet") or "")
+        source_text = str(issue.get("source") or pack.get("source") or "")
+        source_match = re.search(r"\b([A-Za-z_]\w*)\s*=", source_text)
+        if source_match is None and re.fullmatch(r"[A-Za-z_]\w*", source_text.strip()):
+            source_match = re.match(r"([A-Za-z_]\w*)", source_text.strip())
+        numbered = []
+        for raw_line in snippet.splitlines():
+            match = re.match(r"\s*(\d+)\s*\|\s?(.*)$", raw_line)
+            if match:
+                numbered.append((int(match.group(1)), match.group(2)))
+        if source_match is not None and numbered and numbered[-1][1].strip() == "}":
+            variable = source_match.group(1)
+            acquire_index = next(
+                (
+                    index
+                    for index, (_, text) in enumerate(numbered)
+                    if re.search(rf"\b{re.escape(variable)}\s*=", text)
+                ),
+                -1,
+            )
+            release_indexes = [
+                index
+                for index, (_, text) in enumerate(numbered)
+                if re.search(
+                    rf"\b(?:free|SAFE_FREE)\s*\(\s*{re.escape(variable)}\s*\)",
+                    text,
+                )
+            ]
+            if acquire_index >= 0 and release_indexes:
+                first_release = release_indexes[0]
+                unsafe_return = False
+                for index in range(acquire_index + 1, first_release):
+                    if not re.search(r"\breturn\b", numbered[index][1]):
+                        continue
+                    previous = "\n".join(
+                        text for _, text in numbered[max(acquire_index, index - 2) : index]
+                    )
+                    if not re.search(rf"\bif\s*\(\s*!\s*{re.escape(variable)}\s*\)", previous):
+                        unsafe_return = True
+                        break
+                if not unsafe_return:
+                    results.append(
+                        proof(
+                            "reject",
+                            "ownership_cleanup_complete",
+                            (
+                                "cleanup_all_paths",
+                                "allocation_failure_return_has_no_resource",
+                                "release_before_live_exit",
+                            ),
+                            "当前完整函数中，分配失败返回不产生资源；成功分配路径在所有后续出口前释放同一变量",
+                            scope="完整编号函数源码与当前源码摘要",
+                        )
+                    )
     return results
 
 
@@ -1107,6 +1177,8 @@ def attach_decision_facts(
     graph: Optional[DecisionFactGraph] = None,
 ) -> SecurityObligation:
     """Attach the v1 fact slice and structured obligation without changing disposition."""
+
+    binding = attach_obligation_binding(issue)
 
     if obligation is None:
         obligation = security_obligation_for(
@@ -1156,17 +1228,27 @@ def attach_decision_facts(
             # This is intentionally diagnostic-only during the shadow rollout.
             # Candidate generation remains unchanged until the new obligation
             # contracts demonstrate that no known true positive is lost.
-            "candidate_promotion_eligible": (
-                fact_slice.coverage == "complete" and not fact_slice.missing_fact_kinds
+            "candidate_promotion_eligible": bool(
+                binding is not None
+                and fact_slice.coverage == "complete"
+                and not fact_slice.missing_fact_kinds
             ),
             "candidate_promotion_reason": (
                 "structured_security_obligation_complete"
-                if fact_slice.coverage == "complete" and not fact_slice.missing_fact_kinds
-                else "missing_required_decision_facts"
+                if binding is not None
+                and fact_slice.coverage == "complete"
+                and not fact_slice.missing_fact_kinds
+                else (
+                    "validation_obligation_profile_missing"
+                    if binding is None
+                    else "missing_required_decision_facts"
+                )
             ),
             "candidate_promotion_terminal_status": (
                 "candidate"
-                if fact_slice.coverage == "complete" and not fact_slice.missing_fact_kinds
+                if binding is not None
+                and fact_slice.coverage == "complete"
+                and not fact_slice.missing_fact_kinds
                 # During the feature-flag shadow rollout this remains an
                 # auditable lead rather than a report-time deletion.  The
                 # promotion decision is made once, before ledger insertion.

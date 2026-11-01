@@ -155,10 +155,10 @@ def test_individual_run_release_eligibility_requires_formal_mode_and_gates() -> 
 def test_cpp_benchmark_concurrency_matches_released_capacity() -> None:
     config = yaml.safe_load(SPECS["c_cpp"].config_path.read_text(encoding="utf-8"))
 
-    # Current benchmark capacity keeps both LLM request caps aligned at 16
-    # while using 8 validator workers.
-    assert config["concurrency"]["validator_workers"] == 8
-    assert config["concurrency"]["llm_max_inflight"] == 16
+    # Public v3 keeps runtime concurrency out of the user's YAML.
+    assert config["config_version"] == 3
+    assert "concurrency" not in config
+    assert config["execution"]["max_workers"] == 8
     assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 16
 
 

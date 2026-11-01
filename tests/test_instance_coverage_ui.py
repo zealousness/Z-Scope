@@ -46,6 +46,8 @@ def test_instance_coverage_native_owner_http(tmp_path, monkeypatch):
     project.mkdir()
     _write_project(project)
     document = _document()
+    document["project"].pop("root", None)
+    document["scan"]["preset"] = "deep"
     document["project"]["targets"] = [
         {"id": "variants", "compile_commands": "compile_commands.json"}
     ]
@@ -97,7 +99,9 @@ def test_instance_coverage_native_owner_http(tmp_path, monkeypatch):
         analysis = report["metadata"]["entry_instances"]["instance_analysis"]
         assert sorted(item["candidate_count"] for item in analysis["instances"]) == [0, 1]
         assert analysis["instance_scope_complete"] is True
-        assert analysis["scan_coverage_complete"] is False
+        assert analysis["scan_coverage_complete"] is True
+        assert analysis["consumer_scope_complete"] is True
+        assert report["metadata"]["build_coverage"]["scan_complete"] is False
         # Use the same actual scheduler receipt as the owner. The current
         # queue is a per-attempt nonce file; neither globbing a legacy filename
         # nor trusting a report-supplied queue path proves this run's work.

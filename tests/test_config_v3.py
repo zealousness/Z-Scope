@@ -27,6 +27,7 @@ from zscope.config.v3 import (
     SCAN_KEYS,
     SCAN_PRESETS,
     TARGET_KEYS,
+    V3_SVF_HEAP_LIMIT_MB,
     V3_TOP_LEVEL_KEYS,
     UserConfigV3,
     compose_effective_config,
@@ -47,13 +48,12 @@ def _document(**overrides: object) -> dict:
             }
         },
         "project": {
-            "root": ".",
             "language": "c_cpp",
             "platform": "linux_user",
             "targets": [{"id": "service", "compile_commands": "build/compile_commands.json"}],
         },
         "scan": {
-            "preset": "overnight",
+            "preset": "deep",
             "focus": ["memory", "resources", "async_lifecycle"],
             "reproduction": "auto",
         },
@@ -87,7 +87,7 @@ def _v2_document() -> dict:
                 "api_key": "unit-key",
             }
         },
-        "project": {"root": ".", "source_root": ".", "language": "c_cpp"},
+        "project": {"language": "c_cpp"},
         "scan": {"task": ""},
         "indexing": {"backend": "regex"},
         "concurrency": {
@@ -118,13 +118,13 @@ def test_full_document_parses_into_the_formal_model(tmp_path: Path) -> None:
         model.project.targets[0].compile_commands
         == (tmp_path / "build" / "compile_commands.json").resolve()
     )
-    assert model.scan.preset == "overnight"
+    assert model.scan.preset == "deep"
     assert model.scan.focus == ("memory", "resources", "async_lifecycle")
     assert model.scan.reproduction == "auto"
     assert model.scan.mapped_depth == "deep"
     assert model.scan.mapped_depth_source == "config"
-    assert "temporary internal mapping" in model.scan.mapping_note
-    assert "shadow experiments" in model.scan.mapping_note
+    assert "same execution depth" in model.scan.mapping_note
+    assert "experimental rules remain unchanged" in model.scan.mapping_note
     assert model.execution.timezone == "Asia/Taipei"
     assert model.execution.max_workers == 4
     window = model.execution.stop_window
@@ -144,7 +144,7 @@ def test_minimal_document_uses_declared_defaults(tmp_path: Path) -> None:
 
     model = parse_user_config_v3(str(path), now=datetime(2026, 10, 14, 7, 0, tzinfo=timezone.utc))
 
-    assert model.scan.preset == "overnight"
+    assert model.scan.preset == "deep"
     assert model.scan.focus == FOCUS_AREAS
     assert model.scan.reproduction == "auto"
     # A defaulted preset is not an explicit user choice and stays rollout-gateable.
@@ -162,7 +162,7 @@ def test_wiring_notes_list_supported_and_unwired_surfaces(tmp_path: Path) -> Non
 
     states = {note.field: note.state for note in model.wiring}
     assert states["llms"] == "wired"
-    assert states["project.root"] == "wired"
+    assert states["config_path"] == "wired"
     assert states["project.language"] == "wired"
     assert states["project.targets"] == "wired"
     assert states["scan.preset"] == "wired"
@@ -199,14 +199,13 @@ def test_root_resolves_relative_to_the_config_directory_not_the_cwd(
     )
 
 
-def test_root_subdirectory_and_absolute_paths_are_anchored_to_the_root(
+def test_compile_databases_anchor_to_config_directory_or_explicit_absolute_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_dir = tmp_path / "conf"
     config_dir.mkdir()
     absolute_database = tmp_path / "external" / "compile_commands.json"
     document = _document()
-    document["project"]["root"] = "../engine"
     document["project"]["targets"] = [
         {"id": "lib", "compile_commands": "build/cc.json"},
         {"id": "hosted", "compile_commands": str(absolute_database)},
@@ -216,13 +215,13 @@ def test_root_subdirectory_and_absolute_paths_are_anchored_to_the_root(
 
     model = parse_user_config_v3(str(path))
 
-    assert model.project.root == (tmp_path / "engine").resolve()
+    assert model.project.root == config_dir.resolve()
     by_id = {target.id: target.compile_commands for target in model.project.targets}
-    assert by_id["lib"] == (tmp_path / "engine" / "build" / "cc.json").resolve()
+    assert by_id["lib"] == (config_dir / "build" / "cc.json").resolve()
     assert by_id["hosted"] == absolute_database.resolve()
 
 
-def test_v2_root_stays_cwd_relative_so_the_v3_change_cannot_silently_apply(
+def test_v2_also_anchors_the_project_to_the_config_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_dir = tmp_path / "conf"
@@ -236,7 +235,7 @@ def test_v2_root_stays_cwd_relative_so_the_v3_change_cannot_silently_apply(
 
     assert config.user_config_version == 2
     assert config.user_config_v3 is None
-    assert config.project.project_root == other_cwd.resolve()
+    assert config.project.project_root == config_dir.resolve()
 
 
 # --- Composition into the current execution chain -------------------------------
@@ -249,7 +248,7 @@ def test_config_loader_composes_a_single_target_v3_document(tmp_path: Path) -> N
 
     assert config.user_config_version == 3
     assert isinstance(config.user_config_v3, UserConfigV3)
-    assert config.user_config_v3.scan.preset == "overnight"
+    assert config.user_config_v3.scan.preset == "deep"
     assert config.scan.depth == "deep"
     assert config.scan.depth_source == "config"
     assert config.scan.task == ""
@@ -259,6 +258,7 @@ def test_config_loader_composes_a_single_target_v3_document(tmp_path: Path) -> N
         == (tmp_path / "build" / "compile_commands.json").resolve()
     )
     assert config.indexing.backend == "unified"
+    assert config.indexing.svf_heap_limit_mb == V3_SVF_HEAP_LIMIT_MB
     assert config.llm.models == ["unit-model"]
     assert config.llm.api_key == "unit-key"
 
@@ -274,7 +274,7 @@ def test_read_only_load_skips_rollout_preflight_and_ledger(tmp_path: Path) -> No
 
 
 def test_quick_preset_maps_to_fast(tmp_path: Path) -> None:
-    document = _document(scan={"preset": "quick"})
+    document = _document(scan={"preset": "fast"})
     path = _write(tmp_path, document)
 
     model = parse_user_config_v3(str(path))
@@ -297,7 +297,7 @@ def test_java_document_composes_the_java_backend(tmp_path: Path) -> None:
     document = _document()
     document["project"]["language"] = "java"
     document["project"]["targets"] = [{"id": "app"}]
-    document["scan"]["preset"] = "quick"
+    document["scan"]["preset"] = "fast"
     path = _write(tmp_path, document)
 
     config = ConfigLoader.load(str(path), read_only=True)
@@ -314,7 +314,7 @@ def test_java_overnight_preset_is_rejected_with_an_explicit_reason(tmp_path: Pat
     document["project"]["targets"] = [{"id": "app"}]
     path = _write(tmp_path, document)
 
-    with pytest.raises(ValueError, match="scan.preset 'overnight'.*java.*use 'quick'"):
+    with pytest.raises(ValueError, match="scan.preset 'deep'.*java.*use 'fast'"):
         parse_user_config_v3(str(path))
 
 
@@ -335,6 +335,16 @@ def test_preset_does_not_enable_shadow_experiments(tmp_path: Path) -> None:
     )
     assert config.analysis.semantic_model_demand_mode == runtime.analysis.semantic_model_demand_mode
     assert config.scan.task == ""  # legacy field untouched by the v3 intent
+
+
+def test_v3_composition_enables_entry_discovery_for_direct_scans(tmp_path: Path) -> None:
+    path = _write(tmp_path, _document())
+
+    config = ConfigLoader.load(str(path), read_only=True)
+
+    assert config.project.entry_function is None
+    assert config.project.entry_functions_list is None
+    assert config.project.entry_discovery.enabled is True
 
 
 def test_multi_target_identities_are_retained_and_composition_refuses(
@@ -454,7 +464,14 @@ def test_unknown_keys_are_rejected_in_every_section(
     target[key] = {} if section is None else "value"
     path = _write(tmp_path, document)
 
-    with pytest.raises(ValueError, match=f"unknown configuration key .*{key}"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            f"project.{key} removed"
+            if section == "project" and key in {"root", "source_root"}
+            else f"unknown configuration key .*{key}"
+        ),
+    ):
         parse_user_config_v3(str(path))
 
 
@@ -493,8 +510,8 @@ def test_v3_document_mislabeled_as_v2_reports_the_offending_section(
 @pytest.mark.parametrize(
     ("overrides", "pattern"),
     [
-        ({"scan": {"preset": "balanced"}}, "scan.preset must be one of: overnight, quick"),
-        ({"scan": {"preset": "deep"}}, "scan.preset must be one of: overnight, quick"),
+        ({"scan": {"preset": "quick"}}, "scan.preset quick/overnight removed"),
+        ({"scan": {"preset": "overnight"}}, "scan.preset quick/overnight removed"),
         ({"scan": {"focus": ["concurrency"]}}, "scan.focus contains unknown area"),
         ({"scan": {"focus": []}}, "scan.focus must not be empty"),
         ({"scan": {"reproduction": "off"}}, "scan.reproduction must be one of: auto"),
@@ -541,7 +558,7 @@ def test_java_target_cannot_declare_compile_commands(tmp_path: Path) -> None:
     document = _document()
     document["project"]["language"] = "java"
     document["project"]["targets"] = [{"id": "app", "compile_commands": "build/cc.json"}]
-    document["scan"]["preset"] = "quick"
+    document["scan"]["preset"] = "fast"
     path = _write(tmp_path, document)
 
     with pytest.raises(ValueError, match="compile_commands is not valid for Java"):
@@ -828,7 +845,7 @@ def test_target_database_rules_are_language_conditional_in_schema_and_parser(
     java_document = _document()
     java_document["project"]["language"] = "java"
     java_document["project"]["targets"] = [{"id": "app", "compile_commands": "cc.json"}]
-    java_document["scan"]["preset"] = "quick"
+    java_document["scan"]["preset"] = "fast"
     java_path = _write(tmp_path, java_document, name="java.yaml")
     with pytest.raises(ValueError, match="compile_commands is not valid for Java"):
         parse_user_config_v3(str(java_path))
@@ -849,7 +866,7 @@ def test_preset_availability_is_language_gated_in_schema_and_parser(
     # allowed preset is required.
     assert branch["then"]["required"] == ["scan"]
     assert branch["then"]["properties"]["scan"]["required"] == ["preset"]
-    assert branch["then"]["properties"]["scan"]["properties"]["preset"]["enum"] == ["quick"]
+    assert branch["then"]["properties"]["scan"]["properties"]["preset"]["enum"] == ["fast"]
 
     # Parser parity: a java document without an explicit preset defaults to
     # overnight, which the language gate rejects.
@@ -858,13 +875,13 @@ def test_preset_availability_is_language_gated_in_schema_and_parser(
     document["project"]["targets"] = [{"id": "app"}]
     del document["scan"]
     path = _write(tmp_path, document)
-    with pytest.raises(ValueError, match="scan.preset 'overnight'.*use 'quick'"):
+    with pytest.raises(ValueError, match="scan.preset 'deep'.*use 'fast'"):
         parse_user_config_v3(str(path))
 
     # And the schema-allowed explicit choice loads.
-    document["scan"] = {"preset": "quick"}
+    document["scan"] = {"preset": "fast"}
     path = _write(tmp_path, document)
-    assert parse_user_config_v3(str(path)).scan.preset == "quick"
+    assert parse_user_config_v3(str(path)).scan.preset == "fast"
 
 
 def test_loader_enforced_constraints_are_disclosed_in_the_schema() -> None:
@@ -887,7 +904,6 @@ def test_non_empty_string_fields_declare_min_length_and_the_parser_agrees(
     schema = public_json_schema()
 
     fields = [
-        schema["properties"]["project"]["properties"]["root"],
         schema["properties"]["project"]["properties"]["targets"]["items"]["properties"][
             "compile_commands"
         ],
@@ -910,5 +926,5 @@ def test_non_empty_string_fields_declare_min_length_and_the_parser_agrees(
     empty_root = _document()
     empty_root["project"]["root"] = ""
     path = _write(tmp_path, empty_root, name="empty-root.yaml")
-    with pytest.raises(ValueError, match="project.root must not be empty"):
+    with pytest.raises(ValueError, match="project.root removed"):
         parse_user_config_v3(str(path))

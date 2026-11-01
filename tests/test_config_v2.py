@@ -25,8 +25,6 @@ def _config(root: Path, *, language: str = "c_cpp") -> dict:
             }
         },
         "project": {
-            "root": str(root),
-            "source_root": ".",
             "language": language,
             "entry_discovery": {
                 "enabled": True,
@@ -184,14 +182,16 @@ def test_project_wiki_config_is_strict_and_root_relative(tmp_path: Path) -> None
     assert config.project.wiki.explanatory_overrides == ["docs/contracts/**/*.md"]
 
 
-def test_project_wiki_limits_default_to_unlimited_without_changing_llm_profile(tmp_path: Path) -> None:
+def test_project_wiki_limits_default_to_unlimited_without_changing_llm_profile(
+    tmp_path: Path,
+) -> None:
     config = ConfigLoader.load(str(_write(tmp_path, _config(tmp_path))))
 
     wiki = config.project.wiki
     assert wiki.compiler_max_tokens is None
     assert wiki.max_wall_seconds is None
     assert wiki.max_constraints is None
-    assert config.llms["default"].max_tokens == 4096
+    assert config.llms["default"].max_tokens == 8192
 
 
 def test_project_wiki_accepts_explicit_local_limits(tmp_path: Path) -> None:
@@ -349,55 +349,35 @@ def test_runtime_paths_are_anchored_to_project_root(tmp_path: Path) -> None:
     )
 
 
-def test_search_root_is_relative_to_source_root_and_cannot_escape(tmp_path: Path) -> None:
+def test_search_root_is_relative_to_the_only_project_directory(tmp_path: Path) -> None:
     module = tmp_path / "src" / "modules" / "api"
     module.mkdir(parents=True)
     data = _config(tmp_path)
-    data["project"]["source_root"] = "src"
-    data["project"]["entry_discovery"]["search_root"] = "modules/api"
-    config = ConfigLoader.load(str(_write(tmp_path, data)))
+    data["project"]["entry_discovery"]["search_root"] = "src/modules/api"
+    config = ConfigLoader.load(str(_write(tmp_path, data)), read_only=True)
     assert config.project.entry_discovery.search_root == module.resolve()
-
+    assert not hasattr(config.project, "source_root")
     data["project"]["entry_discovery"]["search_root"] = "../outside"
-    (tmp_path / "outside").mkdir(exist_ok=True)
-    with pytest.raises(ValueError, match="inside project.source_root"):
-        ConfigLoader.load(str(_write(tmp_path, data)))
+    (tmp_path.parent / "outside").mkdir(exist_ok=True)
+    with pytest.raises(ValueError, match="inside the configuration directory"):
+        ConfigLoader.load(str(_write(tmp_path, data)), read_only=True)
 
 
-def test_search_root_inside_project_root_but_outside_source_root_is_rejected(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / "src").mkdir()
-    (tmp_path / "modules").mkdir()
+@pytest.mark.parametrize("field", ["root", "source_root"])
+def test_removed_root_fields_require_explicit_migration(tmp_path: Path, field: str) -> None:
     data = _config(tmp_path)
-    data["project"]["source_root"] = "src"
-    data["project"]["entry_discovery"]["search_root"] = "../modules"
-    with pytest.raises(ValueError, match="inside project.source_root"):
-        ConfigLoader.load(str(_write(tmp_path, data)))
+    data["project"][field] = "."
+    with pytest.raises(ValueError, match=f"project.{field} removed"):
+        ConfigLoader.load(str(_write(tmp_path, data)), read_only=True)
 
 
-def test_relative_project_root_resolves_against_working_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """相对 project.root 基于加载进程的 CWD 解析（仓库内 demo 配置的既有约定）。
-
-    子进程继承同一 CWD，因此 CLI / Web 仪表盘 / MCP 的解析结果保持一致；
-    search_root 相对路径则固定基于 source_root，与 CWD 无关。
-    """
-
-    project_dir = tmp_path / "demo"
-    (project_dir / "src" / "api").mkdir(parents=True)
-    data = _config(project_dir)
-    data["project"]["root"] = "demo"
-    data["project"]["source_root"] = "src"
-    data["project"]["entry_discovery"]["search_root"] = "api"
-    _write(project_dir, data)
-
+def test_v2_project_root_is_the_config_directory_from_any_cwd(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = _write(project, _config(project))
     monkeypatch.chdir(tmp_path)
-    config = ConfigLoader.load(str(project_dir / "zscope.yaml"))
-    assert config.project.project_root == project_dir.resolve()
-    assert config.project.source_root == (project_dir / "src").resolve()
-    assert config.project.entry_discovery.search_root == (project_dir / "src" / "api").resolve()
+    config = ConfigLoader.load(str(path), read_only=True)
+    assert config.project.project_root == project.resolve()
 
 
 def test_cross_language_fields_are_rejected(tmp_path: Path) -> None:

@@ -32,7 +32,14 @@ def record():
     }
 
 
-def test_llm_extractor_preserves_program_owned_identity():
+def test_llm_extractor_preserves_program_owned_identity(monkeypatch):
+    from zscope.agents.review_memory.agent import ReviewMemoryAgent
+    from zscope.framework.base import AgentResponse
+
+    # A compromised/custom Agent must still not overwrite program identities.
+    monkeypatch.setattr(ReviewMemoryAgent, "run", lambda self, _input: AgentResponse(
+        success=True, data=json.loads(self.llm_client.content)
+    ))
     proposal = extract_with_llm(
         record(),
         FakeLLM(json.dumps({

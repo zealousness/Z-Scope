@@ -22,6 +22,9 @@ from .models import JobError
 
 _MANIFEST_LIMIT = 50_000
 _HASH_CHUNK = 1024 * 1024
+# Product report artifacts are outputs, not source inputs. In particular a
+# first-window report must not invalidate the next window's input identity.
+_GENERATED_REPORTS = frozenset({"zscope_batch_report.json", "zscope_report.json"})
 _SKIPPED_DIRS = frozenset(
     {
         ".git",
@@ -80,6 +83,8 @@ def _source_manifest(source_root: Path) -> Dict[str, Any]:
         for dirpath, dirnames, filenames in os.walk(source_root, followlinks=False):
             dirnames[:] = sorted(d for d in dirnames if d not in _SKIPPED_DIRS)
             for name in sorted(filenames):
+                if name in _GENERATED_REPORTS and Path(dirpath) == source_root:
+                    continue
                 if entries >= _MANIFEST_LIMIT:
                     capped = True
                     break
@@ -163,7 +168,7 @@ def compute_input_fingerprint(
 
     project = config.project
     project_root = Path(project.project_root)
-    source_root = Path(project.source_root) if project.source_root else project_root
+    source_root = project_root
 
     compile_commands = getattr(project, "compile_commands_path", None)
     entry_list_path: Optional[Path] = None
@@ -203,6 +208,7 @@ def compute_input_fingerprint(
             Path(compile_commands) if isinstance(compile_commands, (str, Path)) else None
         ),
         "entry_functions_list": _file_component(entry_list_path),
+        "project_semantics": _file_component(getattr(project, "semantics_file", None)),
         "user_config_file": _file_component(
             Path(user_config_file) if isinstance(user_config_file, (str, Path)) else None
         ),

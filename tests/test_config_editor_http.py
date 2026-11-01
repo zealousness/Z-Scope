@@ -98,7 +98,7 @@ def test_invalid_structured_save_keeps_original_bytes_and_no_candidates(config_h
         document["unexpected"] = True
     elif change == "java-database":
         document["project"]["language"] = "java"
-        document["scan"]["preset"] = "quick"
+        document["scan"]["preset"] = "fast"
     else:
         document["project"]["targets"] = []
     status, payload = request("/api/config/structured", {"config": document})

@@ -51,7 +51,7 @@ def frame(
     }
     body = {
         "complete": True,
-        "fact_version": "zscope.program-events.v5",
+        "fact_version": "zscope.program-events.v7",
         "owner": {"name": "dispose", "usr": usr, "file": "unit.c"},
         "events": events if events is not None else [event_template],
     }
@@ -166,7 +166,8 @@ def test_from_row_strips_usr_from_user_rows_but_keeps_compiler_rows():
 
 
 def test_compiler_version_moved_past_the_usr_less_records():
-    assert CONTRACT_COMPILER_VERSION == "zscope.contract-compiler.v26"
+    assert CONTRACT_COMPILER_VERSION.startswith("zscope.contract-compiler.v")
+    assert int(CONTRACT_COMPILER_VERSION.rsplit("v", 1)[1]) >= 29
 
 
 # --- unit: callee map and entry-USR helpers -----------------------------------------
@@ -545,3 +546,116 @@ def test_real_dual_tu_homonyms_reject_the_foreign_usr(native_index):
     with bind_call_context(caller_context("use_b", use_b), registry):
         assert not registry.match_call("service", "io_acquire", ["h"])
         assert not registry.match_call("service", "io_acquire", ["h"], usr=usr_a)
+
+
+def test_macro_reference_receipt_resolves_source_spelling_only_in_its_build() -> None:
+    facts = {
+        "complete": True,
+        "build_context_id": "ctx-a",
+        "function_identity": {"build_context_id": "ctx-a", "usr": "c:@F@caller"},
+        "functions": [
+            {
+                "complete": True,
+                "owner": {"name": "caller", "usr": "c:@F@caller"},
+                # The AST call names the function produced by expansion, not
+                # the source-level macro token.
+                "events": [
+                    {
+                        "event_kind": "call",
+                        "macro_expansion": True,
+                        "callee": {"name": "lock_wrapper", "usr": "c:@F@lock_wrapper"},
+                    }
+                ],
+            }
+        ],
+        "referenced_macros": [
+            {
+                "name": "LOCK",
+                "usr": "c:common.h@42@macro@LOCK",
+                "function_identity": {
+                    "usr": "c:@F@caller",
+                    "build_context_id": "ctx-a",
+                },
+            },
+            {
+                "name": "FOREIGN",
+                "usr": "c:other.h@1@macro@FOREIGN",
+                "function_identity": {
+                    "usr": "c:@F@caller",
+                    "build_context_id": "ctx-b",
+                },
+            },
+        ],
+    }
+
+    observed = callee_usr_map(
+        {"func_name": "caller", "build_context_id": "ctx-a", "program_facts": facts}
+    )
+
+    assert observed == {
+        "LOCK": "c:common.h@42@macro@LOCK",
+        "lock_wrapper": "c:@F@lock_wrapper",
+    }
+
+
+def test_exact_macro_reference_is_observed_when_path_parser_stops_at_switch() -> None:
+    from zscope.orchestration.parallel_analyzer import (
+        _semantic_contract_reference_rows,
+        _semantic_contract_trace_status,
+    )
+
+    macro_usr = "c:common.h@42@macro@SAFE_FREE"
+    registry = ContractRegistry(build_context_id="b1")
+    registry.add(
+        ApiContract(
+            SymbolIdentity(
+                name="SAFE_FREE",
+                file_path="common.h",
+                signature="#define SAFE_FREE(ptr)",
+                symbol_type="macro",
+                build_context_id="b1",
+                usr=macro_usr,
+            ),
+            "deallocator",
+            ObjectBinding("argument", 0),
+            source="inferred:project_semantics:project:macro:SAFE_FREE",
+            effect_cases=[{"when": {"op": "true"}, "effect": "applies"}],
+            verification={
+                "method": "source_composition",
+                "compiler_version": CONTRACT_COMPILER_VERSION,
+                "effect_strength": "must_under_guard",
+                "source_hash": "a" * 64,
+                "identity_verified": True,
+                "project_semantics_id": "project:macro:SAFE_FREE",
+                "authority": "native_current",
+            },
+        )
+    )
+    context = frame(events=[], usr="c:@F@dispose")
+    context["code"] = "void dispose(void *p) { switch (1) { case 1: SAFE_FREE(p); break; } }"
+    context["program_facts"]["referenced_macros"] = [
+        {
+            "name": "SAFE_FREE",
+            "usr": macro_usr,
+            "line": 1,
+            "function_identity": {
+                "usr": "c:@F@dispose",
+                "build_context_id": "b1",
+            },
+        }
+    ]
+
+    assert _semantic_contract_reference_rows(context, registry) == [
+        {
+            "name": "SAFE_FREE",
+            "usr": macro_usr,
+            "role": "deallocator",
+            "effects_trusted": True,
+            "source": "inferred:project_semantics:project:macro:SAFE_FREE",
+            "project_semantics_id": "project:macro:SAFE_FREE",
+            "build_context_id": "b1",
+            "reference_kind": "macro_reference",
+            "line": 1,
+        }
+    ]
+    assert _semantic_contract_trace_status(context, registry) == "source_parser_incomplete"

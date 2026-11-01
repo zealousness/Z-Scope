@@ -22,6 +22,40 @@ from .models import DetectorStage
 from .shared_access import SharedAccessIndex
 
 
+_PATH_STATE_QUERY_ROOTS = frozenset({"access", "stat", "lstat", "faccessat", "fstatat"})
+
+
+def _trusted_path_state_query(generator: Any, text: str) -> bool:
+    """Recognize a path query only through current executable semantics.
+
+    A project helper's spelling is never authority.  The call must resolve to
+    one exact trusted ``standard_operation`` contract, and that contract must
+    either be a verified system path query or transparently delegate to one.
+    """
+
+    registry = generator.semantics.contracts
+    for match in re.finditer(r"\b(?P<name>[A-Za-z_]\w*)\s*\(", text):
+        name = match.group("name")
+        for contract in registry.find_for_call(name, "standard_operation"):
+            if not contract.effects_trusted:
+                continue
+            roots = {contract.symbol.name}
+            for delegate in contract.delegates or []:
+                if not isinstance(delegate, dict):
+                    continue
+                symbol = delegate.get("symbol")
+                if isinstance(symbol, dict):
+                    roots.add(str(symbol.get("name") or ""))
+            if not roots.intersection(_PATH_STATE_QUERY_ROOTS):
+                continue
+            if registry.effect_possibility(name, "standard_operation", text) in {
+                "applies",
+                "possible",
+            }:
+                return True
+    return False
+
+
 STAGES = (
     DetectorStage(
         "regex",
@@ -282,13 +316,13 @@ class RegexProtocolOwnershipLogicRules:
             if self._unlock_re.search(line.text) and held_locks:
                 held_locks.pop()
 
-            if re.search(
-                self._literal_api_pattern(r"\b(?:access|stat|lstat|faccessat|fstatat)\s*\("),
-                line.text,
-            ) or re.search(
-                r"\b[A-Za-z_]\w*(?:check|validate|verify)[A-Za-z_0-9]*(?:permission|access|path|file)[A-Za-z_0-9]*\s*\(",
-                line.text,
-                re.IGNORECASE,
+            if _trusted_path_state_query(self, line.text) or (
+                not self.restrict_to_semantics
+                and re.search(
+                    r"\b[A-Za-z_]\w*(?:check|validate|verify)[A-Za-z_0-9]*(?:permission|access|path|file)[A-Za-z_0-9]*\s*\(",
+                    line.text,
+                    re.IGNORECASE,
+                )
             ):
                 permission_check_line = line
             if permission_check_line and re.search(
@@ -642,9 +676,38 @@ class RegexProtocolOwnershipLogicRules:
             )
 
         write_line = self._first_line_matching(
-            lines, re.compile(self._literal_api_pattern(r"\bwrite\s*\("))
+            lines,
+            re.compile(
+                self._literal_api_pattern(
+                    r"\bwrite\s*\(\s*(?P<fd>[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)"
+                )
+            ),
         )
-        if write_line and "SIGPIPE" not in text and "MSG_NOSIGNAL" not in text:
+        write_match = (
+            re.search(
+                r"\bwrite\s*\(\s*(?P<fd>[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)",
+                write_line.text,
+            )
+            if write_line
+            else None
+        )
+        peer_fd = str(write_match.group("fd") if write_match else "")
+        peer_evidence = bool(
+            re.search(r"(?:peer|socket|sock|pipe|conn|control|reply)", peer_fd, re.I)
+            or re.search(
+                rf"\b{re.escape(peer_fd)}\s*=\s*(?:::)?(?:socket|accept|accept4)\s*\(",
+                text,
+            )
+            or re.search(
+                rf"\b(?:pipe|socketpair)\s*\([^;]*\b{re.escape(peer_fd)}\b", text
+            )
+        )
+        if (
+            write_line
+            and peer_evidence
+            and "SIGPIPE" not in text
+            and "MSG_NOSIGNAL" not in text
+        ):
             emit(
                 defect_class="sigpipe_unhandled",
                 rule="write_without_sigpipe_handling",
@@ -660,6 +723,20 @@ class RegexProtocolOwnershipLogicRules:
             )
 
         for idx, line in enumerate(lines):
+            cpp_new = re.search(
+                r"\b(?:[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:\s*<[^;=]+>)?\s*)?"
+                r"\*\s*(?P<owner>[A-Za-z_]\w*)\s*=\s*new\b",
+                line.text,
+            )
+            if cpp_new:
+                self._emit_cpp_new_failed_status_leak(
+                    lines,
+                    idx,
+                    line,
+                    cpp_new.group("owner"),
+                    emit,
+                )
+
             alloc = re.search(
                 self._semantic_api_pattern(
                     r"\b(?P<owner>[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)\s*=\s*(?:\([^)]*\)\s*)?"
@@ -726,6 +803,290 @@ class RegexProtocolOwnershipLogicRules:
                             f"later path frees parent `{base}` without freeing the member",
                         ],
                     )
+
+        self._emit_unchecked_native_status_masking(lines, emit)
+
+    def _emit_cpp_new_failed_status_leak(
+        self,
+        lines: Sequence[CodeLine],
+        alloc_index: int,
+        alloc_line: CodeLine,
+        owner: str,
+        emit: Callable[..., None],
+    ) -> None:
+        """Find a raw ``new`` owner transferred only on a success branch.
+
+        Merely seeing ``new`` followed by a return is intentionally
+        insufficient.  The path must contain a status produced by an
+        operation on the new object, an ``ok()`` guard around the only
+        visible ownership handoff, and an unconditional return of that same
+        status after the guard.
+        """
+
+        tail = list(lines[alloc_index + 1 :])
+        if not tail:
+            return
+        release_re = re.compile(
+            rf"\b(?:delete\s*(?:\[\s*\])?\s*{re.escape(owner)}\b|"
+            rf"free\s*\(\s*{re.escape(owner)}\s*\))"
+        )
+        if any(release_re.search(item.text) for item in tail):
+            return
+
+        status_assignments: Dict[str, CodeLine] = {}
+        for item in tail:
+            status = re.search(
+                rf"\b(?:[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*\s+)?"
+                rf"(?P<status>[A-Za-z_]\w*)\s*=\s*[^;]*\b{re.escape(owner)}\s*"
+                rf"(?:->|\.)\s*[A-Za-z_]\w*\s*\(",
+                item.text,
+            )
+            if status:
+                status_assignments.setdefault(status.group("status"), item)
+        if not status_assignments:
+            return
+
+        for guard_index, guard_line in enumerate(
+            lines[alloc_index + 1 :], start=alloc_index + 1
+        ):
+            guard = re.search(
+                r"\bif\s*\(\s*(?P<status>[A-Za-z_]\w*)\s*\.\s*ok\s*\(\s*\)\s*\)",
+                guard_line.text,
+            )
+            if not guard:
+                continue
+            status_name = guard.group("status")
+            status_line = status_assignments.get(status_name)
+            if status_line is None or status_line.index >= guard_line.index:
+                continue
+            block_end = self._source_block_end(lines, guard_index)
+            if block_end is None:
+                continue
+            guarded = lines[guard_index : block_end + 1]
+            transfer_line = next(
+                (
+                    item
+                    for item in guarded
+                    if re.search(
+                        rf"(?:^|[^=!<>])=\s*{re.escape(owner)}\s*;",
+                        item.text,
+                    )
+                ),
+                None,
+            )
+            if transfer_line is None:
+                continue
+
+            return_line = next(
+                (
+                    item
+                    for item in lines[block_end + 1 :]
+                    if re.search(rf"\breturn\s+{re.escape(status_name)}\s*;", item.text)
+                ),
+                None,
+            )
+            if return_line is None:
+                continue
+            between = lines[alloc_index + 1 : return_line.index]
+            if any(release_re.search(item.text) for item in between):
+                continue
+            # A handoff outside the success guard also covers the failure
+            # return and therefore breaks this particular leak chain.
+            if any(
+                re.search(rf"(?:^|[^=!<>])=\s*{re.escape(owner)}\s*;", item.text)
+                for item in between
+                if item.index < guard_index or item.index > block_end
+            ):
+                continue
+
+            emit(
+                defect_class="memory_leak",
+                rule="error_path_allocation_not_released",
+                line=alloc_line,
+                description=(
+                    f"`{owner}` 由 C++ `new` 创建，但仅在 `{status_name}.ok()` 成功分支"
+                    "转移所有权；失败状态返回前没有释放它。"
+                ),
+                root_cause=(
+                    "原始指针的所有权转移受成功条件保护，而同一状态的失败路径直接返回，"
+                    "没有对应的 delete 或其他可见清理。"
+                ),
+                suggested_fix=(
+                    "在失败返回前 delete 该对象，或先用 std::unique_ptr 持有并仅在成功时 release。"
+                ),
+                source=alloc_line.text.strip(),
+                sink=return_line.text.strip(),
+                confidence=0.9,
+                impact_level="high",
+                positive=[
+                    f"line {alloc_line.number}: raw owner `{owner}` is created with C++ new",
+                    f"line {status_line.number}: `{status_name}` is produced by an operation on `{owner}`",
+                    f"line {transfer_line.number}: ownership is transferred only under `{status_name}.ok()`",
+                    f"line {return_line.number}: the same status is returned without deleting `{owner}` on failure",
+                ],
+                negative=[
+                    "no delete/free of the raw owner is visible before the status return",
+                    "no ownership handoff is visible outside the success-only branch",
+                ],
+                evidence={
+                    "path": {
+                        "function": getattr(self, "_function_name", ""),
+                        "complete_in_function": True,
+                        "source_line": alloc_line.number,
+                        "status_line": status_line.number,
+                        "guard_line": guard_line.number,
+                        "transfer_line": transfer_line.number,
+                        "sink_line": return_line.number,
+                        "path_constraints": [
+                            f"failure of {status_name}.ok() skips ownership transfer",
+                            f"return {status_name} executes on that failure path",
+                        ],
+                    },
+                    "ownership": {
+                        "object": owner,
+                        "acquire": "cxx_new",
+                        "success_transfer": transfer_line.text.strip(),
+                        "failure_release": "absent",
+                    },
+                },
+            )
+            return
+
+    @staticmethod
+    def _source_block_end(lines: Sequence[CodeLine], start_index: int) -> Optional[int]:
+        """Return the line index that closes a braced source block."""
+
+        depth = 0
+        opened = False
+        for index in range(start_index, len(lines)):
+            text = re.sub(r'"(?:\\.|[^"\\])*"', "", lines[index].text)
+            for char in text:
+                if char == "{":
+                    depth += 1
+                    opened = True
+                elif char == "}" and opened:
+                    depth -= 1
+                    if depth == 0:
+                        return index
+        return None
+
+    def _emit_unchecked_native_status_masking(self, lines: List[CodeLine], emit) -> None:
+        """Find an ignored, exact non-void call masked by a later return.
+
+        Source spelling alone cannot establish that a project call returns a
+        status.  The fast planner already supplies the current native
+        ``program_function`` receipt, so require the exact call event and its
+        canonical non-void signature before producing this candidate.
+        """
+
+        bodies = [
+            value
+            for value in (self.program_facts.get("functions") or [])
+            if isinstance(value, Mapping)
+        ]
+        if len(bodies) != 1:
+            return
+        events_by_line: Dict[int, List[Mapping[str, Any]]] = {}
+        for event in bodies[0].get("events") or []:
+            if not isinstance(event, Mapping) or event.get("event_kind") != "call":
+                continue
+            location = event.get("location")
+            if not isinstance(location, Mapping):
+                continue
+            line_number = int(location.get("line") or 0)
+            if line_number > 0:
+                events_by_line.setdefault(line_number, []).append(event)
+
+        def nonvoid_project_call(event: Mapping[str, Any]) -> tuple[str, str] | None:
+            callee = event.get("callee")
+            if not isinstance(callee, Mapping):
+                return None
+            name = str(callee.get("name") or event.get("callee_name") or "")
+            signature = str(
+                callee.get("canonical_signature") or callee.get("signature") or ""
+            ).strip()
+            result = signature.split("(", 1)[0].strip().lower()
+            if (
+                not name
+                or not signature
+                or result in {"", "void"}
+                or bool(callee.get("is_system_header"))
+                or not str(callee.get("usr") or callee.get("referenced_usr") or "")
+            ):
+                return None
+            return name, signature
+
+        for line in lines:
+            stripped = line.text.strip()
+            standalone = re.fullmatch(r"(?P<callee>[A-Za-z_]\w*)\s*\([^;]*\)\s*;", stripped)
+            if (
+                standalone is None
+                or stripped.startswith("(void)")
+                or re.match(r"(?:return|if|while|for|switch)\b", stripped)
+                or "=" in stripped.split("(", 1)[0]
+            ):
+                continue
+            native = next(
+                (
+                    details
+                    for event in events_by_line.get(line.number, [])
+                    if (details := nonvoid_project_call(event)) is not None
+                    and details[0] == standalone.group("callee")
+                    and not str(event.get("assignment_target") or "")
+                ),
+                None,
+            )
+            if native is None:
+                continue
+            returned_line = None
+            returned_native = None
+            for later in lines[line.index + 1 : line.index + 8]:
+                if re.search(r"\b(?:if|while|switch)\s*\(", later.text):
+                    break
+                returned = re.search(r"\breturn\s+(?P<callee>[A-Za-z_]\w*)\s*\(", later.text)
+                if returned:
+                    returned_native = next(
+                        (
+                            details
+                            for event in events_by_line.get(later.number, [])
+                            if (details := nonvoid_project_call(event)) is not None
+                            and details[0] == returned.group("callee")
+                        ),
+                        None,
+                    )
+                    if returned_native is not None:
+                        returned_line = later
+                    break
+                if re.search(r"\breturn\s+(?:0|true)\s*;", later.text):
+                    returned_line = later
+                    returned_native = ("success_literal", "int")
+                    break
+            if returned_line is None or returned_native is None:
+                continue
+            emit(
+                defect_class="unchecked_return",
+                rule="error_probe_can_return_success",
+                line=line,
+                description=(
+                    f"`{native[0]}` 的非 void 返回状态被丢弃，随后函数返回了"
+                    f" `{returned_native[0]}` 的独立结果。"
+                ),
+                root_cause=(
+                    "前一个可失败操作的状态没有参与控制流或最终返回值，"
+                    "后续成功结果可能掩盖该失败。"
+                ),
+                suggested_fix="保存并检查每个状态；任一步失败时立即返回或合并错误状态。",
+                source=f"{native[0]}: {native[1]}",
+                sink=returned_line.text.strip(),
+                confidence=0.82,
+                impact_level="high",
+                positive=[
+                    f"line {line.number}: current native receipt identifies `{native[0]}` as `{native[1]}`",
+                    f"line {line.number}: the returned status is neither assigned nor checked",
+                    f"line {returned_line.number}: an independent result is returned instead",
+                ],
+                negative=[],
+            )
 
     def _emit_borrowed_after_unlock(
         self, lines: List[CodeLine], return_line: CodeLine, emit
@@ -1143,6 +1504,7 @@ class GraphProtocolOwnershipLogicRules:
         self._emit_registration_race_candidate(view, issues)
         self._emit_alloc_free_mismatch_candidate(view, issues)
         self._emit_key_generation_race_candidate(view, issues)
+        self._emit_callee_external_length_to_buffer_candidate(view, issues)
 
     def _emit_fd_contract_candidate(
         self,
@@ -1628,7 +1990,16 @@ class ClangProtocolOwnershipLogicRules:
             self._maybe_emit_fd_leak_on_error_return(
                 issues, func_name, file_path, lines, allowed_skills, line
             )
+            self._maybe_emit_global_mapping_overwrite(
+                issues, func_name, file_path, lines, allowed_skills, line
+            )
+            self._maybe_emit_guarded_fd_release_gap(
+                issues, func_name, file_path, lines, allowed_skills, line
+            )
             self._maybe_emit_unchecked_strchr_result(
+                issues, func_name, file_path, lines, allowed_skills, line
+            )
+            self._maybe_emit_unchecked_wait_status_read(
                 issues, func_name, file_path, lines, allowed_skills, line
             )
             self._maybe_emit_thread_stack_escape(
@@ -1911,35 +2282,51 @@ class ClangProtocolOwnershipLogicRules:
             return
         _api, raw_released = release
         released = self._resource_expr(raw_released) or self._resource_var(raw_released)
-        if not (released == "node" or released.startswith("node->")):
+        if not re.fullmatch(r"[A-Za-z_]\w*", released):
             return
-        body = "\n".join(item.text for item in lines)
-        if "children" in body:
-            return
+        root = released
         prefix = lines[: line.index]
-        insert_line = self._last_line_matching(
-            prefix, re.compile(r"\b[A-Za-z_]\w*insert_locked\s*\(\s*node\s*\)")
-        )
-        unlink_line = self._last_line_matching(
-            prefix,
-            re.compile(r"\bg_[A-Za-z_0-9.]*registry[A-Za-z_0-9.]*\.head\s*=\s*node->next\s*;"),
-        )
-        unlock_line = self._last_line_matching(prefix, self._unlock_call_re)
-        lock_line = self._last_line_matching(prefix, self._lock_call_re)
-        if not (insert_line and unlink_line and unlock_line and lock_line):
+        unlink_match = None
+        unlink_line = None
+        for item in reversed(prefix):
+            match = re.search(
+                rf"(?P<container>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*)\s*=\s*"
+                rf"{re.escape(root)}\s*->\s*(?P<link>[A-Za-z_]\w*)\s*;",
+                item.text,
+            )
+            if match and not re.fullmatch(
+                rf"{re.escape(root)}\s*->.*", match.group("container").strip()
+            ):
+                unlink_line, unlink_match = item, match
+                break
+        if unlink_line is None or unlink_match is None:
             return
-        if not (
-            lock_line.index < insert_line.index < unlink_line.index < unlock_line.index < line.index
-        ):
+
+        lock_line = None
+        lock_object = ""
+        for item in reversed(lines[: unlink_line.index]):
+            matched_lock = self._match_lock(item.text)
+            matched_unlock = self._match_unlock(item.text)
+            if matched_unlock:
+                break
+            if matched_lock:
+                lock_line, lock_object = item, matched_lock[1]
+                break
+        if lock_line is None:
+            return
+
+        unlock_line = None
+        normalized_lock = re.sub(r"\s+|^&", "", lock_object)
+        for item in lines[unlink_line.index + 1 : line.index]:
+            matched_unlock = self._match_unlock(item.text)
+            if matched_unlock and re.sub(r"\s+|^&", "", matched_unlock[1]) == normalized_lock:
+                unlock_line = item
+                break
+        if unlock_line is None:
             return
         for item in lines[unlock_line.index + 1 : line.index]:
-            prior_release = self._match_release(item.text)
-            if not prior_release:
-                continue
-            prior_arg = self._resource_expr(prior_release[1]) or self._resource_var(
-                prior_release[1]
-            )
-            if prior_arg == "node" or prior_arg.startswith("node->"):
+            matched_lock = self._match_lock(item.text)
+            if matched_lock and re.sub(r"\s+|^&", "", matched_lock[1]) == normalized_lock:
                 return
         self._emit(
             issues,
@@ -1958,10 +2345,10 @@ class ClangProtocolOwnershipLogicRules:
             confidence=0.82,
             impact_level="critical",
             positive=[
-                f"line {insert_line.number}: node is inserted into shared registry state",
-                f"line {unlink_line.number}: registry head is advanced to unlink `node`",
-                f"line {unlock_line.number}: registry lock is released before cleanup",
-                f"line {line.number}: node-owned storage is freed after the unlock window",
+                f"line {lock_line.number}: `{lock_object}` protects the container update",
+                f"line {unlink_line.number}: `{unlink_match.group('container').strip()}` bypasses `{root}` through `{unlink_match.group('link')}`",
+                f"line {unlock_line.number}: the same protection lock is released before cleanup",
+                f"line {line.number}: unlinked object `{root}` is freed after the unlock window",
             ],
             negative=[
                 "Validator must confirm whether registry readers can retain borrowed node pointers across this unlock window."
@@ -1969,12 +2356,11 @@ class ClangProtocolOwnershipLogicRules:
             ast_cfg=self._ast_cfg_pack(
                 lines,
                 [
-                    self._event("registry_insert", insert_line, "node", "", insert_line.text),
-                    self._event("registry_unlink", unlink_line, "node", "", unlink_line.text),
-                    self._event("registry_unlock", unlock_line, "registry", "", unlock_line.text),
+                    self._event("registry_unlink", unlink_line, root, "", unlink_line.text),
+                    self._event("registry_unlock", unlock_line, lock_object, "", unlock_line.text),
                     self._event("post_unlock_release", line, released, "", line.text),
                 ],
-                [insert_line.number, unlink_line.number, unlock_line.number, line.number],
+                [unlink_line.number, unlock_line.number, line.number],
             ),
         )
 
@@ -2079,6 +2465,24 @@ class ClangProtocolOwnershipLogicRules:
             return parsed
         return str(func_name or "")
 
+    def _known_refcount_fields(self) -> Set[str]:
+        """Return compiler-verified/configured refcount carriers by field identity.
+
+        The protocol registry owns the meaning; detector spelling is only a
+        backward-compatible fallback for legacy ``ref_count`` candidates.
+        """
+
+        fields: Set[str] = set()
+        for contract in self.semantics.contracts.contracts:
+            protocol = contract.protocol or {}
+            if protocol.get("family", protocol.get("kind")) != "non_atomic_refcount":
+                continue
+            path = str(protocol.get("count_path") or "")
+            match = re.fullmatch(r"(?:->|\.)([A-Za-z_]\w*)", path)
+            if match:
+                fields.add(match.group(1))
+        return fields
+
     def _find_owned_member_assignment(
         self,
         lines: Sequence[ClangCfgLine],
@@ -2094,22 +2498,12 @@ class ClangProtocolOwnershipLogicRules:
                 continue
             member = match.group("member")
             rhs = match.group("rhs").strip()
-            if not (self._is_owned_member_name(member) or self._looks_like_owned_member_rhs(rhs)):
+            if not self._looks_like_owned_member_rhs(rhs):
                 continue
             if re.fullmatch(r"(?:NULL|nullptr|0)", rhs):
                 continue
             return item, member, rhs
         return None
-
-    @staticmethod
-    def _is_owned_member_name(member: str) -> bool:
-        return bool(
-            re.search(
-                r"(?:child|children|proc_head|head$|_head$|list$|_list$|items$|_items$|entries$|_entries$)",
-                str(member or ""),
-                re.IGNORECASE,
-            )
-        )
 
     def _looks_like_owned_member_rhs(self, rhs: str) -> bool:
         return bool(
@@ -2148,41 +2542,26 @@ class ClangProtocolOwnershipLogicRules:
         release_line: ClangCfgLine,
         parent: str,
     ) -> Optional[Tuple[ClangCfgLine, str]]:
-        create_line = next(
-            (
-                item
-                for item in reversed(lines[max(0, release_line.index - 40) : release_line.index])
-                if re.search(
-                    self._semantic_api_pattern(
-                        rf"\b{re.escape(parent)}\s*=\s*(?:\([^)]*\)\s*)?"
-                        r"(?:malloc|calloc|realloc|strdup)\s*\("
-                    ),
-                    item.text,
-                    re.IGNORECASE,
-                )
-            ),
-            None,
-        )
-        if create_line is None:
+        create_line = None
+        api = ""
+        for item in reversed(lines[max(0, release_line.index - 60) : release_line.index]):
+            assignment = re.search(
+                rf"\b{re.escape(parent)}\s*=\s*(?:\([^)]*\)\s*)?"
+                r"(?P<api>[A-Za-z_]\w*)\s*\(",
+                item.text,
+            )
+            if not assignment:
+                continue
+            candidate = assignment.group("api")
+            if any(
+                contract.carrier.kind == "return" and contract.carrier.member_path
+                for contract in self.semantics.contracts.find(candidate)
+            ):
+                create_line, api = item, candidate
+                break
+        if create_line is None or not api:
             return None
         region = "\n".join(item.text for item in lines[create_line.index + 1 : release_line.index])
-        common_members = ("payload", "context", "ctx", "tag", "buffer", "data", "value")
-        for member in common_members:
-            member_expr = rf"{re.escape(parent)}\s*->\s*{member}"
-            if re.search(member_expr, region) and not re.search(
-                self._semantic_api_pattern(rf"\b(?:free)\s*\([^;]*{member_expr}"),
-                region,
-                re.IGNORECASE,
-            ):
-                return create_line, member
-        api = next(
-            (
-                name
-                for name, _args in self._calls(create_line.text)
-                if self.semantics.contracts.find(name)
-            ),
-            "",
-        )
         owned_members = {
             c.carrier.member_path.removeprefix("->").removeprefix(".")
             for c in self.semantics.contracts.find(api)
@@ -2972,11 +3351,24 @@ class ClangProtocolOwnershipLogicRules:
         if getenv:
             env_vars[getenv.group("var")] = line
 
-        system_call = re.search(
-            self._literal_api_pattern(r"\bsystem\s*\(\s*(?P<arg>[A-Za-z_]\w*)\s*\)"), line.text
+        from ....semantics.call_operands import call_operands, is_literal_string
+
+        command = next(
+            (
+                operand
+                for operand in call_operands(
+                    self.semantics.contracts,
+                    line.text,
+                    "command_sink",
+                    file_path=file_path,
+                )
+                if not is_literal_string(operand.expression)
+            ),
+            None,
         )
-        if system_call:
-            arg = system_call.group("arg")
+        if command is not None:
+            arg = command.expression
+            api = command.name
             self._emit(
                 issues,
                 func_name,
@@ -2986,20 +3378,20 @@ class ClangProtocolOwnershipLogicRules:
                 defect_class="command_injection",
                 rule="clang_cfg_system_with_nonliteral_command",
                 line=line,
-                description=f"`system` 执行了非字面量的命令缓冲区 `{arg}`。",
+                description=f"`{api}` 使用了非字面量的命令参数 `{arg}`。",
                 root_cause="shell 命令文本是在进程内构造的，可能携带用户或环境可控的令牌。",
                 suggested_fix="避免使用 `system`；直接向 execve/posix_spawn 传递 argv 并校验每个参数。",
                 source=arg,
                 sink=line.text,
                 confidence=0.84,
                 impact_level="critical",
-                positive=[f"line {line.number}: `system` executes non-literal `{arg}`"],
+                positive=[f"line {line.number}: `{api}` consumes non-literal `{arg}`"],
                 negative=[
                     "Validator must trace whether the command buffer is attacker-controlled."
                 ],
                 ast_cfg=self._ast_cfg_pack(
                     lines,
-                    [self._event("system_call", line, arg, "system", line.text)],
+                    [self._event("command_sink", line, arg, api, line.text)],
                     [line.number],
                 ),
             )
@@ -3183,13 +3575,14 @@ class ClangProtocolOwnershipLogicRules:
 
     def _is_path_check(self, text: str) -> bool:
         return bool(
-            re.search(
-                self._literal_api_pattern(r"\b(?:access|stat|lstat|faccessat|fstatat)\s*\("), text
-            )
-            or re.search(
-                r"\b[A-Za-z_]\w*(?:check|validate|verify)[A-Za-z_0-9]*(?:permission|access|path|file)[A-Za-z_0-9]*\s*\(",
-                text,
-                re.IGNORECASE,
+            _trusted_path_state_query(self, text)
+            or (
+                not self.restrict_to_semantics
+                and re.search(
+                    r"\b[A-Za-z_]\w*(?:check|validate|verify)[A-Za-z_0-9]*(?:permission|access|path|file)[A-Za-z_0-9]*\s*\(",
+                    text,
+                    re.IGNORECASE,
+                )
             )
         )
 

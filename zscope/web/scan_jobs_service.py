@@ -24,6 +24,16 @@ class ScanJobsHttpService:
         self.config_path = Path(config_path)
         self.feedback = feedback
         self._engine = engine
+        self._schedule_engine: Any = None
+
+    def _schedules(self) -> Any:
+        if self._schedule_engine is None:
+            if sys.platform != "linux":
+                raise RuntimeError("persistent schedules require Linux")
+            from ..orchestration.jobs.schedules import ScanScheduleService
+
+            self._schedule_engine = ScanScheduleService(self.config_path, engine=self._service())
+        return self._schedule_engine
 
     @staticmethod
     def _error(code: str, message: str, status: int) -> tuple[int, dict[str, Any]]:
@@ -53,7 +63,7 @@ class ScanJobsHttpService:
         )
 
     def get(self, path: str, query: str) -> tuple[int, dict[str, Any]]:
-        if path == "/api/jobs":
+        if path in {"/api/jobs", "/api/schedules"}:
             params = self._query(query, set())
         elif path in {"/api/jobs/detail", "/api/jobs/result"}:
             params = self._query(query, {"job_id"})
@@ -70,6 +80,9 @@ class ScanJobsHttpService:
         ):
             return self._error("invalid_request", "事件游标必须是非负整数", 400)
         try:
+            if path == "/api/schedules":
+                response = self._schedules().list()
+                return response.status_code, response.payload
             engine = self._service()
             if path == "/api/jobs/result":
                 return self._result(engine, params["job_id"])
@@ -86,6 +99,25 @@ class ScanJobsHttpService:
             )
 
     def post(self, path: str, payload: Any) -> tuple[int, dict[str, Any]]:
+        if path in {"/api/schedules", "/api/schedules/cancel"}:
+            if not isinstance(payload, dict):
+                return self._error("invalid_request", "定时扫描请求字段无效", 400)
+            if path.endswith("/cancel") and not {
+                "schedule_id",
+                "base_revision",
+                "request_id",
+            } <= set(payload) <= {"schedule_id", "base_revision", "request_id", "stop_running"}:
+                return self._error("invalid_request", "定时扫描取消参数无效", 400)
+            try:
+                engine = self._schedules()
+                response = (
+                    engine.cancel(**payload)
+                    if path.endswith("/cancel")
+                    else engine.create(**payload)
+                )
+                return response.status_code, response.payload
+            except (ImportError, OSError, ValueError, RuntimeError, TypeError):
+                return self._error("unavailable", "定时扫描需要已连接的 Linux 后台", 503)
         if path == "/api/jobs":
             required, allowed = {"request_id"}, {"request_id", "scan_depth", "stop_at"}
         elif path in {"/api/jobs/cancel", "/api/jobs/resume"}:

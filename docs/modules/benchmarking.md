@@ -5,6 +5,9 @@ covers:
 sources:
   - zscope/benchmarking/protocol.py
   - zscope/benchmarking/runner.py
+  - zscope/benchmarking/semantics.py
+  - zscope/benchmarking/semantic_runner.py
+  - zscope/benchmarking/semantic_scoring.py
   - zscope/benchmarking/policy.py
   - zscope/benchmarking/isolation.py
   - zscope/benchmarking/attestation.py
@@ -40,6 +43,7 @@ tests:
   - tests/test_review_experiment_protocol.py
   - tests/test_benchmark_leakage.py
   - tests/test_benchmark_runner.py
+  - tests/test_benchmark_semantics.py
   - tests/test_range_benchmark_regression.py
   - tests/test_range_release_aggregate.py
   - tests/test_formal_benchmark_runner.py
@@ -55,6 +59,12 @@ tests:
 ---
 
 # Benchmark
+
+## 最小语义配置诊断
+
+`scripts/audit_semantic_configuration.py --config <工程配置> --output <新文件.json>` 在 Linux 上对相同精确 native 函数清单执行三组本地候选与调用效果比较：内置语义、内置加自动推导、再加已确认项目配置。配置只读，模型调用为零，不读取答案文件。记录原配置 SHA-256、BuildContext、逐函数候选、推导缺口、配置命题差异及耗时。自动闭包每构建计算一次，实际调用者只接收经真实链接核验的导出效果。
+
+这是直接候选生成器的诊断范围，包含实验检测器；不代表默认规则集的最终报告。它没有执行 TU/图/SVF 全链路或 Validator，因此候选增减不能换算为 TP/FP、precision 或 recall，也不能只因某条款未产生候选就删除配置。完整命题等价标记限于当前效果；仅相同对象/role、不同条件或配对不算等价。范围、原配置和评分参照保持独立，报告始终 `formal_eligible=false`、`minimum_configuration_proven=false`。
 
 ## 实施计划的开发评测准备
 
@@ -72,6 +82,11 @@ tests:
 
 ## 主入口和数据流
 
+- C/C++ 的 `run --mode prepare --scan-depth fast|balanced|deep` 执行无模型的真实构建、链接、接口审阅决定重绑定和 doctor 检查。trial/formal 自动消费同一准备阶段；formal 的准备命令也通过 OCI executor。密封输入与执行项目分开，旧 BuildContext/机器证据不随人工决定复用。配置内 `benchmark_review` 只对源码及契约命题完全相同的审阅结果授权；变化必须重新审阅。
+- `zscope-benchmark semantics` 从 none_known 空配置调用产品发现命令，进程退出后由 host-only `semantic_scoring.py` 读取同一份源码独立审阅的扫描 YAML。正向效果的召回分母不受发现结果影响；规范化比较排除身份元数据和排列噪声，保留契约条件和责任差异。不再独立维护接口 truth JSON；范围外命题和非等价表达进入待审查，不能直接判误报。准备阶段只执行真实 native 重绑定，不用重新发现的结果替换审阅输入。入口、评分字段与证据归档见 `docs/range-benchmark.md`。
+- 接口评测的 `reference_coverage` 将全部参照义务分为严格匹配、候选不合法、契约有差异和效果候选缺失；这些状态互斥，而旧 missing 与输出 invalid/mismatch 有重叠。`contract_proposals` 与旧 advisory 分开检查模型完成度，不把结构修正失败或未尝试的单位算作完成。新增有效但超出审阅范围的效果保留 unreviewed，严格一致率不等同最终语义准确率。相同对象的 allocator/calloc 子类变化只用于定位差异候选，不能算严格命中或完全未发现。
+- 范围外输出的逐项源码审阅是扫描后的补充报告，不成为新的参照或发现输入。分别统计真实新增边界、冗余提案、错误契约；保守 may 与精确契约分开解释。发现批次的证据去重不改变精确构建身份和调查单位，成本对照同时记录全部 provider usage、完成度和固定分母质量，保留失败的优化试验。
+
 - `zscope/benchmarking/protocol.py` 提供 `zscope.benchmark.v4` 单次评分、候选生命周期漏斗、发现/决策二维归因和成本指标；旧 schema 仅作只读兼容。漏斗的 `canonical_group_attribution` 同时投影验证升级阶梯：`reached_by_rung`/`confirmed_by_rung`/`drop_reason_by_rung`（R1=R1_validator_v1、R2=R2_v3_reattempt、R3=R3_v2b_adjudication，R3 臂交付前恒 0）。
 - 验证级 rung 实验（R2/R3/τ）用 answer-free replay 臂离线差分：`scripts/replay_tau_channel.py`（τ 扫描，谓词与 pipeline 逐项对齐）与 `scripts/run_validator_replay.py`/`scripts/score_validator_replay_experiment.py`；扫描级 rung 累积差分用 `scripts/rung_attribution.py`（输入多份 run artifact 输出 TP_added/FP_added/tokens 差分表）。
 - `zscope-benchmark` 是内置 fixture 的唯一公开入口；`smoke`、`trial`、`formal` 分别承担离线结构门禁、单轮预览和至少五轮的发布门禁。
@@ -79,7 +94,11 @@ tests:
 - `scripts/evaluate_range_regression.py` 评估确定性候选的 Range 覆盖。
 - `check_entry_coverage.py` 在正式扫描前核对入口覆盖；它可以读取 truth，但不得把 truth 传入扫描 prompt。
 - 扫描报告生成后，独立 scorer 读取报告与 ground truth，输出 matched pairs、TP、FN、raw/effective FP、precision、recall 和 F1。
+- 当前 C/C++ Range canonical truth 为 v17/141。v17 的外部工具 non-GT 复核只纳入 7 个二审通过的新根，合并或退休 5 个重复/不成立记录；完整分类、探针摘要和源码摘要冻结在 `test/range/benchmark/maintenance/formal_verification_non_gt_audit.v1.json`。仍为 unknown 的契约或平台项不进入分母，已有 truth manifestation 只通过结构化 secondary/additional anchor 归并，不能新增函数名到 GT ID 的 scorer 硬编码。
 - `zscope.formal-benchmark.v3` 聚合至少五轮 cold run；`zscope.benchmark-policy.v1` 是发布门禁的唯一政策源。
+- C/C++ fast 报告的 `metadata.fast_static_scan` 使用 `zscope.fast-static-scan.v1`：公开唯一函数实例/本地实际执行/重复执行、Clang AST/CFG、regex、matcher 与扩展 provider 的实际本地执行数、最小分析单元、图/backend/link coverage、系统 API 与 native wrapper 授权身份、raw→dedup→V0/decision-ready/Validator→三态漏斗，以及 `zscope.fast-static-cache.v12` 的 cold/hot/invalid/write-failure 计数和阶段耗时。Validator 观测包含 raw/parsed/final verdict、fact/edge 可读率、四态 provider 与 delta、有效证据门禁和 claim replay、严格 DSML 归一化，以及截断或畸形终态的一次紧凑修复重试；所有启发式 score 明示为 `ranking_only`。每个函数分析单元还记录当前 BuildContext 下实际解析的语义 contract call、role、适用性和人工语义 ID；缓存命中不计作本地或图的实际执行。
+
+- post-score candidate coverage audit 只在扫描关闭后读取 truth，并逐 GT 保存类别、文件、函数、行、分析单元、规则及候选 UID。v3 审计以 obligation profile、source/sink 角色和所需跨函数端点做 mechanism-qualified 匹配；只有 category/family 重合但 profile 不符、引用错误局部机制或遗漏相关 endpoint 的候选分别进入 `family_only` / `wrong_mechanism`，不再计入语义覆盖。该诊断只用于评分后归因，不能进入扫描输入或反向改变候选。fast readiness 要求默认 confirmed precision 至少 90%（零 confirmed 为 0%）、机制级语义覆盖至少 90%、`decision_ready == validator_validated`、协议异常/空事实引用/虚假 provider 能力为零、验证队列清空、`duplicate_local_executions=0`、默认启用规则具有可核验的外部 qualification evidence，并且 link/build coverage 闭合；recall、候选 recall、耗时和 LLM 成本仍完整披露。
 - answer-free `validator_replay_bundle.v1` 只导出 canonical validation groups、证据/事实与哈希，不含 truth、历史 Validator verdict 或评分结果，用于固定候选集上的 A–E 隔离实验。bundle 合约显式区分 V1 初始 facts 与 provider-resolvable frozen reservoir；同一 fact record 或 UID 出现在两个分区时 fail closed，V2 只能从 reservoir 取得新增量。
 - balanced/deep 产品分档召回实验与历史 A–E arm 分开解释：生产 V3 已移除 top-5%/top-20% 截断，balanced 调查 high/critical 或外部可达且有可闭合证据缺口的未决 cluster，deep 调查全部无完整反证的非 shadow 未决 cluster；每个 cluster 使用一个最多 50 次模型迭代的只读工具会话。实验必须先做 cold pilot 的 eligible→entered→promotion 链路检查，通过后才运行每档五轮，并同时归档双视图、V3 fact/transition 与逐 agent/stage token。
 - 打包的 `validator_arms.v1.json` 固定 A–D 的 pass、repair、事实补充和调查轨迹，并把 E 定义为冻结旧多轮 Validator 的 17M 预期成本/召回上界；E 不是 bounded v3 调查的别名。A 冻结当前 generic loop 的精确 forced-final 指令和 terminal-tool bridge，与 B 的直接结构化 V1 严格分离；D 只对 high/critical、外部可达、达到 balanced 风险阈值并位于 top 5% 的 V2 未决 cluster 开放一条、最多两次冻结只读查询的轨迹。`scripts/run_validator_replay.py` 只接受已验哈希的 answer-free bundle、可选 post-run cost expectation 和 executor/model/prompt 身份，按 cluster 顺序生成 `zscope.validator-replay-run.v1` 调用与 token ledger。A–D 可用 `--builtin-provider-config` 从严格的 answer-free provider JSON 构造 fresh `LLMClient`，每次 executor 调用只允许一个 HTTP attempt且必须返回 provider usage；失败/中断或不合法 usage 按请求投影保守计量，但仍可继续既定 repair。`scripts/describe_validator_replay_provider.py` 离线派生实际配置、Prompt模板与加载代码的三个哈希，run CLI 再与调度方外部冻结的 expected hashes 核对。当前 legacy Validator 缺少 replay-safe 的逐 attempt usage/session 接口，内置 E 因而 fail closed，并保留显式 external adapter；外部 E 的一次调用仍必须是完整旧多轮 session并聚合所有 provider usage 与 `api_attempt_count`。普通 CLI 中的 `package.module` adapter 一律标为 non-formal，不接受自报 OCI evidence；在 host-side RootlessOciExecutor 实际执行/inspect 并受保护地签入 evidence 之前，formal E 实验 fail closed。truth 匹配必须由执行完成后的独立 scorer 完成。
@@ -91,6 +110,8 @@ tests:
 
 ## 必须保持的不变量
 
+- Runner 生成的执行配置位于本轮目标工程目录，文件名逐轮独立并拒绝覆盖已有文件；配置不再声明 `project.root/source_root`。归档目录保留配置字节副本，不能把该副本直接用作工程执行入口。Formal 的健康、索引和扫描命令读取 `/zscope-cache/project/` 中的同一配置，让配置目录与实际构建工程一致，不在只读密封输入中伪造可写工程根。
+
 - Review 实验 checkpoint 保存完整事实、构建依赖、前序 ValidatorResult 和原始工具结果；拒绝 truth、评分和离线标签字段。报告投影只允许 compiler pilot 诊断，缺少精确前序结果或失效依赖时不得当作可恢复 replay。
 - `replay_review_experiment.py` 在 Linux/WSL 中按冻结 RC 清单恢复，使用真实 ValidationRunner 的最终分流与关联 Ledger；baseline、protocol、facts、neutral、positive、related 各组独立运行。neutral 与 positive 使用相同工具、模型、迭代预算，只有 V3 任务目标不同。输出写在独立实验目录，正式 unified 协议、答案隔离和成本要求保持不变。
 - 独立审计分类为 true_defect、provable_fp、duplicate、out_of_scope、unknown，审计文件以内容哈希冻结，不能以未匹配 truth 推导 FP。`compare_paired_replays` 需要五个独立配对、每轮 truth 集合不退化、confirmed FP 不增加、全部原候选可追踪，以及自动拒绝可重新检查。新增关联 FP 纳入 review 总量，任何未知审计项或缺失正式 truth 集合都不得给出达标结论。
@@ -100,12 +121,12 @@ tests:
 - Range 是分布内开发/回归集，不是生产泛化结论。发布必须依次报告 Range、public external、独立团队保管的 sealed 集和真实项目 shadow；没有 sealed attestation 不能宣称通过生产门禁。
 - formal/sealed 扫描必须在 rootless OCI 隔离中运行，只挂载 answer-free 项目、配置、工具链和输出目录；scanner cwd、mount 和环境不得可达源码 checkout、`test/`、truth 或 scorer。缺少 Podman/Docker 隔离能力时 fail closed。
 - formal workflow 除要求 `repository@sha256:<digest>` 外，还校验 scanner image 的 `org.opencontainers.image.revision` 等于被测 Git SHA；每轮 summary 绑定 report、score、input manifest、tool health、Validator replay bundle 与原始 usage sidecar 的实际字节 SHA，Release evaluator 会从下载 artifact 重新计算并逐项对账。
-- public external formal 必须把项目复制到 checkout 外的临时 sealed input，再复制到独立的 writable cache project；只读输入、writable artifact 和 writable cache 三个 mount 必须互不包含。entries 要先通过 answer-key 字段检查，容器 config/compile commands 只含容器路径，truth 必须等 scanner 退出并通过 `require_release_isolation` 后才由 host scorer 加载。
+- public external formal 必须把项目复制到 checkout 外的临时 sealed input，再复制到独立的 writable cache project；只读输入、writable artifact 和 writable cache 三个 mount 必须互不包含。entries 要先通过 answer-key 字段检查，容器 config/compile commands 只含容器路径，truth 必须等 scanner 退出并通过 `require_release_isolation` 后才由 host scorer 加载。配置统一以 YAML 所在目录为唯一根：外部套件配置放在 `project/zscope.benchmark.yaml`；cold 运行复用原配置并仅隔离 RuntimeSpec cache 路径。formal 执行配置随密封 project 复制到 writable project，再从 `/zscope-cache/project/zscope.execution.yaml` 加载，保持三挂载隔离；根外的配置副本只用于产物归档，不能作为执行入口。旧 root/source_root 配置必须显式迁移或重新准备套件。
 - 正式 unified 结果要求 Linux 用户态和完整工具链，SVF/Saber 降级结果不能冒充正式结果。
 - Windows 主机使用 WSL；原生 Linux 直接运行等价命令；原生 Windows 不形成正式结果。
 - `test/` 不包含执行 runner、历史报告或后台 launcher；fixture 根每种语言只保留一份正式配置。
 - C/C++ formal 不读取 deterministic entry manifest，入口必须由隔离副本中的自动发现产生。
-- scorer 以结构化 file/function/category/location/evidence 匹配，并保留 `matched_pairs` 供人工审计。类别门是单向任一命中：truth 单一 `category` 命中 issue 的类别集合（`category`/`categories`/`defect_class`/`defect_family` 等）即 `category_exact`；两侧 CWE 集合（含 `cwes` 列表与斜杠复合标签）有交集即 `cwe_exact`；同预定义族为 `category_family`。配对策略为多 TP：每个 truth 独立认领其分数最高的强配对，同一 issue（例如聚合后的多 CWE 位点）可命中多个 truth，而每个 truth 无论被多少 issue 命中都只计一个 TP；额外的同位 issue 走 `truth_covered_additional`/`same_product_root` 豁免。
+- scorer 以结构化 file/function/category/location/evidence 匹配，并保留 `matched_pairs` 供人工审计。类别门是单向任一命中：truth 单一 `category` 命中 issue 的类别集合（`category`/`categories`/`defect_class`/`defect_family` 等）即 `category_exact`；两侧 CWE 集合（含 `cwes` 列表与斜杠复合标签）有交集即 `cwe_exact`；同预定义族为 `category_family`。资源生命周期族包含具体的 memory/fd leak 和 broader `incomplete_cleanup`，但仍要求同一结构化函数/位置与机制证据，不能靠关键词升级。配对策略为多 TP：每个 truth 独立认领其分数最高的强配对，同一 issue（例如聚合后的多 CWE 位点）可命中多个 truth，而每个 truth 无论被多少 issue 命中都只计一个 TP；额外的同位 issue 走 `truth_covered_additional`/`same_product_root` 豁免。同一结构化 sink 同时有 confirmed 与 needs_review 时，聚合主记录必须优先 confirmed，review 只能贡献标签/证据并成为可审计 alias，不能反向隐藏精确视图结果。
 - raw FP、duplicate-of-matched 和 effective FP 必须分开保留，不能通过静默删除重复报告美化指标。
 - 没有 safe units/true negatives 的数据集不得把 `FP/(TP+FP)` 称为经典 FPR；应报告 actionable FDR、raw FP 和 precision。经典 FPR 仅在 truth 明确给出 safe units 时计算。
 - 每次正式评分必须输出 `discovered_by × decided_by` 交叉表、LLM 独占 TP、tokens/TP、marginal tokens/新增 TP、tokens/KLOC、p50/p95、五轮 Jaccard/极差和 Range→sealed generalization gap。
@@ -143,7 +164,7 @@ python -m pytest -q tests/test_discovery_ablation.py
 python -m pytest -q tests/test_discovery_ablation_experiment.py
 python -m pytest -q tests/test_external_benchmark_oci.py
 python scripts/check_benchmark_hygiene.py
-python scripts/evaluate_range_regression.py --deterministic-candidates
+python scripts/evaluate_range_regression.py --regex-candidates
 ```
 
 完整 LLM/unified 扫描需要有效模型配置和 Linux 工具链，不应作为普通单元测试自动启动。

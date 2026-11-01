@@ -1,0 +1,352 @@
+{
+  "schema": "zscope.webui-comparison-capture.v1",
+  "captured_at": "2026-10-23T15:35:16.472Z",
+  "baseline_commit": "2693b74665991508affec2d71a181077324ff677",
+  "scope": "Synthetic API rendering only. No real scan, model, configuration or report files read. Not backend acceptance.",
+  "fixture_sha256": "9e5cfe043f9d0ea00f20423de7ffa236478017a606b9ac43acb1f527f6431423",
+  "sources": {
+    "before": {
+      "dashboard_config.js": "dd9dbc8e20d614048af3b5aa8e218166930e4ad726efd235aa2aaed276dd0f12",
+      "dashboard_reports.js": "554009551f76265cd3f096cded04e8fa5d06254f33d83883a604f1cb96320637",
+      "dashboard_workbench.css": "88f6a8eddf8b89bf89a2ce27b281e8385ff509d15553e2ff98be066663822384",
+      "dashboard_workbench.js": "5e74f8fc1ae35bc8a661cffc0446893a250391fd4e6e23d70e81895e1754dbdc",
+      "index.html": "c01d9ffab38ee5a8b52ae040b8c2c5ee8fa078d3b10e296a1126d7d620f9eda9",
+      "offline_review.js": "9ca5d645541b30d820eb707d8c7c02311ff2c0565fd9d649262e0b2862508042",
+      "offline_template.html": "3f48122023e2d59e4efaf0353fcc58d4771de9bc90b425ecf2d323acf0d63a98",
+      "report_view.css": "d2e2a3c95d89c709bcaa91a737b9fa4bdf11cfea53f377fa6a24d9f918b90ad8",
+      "report_view.js": "ad0b93ea04440cfe7d6e2e1e73b12c51a9a1d49b101027451fd15a9d8bbe225a",
+      "vendor/alpine.LICENSE": "5f05c4925dd3edf049a70b4b403ac0dd43b20f72501d9359911ddd25d5ac657d",
+      "vendor/alpine.js": "3ed1eed252488921df65e363d6715deb04d7f92aaedb9e52199fdf73cb1e0ad3",
+      "vendor/daisyui.LICENSE": "8709e3ac65c84637c422dc8082b893d9997fce093751c77b2f1983bf29dbf9ea",
+      "vendor/daisyui.css": "d5514aacaf99f4eca9e73fa6a27d485b3eb76e2f35c6d8f86ed343770269b1b0",
+      "vendor/fflate.LICENSE": "805f6cb28bb8b6d3a0badd83c93bccd9671fa01a3b4b92b7042b0743325ac243",
+      "vendor/fflate.js": "c3b34f2e9f5e74d4d7d64e01cac7a0c01954c6c406414d42185c7b53d6875ddf",
+      "vendor/js-yaml.LICENSE": "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98bd63961f9550",
+      "vendor/js-yaml.js": "0de3dec92d20eab9e0b46a5d928cd45ec025d73e348ddf458dbfb01da00cb473",
+      "vendor/markdown-it.LICENSE": "792c48c5a849a15fdf9e37e8bcf9e6d1dd13b32b46c642a748a0a46a9919d473",
+      "vendor/markdown-it.js": "c833317a56b17b17cc1910f3b7004447573487cd1fed4c1bcef90afbcbf5c234",
+      "vendor/prism-c.js": "9e05cf21207bff46afbf80cb8f43bb58bc4a4a87b68f28bc0470342f69345209",
+      "vendor/prism-cpp.js": "12077d9ea67882c149066e94843a6ede9036994b3724bfc45b31d97619328e14",
+      "vendor/prism-java.js": "4c2dc81dfc9efa51e38a7573938065288c63c64850f01a32f8a7b20a3e24c5a7",
+      "vendor/prism.LICENSE": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b",
+      "vendor/prism.css": "1b15fe2971998a048aebb60f26f6eed76122071db9ef3b995abd003224f52a98",
+      "vendor/prism.js": "e7b88bddc6c757b2fc8cb113e2469801ab14a78ec1a8fada4d6391e3573f5f9f",
+      "vendor/tailwind.LICENSE": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985",
+      "vendor/tailwind.css": "8b8474230d38092dc2fd77e019aba4e857b34189c3db52a532a2eb7f994f2f80"
+    },
+    "after": {
+      "dashboard_config.js": "dd9dbc8e20d614048af3b5aa8e218166930e4ad726efd235aa2aaed276dd0f12",
+      "dashboard_navigation.js": "74dd0d9de30503b98f3595f92a35899de206429e03c452ca00f1ecf159a9ea24",
+      "dashboard_redesign.css": "99304ded99f6eac354d0ad9bac7c38d1d81f6c5496843ae640a561879827764e",
+      "dashboard_reports.js": "554009551f76265cd3f096cded04e8fa5d06254f33d83883a604f1cb96320637",
+      "dashboard_workbench.css": "88f6a8eddf8b89bf89a2ce27b281e8385ff509d15553e2ff98be066663822384",
+      "dashboard_workbench.js": "590f8850605c16ea3e61f9fed345d939c75aa37edd33dab19325d40083323678",
+      "index.html": "ff9ee8a8cfaaa2ae200761377db2132a279ea6e6e2c9313b886ef48f8c202292",
+      "offline_review.js": "9ca5d645541b30d820eb707d8c7c02311ff2c0565fd9d649262e0b2862508042",
+      "offline_template.html": "3f48122023e2d59e4efaf0353fcc58d4771de9bc90b425ecf2d323acf0d63a98",
+      "report_view.css": "d2e2a3c95d89c709bcaa91a737b9fa4bdf11cfea53f377fa6a24d9f918b90ad8",
+      "report_view.js": "ad0b93ea04440cfe7d6e2e1e73b12c51a9a1d49b101027451fd15a9d8bbe225a",
+      "vendor/alpine.LICENSE": "5f05c4925dd3edf049a70b4b403ac0dd43b20f72501d9359911ddd25d5ac657d",
+      "vendor/alpine.js": "3ed1eed252488921df65e363d6715deb04d7f92aaedb9e52199fdf73cb1e0ad3",
+      "vendor/daisyui.LICENSE": "8709e3ac65c84637c422dc8082b893d9997fce093751c77b2f1983bf29dbf9ea",
+      "vendor/daisyui.css": "d5514aacaf99f4eca9e73fa6a27d485b3eb76e2f35c6d8f86ed343770269b1b0",
+      "vendor/fflate.LICENSE": "805f6cb28bb8b6d3a0badd83c93bccd9671fa01a3b4b92b7042b0743325ac243",
+      "vendor/fflate.js": "c3b34f2e9f5e74d4d7d64e01cac7a0c01954c6c406414d42185c7b53d6875ddf",
+      "vendor/js-yaml.LICENSE": "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98bd63961f9550",
+      "vendor/js-yaml.js": "0de3dec92d20eab9e0b46a5d928cd45ec025d73e348ddf458dbfb01da00cb473",
+      "vendor/markdown-it.LICENSE": "792c48c5a849a15fdf9e37e8bcf9e6d1dd13b32b46c642a748a0a46a9919d473",
+      "vendor/markdown-it.js": "c833317a56b17b17cc1910f3b7004447573487cd1fed4c1bcef90afbcbf5c234",
+      "vendor/prism-c.js": "9e05cf21207bff46afbf80cb8f43bb58bc4a4a87b68f28bc0470342f69345209",
+      "vendor/prism-cpp.js": "12077d9ea67882c149066e94843a6ede9036994b3724bfc45b31d97619328e14",
+      "vendor/prism-java.js": "4c2dc81dfc9efa51e38a7573938065288c63c64850f01a32f8a7b20a3e24c5a7",
+      "vendor/prism.LICENSE": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b",
+      "vendor/prism.css": "1b15fe2971998a048aebb60f26f6eed76122071db9ef3b995abd003224f52a98",
+      "vendor/prism.js": "e7b88bddc6c757b2fc8cb113e2469801ab14a78ec1a8fada4d6391e3573f5f9f",
+      "vendor/tailwind.LICENSE": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985",
+      "vendor/tailwind.css": "8b8474230d38092dc2fd77e019aba4e857b34189c3db52a532a2eb7f994f2f80"
+    }
+  },
+  "captures": [
+    {
+      "file": "before-overview-1440.png",
+      "version": "before",
+      "page": "overview",
+      "width": 1440,
+      "height": 900,
+      "sha256": "7084fa3aea663979dca3edc95885765ce9be089e98b4b00ee51962f186a678af",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-scans-1440.png",
+      "version": "before",
+      "page": "scans",
+      "width": 1440,
+      "height": 900,
+      "sha256": "7084fa3aea663979dca3edc95885765ce9be089e98b4b00ee51962f186a678af",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-jobs-1440.png",
+      "version": "before",
+      "page": "jobs",
+      "width": 1440,
+      "height": 900,
+      "sha256": "3821926f9a4250a53a3809f3b08b10a957261f19c67117af4f4e731efc7931d4",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-issues-1440.png",
+      "version": "before",
+      "page": "issues",
+      "width": 1440,
+      "height": 900,
+      "sha256": "ef61516c83b3f25e5ee86e59aedddb3066f54c3d1588287aae70c8b27d1b4232",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-coverage-1440.png",
+      "version": "before",
+      "page": "coverage",
+      "width": 1440,
+      "height": 900,
+      "sha256": "d6c481ff5c8e6a21691f2005db91d5e1d80a68e193eaf60ba1a5bb3de9d0576b",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-settings-1440.png",
+      "version": "before",
+      "page": "settings",
+      "width": 1440,
+      "height": 900,
+      "sha256": "aea24a513a669bf2fca9fc7eebae6a31a8e51985bf61b5f57142218367a1e4e5",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-flow.webm",
+      "version": "before",
+      "kind": "navigation-recording",
+      "sha256": "1244974eaa100ea9a5eea2188666ad1098f98542d3414c72fe9414fb0f9df3b8"
+    },
+    {
+      "file": "before-overview-390.png",
+      "version": "before",
+      "page": "overview",
+      "width": 390,
+      "height": 844,
+      "sha256": "d773fd545d8374dd14eeb154d77908f2b7a8275dcc1b76bd82da1fcc1a98ca6c",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-scans-390.png",
+      "version": "before",
+      "page": "scans",
+      "width": 390,
+      "height": 844,
+      "sha256": "d773fd545d8374dd14eeb154d77908f2b7a8275dcc1b76bd82da1fcc1a98ca6c",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-jobs-390.png",
+      "version": "before",
+      "page": "jobs",
+      "width": 390,
+      "height": 844,
+      "sha256": "49a49153c18d6dfb3ce55dbfceb31a108a9d95f1035ec556594cdcb387d35e28",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-issues-390.png",
+      "version": "before",
+      "page": "issues",
+      "width": 390,
+      "height": 844,
+      "sha256": "ad99106921e2018382d534cc0d2eaaa2eb47bd448b094177585f4744049d21dc",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-coverage-390.png",
+      "version": "before",
+      "page": "coverage",
+      "width": 390,
+      "height": 844,
+      "sha256": "22c15ae3fcea2851bafa89740bacd871ef7057ce3ea66d463cc8b01f751c18f2",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "before-settings-390.png",
+      "version": "before",
+      "page": "settings",
+      "width": 390,
+      "height": 844,
+      "sha256": "22d07e57196116eee084613724dd4612b896662d728ccd77482f771767697786",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-overview-1440.png",
+      "version": "after",
+      "page": "overview",
+      "width": 1440,
+      "height": 900,
+      "sha256": "2706b482fee6c5e7d184ce15555ec379ec082fdab8bd3de587d94f7f79df9e67",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-scans-1440.png",
+      "version": "after",
+      "page": "scans",
+      "width": 1440,
+      "height": 900,
+      "sha256": "e2353f69f3f021a6d4b52be68283dcedce9297ad4efb609dc510bba33c06a896",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-jobs-1440.png",
+      "version": "after",
+      "page": "jobs",
+      "width": 1440,
+      "height": 900,
+      "sha256": "b8121bb34a7bd9999008873b199613ed4a9cbec0b53545324d1f1286f7dc7b53",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-issues-1440.png",
+      "version": "after",
+      "page": "issues",
+      "width": 1440,
+      "height": 900,
+      "sha256": "195957c3257d15a9fbc0f093c3788078d14c0b26c500e1972c8e79a228e9108c",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-coverage-1440.png",
+      "version": "after",
+      "page": "coverage",
+      "width": 1440,
+      "height": 900,
+      "sha256": "dfd386ff0905100e7a01c1f15e8827440484c0df6d2aedfbc60b3eca187a65e5",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-settings-1440.png",
+      "version": "after",
+      "page": "settings",
+      "width": 1440,
+      "height": 900,
+      "sha256": "719d026a3ca77713c6ef1423f2d5efb3db0193727d31fbb7d472ded92366372f",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-flow.webm",
+      "version": "after",
+      "kind": "navigation-recording",
+      "sha256": "9e786cef24ffe88241675f4b526a4f611f27bf46a09c4dd56cbfdf4c01dea4a6"
+    },
+    {
+      "file": "after-overview-390.png",
+      "version": "after",
+      "page": "overview",
+      "width": 390,
+      "height": 844,
+      "sha256": "4c575f872d579e46081018645139cc0c09e6ed9b80be695ab32bd2302cf768c0",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-scans-390.png",
+      "version": "after",
+      "page": "scans",
+      "width": 390,
+      "height": 844,
+      "sha256": "145f2e982b238d7ab9b9bc63ad4dcb502a00e20844a9e12a8839f76b31888e74",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-jobs-390.png",
+      "version": "after",
+      "page": "jobs",
+      "width": 390,
+      "height": 844,
+      "sha256": "e88fedcc8992781c13c67ae42e880627e8cf056489f1e631d4b3227b60623c59",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-issues-390.png",
+      "version": "after",
+      "page": "issues",
+      "width": 390,
+      "height": 844,
+      "sha256": "a146c578b75c0871e7a828068cb325c7ae0ff1031d1c071c51821c6975702411",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-coverage-390.png",
+      "version": "after",
+      "page": "coverage",
+      "width": 390,
+      "height": 844,
+      "sha256": "557ed4b01ab5aaf2fde2c3dab0aa0f657e64d285354a46bc4738ec7aa01eb697",
+      "horizontal_overflow": false
+    },
+    {
+      "file": "after-settings-390.png",
+      "version": "after",
+      "page": "settings",
+      "width": 390,
+      "height": 844,
+      "sha256": "e080dc24fbcbb2bc17ed3b7d983ea28ac6cae8254500435b30c5cc6ca91f6448",
+      "horizontal_overflow": false
+    }
+  ],
+  "errors": [],
+  "unexpected_requests": [],
+  "writes": [],
+  "product_browser_checks": [
+    {
+      "width": 390,
+      "pages": 6,
+      "keyboard_selection": true,
+      "skip_link_keeps_route": true,
+      "review_readable": true,
+      "filters_and_reload": true,
+      "back_restore": true,
+      "stale_report_hidden": true,
+      "exact_snapshot_binding": true,
+      "errors": []
+    },
+    {
+      "width": 1280,
+      "pages": 6,
+      "keyboard_selection": true,
+      "skip_link_keeps_route": true,
+      "review_readable": true,
+      "filters_and_reload": true,
+      "back_restore": true,
+      "stale_report_hidden": true,
+      "exact_snapshot_binding": true,
+      "errors": []
+    },
+    {
+      "width": 1440,
+      "pages": 6,
+      "keyboard_selection": true,
+      "skip_link_keeps_route": true,
+      "review_readable": true,
+      "filters_and_reload": true,
+      "back_restore": true,
+      "stale_report_hidden": true,
+      "exact_snapshot_binding": true,
+      "errors": []
+    },
+    {
+      "width": 1920,
+      "pages": 6,
+      "keyboard_selection": true,
+      "skip_link_keeps_route": true,
+      "review_readable": true,
+      "filters_and_reload": true,
+      "back_restore": true,
+      "stale_report_hidden": true,
+      "exact_snapshot_binding": true,
+      "errors": []
+    }
+  ]
+}

@@ -14,6 +14,7 @@ explicit external E adapter until that interface exists.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import marshal
@@ -25,7 +26,11 @@ from types import CodeType
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 from urllib.parse import urlsplit
 
-from ..common.validator_protocol import validator_result_schema_v3
+from ..common.validator_protocol import (
+    normalize_validator_provider_payload_v3,
+    validator_result_provider_schema_v3,
+    validator_result_schema_v3,
+)
 from ..framework.conversation_recorder import get_conversation_recorder
 from ..framework.llm_client import LLMClient
 from .replay_bundle import canonical_json_sha256
@@ -38,7 +43,7 @@ from .validator_replay import (
 
 
 PROVIDER_CONFIG_SCHEMA_VERSION = "zscope.validator-replay-provider.v1"
-BUILTIN_EXECUTOR_REVISION = 1
+BUILTIN_EXECUTOR_REVISION = 6
 _CONFIG_FIELDS = frozenset(
     {
         "schema_version",
@@ -56,13 +61,32 @@ _SYSTEM_PROMPT = (
     "You are the Z-Scope Validator replay executor. Use only the supplied "
     "answer-free evidence slice. Never infer benchmark truth or request repository "
     "content. Return exactly one strict ValidatorResult v3 object. Evidence refs "
-    "must be keys in evidence_ref_catalog. Missing evidence is uncertain, never an "
-    "unsupported rejection."
+    "must be keys in evidence_ref_catalog. A verified or rejected result must cite "
+    "at least one readable current decision_fact, path_edge, proof_fact, or "
+    "evidence_delta_fact, plus the source/sink or counter-claim refs. Missing "
+    "evidence is uncertain, never an unsupported rejection."
 )
 _USER_PROMPT_TEMPLATE = (
     "Replay call kind={call_kind}; validation pass={validation_pass}. "
+    "Copy candidate_uid, validation_cluster_uid, and pass exactly from the input. "
+    "For verified or rejected, missing_fact_request must be null and stop_reason "
+    "must be decision_complete. For uncertain with one supported fact request, "
+    "stop_reason must be missing_fact. For uncertain with a null request, stop_reason "
+    "must be exactly one of unsupported_fact, fact_timeout, no_evidence_gain, "
+    "duplicate_fact_request, or output_truncated; when no provider remains, use "
+    "no_evidence_gain. Never use investigation_exhausted in a model result. All "
+    "fields are required. "
     "The following canonical JSON is the complete available input. Do not quote it "
     "in reasoning and do not request data outside it.\n\n{validator_input_json}"
+)
+_COMPACT_REPAIR_INSTRUCTION = (
+    "The previous response violated ValidatorResult v3. Return the smallest complete "
+    "object now. Copy all identity fields exactly, cite only catalog keys, and obey "
+    "the verdict/request/stop_reason combinations stated above. In particular, an "
+    "uncertain result with no fact request and no remaining provider must use "
+    "stop_reason=no_evidence_gain, never investigation_exhausted. Use JSON booleans "
+    "true/false without quotes, emit valid JSON tool arguments, and do not add "
+    "markdown or free-form terminal text."
 )
 _TERMINAL_TOOL_NAME = "emit_validator_result_v3"
 _ACTION_TOOL_NAME = "emit_validator_replay_action"
@@ -196,13 +220,15 @@ def load_replay_provider_spec(path: Path) -> ReplayProviderSpec:
     )
 
 
-def _terminal_tool_schema() -> Dict[str, Any]:
+def _terminal_tool_schema(
+    parameters: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
     return {
         "type": "function",
         "function": {
             "name": _TERMINAL_TOOL_NAME,
             "description": "Emit one strict Z-Scope ValidatorResult v3 object.",
-            "parameters": validator_result_schema_v3(),
+            "parameters": dict(parameters or validator_result_provider_schema_v3()),
         },
     }
 
@@ -386,6 +412,11 @@ class BuiltinProviderReplayExecutor:
         self._api_key = api_key
         self._client_factory = client_factory
         self.execution_identity = derive_builtin_execution_identity(spec)
+        # Answer-free model comparison keeps the provider's original terminal
+        # framing beside the parsed replay ledger.  This is deliberately not
+        # returned to the generic replay engine, so it cannot affect protocol
+        # validity, usage accounting, or run hashes.
+        self.last_provider_response: Dict[str, Any] = {}
 
     @classmethod
     def from_config(
@@ -435,6 +466,7 @@ class BuiltinProviderReplayExecutor:
             provider_logger.disabled = logger_was_disabled
         if not isinstance(response, Mapping):
             raise BuiltinReplayProviderError("provider response must be an object")
+        self.last_provider_response = copy.deepcopy(dict(response))
         return {
             "result": self._result(response, call),
             "usage": self._usage(response),
@@ -500,13 +532,44 @@ class BuiltinProviderReplayExecutor:
             # This is the exact terminal bridge injected by the generic loop
             # when max_iterations=1 and a terminal tool is required.
             messages.append({"role": "user", "content": _LEGACY_FORCED_FINAL_INSTRUCTION})
+        elif call.call_kind == "format_repair":
+            messages.append({"role": "user", "content": _COMPACT_REPAIR_INSTRUCTION})
         return messages
 
     @staticmethod
     def _schema_and_tool_name(call: ReplayCall) -> tuple[Dict[str, Any], str]:
         if call.call_kind == "bounded_investigation_turn":
             return _investigation_action_schema(), _ACTION_TOOL_NAME
-        return validator_result_schema_v3(), _TERMINAL_TOOL_NAME
+        evidence_slice = call.validator_input.get("evidence_slice")
+        evidence_slice = evidence_slice if isinstance(evidence_slice, Mapping) else {}
+        catalog = evidence_slice.get("evidence_ref_catalog")
+        allowed_refs = list(catalog) if isinstance(catalog, Mapping) else None
+        raw_allowed_missing = evidence_slice.get("allowed_missing_fact_kinds")
+        allowed_missing = (
+            list(raw_allowed_missing)
+            if isinstance(raw_allowed_missing, Sequence)
+            and not isinstance(raw_allowed_missing, str)
+            else None
+        )
+        schema = validator_result_provider_schema_v3(
+            allowed_missing_fact_kinds=allowed_missing,
+            allowed_evidence_refs=allowed_refs,
+        )
+        properties = dict(schema["properties"])
+        properties["candidate_uid"] = {
+            "type": "string",
+            "enum": [call.candidate_uid],
+        }
+        properties["validation_cluster_uid"] = {
+            "type": "string",
+            "enum": [call.validation_cluster_uid],
+        }
+        properties["pass"] = {
+            "type": "string",
+            "enum": [call.validation_pass],
+        }
+        schema["properties"] = properties
+        return schema, _TERMINAL_TOOL_NAME
 
     def _completion_kwargs(self, call: ReplayCall) -> Dict[str, Any]:
         schema, tool_name = self._schema_and_tool_name(call)
@@ -538,7 +601,7 @@ class BuiltinProviderReplayExecutor:
                 (
                     _action_tool_schema()
                     if call.call_kind == "bounded_investigation_turn"
-                    else _terminal_tool_schema()
+                    else _terminal_tool_schema(schema)
                 )
             ]
             # The frozen Arm A bridge mirrors LLMClient.run_conversation_loop:
@@ -570,7 +633,10 @@ class BuiltinProviderReplayExecutor:
                 value = json.loads(content)
             except (ValueError, TypeError):
                 return {"protocol_error": "malformed_structured_content"}
-            return value if isinstance(value, Mapping) else {"protocol_error": "non_object_result"}
+            if not isinstance(value, Mapping):
+                return {"protocol_error": "non_object_result"}
+            normalized = normalize_validator_provider_payload_v3(value)
+            return normalized if normalized is not None else value
         tool_calls = message.get("tool_calls")
         if not isinstance(tool_calls, list) or len(tool_calls) != 1:
             return {"protocol_error": "terminal_tool_count"}
@@ -585,11 +651,10 @@ class BuiltinProviderReplayExecutor:
                 arguments = json.loads(arguments)
             except ValueError:
                 return {"protocol_error": "malformed_terminal_arguments"}
-        return (
-            arguments
-            if isinstance(arguments, Mapping)
-            else {"protocol_error": "terminal_arguments_shape"}
-        )
+        if not isinstance(arguments, Mapping):
+            return {"protocol_error": "terminal_arguments_shape"}
+        normalized = normalize_validator_provider_payload_v3(arguments)
+        return normalized if normalized is not None else arguments
 
     @staticmethod
     def _usage(response: Mapping[str, Any]) -> Dict[str, Any]:

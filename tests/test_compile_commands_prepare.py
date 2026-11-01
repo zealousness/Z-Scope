@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -439,6 +440,43 @@ def test_standalone_bitcode_uses_prepared_database_before_tasks(tmp_path, monkey
     assert "-m32" not in path.read_text() and "-m64" in path.read_text()
     assert builder.build()
     assert next(iter(builder._manifest["attempts"].values()))["status"] == "reused"
+
+
+@pytest.mark.parametrize("rewrite_after_compile", [False, True])
+def test_bitcode_source_version_is_independent_of_wall_clock(
+    tmp_path, monkeypatch, rewrite_after_compile
+):
+    from zscope.retrieval import bitcode_compile
+    from zscope.retrieval.build_llvm import BitcodeBuilder
+    from zscope.retrieval.llvm_toolchain import matching_clang
+
+    link = shutil.which("llvm-link")
+    if not link or not matching_clang(link):
+        pytest.skip("matching LLVM toolchain required")
+    path = database(tmp_path, [])
+    source = tmp_path / "tu0.c"
+    code = "int main(void) { return 0; }\n"
+    source.write_text(code)
+    os.utime(source, ns=(source.stat().st_atime_ns, time.time_ns() + 5_000_000_000))
+    original = bitcode_compile.run_process
+
+    def run(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if rewrite_after_compile and kwargs.get("label", "").startswith("bitcode-compile:"):
+            before = source.stat()
+            source.write_text(code)
+            os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return result
+
+    monkeypatch.setattr(bitcode_compile, "run_process", run)
+    monkeypatch.setenv("Z_SCOPE_BITCODE_MEMORY_MB", "256")
+    builder = BitcodeBuilder(tmp_path, path, output_dir=tmp_path / "bc", llvm_link_path=link)
+    output = builder.build()
+    if rewrite_after_compile:
+        assert output == {}
+        assert builder.failed_tus[0]["reason"] == "dependency_changed_during_compile"
+    else:
+        assert output and not builder.failed_tus
 
 
 def test_unified_deferred_svf_keeps_same_preparation_receipt(tmp_path, monkeypatch):

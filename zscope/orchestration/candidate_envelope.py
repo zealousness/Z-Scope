@@ -34,6 +34,7 @@ DECISION_CONTEXT_VERSION = DECISION_CONTEXT_V33
 CANDIDATE_DISPOSITIONS = {
     "confirmed",
     "rejected_with_proof",
+    "rejected_with_evidence",
     "needs_review",
     "deferred_budget",
     "engine_failed",

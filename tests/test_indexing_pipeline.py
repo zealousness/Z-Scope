@@ -55,6 +55,15 @@ def test_dependency_hash_detects_same_timestamp_change_and_deletion(tmp_path):
     assert not dependencies_current({str(source): "missing"})
 
 
+def test_depfile_continuations_separate_adjacent_inputs(tmp_path):
+    depfile = tmp_path / "main.d"
+    depfile.write_text("main.o: main.c\\\nheader\\ with\\ space.h\n", encoding="utf-8")
+    assert parse_depfile(depfile, tmp_path) == [
+        (tmp_path / "main.c").resolve(),
+        (tmp_path / "header with space.h").resolve(),
+    ]
+
+
 def test_compiler_search_paths_and_nested_response_files(tmp_path):
     from zscope.retrieval.indexing_identity import compiler_search_directories, include_search_roots
 

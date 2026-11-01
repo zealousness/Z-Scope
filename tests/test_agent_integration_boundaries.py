@@ -4,6 +4,7 @@ import http.server
 import json
 import threading
 import time
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from zscope.reporting.acceptance import acceptance_coverage
@@ -24,7 +25,6 @@ def test_v3_multiple_targets_prepare_over_actual_http(tmp_path, monkeypatch):
             }
         },
         "project": {
-            "root": ".",
             "language": "c_cpp",
             "platform": "linux_user",
             "targets": [
@@ -32,7 +32,7 @@ def test_v3_multiple_targets_prepare_over_actual_http(tmp_path, monkeypatch):
                 {"id": "b", "compile_commands": "b.json"},
             ],
         },
-        "scan": {"preset": "quick"},
+        "scan": {"preset": "fast"},
     }
     path = tmp_path / "zscope.yaml"
     path.write_text(json.dumps(document), encoding="utf-8")
@@ -77,6 +77,7 @@ def test_compile_planning_does_not_hide_analysis_coverage_gap():
 
 def test_actual_job_engine_over_http_with_controlled_scanner(tmp_path, monkeypatch):
     """Real SQLite/owner/HTTP; scanner emits explicitly synthetic evidence."""
+    from semantics_fixtures import reviewed_control_plane_project
     from test_config_v2 import _config, _write
     from zscope.orchestration.jobs.service import ScanJobService
 
@@ -105,6 +106,9 @@ def test_actual_job_engine_over_http_with_controlled_scanner(tmp_path, monkeypat
     monkeypatch.setattr(
         server, "_scan_jobs_http_service", ScanJobsHttpService(config, feedback, engine=engine)
     )
+    # Exercise the explicitly bound single-project service, independently of
+    # project-picker globals left by other HTTP tests.
+    monkeypatch.setattr(server, "_project_library", None)
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.ZScopeHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -116,13 +120,23 @@ def test_actual_job_engine_over_http_with_controlled_scanner(tmp_path, monkeypat
             data=body,
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(request, timeout=10) as response:
+        try:
+            response = urlopen(request, timeout=10)
+        except HTTPError as error:
+            response = error
+        with response:
             return response.status, json.loads(response.read())
 
     try:
         payload = {"request_id": "actual-http-create"}
+        status, rejected = call("/api/jobs", payload)
+        assert status == 409 and rejected["code"] == "project_semantics_not_ready"
+        assert call("/api/jobs")[1]["jobs"] == []
+        # Supply the current onboarding precondition instead of bypassing the
+        # production gate. This receipt only tests the synthetic control plane.
+        reviewed_control_plane_project(config)
         status, created = call("/api/jobs", payload)
-        assert status == 202
+        assert status == 202, created
         job_id = created["job"]["job_id"]
         assert call("/api/jobs", payload)[1]["job"]["job_id"] == job_id
         deadline = time.monotonic() + 30

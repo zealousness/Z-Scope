@@ -14,7 +14,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    cast,
+)
 
 from ...retrieval.code_index import CodeIndex
 from ...retrieval.analysis_facts import scan_fact_cache, index_context_key
@@ -75,6 +86,8 @@ class GraphCandidateGenerator(
         self._impl_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self._view_cache: Dict[str, Optional[FunctionView]] = {}
         self._callee_evidence: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._program_facts_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._current_program_facts: Dict[str, Any] = {}
         self.last_deferred_functions: List[Dict[str, Any]] = []
         self.last_query_errors: List[Dict[str, str]] = []
         self._compile_semantic_patterns()
@@ -98,11 +111,17 @@ class GraphCandidateGenerator(
         *,
         max_depth: int = 1,
         max_functions: int = 32,
+        include_view_rules: bool = True,
+        include_batch_rules: bool = True,
     ) -> List[Dict[str, Any]]:
         views = self._reachable_views(
             func_name, impl, max_depth=max_depth, max_functions=max_functions
         )
-        return self.generate_for_views(views)
+        return self.generate_for_views(
+            views,
+            include_view_rules=include_view_rules,
+            include_batch_rules=include_batch_rules,
+        )
 
     def _compile_semantic_patterns(self) -> None:
         from ...semantics.contracts import return_acquisition_names
@@ -151,21 +170,50 @@ class GraphCandidateGenerator(
         )
 
     def _semantic_api_pattern(self, pattern: str) -> str:
-        from .regex import _consumer_api_pattern
-
-        return _consumer_api_pattern(pattern, self.semantics, self.restrict_to_semantics)
-
-    def _literal_api_pattern(self, pattern: str) -> str:
-        from .regex import _consumer_api_pattern
+        from .regex import _consumer_api_pattern, current_compiler_intrinsic_names
 
         return _consumer_api_pattern(
-            pattern, self.semantics, self.restrict_to_semantics, expand_slots=False
+            pattern,
+            self.semantics,
+            self.restrict_to_semantics,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self._current_program_facts),
+        )
+
+    def _literal_api_pattern(self, pattern: str) -> str:
+        from .regex import _consumer_api_pattern, current_compiler_intrinsic_names
+
+        return _consumer_api_pattern(
+            pattern,
+            self.semantics,
+            self.restrict_to_semantics,
+            expand_slots=False,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self._current_program_facts),
         )
 
     def _semantic_call_allowed(self, name: str, *roles: str) -> bool:
-        from .regex import _semantic_call_allowed
+        from .regex import _semantic_call_allowed, current_compiler_intrinsic_names
 
-        return _semantic_call_allowed(self.semantics, self.restrict_to_semantics, name, *roles)
+        return _semantic_call_allowed(
+            self.semantics,
+            self.restrict_to_semantics,
+            name,
+            *roles,
+            exact_compiler_intrinsics=current_compiler_intrinsic_names(self._current_program_facts),
+        )
+
+    def _program_facts_for_view(self, view: FunctionView) -> Dict[str, Any]:
+        key = (view.name, view.file_path)
+        if key not in self._program_facts_cache:
+            getter = getattr(self.code_index, "get_function_program_facts", None)
+            if not callable(getter):
+                self._program_facts_cache[key] = {}
+            else:
+                try:
+                    value = getter(view.name, view.file_path)
+                except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                    value = {}
+                self._program_facts_cache[key] = value if isinstance(value, dict) else {}
+        return self._program_facts_cache[key]
 
     @staticmethod
     def _default_semantics() -> "LocalPatternSemantics":
@@ -210,6 +258,8 @@ class GraphCandidateGenerator(
         function_names: Iterable[str],
         *,
         max_functions: int = 500,
+        include_view_rules: bool = True,
+        include_batch_rules: bool = True,
     ) -> List[Dict[str, Any]]:
         views: List[FunctionView] = []
         seen = set()
@@ -222,51 +272,146 @@ class GraphCandidateGenerator(
                 views.append(view)
             if len(views) >= max_functions:
                 break
-        return self.generate_for_views(views)
+        return self.generate_for_views(
+            views,
+            include_view_rules=include_view_rules,
+            include_batch_rules=include_batch_rules,
+        )
 
-    def generate_for_views(self, views: Sequence[FunctionView]) -> List[Dict[str, Any]]:
+    def prepare_function_view(
+        self,
+        func_name: str,
+        impl: Dict[str, Any],
+        *,
+        program_facts: Optional[Mapping[str, Any]] = None,
+    ) -> Optional[FunctionView]:
+        """Build one graph view from an already instance-bound function body.
+
+        Project-level fast planning resolves every body and its native facts
+        through an exact ``BuildContext + USR`` facade before graph analysis.
+        Re-querying the unscoped project index while assembling a link group
+        can select an ambiguous declaration or another TU projection.  This
+        helper keeps the resolved body/callee view and its facts together so a
+        later link-group pass can consume them without reopening identity.
+        """
+
+        view = self._view_for(str(func_name), dict(impl))
+        if view is not None and program_facts is not None:
+            self._program_facts_cache[(view.name, view.file_path)] = dict(program_facts)
+        return view
+
+    def generate_for_prepared_views(
+        self,
+        prepared: Iterable[Tuple[FunctionView, Mapping[str, Any]]],
+        *,
+        include_view_rules: bool = True,
+        include_batch_rules: bool = True,
+        view_rule_names: Optional[Iterable[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Run one graph unit over exact views prepared by instance planners."""
+
+        views: List[FunctionView] = []
+        seen: set[Tuple[str, str, str]] = set()
+        for view, program_facts in prepared:
+            identity = (view.name, view.file_path, view.signature)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            views.append(view)
+            self._program_facts_cache[(view.name, view.file_path)] = dict(program_facts)
+        return self.generate_for_views(
+            views,
+            include_view_rules=include_view_rules,
+            include_batch_rules=include_batch_rules,
+            view_rule_names=view_rule_names,
+        )
+
+    def generate_unlinked_factory_cleanup_candidates(
+        self,
+        prepared: Iterable[Tuple[FunctionView, Mapping[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        """Run the narrow project lifecycle summary without link authority.
+
+        This pass exists for direct C++ source identities whose compile
+        commands are current but whose final link target has not been
+        recorded.  It intentionally runs only the factory-return/member/
+        destructor detector; ordinary cross-TU graph rules continue to
+        require a real link record.  Callers must retain the missing-link
+        coverage gap and must not treat this observation as formal link proof.
+        """
+
+        views: List[FunctionView] = []
+        seen: set[Tuple[str, str, str]] = set()
+        for view, program_facts in prepared:
+            identity = (view.name, view.file_path, view.signature)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            views.append(view)
+            self._program_facts_cache[(view.name, view.file_path)] = dict(program_facts)
+        issues: List[Dict[str, Any]] = []
+        self._emit_factory_returned_member_cleanup_gaps(views, issues)
+        return self._dedupe(issues)
+
+    def generate_for_views(
+        self,
+        views: Sequence[FunctionView],
+        *,
+        include_view_rules: bool = True,
+        include_batch_rules: bool = True,
+        view_rule_names: Optional[Iterable[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        view_contexts: Dict[str, Dict[str, Any]] = {
+            view.name: {
+                "func_name": view.name,
+                "file_path": view.file_path,
+                "signature": view.signature,
+                "code": "\n".join(line.text for line in view.lines),
+                "program_facts": self._program_facts_for_view(view),
+            }
+            for view in views
+        }
         self.last_semantic_events = [
             event
             for view in views
-            for event in self.semantics.contracts.trace_calls(
-                {
-                    "func_name": view.name,
-                    "file_path": view.file_path,
-                    "signature": view.signature,
-                    "code": "\n".join(line.text for line in view.lines),
-                }
-            )
+            for event in self.semantics.contracts.trace_calls(view_contexts[view.name])
         ]
         by_name = {view.name: view for view in views}
         issues: List[Dict[str, Any]] = []
-        for view in views:
-            from ...semantics.call_context import bind_call_context
+        if include_view_rules:
+            selected_view_names = (
+                {str(value) for value in view_rule_names}
+                if view_rule_names is not None
+                else None
+            )
+            for view in views:
+                if selected_view_names is not None and view.name not in selected_view_names:
+                    continue
+                from ...semantics.call_context import bind_call_context
 
-            with bind_call_context(
-                {
-                    "func_name": view.name,
-                    "file_path": view.file_path,
-                    "signature": view.signature,
-                    "code": "\n".join(line.text for line in view.lines),
-                },
-                self.semantics.contracts,
-            ):
-                run_detector_plan(
-                    "graph",
-                    "view",
-                    GraphViewRuleContext(
-                        generator=self,
-                        view=view,
-                        by_name=by_name,
-                        issues=issues,
-                    ),
-                )
+                self._current_program_facts = view_contexts[view.name]["program_facts"]
+                with bind_call_context(
+                    view_contexts[view.name],
+                    self.semantics.contracts,
+                ):
+                    run_detector_plan(
+                        "graph",
+                        "view",
+                        GraphViewRuleContext(
+                            generator=self,
+                            view=view,
+                            by_name=by_name,
+                            issues=issues,
+                        ),
+                    )
 
-        run_detector_plan(
-            "graph",
-            "batch",
-            GraphBatchRuleContext(generator=self, views=views, issues=issues),
-        )
+        self._current_program_facts = {}
+        if include_batch_rules:
+            run_detector_plan(
+                "graph",
+                "batch",
+                GraphBatchRuleContext(generator=self, views=views, issues=issues),
+            )
         if self.rule_policy is not None:
             filtered: List[Dict[str, Any]] = []
             for issue in issues:
@@ -391,6 +536,12 @@ class GraphCandidateGenerator(
         return cast(Optional[FunctionView], view)
 
     def _function_fact_key(self, func_name: str) -> Any:
+        pinned_context = str(getattr(self.code_index, "pinned_build_context_id", "") or "")
+        if pinned_context:
+            # Scoped indexes intentionally hide the project-wide navigation
+            # dictionaries.  The exact build receipt is the cache identity for
+            # bodies resolved through that facade.
+            return self.fact_context, "impl", func_name, pinned_context
         index = getattr(self.code_index, "_function_index", {})
         info = index.get(func_name) or {}
         if not info:
@@ -408,14 +559,31 @@ class GraphCandidateGenerator(
 
     def _impl_for(self, func_name: str) -> Optional[Dict[str, Any]]:
         if func_name not in self._impl_cache:
+            scoped_body = getattr(self.code_index, "has_scoped_function_body", None)
+            if callable(scoped_body) and not scoped_body(func_name):
+                self._impl_cache[func_name] = None
+                return None
             getter = getattr(self.code_index, "get_function_impl", None)
             if not callable(getter):
                 self._impl_cache[func_name] = None
             else:
                 try:
+
+                    def load_impl() -> Any:
+                        try:
+                            return getter(
+                                func_name,
+                                max_lines=None,
+                                warn_missing=False,
+                                include_context=False,
+                            )
+                        except TypeError as exc:
+                            if "include_context" not in str(exc):
+                                raise
+                            return getter(func_name, max_lines=None, warn_missing=False)
+
                     self._impl_cache[func_name] = self.fact_cache.compute(
-                        self._function_fact_key(func_name),
-                        lambda: getter(func_name, max_lines=None, warn_missing=False),
+                        self._function_fact_key(func_name), load_impl
                     )
                     if (self._impl_cache[func_name] or {}).get("truncated"):
                         raise ValueError("source_truncated")

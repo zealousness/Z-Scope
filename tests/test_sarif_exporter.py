@@ -1,7 +1,49 @@
 import json
 from pathlib import Path
 
-from zscope.reporting.sarif_exporter import save_sarif_report
+from zscope.reporting.sarif_exporter import report_to_sarif, save_sarif_report
+
+
+def test_sarif_parses_windows_location_with_column() -> None:
+    report = {"issues": [{"location": r"C:\src\demo.c:42:7"}]}
+    result = report_to_sarif(report)["runs"][0]["results"][0]
+    physical = result["locations"][0]["physicalLocation"]
+    assert physical["artifactLocation"]["uri"] == "C:/src/demo.c"
+    assert physical["region"]["startLine"] == 42
+
+
+def test_sarif_preserves_legacy_line_range_locations() -> None:
+    report = {
+        "issues": [
+            {"location": "src/demo.c:10-20"},
+            {"location": r"C:\src\demo.c:30-40"},
+        ]
+    }
+    results = report_to_sarif(report)["runs"][0]["results"]
+    physical = [result["locations"][0]["physicalLocation"] for result in results]
+    assert [item["artifactLocation"]["uri"] for item in physical] == [
+        "src/demo.c", "C:/src/demo.c"
+    ]
+    assert [item["region"]["startLine"] for item in physical] == [10, 30]
+
+
+def test_sarif_prefers_structured_coordinates_over_display_location() -> None:
+    report = {
+        "issues": [
+            {"file_path": "src/current.c", "line": 23, "location": "src/stale.c:99"}
+        ]
+    }
+    result = report_to_sarif(report)["runs"][0]["results"][0]
+    physical = result["locations"][0]["physicalLocation"]
+    assert physical["artifactLocation"]["uri"] == "src/current.c"
+    assert physical["region"]["startLine"] == 23
+
+
+def test_sarif_encodes_reserved_characters_in_source_paths() -> None:
+    report = {"issues": [{"location": "src/a #1%?.c:8"}]}
+    result = report_to_sarif(report)["runs"][0]["results"][0]
+    physical = result["locations"][0]["physicalLocation"]
+    assert physical["artifactLocation"]["uri"] == "src/a%20%231%25%3F.c"
 
 
 def test_save_sarif_report_exports_zscope_issue(tmp_path: Path) -> None:

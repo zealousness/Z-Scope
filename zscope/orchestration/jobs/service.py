@@ -95,6 +95,16 @@ def _envelope_errors(func: Any) -> Any:
 class ScanJobService:
     """Control plane for persistent scan jobs of one saved config."""
 
+    def require_semantics(self) -> None:
+        from ...config.config import ConfigLoader
+        from ...config.semantics_workflow import require_workflow, project_activity
+
+        try:
+            with project_activity(self.config_path.parent, wait_seconds=0.5):
+                require_workflow(ConfigLoader.load(str(self.config_path), read_only=True))
+        except (ValueError, OSError) as exc:
+            raise JobError("project_semantics_not_ready", str(exc), status_code=409) from exc
+
     def __init__(
         self,
         config_path: str | Path,
@@ -209,9 +219,14 @@ class ScanJobService:
         return window
 
     def _locate_store(self) -> JobStore:
-        """Store handle for read paths; store *locating* may reuse the cache."""
+        """Read/cancel scope stays the YAML directory, even during invalid edits.
 
-        return self._store(self._locate_fingerprint())
+        Public roots are fixed to this directory. Parsing changed configuration
+        must not prevent cancelling an already-owned paid scanner. Starts and
+        resumes still recompute and validate the full input fingerprint.
+        """
+        root = self.store_root_override or self.config_path.resolve().parent / STORE_DIR_NAME
+        return JobStore(root / STORE_DB_NAME)
 
     # ------------------------------------------------------------------ serialize
 
@@ -641,6 +656,7 @@ class ScanJobService:
         store: JobStore,
         job: Dict[str, Any],
         fingerprint: Dict[str, Any],
+        expected_input_revision: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Launch-side effects for an already-reserved job row.
 
@@ -669,6 +685,7 @@ class ScanJobService:
             report_candidates=report_candidates,
             stop_at_epoch=job.get("stop_at_epoch"),
             resolved_stop_time=job.get("resolved_stop_time"),
+            expected_input_revision=expected_input_revision,
         )
         if not self.spawn_owner:
             return job
@@ -738,6 +755,8 @@ class ScanJobService:
         scan_depth: Optional[str] = None,
         stop_at: Optional[str] = None,
         request_id: str,
+        ignore_config_window: bool = False,
+        expected_input_revision: Optional[str] = None,
     ) -> ServiceResponse:
         """POST /api/jobs — create a job and spawn its detached owner.
 
@@ -759,8 +778,20 @@ class ScanJobService:
         request_id = validate_request_id(request_id)
         resolved_stop_time, stop_at_epoch = resolve_stop_time(stop_at)
         store, fingerprint = self._store_and_fingerprint(scan_depth=depth)
+        if expected_input_revision is not None and fingerprint["sha256"] != expected_input_revision:
+            raise JobError(
+                "schedule_input_changed",
+                "Scheduled inputs changed; review and create a new schedule.",
+                status_code=409,
+            )
         store.initialize()
-        payload_hash = self._payload_hash("start", {"scan_depth": depth, "stop_at": stop_at})
+        start_payload: Dict[str, Any] = {"scan_depth": depth, "stop_at": stop_at}
+        if ignore_config_window or expected_input_revision is not None:
+            start_payload.update(
+                ignore_config_window=ignore_config_window,
+                expected_input_revision=expected_input_revision,
+            )
+        payload_hash = self._payload_hash("start", start_payload)
         # Serve a registered marker before resolving any config stop window:
         # a retry of an accepted request replays the original job with its
         # original window even when the saved config boundary would now
@@ -772,8 +803,19 @@ class ScanJobService:
             return ServiceResponse(
                 202, {"schema": SCHEMA_VERSION, "job": self._serialize_job(fast)}
             )
+        if (
+            expected_input_revision is not None
+            and stop_at_epoch is not None
+            and stop_at_epoch <= time.time()
+        ):
+            raise JobError(
+                "stop_window_closed", "The scheduled window has already closed.", status_code=409
+            )
         stop_at_source = "request"
-        config_window = self._config_stop_window() if stop_at is None else None
+        self.require_semantics()
+        config_window = (
+            self._config_stop_window() if stop_at is None and not ignore_config_window else None
+        )
         if config_window is not None:
             resolved_stop_time = config_window.resolved_stop_time
             stop_at_epoch = config_window.stop_at_epoch
@@ -833,10 +875,25 @@ class ScanJobService:
                 ),
             },
         )
-        job = self._launch_attempt(store=store, job=job, fingerprint=fingerprint)
+        job = self._launch_attempt(
+            store=store,
+            job=job,
+            fingerprint=fingerprint,
+            expected_input_revision=expected_input_revision,
+        )
         return ServiceResponse(202, {"schema": SCHEMA_VERSION, "job": self._serialize_job(job)})
 
     # ------------------------------------------------------------------ API: list
+
+    def registered_job(self, request_id: str) -> Optional[Dict[str, Any]]:
+        """Read a previously reserved schedule action without launching anything."""
+        store = self._locate_store()
+        store.initialize()
+        marker = store.get_request(validate_request_id(request_id))
+        if marker is None:
+            return None
+        job = self._load_job_or_404(store, marker["job_id"])
+        return self._serialize_job(self._reconcile(store, job))
 
     @_envelope_errors
     def list(self) -> ServiceResponse:
@@ -951,24 +1008,33 @@ class ScanJobService:
     # ------------------------------------------------------------------ API: resume
 
     @_envelope_errors
-    def resume(self, job_id: str, *, base_revision: int, request_id: str) -> ServiceResponse:
+    def resume(
+        self,
+        job_id: str,
+        *,
+        base_revision: int,
+        request_id: str,
+        stop_at: Optional[str] = None,
+        expected_input_revision: Optional[str] = None,
+    ) -> ServiceResponse:
         """POST /api/jobs/resume — new run_id; old attempt results stay bound.
 
         The marker, the status/revision guard and the attempt re-arm commit
         in one transaction before any launch side effect: duplicates replay
         the armed attempt, conflicting keys start nothing, and a stale
-        base_revision can never arm a second attempt.  ``stop_at`` windows
-        are per-attempt: a resumed attempt starts without the expired
-        window (start a new job for a new window).
+        base_revision can never arm a second attempt. Ordinary resumes clear
+        expired windows. The internal calendar scheduler may explicitly pass
+        a fresh future ``stop_at`` bound to the same expected input revision.
         """
 
         request_id = validate_request_id(request_id)
         base_revision = validate_base_revision(base_revision)
         store = self._locate_store()
         store.initialize()
-        payload_hash = self._payload_hash(
-            "resume", {"job_id": job_id, "base_revision": base_revision}
-        )
+        resume_payload: Dict[str, Any] = {"job_id": job_id, "base_revision": base_revision}
+        if stop_at is not None or expected_input_revision is not None:
+            resume_payload.update(stop_at=stop_at, expected_input_revision=expected_input_revision)
+        payload_hash = self._payload_hash("resume", resume_payload)
         fast = self._fast_replay_or_none(
             store, request_id=request_id, endpoint="resume", payload_hash=payload_hash
         )
@@ -979,7 +1045,21 @@ class ScanJobService:
         job = self._load_job_or_404(store, job_id)
         job = self._reconcile(store, job)
         depth = job.get("scan_depth") or None
+        self.require_semantics()
         fingerprint = self._fingerprint(scan_depth=depth)
+        if expected_input_revision is not None and fingerprint["sha256"] != expected_input_revision:
+            raise JobError(
+                "schedule_input_changed",
+                "Scheduled inputs changed; refusing cross-input continuation.",
+                status_code=409,
+            )
+        resolved_stop_time, stop_at_epoch = resolve_stop_time(stop_at)
+        if stop_at_epoch is not None and stop_at_epoch <= time.time():
+            raise JobError(
+                "stop_window_closed",
+                "The new continuation window has already closed.",
+                status_code=409,
+            )
         previous_revision = str(job.get("input_revision") or "")
         changed: List[str] = []
         if previous_revision and previous_revision != fingerprint["sha256"]:
@@ -998,17 +1078,24 @@ class ScanJobService:
             )
         run_id = f"run_{uuid.uuid4().hex}"
         owner_token = secrets.token_hex(16)
+        updates = self._rearm_updates(
+            fingerprint,
+            run_id=run_id,
+            owner_token=owner_token,
+            scan_depth=depth,
+            run_dir=str(store.db_path.parent / job["job_id"] / run_id),
+        )
+        if stop_at is not None:
+            updates.update(
+                requested_stop_at=stop_at,
+                resolved_stop_time=resolved_stop_time,
+                stop_at_epoch=stop_at_epoch,
+            )
         reservation = store.arm_attempt_with_request(
             job_id=str(job["job_id"]),
             expected_revision=base_revision,
             from_statuses=tuple(RESUMABLE_STATUSES),
-            updates=self._rearm_updates(
-                fingerprint,
-                run_id=run_id,
-                owner_token=owner_token,
-                scan_depth=depth,
-                run_dir=str(store.db_path.parent / job["job_id"] / run_id),
-            ),
+            updates=updates,
             request_id=request_id,
             endpoint="resume",
             payload_hash=payload_hash,
@@ -1044,7 +1131,12 @@ class ScanJobService:
             message=f"new attempt {run_id} started",
             data={"run_id": run_id, "input_revision": fingerprint["sha256"]},
         )
-        updated = self._launch_attempt(store=store, job=armed, fingerprint=fingerprint)
+        updated = self._launch_attempt(
+            store=store,
+            job=armed,
+            fingerprint=fingerprint,
+            expected_input_revision=expected_input_revision,
+        )
         return ServiceResponse(202, {"schema": SCHEMA_VERSION, "job": self._serialize_job(updated)})
 
     # ------------------------------------------------------------------ API: result

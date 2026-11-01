@@ -65,6 +65,7 @@ def _allowed(relative: Path) -> bool:
         "test/range/README.md",
         "test/range/CMakeLists.txt",
         "test/range/zscope.benchmark.yaml",
+        "test/range/zscope.semantics.yaml",
         "test/range/benchmark/README.md",
         "test/range/benchmark/ground_truth.json",
         "test/range/benchmark/deterministic_entries.json",
@@ -104,6 +105,21 @@ def _truth_errors(path: Path) -> List[str]:
     if declared is not None and declared != len(rows):
         errors.append(f"{path}: total_vulnerabilities does not match array length")
     return errors
+
+
+def _semantic_input_errors() -> List[str]:
+    from zscope.benchmarking.semantics import validate_reviewed
+    from zscope.config.project_semantics import load_project_semantics
+
+    root = SPECS["c_cpp"].fixture_root
+    try:
+        document = load_project_semantics(root / "zscope.semantics.yaml")
+        validate_reviewed(document, root)
+        if (root / "benchmark/interface_truth.json").exists():
+            return ["Range must use the reviewed scan YAML as its sole semantic reference"]
+    except (ValueError, OSError) as exc:
+        return [f"Range interface input is invalid: {exc}"]
+    return []
 
 
 def _java_entry_errors() -> List[str]:
@@ -182,15 +198,19 @@ def check_hygiene() -> List[str]:
             errors.append(f"forbidden tracked benchmark output: {path.relative_to(ROOT)}")
     for spec in SPECS.values():
         yaml_files = list(spec.fixture_root.glob("*.yaml")) + list(spec.fixture_root.glob("*.yml"))
-        if yaml_files != [spec.config_path]:
+        expected_yaml = {spec.config_path}
+        if spec.language == "c_cpp":
+            expected_yaml.add(spec.fixture_root / "zscope.semantics.yaml")
+        if set(yaml_files) != expected_yaml:
             errors.append(
-                f"{spec.fixture_root}: expected exactly one zscope.benchmark.yaml, got {yaml_files}"
+                f"{spec.fixture_root}: expected the canonical config and declared semantics, got {yaml_files}"
             )
         errors.extend(_truth_errors(spec.truth_path))
     range_truth = json.loads(SPECS["c_cpp"].truth_path.read_text(encoding="utf-8"))
-    if range_truth.get("version") != 15 or range_truth.get("total_vulnerabilities") != 136:
-        errors.append("Range canonical truth must remain version 15 with 136 records")
+    if range_truth.get("version") != 17 or range_truth.get("total_vulnerabilities") != 141:
+        errors.append("Range canonical truth must remain version 17 with 141 records")
     errors.extend(_java_entry_errors())
+    errors.extend(_semantic_input_errors())
     demo_truth = ROOT / "test" / "llm_wiki_demo" / "benchmark" / "ground_truth.json"
     if demo_truth.is_file():
         errors.extend(_truth_errors(demo_truth))

@@ -109,6 +109,40 @@ def test_native_include_probes_bind_missing_absolute_and_relative_files(tmp_path
     )
 
 
+def test_include_next_negative_probe_skips_the_origin_search_directory(tmp_path):
+    from zscope.retrieval.indexing_identity import include_probes_current
+
+    high = tmp_path / "high"
+    low = tmp_path / "low"
+    high.mkdir()
+    low.mkdir()
+    including = high / "wrapper.h"
+    including.write_text("/* wrapper */\n", encoding="utf-8")
+    # This candidate precedes the include-next starting point and therefore
+    # cannot invalidate the observed negative result.
+    (high / "probe.h").write_text("/* shadowed before next */\n", encoding="utf-8")
+    query = {
+        "name": "probe.h",
+        "angled": True,
+        "including_file": str(including),
+        "found": False,
+        "target_file": "",
+    }
+    probes = {
+        "version": "zscope.include-probes.v1",
+        "search_directories": [str(high), str(low)],
+        "queries": [query],
+    }
+    lookups = {
+        "version": "zscope.include-lookups.v1",
+        "search_directories": [{"path": str(high)}, {"path": str(low)}],
+        "probe_lookups": [{**query, "operator": "__has_include_next"}],
+    }
+    assert include_probes_current(probes, lookups)
+    (low / "probe.h").write_text("/* now visible to include-next */\n", encoding="utf-8")
+    assert not include_probes_current(probes, lookups)
+
+
 def test_jobs_select_every_variant_deduplicate_only_identical_commands(tmp_path):
     source = tmp_path / "unit.c"
     source.write_text("int f(void);\n")
@@ -527,3 +561,28 @@ def test_coverage_view_names_a_stale_stored_instance_instead_of_counting_it(tmp_
     assert stale["extraction_complete"] is True
     assert stale["status"] == "partial"
     assert "stale_compilation_instance_inputs" in stale["reasons"]
+
+
+def test_coverage_currentness_honors_each_context_search_excludes(tmp_path):
+    from zscope.retrieval.build_context import scan_build_coverage
+    from zscope.retrieval.indexing_identity import search_directories_snapshot
+
+    (tmp_path / "unit.c").write_text("int f(void) { return 0; }\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text("[]\n", encoding="utf-8")
+    header = tmp_path / "unit.h"
+    header.write_text("#define VALUE 1\n", encoding="utf-8")
+    generated = tmp_path / ".cache" / "clangd"
+    context = _measured_coverage_context(tmp_path, "a", header)
+    context["search_excludes"] = [str(generated)]
+    context["search_directories"] = search_directories_snapshot(
+        [tmp_path], exclude_paths=[generated]
+    )
+    plain = SimpleNamespace(get_build_contexts=lambda: [dict(context)])
+
+    generated.mkdir(parents=True)
+    (generated / "unit.idx").write_text("generated", encoding="utf-8")
+
+    coverage = scan_build_coverage(plain)
+
+    assert coverage["instance_input_status"] == {"a": "current"}
+    assert coverage["uncurrent_instances"] == []

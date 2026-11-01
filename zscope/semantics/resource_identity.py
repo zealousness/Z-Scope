@@ -89,7 +89,7 @@ def native_heap_witness(
     ):
         return None
     body = bodies[0]
-    if body.get("fact_version") != "zscope.program-events.v5":
+    if body.get("fact_version") != "zscope.program-events.v7":
         return None
     adjacency: dict[int, set[int]] = {}
     for edge in body.get("cfg_edges", []):

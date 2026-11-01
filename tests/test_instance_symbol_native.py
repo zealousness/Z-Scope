@@ -223,7 +223,6 @@ def _config(tmp_path: Path, cdb: Path):
         ),
         project=ProjectConfig(
             project_root=tmp_path,
-            source_root=tmp_path,
             language="c_cpp",
             compile_commands_path=cdb,
             agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],

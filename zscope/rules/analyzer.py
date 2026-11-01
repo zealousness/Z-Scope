@@ -73,6 +73,8 @@ class RuleDrivenAnalyzer:
                 max_retries=llm_cfg.max_retries,
                 retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                 max_tokens=llm_cfg.max_tokens,
+                context_window=llm_cfg.context_window,
+                model_context_windows=llm_cfg.model_context_windows,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),

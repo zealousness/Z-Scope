@@ -92,6 +92,16 @@ def test_builtin_catalog_covers_current_java_and_cpp_rule_engines() -> None:
     assert all(item.legacy_id or item.id.startswith("zscope.") for item in catalog)
 
 
+def test_semantics_aware_secondary_producer_keeps_canonical_rule_engine() -> None:
+    catalog = RuleCatalog.builtin(skill_languages=SKILL_LANGUAGES)
+    rule = catalog.require("clang_ast_release_then_call_argument_use")
+    inventory = discover_builtin_implementation()
+
+    assert rule.engine == "cpp_clang_matcher"
+    assert rule.id in inventory.ids_for("cpp_clang_matcher")
+    assert rule.id not in inventory.ids_for("cpp_clang_cfg")
+
+
 def test_catalog_rejects_duplicate_yaml_keys_and_unknown_fields(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.yaml"
     duplicate.write_text(

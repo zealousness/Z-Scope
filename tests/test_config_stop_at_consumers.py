@@ -84,12 +84,11 @@ def _v3_document(*, execution: Optional[Dict[str, Any]] = None) -> Dict[str, Any
             }
         },
         "project": {
-            "root": ".",
             "language": "c_cpp",
             "platform": "linux_user",
             "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
         },
-        "scan": {"preset": "quick"},
+        "scan": {"preset": "fast"},
     }
     if execution is not None:
         document["execution"] = execution
@@ -106,7 +105,7 @@ def _v2_document(root: str = ".") -> Dict[str, Any]:
                 "api_key": "unit-key",
             }
         },
-        "project": {"root": root, "source_root": ".", "language": "c_cpp"},
+        "project": {"language": "c_cpp"},
         "scan": {"task": ""},
         "indexing": {"backend": "regex"},
         "concurrency": {

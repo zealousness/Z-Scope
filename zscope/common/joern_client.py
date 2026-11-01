@@ -20,6 +20,15 @@ DEFAULT_QUERY_MAX_ATTEMPTS = 2
 CPG_IMPORT_QUERY_TIMEOUT_SECONDS = 3600.0
 
 
+def _scala_string(value: str) -> str:
+    """Encode one ordinary Scala string literal, including its quotes.
+
+    JSON's quote, backslash, control-character and Unicode escapes are valid
+    in ordinary Scala strings. Never use interpolation or triple quotes here.
+    """
+    return json.dumps(str(value), ensure_ascii=True)
+
+
 class JoernQueryError(RuntimeError):
     """Raised when a Joern fact query failed or returned an invalid payload."""
 
@@ -728,7 +737,7 @@ class JoernClient:
     def get_method(self, name: str) -> Optional[Dict[str, Any]]:
         """Get method node by exact name."""
         result = self.query(
-            f'cpg.method.name("{name}").map(m => Map('
+            f'cpg.method.name({_scala_string(name)}).map(m => Map('
             f'"name" -> m.name, "filename" -> m.filename, '
             f'"lineNumber" -> m.lineNumber.getOrElse(-1), '
             f'"lineNumberEnd" -> m.lineNumberEnd.getOrElse(-1), '
@@ -747,37 +756,36 @@ class JoernClient:
         callee_file: str = "",
     ) -> List[Dict[str, Any]]:
         """Get functions that call the given function."""
-        method_query = f'cpg.method.name("{name}")'
+        method_query = f'cpg.method.name({_scala_string(name)})'
         clean_file = str(callee_file or "").replace("\\", "/").strip()
         if clean_file:
-            escaped_file = clean_file.replace('"', '\\"')
             method_query += (
-                f'.filter(m => m.filename == "{escaped_file}" || '
-                f'm.filename.endsWith("/{escaped_file}") || '
-                f'"{escaped_file}".endsWith("/" + m.filename))'
+                f'.filter(m => m.filename == {_scala_string(clean_file)} || '
+                f'm.filename.endsWith({_scala_string("/" + clean_file)}) || '
+                f'{_scala_string(clean_file)}.endsWith("/" + m.filename))'
             )
         result = self.query(
             f"{method_query}.callIn.method.distinct"
             f'.map(m => Map("name" -> m.name, "filename" -> m.filename, '
             f'"lineNumber" -> m.lineNumber.getOrElse(-1)))'
-            f".take({limit}).l.toJson"
+            f".take({int(limit)}).l.toJson"
         )
         return self._require_list_result(result, "get_method_callers")
 
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Get functions called by the given function."""
         result = self.query(
-            f'cpg.method.name("{name}").callee.distinct'
+            f'cpg.method.name({_scala_string(name)}).callee.distinct'
             f'.map(m => Map("name" -> m.name, "filename" -> m.filename, '
             f'"lineNumber" -> m.lineNumber.getOrElse(-1)))'
-            f".take({limit}).l.toJson"
+            f".take({int(limit)}).l.toJson"
         )
         return self._require_list_result(result, "get_method_callees")
 
     def get_type_decl(self, name: str) -> Optional[Dict[str, Any]]:
         """Get type declaration (struct/union/enum) by name."""
         result = self.query(
-            f'cpg.typeDecl.name("{name}").map(t => Map('
+            f'cpg.typeDecl.name({_scala_string(name)}).map(t => Map('
             f'"name" -> t.name, "filename" -> t.filename, '
             f'"lineNumber" -> t.lineNumber.getOrElse(-1)'
             f")).l.toJson"
@@ -789,9 +797,8 @@ class JoernClient:
 
     def get_type_decls(self, name: str) -> List[Dict[str, Any]]:
         """Get every same-name type declaration with its source definition."""
-        escaped_name = str(name or "").replace('"', '\\"')
         result = self.query(
-            f'cpg.typeDecl.name("{escaped_name}").map(t => Map('
+            f'cpg.typeDecl.name({_scala_string(name)}).map(t => Map('
             f'"name" -> t.name, "filename" -> t.filename, '
             f'"lineNumber" -> t.lineNumber.getOrElse(-1), '
             f'"lineNumberEnd" -> t.lineNumberEnd.getOrElse(-1), '
@@ -803,7 +810,7 @@ class JoernClient:
     def get_type_members(self, name: str) -> List[Dict[str, Any]]:
         """Get members of a type declaration."""
         result = self.query(
-            f'cpg.typeDecl.name("{name}").member'
+            f'cpg.typeDecl.name({_scala_string(name)}).member'
             f'.map(m => Map("name" -> m.name, "typeFullName" -> m.typeFullName))'
             f".l.toJson"
         )
@@ -815,11 +822,10 @@ class JoernClient:
         file_path: str = "",
     ) -> List[Dict[str, Any]]:
         """Return direct signature/local type facts exposed by the Joern CPG."""
-        escaped_name = str(name or "").replace('"', '\\"')
-        escaped_file = str(file_path or "").replace("\\", "/").replace('"', '\\"')
-        method = f'cpg.method.nameExact("{escaped_name}")'
-        if escaped_file:
-            method += f'.filter(m => m.filename.replace("\\\\", "/").endsWith("{escaped_file}"))'
+        clean_file = str(file_path or "").replace("\\", "/")
+        method = f'cpg.method.nameExact({_scala_string(name)})'
+        if clean_file:
+            method += f'.filter(m => m.filename.replace("\\\\", "/").endsWith({_scala_string(clean_file)}))'
         result = self.query(
             method
             + ".flatMap(m => "
@@ -838,7 +844,7 @@ class JoernClient:
 
     def find_methods(self, pattern: str, limit: int = 50) -> List[str]:
         """Find method names matching a regex pattern."""
-        result = self.query(f'cpg.method.name("{pattern}").name.distinct.take({limit}).l.toJson')
+        result = self.query(f'cpg.method.name({_scala_string(pattern)}).name.distinct.take({int(limit)}).l.toJson')
         rows = self._require_list_result(result, "find_methods")
         return [str(item) for item in rows]
 
@@ -847,8 +853,8 @@ class JoernClient:
     ) -> List[Dict[str, Any]]:
         """Trace data flow from source parameter to sink calls."""
         result = self.query(
-            f'def src = cpg.method.name("{source_func}").parameter.name("{source_param}")\n'
-            f'def snk = cpg.call.name("{sink_pattern}").argument\n'
+            f'def src = cpg.method.name({_scala_string(source_func)}).parameter.name({_scala_string(source_param)})\n'
+            f'def snk = cpg.call.name({_scala_string(sink_pattern)}).argument\n'
             f"sink(snk).reachableByFlows(source(src))"
             f'.map(f => Map("path" -> f.elements.map(e => '
             f'Map("code" -> e.code, "lineNumber" -> e.lineNumber.getOrElse(-1), '
@@ -860,7 +866,7 @@ class JoernClient:
     def find_function_pointers(self, func_name: str) -> List[Dict[str, Any]]:
         """Find assignments/references to function as pointer."""
         result = self.query(
-            f'cpg.identifier.name("{func_name}").inAssignment'
+            f'cpg.identifier.name({_scala_string(func_name)}).inAssignment'
             f'.map(a => Map("code" -> a.code, '
             f'"filename" -> a.file.name.headOption.getOrElse(""), '
             f'"lineNumber" -> a.lineNumber.getOrElse(-1)))'

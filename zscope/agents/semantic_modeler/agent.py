@@ -230,10 +230,8 @@ class SemanticModeler(JsonToolAgent):
                 last_terminal_payload.clear()
                 last_terminal_payload.update(payload)
             validation_errors.clear()
-            if language == "java":
-                return is_valid_snapshot(payload)
             validation_errors.extend(schema_errors(payload, effective_schema))
-            return not validation_errors
+            return not validation_errors and (language != "java" or is_valid_snapshot(payload))
 
         def record_terminal(payload: Dict[str, Any], valid: bool) -> None:
             terminal_submissions.append(

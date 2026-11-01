@@ -1384,7 +1384,7 @@ class SnapshotStore:
                     owner = json.loads(
                         (self.snapshot_dir / str(row[0])).read_text(encoding="utf-8")
                     )
-                    if owner.get("index_name") != index_name:
+                    if not isinstance(owner, dict) or owner.get("index_name") != index_name:
                         return None
                 value = cached if cached is not None else read_report(self.snapshot_dir / filename)
             except FileNotFoundError:

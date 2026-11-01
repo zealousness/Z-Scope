@@ -429,7 +429,7 @@ def test_k01_off_retains_original_spec_digest_and_does_not_invoke_schema_helper(
         {
             "version": 2,
             "contract_compiler": CONTRACT_COMPILER_VERSION,
-            "program_facts": "zscope.program-events.v5",
+            "program_facts": "zscope.program-events.v7",
             "schema": DEFAULT_FUNCTION_SNAPSHOT_SCHEMA,
             "prompt": (
                 Path(modeling.__file__).parents[1] / "agents/semantic_modeler/AGENT.md"

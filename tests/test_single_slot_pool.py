@@ -82,7 +82,7 @@ def context(role):
             "functions": [
                 {
                     "complete": True,
-                    "fact_version": "zscope.program-events.v5",
+                    "fact_version": "zscope.program-events.v7",
                     "resource_protocol_facts_version": "zscope.resource-protocol-facts.v1",
                     "owner": {"name": name, "usr": "c:@F@" + name},
                     "parameters": [

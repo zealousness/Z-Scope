@@ -221,7 +221,7 @@ def _function_fact(name: str, parameter: str, events: list[dict], edges=None) ->
         "owner": {"name": name, "file": "src/demo.c", "line": 1},
         "location": _location("src/demo.c", 1),
         "complete": True,
-        "fact_version": "zscope.program-events.v5",
+        "fact_version": "zscope.program-events.v7",
         "parameters": [_value(parameter, kind="parameter", index=0)],
         "events": events,
         "cfg_edges": edges or [],

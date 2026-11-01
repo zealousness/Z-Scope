@@ -1,4 +1,4 @@
-"""Exact-instance C/C++ semantics: builtin effects only, manual rows advisory.
+"""Exact-instance builtin, current native-derived and confirmed project effects.
 
 This is the S01 first slice (``S01-INSTANCE-SEMANTICS-MIN-R23``, inheriting
 ``S01-INSTANCE-MODELING-DESIGN-R21``), repaired under the R24 and R25 source
@@ -42,8 +42,12 @@ instance a snapshot carries two strictly separated kinds of information:
 
 Every workbook row whose source is inferred is excluded, with the row bytes
 and an explicit exclusion reason preserved in ``excluded_rows`` — including
-rows whose build/USR look exact or whose saved verification looks valid.  No
-inferred execution effect is authorized in this slice.
+rows whose build/USR look exact or whose saved verification looks valid.
+This does not exclude the factory's own deterministic native wrapper closure:
+it is recomputed from current exact-build bodies and authorized builtin roots,
+without reading saved model proposals or granting workbook rows authority.
+Confirmed project YAML effects remain separately rebound to their current
+identities. They are never seeds for the independent automatic closure.
 
 Snapshots are **factory-issued objects**: :func:`build_instance_semantics`
 derives every effect byte from the packaged catalog plus the pinned build's
@@ -92,7 +96,19 @@ import weakref
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Mapping, NewType, Optional, Tuple, Union
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    NewType,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from ..retrieval.build_context import context_input_status
 from ..retrieval.instance_index import InstanceScope, ScopedCodeIndex
@@ -115,11 +131,12 @@ from .models import (
     LocalPatternSemantics,
 )
 from .standard_api import STANDARD_API_VERSION
+from .c_linux_catalog import CATALOG_VERSION, VERIFIED_STANDARD_ABI, VERIFIED_STANDARD_ABI_ALTERNATIVES
 from .user_config_context import parse_user_config_list, user_config_scope_matches
 
 INSTANCE_SEMANTICS_SCHEMA: Literal["zscope.instance-semantics.v1"] = "zscope.instance-semantics.v1"
-AUTHORITY_POLICY: Literal["builtin_current_manual_advisory_no_inferred.v1"] = (
-    "builtin_current_manual_advisory_no_inferred.v1"
+AUTHORITY_POLICY: Literal["builtin_current_automatic_native_confirmed_project.v3"] = (
+    "builtin_current_automatic_native_confirmed_project.v3"
 )
 #: Manual rows never carry more than name/file/signature-level authority.
 ADVISORY_AUTHORITY = "name_only_advisory"
@@ -145,20 +162,11 @@ ORIGIN_UNVERIFIABLE_COMMAND = "unverifiable_command_include_paths"
 ORIGIN_STANDARD_SOURCE_UNPROVEN = "no_verified_standard_declaration_source"
 _ALLOWED_ORIGINS = frozenset({ORIGIN_SYSTEM_RECEIPT})
 
-# Verified standard-root ABI table for the supported platform (Linux glibc
-# LP64): the exact canonical signature each packaged root's declaration must
-# carry in the current compilation for its effects to be authorized.  The
-# native receipt supplies the actual declaration facts; this table supplies
-# the platform expectation the receipt is compared against.  Roots outside
-# this table have no receipt-backed ABI verifier in this slice and stay
-# denied with an explicit ``no_verifiable_standard_abi`` gap — they are never
-# authorized by name, system-header classification or basename alone.
-_VERIFIED_STANDARD_ABI: Dict[str, str] = {
-    "malloc": "void *(unsigned long)",
-    "calloc": "void *(unsigned long, unsigned long)",
-    "realloc": "void *(void *, unsigned long)",
-    "free": "void (void *)",
-}
+# Verified Linux glibc LP64 ABI signatures come from the versioned packaged
+# catalog.  There is intentionally no second handwritten table in this
+# module: catalog classification, contract generation and native authority
+# checks must move together.
+_VERIFIED_STANDARD_ABI = VERIFIED_STANDARD_ABI
 #: C external-linkage USR form of a standard root (clang ``c:@F@<name>``).
 _C_USR_PREFIX = "c:@F@"
 #: Command flags that add user-controlled include/sysroot search paths.
@@ -231,6 +239,10 @@ class FrozenWorkbookRows:
     external_rows: Tuple[FrozenJSON, ...]
     paired_rows: Tuple[FrozenJSON, ...]
     other_advisory_rows: Tuple[FrozenJSON, ...]
+    # Canonical zscope.project-semantics.v1 document.  The historical class
+    # name/three projections remain temporarily to avoid duplicating every
+    # evidence renderer; scanners populate this field from YAML, never XLSX.
+    project_document: FrozenJSON = FrozenJSON(b"{}")
 
 
 @dataclass(frozen=True)
@@ -270,7 +282,7 @@ class InstanceSemanticsSnapshot:
     """
 
     schema: Literal["zscope.instance-semantics.v1"]
-    authority_policy: Literal["builtin_current_manual_advisory_no_inferred.v1"]
+    authority_policy: Literal["builtin_current_automatic_native_confirmed_project.v3"]
     scope: InstanceScope
     dependencies: SemanticsDependencies
     workbook_sha256: str
@@ -285,6 +297,23 @@ class SemanticsUnavailable:
     """Why no instance semantics could be frozen; never a silent fallback."""
 
     reason: str
+
+
+@dataclass(frozen=True)
+class _InstanceInputAdmission:
+    """Factory-issued proof that one exact scope passed a batch input gate.
+
+    The expensive filesystem/native checks are performed by the coordinator
+    once per BuildContext.  This token carries the exact context and function
+    fact bytes admitted at that boundary, so the snapshot factory can avoid
+    re-walking the same include namespace for every function without accepting
+    a caller-supplied boolean.
+    """
+
+    scope_identity: str
+    build_context_id: str
+    context_receipt: FrozenJSON
+    program_facts: FrozenJSON
 
 
 # ── Canonical JSON bytes ──
@@ -390,6 +419,9 @@ def freeze_workbook_rows(
 _ISSUED_SNAPSHOTS: "weakref.WeakValueDictionary[int, InstanceSemanticsSnapshot]" = (
     weakref.WeakValueDictionary()
 )
+_ISSUED_INPUT_ADMISSIONS: "weakref.WeakValueDictionary[int, _InstanceInputAdmission]" = (
+    weakref.WeakValueDictionary()
+)
 _ISSUER_LOCK = threading.Lock()
 
 
@@ -407,6 +439,38 @@ def _verify_factory_issued(snapshot: InstanceSemanticsSnapshot) -> None:
             "instance semantics snapshot was not issued by build_instance_semantics "
             "in this process; reconstructed or forged snapshots grant nothing"
         )
+
+
+def _issue_instance_input_admission(
+    *, scope: InstanceScope, context: Mapping[str, Any], program_facts: Mapping[str, Any]
+) -> _InstanceInputAdmission:
+    """Mint an exact admission only after the coordinator's batch verifier.
+
+    This intentionally remains private to the semantics coordinator.  The
+    factory additionally rechecks the token identity, scope and canonical
+    native bytes before using it.
+    """
+
+    admission = _InstanceInputAdmission(
+        scope_identity=scope.identity,
+        build_context_id=scope.build_context_id,
+        context_receipt=_canonical_bytes([dict(context)]),
+        program_facts=_canonical_bytes(dict(program_facts)),
+    )
+    with _ISSUER_LOCK:
+        _ISSUED_INPUT_ADMISSIONS[id(admission)] = admission
+    return admission
+
+
+def _verify_input_admission(admission: _InstanceInputAdmission, scope: InstanceScope) -> None:
+    with _ISSUER_LOCK:
+        issued = _ISSUED_INPUT_ADMISSIONS.get(id(admission)) is admission
+    if (
+        not issued
+        or admission.scope_identity != scope.identity
+        or admission.build_context_id != scope.build_context_id
+    ):
+        raise ValueError("instance semantics input admission was not factory issued")
 
 
 # ── Packaged builtin payload (the only effect authority) ──
@@ -477,6 +541,9 @@ def builtin_semantics_fingerprint() -> Dict[str, str]:
     """
 
     data = _builtin_effect_data()
+    verified_abi_payload: Dict[str, JSONValue] = {
+        str(name): str(signature) for name, signature in VERIFIED_STANDARD_ABI.items()
+    }
     payload = _canonical_bytes(
         {
             "type_aliases": data["type_aliases"],
@@ -485,16 +552,24 @@ def builtin_semantics_fingerprint() -> Dict[str, str]:
             "pairs": data["pairs"],
             "checker_models": data["checker_models"],
             "checker_only_roots": data["checker_only_roots"],
+            "c_linux_catalog_version": CATALOG_VERSION,
+            "verified_standard_abi": verified_abi_payload,
         }
     )
     return {
         "compiler_version": CONTRACT_COMPILER_VERSION,
         "standard_api_version": STANDARD_API_VERSION,
+        "c_linux_catalog_version": CATALOG_VERSION,
         "builtin_payload_sha256": _sha256_hex(payload),
     }
 
 
-def _effect_payload(denied: Iterable[str], origins: Mapping[str, str]) -> FrozenJSON:
+def _effect_payload(
+    denied: Iterable[str],
+    origins: Mapping[str, str],
+    standard_declaration_files: Iterable[Path] = (),
+    project_contracts: Iterable[Mapping[str, Any]] = (),
+) -> FrozenJSON:
     hidden = set(denied)
     data = _builtin_effect_data()
     models = {
@@ -511,6 +586,7 @@ def _effect_payload(denied: Iterable[str], origins: Mapping[str, str]) -> Frozen
         "builtin_source": DEFAULT_SEMANTICS_SOURCE,
         "compiler_version": CONTRACT_COMPILER_VERSION,
         "standard_api_version": STANDARD_API_VERSION,
+        "c_linux_catalog_version": CATALOG_VERSION,
         "type_aliases": data["type_aliases"],
         "roles": data["roles"],
         "contracts": data["contracts"],
@@ -519,6 +595,10 @@ def _effect_payload(denied: Iterable[str], origins: Mapping[str, str]) -> Frozen
         "checker_only_roots": data["checker_only_roots"],
         "shadowed_symbols": sorted(hidden),
         "symbol_origins": {str(name): str(status) for name, status in origins.items()},
+        "standard_declaration_files": {
+            str(path): file_digest(path) for path in sorted(set(standard_declaration_files))
+        },
+        "project_contracts": [dict(row) for row in project_contracts],
     }
     return _canonical_bytes(payload)
 
@@ -564,21 +644,34 @@ def _pinned_context_record(
     return None
 
 
-def _entry_receipt_problem(scoped_index: ScopedCodeIndex, scope: InstanceScope) -> str:
+def _entry_receipt_problem(
+    scoped_index: ScopedCodeIndex,
+    scope: InstanceScope,
+    *,
+    admitted_facts: Mapping[str, Any] | None = None,
+) -> str:
     """Whether the pinned entry holds a complete exact native receipt."""
 
     if not scope.usr:
         return "unknown_entry_usr"
-    try:
-        facts = scoped_index.get_function_program_facts(scope.usr, scope.source)
-    except Exception:
-        return "entry_program_facts_unavailable"
+    facts: Mapping[str, Any]
+    if admitted_facts is None:
+        try:
+            facts = scoped_index.get_function_program_facts(scope.usr, scope.source)
+        except Exception:
+            return "entry_program_facts_unavailable"
+    else:
+        facts = admitted_facts
     if not isinstance(facts, Mapping) or not facts.get("complete"):
         reason = str(facts.get("reason") or "") if isinstance(facts, Mapping) else ""
         return reason or "instance_facts_incomplete"
     identity = facts.get("function_identity")
     identity = identity if isinstance(identity, Mapping) else {}
-    if str(identity.get("usr") or "") != scope.usr:
+    if (
+        str(facts.get("build_context_id") or "") != scope.build_context_id
+        or str(identity.get("build_context_id") or "") != scope.build_context_id
+        or str(identity.get("usr") or "") != scope.usr
+    ):
         return "entry_identity_unverified"
     return ""
 
@@ -740,15 +833,18 @@ def _trusted_host_header(path: Path) -> bool:
 
 
 def _standard_declaration_files(
-    scoped_index: ScopedCodeIndex, scope: InstanceScope, pinned: Mapping[str, Any]
+    scoped_index: ScopedCodeIndex,
+    scope: InstanceScope,
+    pinned: Mapping[str, Any],
+    receipts: Sequence[Tuple[str, Mapping[str, Any]]],
 ) -> frozenset[Path]:
-    """Positive current exact-build source witness for the bounded glibc roots.
+    """Positive current exact-build source witnesses for supported glibc APIs.
 
     Read only the pinned native store and on-disk identities. Never execute a
     command from a saved manifest. A target flag, ABI, USR, header name/path
     or absent user-root match alone cannot mint this witness. The actual
-    include resolution must name the trusted physical installation, both
-    glibc headers must have been read by this build with current digests,
+    include resolution must name the trusted physical installation, every
+    declaration header must have been read by this build with a current digest,
     the native target/search receipts must agree, and the emitting binary
     and recorded shared libraries must still match their identities.
     """
@@ -796,39 +892,72 @@ def _standard_declaration_files(
     dependencies = pinned.get("dependencies")
     if not isinstance(dependencies, Mapping):
         return frozenset()
-    for header in (_HOST_GLIBC_STDLIB, _HOST_GLIBC_FEATURES):
+    features_digest = dependencies.get(str(_HOST_GLIBC_FEATURES))
+    if (
+        not _trusted_host_header(_HOST_GLIBC_FEATURES)
+        or not isinstance(features_digest, str)
+        or not _is_sha256_hex(features_digest)
+        or file_digest(_HOST_GLIBC_FEATURES) != features_digest
+    ):
+        return frozenset()
+    getter = getattr(scoped_index.base_index(), "get_compilation_facts", None)
+    if not callable(getter):
+        return frozenset()
+    witnessed_includes: set[Path] = set()
+    try:
+        includes = getter(scope.build_context_id, kinds=("include",))
+        for row in includes or []:
+            if not isinstance(row, Mapping) or row.get("kind") != "include":
+                continue
+            location = row.get("location")
+            location = location if isinstance(location, Mapping) else {}
+            including = str(location.get("file") or "")
+            include_target = str(row.get("target_file") or "")
+            if (
+                not include_target
+                or not Path(include_target).is_absolute()
+                or not including
+                or not isinstance(dependencies.get(including), str)
+                or not _is_sha256_hex(str(dependencies.get(including)))
+            ):
+                continue
+            witnessed_includes.add(Path(include_target).resolve(strict=True))
+    except Exception:
+        return frozenset()
+    candidates: set[Path] = set()
+    for name, raw_target in receipts:
+        if name not in _VERIFIED_STANDARD_ABI or not isinstance(raw_target, Mapping):
+            continue
+        declaration = raw_target.get("declaration")
+        declaration = declaration if isinstance(declaration, Mapping) else {}
+        raw_file = str(declaration.get("file") or "")
+        if not raw_file or not Path(raw_file).is_absolute():
+            continue
+        try:
+            header = Path(raw_file).resolve(strict=True)
+        except (OSError, ValueError, RuntimeError):
+            continue
         digest = dependencies.get(str(header))
         if (
             not _trusted_host_header(header)
             or not isinstance(digest, str)
             or not _is_sha256_hex(digest)
             or file_digest(header) != digest
+            or header not in witnessed_includes
         ):
-            return frozenset()
-    getter = getattr(scoped_index.base_index(), "get_compilation_facts", None)
-    if not callable(getter):
-        return frozenset()
-    try:
-        includes = getter(scope.build_context_id, kinds=("include",))
-        for row in includes or []:
-            if not isinstance(row, Mapping) or row.get("kind") != "include":
-                continue
-            resolved = Path(str(row.get("target_file") or ""))
-            location = row.get("location")
-            if not isinstance(location, Mapping):
-                continue
-            including = str(location.get("file") or "")
-            if (
-                resolved.is_absolute()
-                and resolved.resolve(strict=True) == _HOST_GLIBC_STDLIB
-                and Path(including).is_absolute()
-                and isinstance(dependencies.get(including), str)
-                and _is_sha256_hex(dependencies[including])
-            ):
-                return frozenset({_HOST_GLIBC_STDLIB})
-    except Exception:
-        return frozenset()
-    return frozenset()
+            continue
+        # The declaration must live below one search root recorded by the
+        # native include-probe receipt.  A trusted basename elsewhere is not a
+        # system declaration witness.
+        if not any(
+            header == Path(str(root)).resolve() or Path(str(root)).resolve() in header.parents
+            for root in searches
+            if isinstance(root, str) and Path(root).is_absolute()
+        ):
+            continue
+        candidates.add(header)
+    del scoped_index, scope  # all authority came from the pinned receipts above
+    return frozenset(candidates)
 
 
 def _builtin_origin_status(
@@ -884,8 +1013,8 @@ def _builtin_origin_status(
             return ORIGIN_IDENTITY_MISMATCH
         if str(target.get("usr") or target.get("referenced_usr") or "") != (_C_USR_PREFIX + name):
             return ORIGIN_IDENTITY_MISMATCH
-        if str(target.get("canonical_signature") or target.get("signature") or "") != (
-            expected_signature
+        if str(target.get("canonical_signature") or target.get("signature") or "") not in (
+            expected_signature, *VERIFIED_STANDARD_ABI_ALTERNATIVES.get(name, ())
         ):
             return ORIGIN_SIGNATURE_MISMATCH
         declaration = target.get("declaration")
@@ -983,6 +1112,9 @@ def build_instance_semantics(
     scoped_index: ScopedCodeIndex,
     workbook: FrozenWorkbookRows,
     dependencies: SemanticsDependencies,
+    project_contracts_override: Sequence[Mapping[str, Any]] | None = None,
+    _input_admission: _InstanceInputAdmission | None = None,
+    _build_template: InstanceSemanticsSnapshot | None = None,
 ) -> Union[InstanceSemanticsSnapshot, SemanticsUnavailable]:
     """Freeze builtin effects and manual advisory for one exact instance.
 
@@ -1008,18 +1140,34 @@ def build_instance_semantics(
         return SemanticsUnavailable("scope_mismatch")
 
     # -- currency: dependency digests plus the full context-input check ----
-    status = scoped_index.dependencies_current_status()
-    if status != "current":
-        return SemanticsUnavailable(f"dependencies_not_current:{status}")
-    pinned = _pinned_context_record(scoped_index, scope)
-    if pinned is None:
-        return SemanticsUnavailable("unknown_build_context")
-    input_status = context_input_status(pinned)
-    if input_status != "current":
-        return SemanticsUnavailable(f"context_inputs_not_current:{input_status}")
+    admitted_facts: Mapping[str, Any] | None = None
+    if _input_admission is None:
+        status = scoped_index.dependencies_current_status()
+        if status != "current":
+            return SemanticsUnavailable(f"dependencies_not_current:{status}")
+        pinned = _pinned_context_record(scoped_index, scope)
+        if pinned is None:
+            return SemanticsUnavailable("unknown_build_context")
+        input_status = context_input_status(pinned)
+        if input_status != "current":
+            return SemanticsUnavailable(f"context_inputs_not_current:{input_status}")
+    else:
+        pinned = _pinned_context_record(scoped_index, scope)
+        if pinned is None:
+            return SemanticsUnavailable("unknown_build_context")
+        try:
+            _verify_input_admission(_input_admission, scope)
+            if _canonical_bytes([pinned]) != _input_admission.context_receipt:
+                return SemanticsUnavailable("admitted_build_context_changed")
+            decoded_facts = _strict_json_loads(_input_admission.program_facts)
+            if not isinstance(decoded_facts, Mapping):
+                return SemanticsUnavailable("admitted_program_facts_malformed")
+            admitted_facts = decoded_facts
+        except Exception:
+            return SemanticsUnavailable("instance_input_admission_invalid")
 
     # -- exact native entry receipt ---------------------------------------
-    problem = _entry_receipt_problem(scoped_index, scope)
+    problem = _entry_receipt_problem(scoped_index, scope, admitted_facts=admitted_facts)
     if problem:
         return SemanticsUnavailable(f"entry_receipt_unavailable:{problem}")
 
@@ -1090,22 +1238,70 @@ def build_instance_semantics(
         }
     )
 
-    # -- builtin authority: per-root origin inside this exact build -------
-    receipts = _call_origin_receipts(scoped_index, scope)
-    include_roots, has_response_file = _user_include_roots(pinned.get("command") or {})
-    standard_files = (
-        _standard_declaration_files(scoped_index, scope, pinned)
-        if any(name in _VERIFIED_STANDARD_ABI for name, _target in receipts)
-        else frozenset()
-    )
-    origins = {
-        name: _builtin_origin_status(
-            scoped_index, name, receipts, include_roots, has_response_file, standard_files
+    from ..config.project_semantics import compiled_project_contracts, empty_project_semantics
+
+    try:
+        project_document = _strict_json_loads(workbook.project_document)
+        if project_document == {}:
+            project_document = empty_project_semantics()
+        project_contracts = (
+            [dict(row) for row in project_contracts_override]
+            if project_contracts_override is not None
+            else compiled_project_contracts(
+                project_document, build_context_id=scope.build_context_id
+            )
         )
-        for name in _builtin_root_universe()
-    }
-    denied = sorted(name for name, status in origins.items() if status not in _ALLOWED_ORIGINS)
-    effect_payload = _effect_payload(denied, origins)
+    except Exception:
+        return SemanticsUnavailable("project_semantics_compile_failed")
+    if _build_template is None:
+        # Builtin/project authority is a property of the exact BuildContext,
+        # not of the entry function that happens to consume it.  The
+        # coordinator computes this payload once for a build and supplies the
+        # factory-issued template for the remaining exact function instances.
+        receipts = _call_origin_receipts(scoped_index, scope)
+        include_roots, has_response_file = _user_include_roots(pinned.get("command") or {})
+        standard_files = (
+            _standard_declaration_files(scoped_index, scope, pinned, receipts)
+            if any(name in _VERIFIED_STANDARD_ABI for name, _target in receipts)
+            else frozenset()
+        )
+        origins = {
+            name: _builtin_origin_status(
+                scoped_index, name, receipts, include_roots, has_response_file, standard_files
+            )
+            for name in _builtin_root_universe()
+        }
+        denied = sorted(name for name, status in origins.items() if status not in _ALLOWED_ORIGINS)
+        effect_payload = _effect_payload(
+            denied, origins, standard_files, project_contracts=project_contracts
+        )
+        from .automatic import derive_build_payload
+
+        automatic_payload = _strict_json_loads(effect_payload)
+        automatic_payload["automatic_derivation"] = derive_build_payload(
+            scoped_index, automatic_payload
+        )
+        # The whole TU, including non-entry wrappers, belongs to this build.
+        # Recheck its current dependencies after reading/deriving their bodies.
+        if context_input_status(pinned) != "current":
+            return SemanticsUnavailable("automatic_inputs_changed_during_derivation")
+        effect_payload = _canonical_bytes(automatic_payload)
+    else:
+        try:
+            _verify_snapshot(_build_template)
+            template_payload = _strict_json_loads(_build_template.effect_payload)
+            if (
+                _build_template.scope.build_context_id != scope.build_context_id
+                or _build_template.dependencies != dependencies
+                or _build_template.workbook_sha256 != workbook.workbook_sha256
+                or not isinstance(template_payload, Mapping)
+                or template_payload.get("project_contracts")
+                != [dict(row) for row in project_contracts]
+            ):
+                return SemanticsUnavailable("instance_build_template_mismatch")
+            effect_payload = _build_template.effect_payload
+        except Exception:
+            return SemanticsUnavailable("instance_build_template_invalid")
 
     return _register_issued(
         InstanceSemanticsSnapshot(
@@ -1130,6 +1326,120 @@ def build_instance_semantics(
 
 
 # ── Consumer-side materialization ──
+
+
+def compose_linked_automatic_templates(
+    snapshots: Mapping[str, InstanceSemanticsSnapshot], code_index: Any
+) -> dict[str, InstanceSemanticsSnapshot]:
+    """Export issued native proofs through one unambiguous observed C link.
+
+    Definition and consumer BuildContexts remain distinct. A template is not
+    authority for a link: resolve the actual definition and compare its native
+    body digest before issuing the consumer projection. No project YAML effect
+    or caller-supplied contract is a seed.
+    """
+    from copy import deepcopy
+    from dataclasses import replace
+    from .automatic import AUTOMATIC_SOURCE
+    from .contracts import digest
+
+    result = dict(snapshots)
+    by_build: dict[str, InstanceSemanticsSnapshot] = {}
+    for snapshot in snapshots.values():
+        _verify_snapshot(snapshot)
+        by_build.setdefault(snapshot.scope.build_context_id, snapshot)
+    linked_factory = getattr(code_index, "linked_targets", None)
+    linked = linked_factory() if callable(linked_factory) else None
+    if len(by_build) < 2 or linked is None or not getattr(linked, "targets", None):
+        return result
+    payloads = {b: _strict_json_loads(s.effect_payload) for b, s in by_build.items()}
+    exports: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for build, payload in payloads.items():
+        exports[build] = {}
+        for row in payload["automatic_derivation"]["contracts"]:
+            # Only original local proofs can be exported. Never re-export a
+            # previous consumer projection as though it were a definition.
+            if not row["verification"].get("definition_build_context_id"):
+                exports[build].setdefault(row["symbol"]["usr"], []).append(row)
+    contexts = {c["build_context_id"]: c for c in code_index.get_build_contexts()}
+    checked: set[str] = set()
+    links: set[str] = set()
+    updated: dict[str, FrozenJSON] = {}
+    for build, payload in payloads.items():
+        automatic = payload["automatic_derivation"]
+        imports: list[dict[str, Any]] = []
+        gaps: list[dict[str, str]] = []
+        called = {
+            str((event.get("callee") or {}).get("usr") or "")
+            for body in code_index.get_compilation_facts(build, kinds=("program_function",))
+            for event in body.get("events", [])
+            if event.get("event_kind") == "call"
+        }
+        for usr in sorted(called & {u for b, rows in exports.items() if b != build for u in rows}):
+            resolved = linked.resolve(build, usr)
+            if not resolved.get("complete"):
+                gaps.append(
+                    {
+                        "usr": usr,
+                        "reason": str(resolved.get("reason") or "linked_definition_unclosed"),
+                    }
+                )
+                continue
+            definition = str(resolved.get("build_context_id") or "")
+            rows = exports.get(definition, {}).get(usr, [])
+            bodies = resolved.get("functions") or []
+            link_id = str((resolved.get("link_target") or {}).get("target_id") or "")
+            if definition == build or not rows or len(bodies) != 1 or not link_id:
+                continue
+            if definition not in checked:
+                if (
+                    definition not in contexts
+                    or context_input_status(contexts[definition]) != "current"
+                    or not authorized_standard_headers_current(by_build[definition])
+                ):
+                    raise ValueError("automatic_link_definition_not_current")
+                checked.add(definition)
+            for original in rows:
+                if original["verification"].get("native_input_hash") != digest(bodies[0]):
+                    raise ValueError("automatic_link_native_body_changed")
+                row = deepcopy(original)
+                row["symbol"]["build_context_id"] = build
+                row["source"] = AUTOMATIC_SOURCE
+                row["verification"].update(
+                    definition_build_context_id=definition,
+                    definition_snapshot_digest=by_build[definition].digest,
+                    link_target_ids=[link_id],
+                    linked_projection=True,
+                )
+                imports.append(row)
+                links.add(link_id)
+        automatic["contracts"] = _sorted_canonical([*automatic["contracts"], *imports])
+        automatic["linked_imports"] = len(imports)
+        automatic["link_gaps"] = gaps
+        automatic["link_target_ids"] = sorted(
+            {v for r in imports for v in r["verification"]["link_target_ids"]}
+        )
+        automatic["scope"] = "exact_build_native_bodies_and_observed_link_exports"
+        updated[build] = _canonical_bytes(payload)
+    if links and not linked.current_many(sorted(links)):
+        raise ValueError("automatic_link_inputs_changed")
+    for identity, snapshot in snapshots.items():
+        payload = updated[snapshot.scope.build_context_id]
+        result[identity] = _register_issued(
+            replace(
+                snapshot,
+                effect_payload=payload,
+                digest=_snapshot_digest(
+                    scope=snapshot.scope,
+                    dependencies=snapshot.dependencies,
+                    workbook_sha256=snapshot.workbook_sha256,
+                    effect_payload=payload,
+                    advisory_payload=snapshot.advisory_payload,
+                    excluded_rows=snapshot.excluded_rows,
+                ),
+            )
+        )
+    return result
 
 
 def _pair_from_row(row: Mapping[str, Any]) -> Optional[ApiPair]:
@@ -1191,6 +1501,12 @@ def _validate_effect_payload(payload: Any) -> None:
         isinstance(name, str) and isinstance(status, str) for name, status in origins.items()
     ):
         raise ValueError("effect payload symbol origins malformed")
+    headers = payload.get("standard_declaration_files")
+    if not isinstance(headers, dict) or not all(
+        isinstance(path, str) and isinstance(digest, str) and _is_sha256_hex(digest)
+        for path, digest in headers.items()
+    ):
+        raise ValueError("effect payload standard declaration files malformed")
     checker_only = payload.get("checker_only_roots")
     if not isinstance(checker_only, list) or not all(
         isinstance(name, str) for name in checker_only
@@ -1202,6 +1518,48 @@ def _validate_effect_payload(payload: Any) -> None:
         for key in ("resource_models", "lock_models")
     ):
         raise ValueError("effect payload checker models malformed")
+    project_contracts = payload.get("project_contracts")
+    if not isinstance(project_contracts, list):
+        raise ValueError("effect payload project contracts malformed")
+    for row in project_contracts:
+        if not isinstance(row, dict):
+            raise ValueError("effect payload project contract is not an object")
+        source = str(row.get("source") or "")
+        if not (
+            source.startswith("inferred:project_semantics:")
+            or source.startswith("project_semantics:external_model:")
+        ):
+            raise ValueError("effect payload project contract has invalid authority")
+        symbol = row.get("symbol")
+        if (
+            not isinstance(symbol, dict)
+            or not symbol.get("name")
+            or not symbol.get("usr")
+            or not symbol.get("build_context_id")
+        ):
+            raise ValueError("effect payload project contract identity is inexact")
+    from .automatic import AUTOMATIC_SOURCE, AUTOMATIC_VERSION
+
+    automatic = payload.get("automatic_derivation")
+    if not isinstance(automatic, dict) or automatic.get("schema") != AUTOMATIC_VERSION:
+        raise ValueError("effect payload automatic derivation missing")
+    if not isinstance(automatic.get("contracts"), list):
+        raise ValueError("effect payload automatic contracts malformed")
+    for row in automatic["contracts"]:
+        contract = ApiContract.from_row({"contract": row}) if isinstance(row, dict) else None
+        if (
+            contract is None
+            or contract.source != AUTOMATIC_SOURCE
+            or not contract.symbol.usr
+            or not contract.symbol.build_context_id
+            or not contract.effects_trusted
+            or contract.verification.get("automatic_version") != AUTOMATIC_VERSION
+            or contract.verification.get("authority") != "native_current"
+            or contract.verification.get("identity_verified") is not True
+            or not contract.verification.get("native_input_hash")
+            or not contract.verification.get("proof_dependencies")
+        ):
+            raise ValueError("effect payload automatic contract has invalid authority")
 
 
 def _payload_catalog_names(payload: Mapping[str, Any]) -> set:
@@ -1253,6 +1611,16 @@ def materialize_effect_semantics(
         raise ValueError("effect payload deny set is inconsistent with its origin receipts")
 
     semantics = LocalPatternSemantics()
+    # This registry is reconstructed from one factory-issued instance
+    # snapshot, so its ambient lookup scope is that exact BuildContext.  A
+    # number of consumers first make a restricted defensive copy before they
+    # bind an individual call context.  Leaving the registry unscoped there
+    # made those copies discard every exact project contract (their symbols
+    # correctly carry a build id) while retaining build-less builtin roots.
+    # The call-site USR check remains mandatory in ``find_for_call``; this
+    # binding only makes the already-authorized records visible to the
+    # instance consumer and never turns an unknown build into a wildcard.
+    semantics.contracts.build_context_id = snapshot.scope.build_context_id
     semantics.type_aliases.update(
         {str(alias): str(base) for alias, base in payload["type_aliases"].items()}
     )
@@ -1270,6 +1638,28 @@ def materialize_effect_semantics(
         if contract.symbol.name in shadowed:
             continue
         semantics.contracts.add(contract)
+    automatic_contracts: list[ApiContract] = []
+    for row in payload["automatic_derivation"]["contracts"]:
+        contract = ApiContract.from_row({"contract": row})
+        if contract is None or contract.symbol.build_context_id != snapshot.scope.build_context_id:
+            raise ValueError("effect payload automatic contract crossed build contexts")
+        semantics.contracts.add(contract)
+        automatic_contracts.append(contract)
+    project_contracts: list[ApiContract] = []
+    from .automatic import align_project_identities
+
+    for row in align_project_identities(
+        payload["automatic_derivation"]["contracts"], payload["project_contracts"]
+    ):
+        contract = ApiContract.from_row(
+            {"contract": row, "kind": row.get("role"), "source": row.get("source")}
+        )
+        if contract is None:
+            raise ValueError("effect payload project contract did not compile")
+        if contract.symbol.build_context_id != snapshot.scope.build_context_id:
+            raise ValueError("effect payload project contract crossed build contexts")
+        semantics.contracts.add(contract)
+        project_contracts.append(contract)
     for attr, names in payload["roles"].items():
         for name, sources in names.items():
             if name in shadowed:
@@ -1284,19 +1674,77 @@ def materialize_effect_semantics(
             continue
         if pair not in semantics.contracts.pairs:
             semantics.contracts.pairs.append(pair)
+    # Registry.add already maintains the surviving effect's directed edges.
+    # Re-adding edges from replaced automatic contracts here would resurrect
+    # a pairing the explicit configuration overrode.
+    for contract in semantics.contracts.contracts:
+        if contract.source == DEFAULT_SEMANTICS_SOURCE:
+            continue
+        semantics.add_api(contract.role, contract.symbol.name, contract.source)
+
+    from .automatic import configuration_requirements
 
     overlay: Dict[str, Any] = {
         "builtin_source": DEFAULT_SEMANTICS_SOURCE,
         "contract_version": semantics.contracts.version,
         "shadowed_symbols": sorted(shadowed),
         "symbol_origins": dict(origins),
+        "standard_declaration_files": dict(payload["standard_declaration_files"]),
         "api_contracts": [contract.to_dict() for contract in semantics.contracts.contracts],
+        # Keep the executable project subset explicit in the immutable
+        # consumer overlay.  ``api_contracts`` intentionally contains both
+        # builtin and project contracts; callers that report project
+        # authorization must not have to infer authority again from a mixed
+        # registry (and must not mistake a confirmed-but-unbound YAML row for
+        # an authorized instance contract).
+        "project_contracts": [contract.to_dict() for contract in project_contracts],
+        "automatic_contracts": [contract.to_dict() for contract in automatic_contracts],
+        "automatic_derivation": dict(payload["automatic_derivation"]),
+        "configuration_requirements": configuration_requirements(
+            [c.to_dict() for c in project_contracts], [c.to_dict() for c in automatic_contracts]
+        ),
         "api_pairs": [pair.to_dict() for pair in semantics.contracts.pairs],
         "macro_models": [],
         "resource_models": [dict(row) for row in payload["checker_models"]["resource_models"]],
         "lock_models": [dict(row) for row in payload["checker_models"]["lock_models"]],
+        "project_semantics": {
+            "contracts": len(project_contracts),
+            "assumptions": sum(
+                1
+                for contract in project_contracts
+                if str(contract.source).startswith("project_semantics:external_model:")
+            ),
+            "contract_ids": sorted(
+                str(contract.verification.get("project_semantics_id") or "")
+                for contract in project_contracts
+            ),
+        },
     }
     return semantics, overlay
+
+
+def authorized_standard_headers_current(snapshot: InstanceSemanticsSnapshot) -> bool:
+    """Recheck physical trust and content for every authorized system header."""
+
+    try:
+        _verify_snapshot(snapshot)
+        payload = _strict_json_loads(snapshot.effect_payload)
+        headers = payload.get("standard_declaration_files")
+        if not isinstance(headers, dict):
+            return False
+        for raw_path, digest in headers.items():
+            path = Path(str(raw_path))
+            if (
+                not path.is_absolute()
+                or not isinstance(digest, str)
+                or not _is_sha256_hex(digest)
+                or not _trusted_host_header(path)
+                or file_digest(path) != digest
+            ):
+                return False
+        return True
+    except Exception:
+        return False
 
 
 # ── Scoped manual advisory rendering ──

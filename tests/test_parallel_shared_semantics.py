@@ -39,7 +39,6 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         ),
         project=ProjectConfig(
             project_root=tmp_path,
-            source_root=tmp_path,
             agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
         ),
         concurrency=ConcurrencyConfig(entry_workers=3),
@@ -398,24 +397,33 @@ def test_scan_validation_queue_validates_one_shared_ledger_group(tmp_path) -> No
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow"])
-def test_batch_snapshot_shadow_follows_blind_discovery_before_freeze(
-    monkeypatch, tmp_path, mode
+@pytest.mark.parametrize("depth", ["balanced", "deep"])
+def test_batch_without_exact_inventory_preserves_discovery_gap_before_freeze(
+    monkeypatch, tmp_path, mode, depth
 ) -> None:
     from zscope.orchestration import snapshot_candidates
 
     config = _config(tmp_path)
     config.analysis.semantic_snapshot_candidate_mode = mode
-    config.scan.depth = "balanced"
+    config.scan.depth = depth
     parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
     parallel.semantic_result = object()
     events = []
 
-    def blind(entries, profile):
-        assert not parallel._candidate_ledger.records()
-        events.append("blind")
+    def blind(*_args):
+        pytest.fail("default scans must not fall back to legacy navigation-based discovery")
+
+    def assert_gap():
+        assert parallel._active_discovery_state == {
+            "enabled": False,
+            "profile": depth,
+            "status": "unavailable",
+            "reason": "hierarchical_discovery_requires_exact_static_inventory",
+        }
 
     def register(result, registrar, **kwargs):
-        assert events == ["blind"]
+        assert events == []
+        assert_gap()
         assert result is parallel.semantic_result
         assert not registrar.ledger._frozen
         assert kwargs["mode"] == "shadow"
@@ -425,6 +433,7 @@ def test_batch_snapshot_shadow_follows_blind_discovery_before_freeze(
     original_validate = parallel._run_scan_validation_queue
 
     def validate():
+        assert_gap()
         events.append("validate")
         original_validate()
         assert parallel._candidate_ledger._frozen
@@ -433,10 +442,49 @@ def test_batch_snapshot_shadow_follows_blind_discovery_before_freeze(
     monkeypatch.setattr(parallel, "_run_active_discovery", blind)
     monkeypatch.setattr(parallel, "_run_scan_validation_queue", validate)
     monkeypatch.setattr(snapshot_candidates, "register_conditional_snapshot_candidates", register)
-    parallel.analyze_function_entries([])
-    assert events == (
-        ["blind", "snapshot", "validate"] if mode == "shadow" else ["blind", "validate"]
-    )
+    try:
+        parallel.analyze_function_entries([])
+        assert events == (["snapshot", "validate"] if mode == "shadow" else ["validate"])
+    finally:
+        parallel.close()
+
+
+def test_instance_validation_checks_current_inputs_and_discovers_before_freeze(
+    monkeypatch, tmp_path
+):
+    """Verify the production queue order; synthetic hooks do not prove native coverage."""
+    config = _config(tmp_path)
+    config.scan.depth = "deep"
+    parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
+    parallel._batch_instance_scoped = True
+    events = []
+
+    def require_current():
+        assert not parallel._candidate_ledger._frozen
+        events.append("current")
+
+    def discover():
+        assert events == ["current"]
+        assert not parallel._candidate_ledger._frozen
+        events.append("hierarchical_discovery")
+
+    original_freeze = parallel._candidate_ledger.freeze
+
+    def freeze():
+        assert events == ["current", "hierarchical_discovery"]
+        events.append("freeze")
+        original_freeze()
+
+    monkeypatch.setattr(parallel, "require_current_instance_inputs", require_current)
+    monkeypatch.setattr(parallel, "_run_hierarchical_discovery", discover)
+    monkeypatch.setattr(parallel._candidate_ledger, "freeze", freeze)
+    try:
+        parallel._run_scan_validation_queue()
+        assert events == ["current", "hierarchical_discovery", "freeze"]
+        assert parallel._candidate_ledger._frozen
+        assert parallel._global_validation_state["validation_queue_drained"] is True
+    finally:
+        parallel.close()
 
 
 def test_project_deterministic_fact_pass_collects_reachable_function_once(tmp_path) -> None:

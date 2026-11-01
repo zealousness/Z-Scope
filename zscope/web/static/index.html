@@ -19,6 +19,10 @@
     <script src="dashboard_reports.js"></script>
     <script src="dashboard_workbench.js"></script>
     <script src="dashboard_config.js"></script>
+    <script src="dashboard_navigation.js"></script>
+    <script src="dashboard_projects.js"></script>
+    <script src="dashboard_schedules.js"></script>
+    <script src="dashboard_semantics.js"></script>
     <link rel="stylesheet" href="report_view.css">
     <link rel="stylesheet" href="dashboard_workbench.css">
     <style>
@@ -671,48 +675,71 @@
             .code-line-text { padding: 0.16rem 0.625rem; }
         }
     </style>
+    <link rel="stylesheet" href="dashboard_redesign.css">
+    <link rel="stylesheet" href="dashboard_semantics.css">
 </head>
 <body class="work-surface min-h-screen" x-data="zscopeApp()">
 
-    <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 px-6 py-3 flex flex-wrap gap-4 justify-between items-center shadow-sm">
-        <div class="flex items-center gap-3">
-            <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-white">Z</div>
-            <div>
-                <h1 class="text-lg font-bold tracking-tight text-slate-950">Z-SCOPE <span class="text-xs font-normal text-slate-500" x-text="appVersion">v1.3.2</span></h1>
-                <p class="text-xs text-slate-500">AI 代码审计工作台</p>
-            </div>
+    <section class="project-portal" x-cloak x-show="!projectReady" aria-labelledby="project-picker-title">
+        <header class="project-portal-heading"><div><span class="ui-brand-mark">Z</span><p class="wb-eyebrow">Z-SCOPE / PROJECTS</p><h1 id="project-picker-title">先选择要分析的工程</h1><p>选择执行机器上的 YAML 文件。配置文件所在目录，就是工程根目录。</p></div><span class="wb-tag">本地项目</span></header>
+        <p class="wb-notice" x-show="projectLoading" role="status">正在读取最近项目…</p>
+        <p class="wb-notice wb-notice-error" x-show="projectFailure" x-text="projectFailure" role="alert"></p>
+        <div class="project-portal-grid" x-show="!projectLoading">
+            <section class="wb-card"><h2>最近使用</h2><p class="wb-muted">只在本机用户目录记住 YAML 路径，不保存模型密钥。</p>
+                <p class="wb-empty" x-show="!recentProjects.length">还没有项目。从右侧选择目录，打开或创建配置。</p>
+                <template x-for="project in recentProjects" :key="project.project_id"><button class="project-recent" @click="openProjectPath(project.config_path)" :disabled="projectBusy || !project.available"><strong x-text="project.name"></strong><span class="wb-path" x-text="project.config_path"></span><small x-text="project.available ? '打开项目 →' : '路径已不可用，请重新定位'"></small></button></template>
+            </section>
+            <section class="wb-card"><h2>选择工程目录或配置文件</h2><label class="wb-field">执行机器上的绝对路径<input aria-label="工程目录或 YAML 路径" x-model="projectDirectory" @keydown.enter.prevent="/\.ya?ml$/i.test(projectDirectory) ? openProjectPath() : browseProjectDirectory()" placeholder="/home/me/my-project"></label>
+                <div class="wb-actions"><button class="wb-button" @click="browseProjectDirectory()" :disabled="projectBusy">浏览目录</button><button class="wb-button" @click="openProjectPath()" :disabled="projectBusy">打开 YAML</button></div>
+                <template x-if="projectBrowse"><div>
+                    <div class="project-browser-heading"><button class="wb-button" @click="browseProjectDirectory(projectBrowse.parent)" :disabled="projectBusy || projectBrowse.path===projectBrowse.parent">上一级</button><span class="wb-path" x-text="projectBrowse.path"></span></div>
+                    <div class="project-file-list"><template x-for="entry in projectBrowse.entries" :key="entry.path"><button @click="entry.kind==='directory' ? browseProjectDirectory(entry.path) : openProjectPath(entry.path)" :disabled="projectBusy"><span x-text="entry.kind==='directory' ? '▸' : 'YAML'"></span><span x-text="entry.name"></span><span x-text="entry.kind==='directory' ? '进入' : '打开'"></span></button></template></div>
+                    <p class="wb-muted" x-show="projectBrowse.truncated">当前目录仅显示前 300 项，可直接输入完整路径定位。</p>
+                    <p class="wb-notice" x-show="!projectBrowse.has_yaml">这个目录还没有 YAML 配置，可以按下面的向导创建。</p>
+                    <button class="wb-button wb-button-primary" @click="startProjectWizard()" :disabled="projectBusy">在此目录创建项目配置</button>
+                </div></template>
+            </section>
         </div>
-        <div class="flex flex-wrap gap-2 items-center">
-            <div class="wb-topnav" aria-label="扫描工作流程">
-                <button type="button" :aria-current="activeTab==='prepare' ? 'page' : null" @click="activeTab='prepare'"><small>01</small>项目准备</button>
-                <button type="button" :aria-current="activeTab==='jobs' ? 'page' : null" @click="activeTab='jobs';loadJobs()"><small>02</small>夜间作业</button>
-                <button type="button" :aria-current="activeTab==='acceptance' ? 'page' : null" @click="activeTab='acceptance'"><small>03</small>集中验收</button>
-                <button type="button" :aria-current="activeTab==='findings' ? 'page' : null" @click="activeTab='findings'">问题详情</button>
-                <details class="wb-technical">
-                    <summary>配置与工具</summary>
-                    <button type="button" @click="activeTab='project'">项目配置</button>
-                    <button type="button" @click="activeTab='rules';loadRules()">规则目录</button>
-                    <button type="button" @click="activeTab='config';configSubTab='workbook';loadWorkbookConfig()">业务模型</button>
-                    <button type="button" @click="openDashboard()">诊断看板</button>
-                </details>
+        <section class="wb-card project-wizard" x-show="projectWizard" aria-labelledby="wizard-title">
+            <div class="wb-heading"><div><p class="wb-eyebrow">SETUP / <span x-text="projectWizardStep + ' OF 3'"></span></p><h2 id="wizard-title">创建项目配置</h2></div><button class="wb-button" @click="projectWizard=false" :disabled="projectBusy">收起</button></div>
+            <ol class="setup-steps"><li :class="projectWizardStep===1 ? 'current' : ''">1 工程与构建</li><li :class="projectWizardStep===2 ? 'current' : ''">2 模型连接</li><li :class="projectWizardStep===3 ? 'current' : ''">3 确认创建</li></ol>
+            <div class="wb-config-grid" x-show="projectWizardStep===1">
+                <label>配置文件名<input aria-label="新配置文件名" x-model="newProject.filename"><small>直接保存在所选工程目录中，不覆盖已有文件。</small></label>
+                <label>项目语言<select aria-label="新项目语言" x-model="newProject.language" @change="wizardLanguageChanged()"><option value="c_cpp">C/C++</option><option value="java">Java</option></select></label>
+                <label>构建目标名称<input x-model="newProject.target_id" aria-label="新项目构建目标"></label>
+                <label x-show="newProject.language==='c_cpp'">编译数据库<input aria-label="新项目编译数据库" x-model="newProject.compile_commands"><small>相对 YAML 目录，例如 build/compile_commands.json；可创建配置后再生成数据库。</small></label>
+                <label>默认扫描模式<select aria-label="新项目默认模式" x-model="newProject.preset"><option value="fast">快速</option><option value="balanced" :disabled="newProject.language==='java'">均衡</option><option value="deep" :disabled="newProject.language==='java'">深度</option></select><small x-show="newProject.language==='java'">Java 当前仅支持快速。</small></label>
             </div>
-            <div x-show="activeTab==='findings'" class="badge badge-outline gap-2" :class="cpgStatusClass">
-                <span class="w-2 h-2 rounded-full" :class="cpgDotClass"></span>
-                CPG: <span x-text="cpgStatus">unknown</span>
+            <div class="wb-config-grid" x-show="projectWizardStep===2">
+                <label>模型服务地址<input aria-label="新项目模型地址" x-model="newProject.base_url" placeholder="${Z_SCOPE_LLM_BASE_URL}" autocomplete="off"><small>留空使用 Z_SCOPE_LLM_BASE_URL 环境变量。</small></label>
+                <label>模型名称<input aria-label="新项目模型名称" x-model="newProject.model" placeholder="${Z_SCOPE_LLM_MODEL}" autocomplete="off"></label>
+                <label>API 密钥或环境变量引用<input type="password" aria-label="新项目 API 密钥" x-model="newProject.api_key" placeholder="${Z_SCOPE_API_KEY}" autocomplete="new-password"><small>推荐使用环境变量引用。直接填写的值会保存在项目 YAML 中。</small></label>
+                <p class="wb-notice">此步骤只保存连接设置，不发送模型请求。创建后可在项目设置中继续完善。</p>
             </div>
-            <div x-show="activeTab==='findings'" class="badge badge-outline gap-2" :class="statusClass">
-                <span class="w-2 h-2 rounded-full" :class="statusDotClass"></span>
-                <span x-text="statusText">正在加载...</span>
-            </div>
-            <button x-show="activeTab==='findings'" @click="refreshData()" class="btn btn-outline btn-sm">刷新</button>
-            <button x-show="activeTab==='findings'" @click="exportOfflinePage()" class="btn btn-ghost btn-sm" :disabled="exportingReport" x-text="exportingReport ? '导出中…' : '离线导出'"></button>
-            <button x-show="activeTab==='findings'" @click="triggerOfflineImport()" class="btn btn-ghost btn-sm" :disabled="importingReviews">导入</button>
-            <button x-show="activeTab==='findings'" @click="triggerDirectoryImport()" class="btn btn-ghost btn-sm" :disabled="importingReviews">导入目录</button>
-            <input type="file" x-ref="reviewDirectoryInput" @change="importOfflinePage($event)" class="hidden" webkitdirectory multiple>
-            <button x-show="activeTab==='findings'" @click="saveFindings()" class="btn btn-primary btn-sm" :disabled="savingFindings || savingSingleFinding" x-text="savingFindings ? '保存中...' : '回写验证结果'">回写验证结果</button>
-            <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".md,.zip" multiple>
-        </div>
-    </nav>
+            <div x-show="projectWizardStep===3"><dl class="wb-list"><div><dt>工程根目录</dt><dd class="wb-path" x-text="projectBrowse?.path"></dd></div><div><dt>配置文件</dt><dd x-text="newProject.filename"></dd></div><div><dt>项目语言</dt><dd x-text="newProject.language==='java' ? 'Java' : 'C/C++'"></dd></div><div><dt>默认模式</dt><dd x-text="presetLabel(newProject.preset)"></dd></div></dl><p class="wb-notice">创建后进入项目设置，检查编译数据库、模型和本地工具，再安排扫描。所有相对路径都以此 YAML 的目录为基准。</p></div>
+            <div class="wb-actions"><button class="wb-button" x-show="projectWizardStep>1" @click="projectWizardStep--" :disabled="projectBusy">上一步</button><button class="wb-button wb-button-primary" x-show="projectWizardStep<3" @click="projectWizardStep++">下一步</button><button class="wb-button wb-button-primary" x-show="projectWizardStep===3" @click="createProject()" :disabled="projectBusy" x-text="projectBusy ? '创建中…' : '创建并进入项目设置'"></button></div>
+        </section>
+    </section>
+
+    <a class="ui-skip" x-show="projectReady" href="#workspace" @click.prevent="$refs.workspace.focus()">跳到主要内容</a>
+    <button class="ui-nav-backdrop" x-cloak x-show="mobileNavigationOpen" @click="mobileNavigationOpen=false" aria-label="关闭导航"></button>
+    <aside class="ui-sidebar" x-cloak x-show="projectReady" :class="mobileNavigationOpen ? 'is-open' : ''" @keydown.escape.window="mobileNavigationOpen=false">
+        <a class="ui-brand" href="#/overview" @click.prevent="navigate('overview')"><span class="ui-brand-mark">Z</span><span>Z-SCOPE<small>代码审计工作台</small></span></a>
+        <div class="ui-nav-label">工作空间</div>
+        <nav class="ui-navigation" aria-label="主导航">
+            <button @click="navigate('overview')" :aria-current="activeTab==='overview' ? 'page' : null"><span aria-hidden="true">◫</span>项目概览</button>
+            <button @click="navigate('semantics')" :aria-current="activeTab==='semantics' ? 'page' : null"><span aria-hidden="true">◇</span>项目原语</button>
+            <button @click="navigate('prepare')" :aria-current="['prepare','jobs'].includes(activeTab) ? 'page' : null"><span aria-hidden="true">▷</span>扫描任务</button>
+            <button @click="navigate('findings')" :aria-current="['findings','acceptance'].includes(activeTab) ? 'page' : null"><span aria-hidden="true">☷</span>问题工作台</button>
+            <button @click="navigate('coverage')" :aria-current="['coverage','warnings'].includes(activeTab) ? 'page' : null"><span aria-hidden="true">◎</span>覆盖与诊断</button>
+            <button @click="navigate('project')" :aria-current="['project','rules','config'].includes(activeTab) ? 'page' : null"><span aria-hidden="true">⚙</span>项目设置</button>
+        </nav>
+        <div class="ui-sidebar-bottom"><span class="ui-live-dot"></span> 本地工作空间<small>资源随工具提供 · 支持离线阅读</small><span x-text="appVersion"></span></div>
+    </aside>
+    <header class="ui-topbar" x-cloak x-show="projectReady">
+        <div class="ui-topbar-title"><button class="ui-menu" @click="mobileNavigationOpen=!mobileNavigationOpen" :aria-expanded="mobileNavigationOpen" aria-label="展开导航">☰</button><span x-text="pageTitle()">项目概览</span><span class="ui-divider">/</span><span class="ui-project-name" x-text="projectName()">当前工程</span></div>
+        <div class="ui-topbar-actions"><button class="wb-button" x-show="projectPickerEnabled" @click="leaveProject()">切换项目</button><span class="ui-connection" :class="statusClass" x-text="statusText">正在连接</span><button class="wb-button" @click="navigate('prepare')">新建扫描</button></div>
+    </header>
 
     <div
         x-show="toastMessage"
@@ -722,11 +749,77 @@
         <span x-text="toastMessage"></span>
     </div>
 
-    <main class="main-shell p-5">
+    <main id="workspace" x-ref="workspace" x-cloak x-show="projectReady" class="main-shell p-5" tabindex="-1">
+    <div class="sem-strip" x-show="['overview','prepare','project'].includes(activeTab) && semStatus?.applicable && !semStatus?.ready"><div><strong>完成项目原语引导，再开始扫描</strong><small x-text="semStageLabel(semStatus?.stage)"></small></div><button class="wb-button wb-button-primary" @click="navigate('semantics')">继续原语引导 →</button></div>
+    <section class="sem-shell" x-cloak x-show="activeTab==='semantics'" aria-labelledby="semantics-title">
+      <header class="sem-heading"><div><p class="sem-kicker">PROJECT PRIMITIVES</p><h2 id="semantics-title">让分析理解你的项目接口。</h2><p class="sem-muted">先声明已知原语，再发现包装接口。每一份执行语义，都由你审阅后生效。</p></div><span class="sem-badge" x-text="semStageLabel(semStatus?.stage)"></span></header>
+      <p class="sem-error" role="alert" x-show="semError" x-text="semError"></p><p class="sem-note" role="status" x-show="semNotice" x-text="semNotice"></p>
+      <p class="sem-muted" role="status" x-show="semLoading">正在核对工程、发现收据和审阅状态…</p>
+      <section class="sem-card" x-show="semStatus && !semStatus.applicable"><h3>Java 项目不适用</h3><p class="sem-muted">项目原语发现用于 C/C++ 原生接口。Java 项目可继续检查工程配置并安排扫描。</p><button class="wb-button" @click="navigate('project')">返回项目设置</button></section>
+      <template x-if="semStatus?.applicable"><div class="sem-shell">
+        <ol class="sem-steps" aria-label="项目准备步骤"><template x-for="(step,index) in ['工程与模型','声明项目原语','自动发现','审阅结果','扫描就绪']" :key="step"><li :class="semStepDone(index) ? 'done' : ''"><b x-text="semStepDone(index) ? '✓' : index+1"></b><span x-text="step"></span></li></template></ol>
+        <div class="sem-actions"><button class="wb-button" @click="loadSemantics();semLoadQueue()" :disabled="semBusy">刷新状态</button><button class="wb-button" @click="navigate('project')">工程与模型设置</button><button class="wb-button" @click="semOpenAdvanced()" :disabled="semStatus.stage==='missing'">高级 YAML</button><button class="wb-button" x-show="['needs_review','ready'].includes(semStatus.stage)" @click="semAdding=!semAdding;semFindSymbols()">接口更新 / 重新发现</button><span class="sem-path" x-text="semStatus.path"></span></div>
+        <section class="sem-card" x-show="semStatus.stage==='missing'"><h3>创建项目语义文档</h3><p class="sem-muted">与主配置保存在同一工程，作为原语声明和人工审阅的唯一来源。已有文件不会被覆盖。</p><button class="wb-button wb-button-primary" @click="semAction('initialize')" :disabled="semBusy">创建语义文档</button></section>
+        <div class="sem-two" x-show="!['missing','needs_review','ready'].includes(semStatus.stage) || semAdding">
+          <section class="sem-card"><span class="sem-kicker">01 / DECLARE</span><h3>声明项目的基础接口</h3><p class="sem-muted">有自定义分配器、释放函数或锁接口时，从精确函数目录中选择。没有已知原语，也需要明确声明。</p><div class="sem-actions"><button class="wb-button" @click="semAdding=!semAdding;semFindSymbols()" :disabled="semBusy || !!semStatus.active_task">添加已知原语</button><button class="wb-button" @click="semAction('declare',{declaration:'none_known'})" :disabled="semBusy || !!semStatus.active_task">没有已知自定义原语</button></div><p class="sem-muted" x-show="semStatus.declaration" x-text="semStatus.declaration==='none_known' ? '已声明：没有已知自定义原语。仍将基于内置原语发现包装接口。' : '已保存自定义原语声明。更新接口后请重新发现。'"></p></section>
+          <section class="sem-card"><span class="sem-kicker">02 / DISCOVER</span><h3>自动发现包装接口</h3><p class="sem-muted">复用 CLI 的 native 发现核心，生成可核验的接口、条件与派生证据。模型初审提供建议，最终由人工决定。</p><div class="sem-actions"><button class="wb-button wb-button-primary" @click="semStartTask('discovery')" :disabled="semBusy || !!semStatus.active_task || semStatus.stage==='undeclared'">执行自动发现</button><span class="sem-muted">后台运行 · 完成后进入审阅</span></div><details x-show="semStatus.reasons?.length"><summary>查看当前未就绪原因</summary><template x-for="reason in semStatus.reasons" :key="reason"><p class="sem-muted" x-text="reason"></p></template></details></section>
+        </div>
+        <section class="sem-card" x-show="semAdding"><div class="sem-heading"><div><h3>添加已知原语</h3><p class="sem-muted">目录准备只调用本地 native 工具，不调用模型。搜索名称、路径、签名或构建身份。</p></div><button class="wb-button" @click="semAdding=false">收起</button></div>
+          <div class="sem-actions"><button class="wb-button" @click="semStartTask('inventory')" :disabled="semBusy || !!semStatus.active_task">准备 / 更新接口目录</button><input aria-label="搜索原语接口" x-model="semSymbolQuery" @input.debounce.300ms="semSymbolPage=1;semFindSymbols()" placeholder="例如 alloc、memory.c 或构建 ID"><span class="sem-muted" x-text="semInventory?.reason || (semSymbolTotal+' 个精确实例')"></span></div>
+          <div class="sem-symbols" role="group" aria-label="精确函数实例"><template x-for="symbol in semSymbols" :key="symbol.id"><label><input type="radio" name="primitive-symbol" :value="symbol.id" x-model="semPrimitive.symbol_id"><span><strong x-text="symbol.name"></strong><small x-text="symbol.signature"></small><small x-text="symbol.file+' · '+symbol.build_context_id"></small><small x-text="symbol.usr"></small></span></label></template></div>
+          <div class="sem-pages" x-show="semSymbolTotal>30"><button class="wb-button" :disabled="semSymbolPage<=1" @click="semSymbolPage--;semFindSymbols()">上一页</button><span x-text="semSymbolPage+' / '+Math.ceil(semSymbolTotal/30)"></span><button class="wb-button" :disabled="semSymbolPage*30>=semSymbolTotal" @click="semSymbolPage++;semFindSymbols()">下一页</button></div>
+          <div class="sem-form"><label>原语模板<select x-model="semPrimitive.role" @change="semPrimitive.carrier=['allocator','reallocator'].includes(semPrimitive.role)?'return':'argument'"><option value="allocator">申请资源</option><option value="deallocator">释放资源</option><option value="reallocator">重新分配</option><option value="lock">加锁</option><option value="unlock">解锁</option><option value="copy">拷贝</option></select></label><label>对象载体<select x-model="semPrimitive.carrier"><option value="return">返回值</option><option value="argument">参数</option></select></label><label x-show="semPrimitive.carrier==='argument'">参数索引（从 0 计数）<input type="number" min="0" x-model.number="semPrimitive.argument"></label><label>解引用层数<input type="number" min="0" max="4" x-model.number="semPrimitive.dereference"></label><label>成员路径（可选，点分隔）<input x-model="semPrimitive.members" placeholder="owner.buffer"></label><label>资源族<input x-model="semPrimitive.resource_family" placeholder="malloc / project_pool"></label><label>配对接口 ID（逗号分隔）<input x-model="semPrimitive.pairs" placeholder="builtin:free"></label><label>常见生效条件<select x-model="semPrimitive.condition"><option value="always">无条件</option><option value="return_nonnull">返回非空</option><option value="return_zero">返回 0</option></select></label></div>
+          <p class="sem-note" x-text="'声明摘要：在'+({always:'每次调用',return_nonnull:'返回非空',return_zero:'返回 0'})[semPrimitive.condition]+'时，对'+(semPrimitive.carrier==='return'?'返回值':'参数 '+semPrimitive.argument)+'执行'+semRole(semPrimitive.role)+'。此声明等待 native 绑定，不直接授权扫描。'"></p><div class="sem-actions"><button class="wb-button wb-button-primary" @click="semAddPrimitive()" :disabled="semBusy || !semPrimitive.symbol_id">保存原语声明</button><span class="sem-muted">复杂条件与多效果契约可在高级 YAML 中编辑。</span></div>
+        </section>
+        <section class="sem-card" x-show="semTask"><template x-if="semTask"><div><div class="sem-heading"><div><span class="sem-kicker">BACKGROUND TASK</span><h3 x-text="semTaskLabel(semTask.stage || semTask.status)"></h3><p class="sem-muted" x-text="(semTask.mode==='inventory'?'接口目录准备':'完整发现')+' · '+semTaskLabel(semTask.status)"></p></div><button class="wb-button" @click="semAction('cancel',{id:semTask.id})" :disabled="semBusy || !['queued','running'].includes(semTask.status)">取消任务</button></div><p class="sem-error" x-show="semTask.error" x-text="semTask.error"></p><details open><summary>阶段与诊断记录</summary><template x-for="event in semEvents" :key="event.cursor"><div class="sem-event"><time x-text="event.elapsed_seconds+' 秒'"></time><div><strong x-text="semTaskLabel(event.stage)"></strong><p class="sem-muted" x-text="JSON.stringify(event.details)"></p></div></div></template></details><p class="sem-muted">关闭页面或切换工程不会停止后台任务。执行机关闭或休眠期间无法继续计算。</p></div></template></section>
+        <details class="sem-card" x-show="semStatus.tasks?.length"><summary>原语任务历史</summary><template x-for="task in semStatus.tasks" :key="task.id"><div class="sem-actions"><span class="sem-path" x-text="task.id.slice(0,12)"></span><span x-text="task.mode==='inventory'?'接口目录':'自动发现'"></span><span x-text="semTaskLabel(task.status)"></span><button class="wb-button" @click="semWatchTask(task.id)">查看记录</button></div></template></details>
+        <section class="sem-card" x-show="semAdvanced"><div class="sem-heading"><div><h3>高级 YAML</h3><p class="sem-muted">使用正式契约校验器。保留注释与条目扩展字段；发现收据和 native 身份为只读。保存修改后的条目会回到待审状态。</p></div><button class="wb-button" @click="semAdvanced=false">收起</button></div><label class="sem-muted">语义文档<textarea class="sem-yaml" spellcheck="false" x-model="semAdvancedContent" @input="semAdvancedDirty=true;semPersistDraft()" aria-label="项目语义 YAML" :disabled="semAdvancedLoading"></textarea></label><div class="sem-actions"><button class="wb-button" @click="semSaveAdvanced(true)" :disabled="semBusy">校验 YAML</button><button class="wb-button wb-button-primary" @click="semSaveAdvanced()" :disabled="semBusy || !semAdvancedDirty">保存语义文档</button><button class="wb-button" @click="semExport(semAdvancedContent)">导出草稿</button><span class="sem-muted" x-text="semAdvancedDirty ? '本地草稿 · 尚未发布' : '已保存'"></span></div></section>
+        <div class="sem-heading"><div><p class="sem-kicker">03 / REVIEW</p><h3>审阅发现结果</h3><p class="sem-muted">按稳定接口 ID 逐项判断，展开全部构建变体；不同身份不会按名称合并。</p></div><span class="sem-badge" x-text="(semStatus.counts?.pending || 0)+(semStatus.counts?.stale || 0)+' 项待处理'"></span></div>
+        <div class="sem-grid" :class="semMobileDetail ? 'is-detail' : ''">
+          <aside class="sem-card sem-queue" aria-label="原语审阅队列"><div class="sem-queue-head"><h3>接口队列 <span class="sem-badge" x-text="semTotal"></span></h3><div class="sem-filters"><input aria-label="搜索原语候选" placeholder="接口、路径、构建…" x-model="semQuery" @input.debounce.300ms="semPage=1;semLoadQueue()"><select aria-label="原语审阅状态" x-model="semFilter" @change="semPage=1;semLoadQueue()"><option value="todo">待确认与失效</option><option value="all">全部</option><option value="confirmed">已确认</option><option value="rejected">已拒绝</option></select></div></div>
+            <div class="sem-list"><template x-for="row in semRows" :key="row.collection+':'+row.id"><div class="sem-row" :class="semId===row.id && semCollection===row.collection ? 'active' : ''"><input type="checkbox" :aria-label="'选择 '+row.id" x-model="semSelected[row.collection+':'+row.id]" @change="semBatch=null"><button @click="semOpenEntry(row)" :aria-current="semId===row.id ? 'true' : null"><strong x-text="row.selector?.name || row.id"></strong><small x-text="row.selector?.file || row.collection"></small><span class="sem-row-meta"><span class="sem-badge" :class="row.status" x-text="semStatusLabel(row.status)"></span><span class="sem-muted" x-text="(row.variants?.length || 0)+' 个构建变体'"></span></span><small x-text="row.id"></small></button></div></template>
+            <p class="sem-empty" x-show="!semRows.length">此筛选下没有条目。<br>零候选也需要查看发现摘要并完成审阅。</p></div><div class="sem-pages"><button class="wb-button" :disabled="semPage<=1" @click="semPage--;semLoadQueue()">上一页</button><span x-text="semPage+' / '+Math.max(1,Math.ceil(semTotal/30))"></span><button class="wb-button" :disabled="semPage*30>=semTotal" @click="semPage++;semLoadQueue()">下一页</button></div>
+            <div class="sem-queue-head"><p class="sem-muted">仅操作显式勾选的条目。未勾选项不会提交。</p><label class="sem-muted">审阅备注 / 拒绝原因<input aria-label="批量审阅原因" x-model="semReason" @input="semBatch=null"></label><div class="sem-actions"><button class="wb-button" @click="semPreviewReview('confirmed')" :disabled="semBusy || !Object.values(semSelected).some(Boolean)">预检勾选项确认</button><button class="wb-button" @click="semPreviewReview('rejected')" :disabled="semBusy || !Object.values(semSelected).some(Boolean)">预检勾选项拒绝</button></div></div>
+          </aside>
+          <div class="sem-detail"><button class="wb-button sem-back" @click="semMobileDetail=false">← 返回接口队列</button><section class="sem-card sem-empty" x-show="!semEntry">选择一个接口，查看作用、源码和派生证据。</section>
+            <template x-if="semEntry"><div class="sem-detail"><section class="sem-card"><div class="sem-heading"><div><span class="sem-kicker" x-text="semEntry.row.primitive ? 'PROJECT PRIMITIVE' : 'DISCOVERED INTERFACE'"></span><h3 x-text="semEntry.row.selector?.name || semEntry.row.id"></h3><p class="sem-path" x-text="semEntry.row.selector?.signature || semEntry.row.id"></p></div><span class="sem-badge" :class="semEntry.row.status" x-text="semStatusLabel(semEntry.row.status)"></span></div><p class="sem-note" x-text="semSummary(semEntry.row)"></p><p class="sem-muted" x-text="semEntry.row.evidence_summary"></p><p class="sem-path" x-text="semEntry.row.selector?.file"></p><details><summary>全部精确构建变体与身份</summary><template x-for="variant in (semEntry.row.variants || [])" :key="variant.build_context_id+variant.usr"><pre class="sem-evidence" x-text="JSON.stringify(variant,null,2)"></pre></template><p class="sem-muted" x-show="!semEntry.row.variants?.length">此条目尚无 native 构建绑定，或属于独立的指针 / dispatcher 契约。</p></details></section>
+              <section class="sem-card"><h3>生效条件与派生依据</h3><template x-for="(condition,index) in (semEntry.row.cases || [])" :key="index"><p class="sem-note" x-text="semPredicate(condition.when)+' → '+({applies:'产生上述效果',no_effect:'不产生效果',unknown:'效果未知'})[condition.effect]"></p></template><p class="sem-muted" x-text="'配对：'+(semEntry.row.pairs || []).join('、')"></p><p class="sem-path" x-text="'派生自：'+(semEntry.row.derived_from || []).join('、')"></p><details><summary>完整效果与条件契约</summary><pre class="sem-evidence" x-text="JSON.stringify({cases:semEntry.row.cases,effects:semEntry.row.effects,pairs:semEntry.row.pairs,derived_from:semEntry.row.derived_from},null,2)"></pre></details><details><summary>源码证据（当前工程文件，最多 128k 字符）</summary><pre class="sem-evidence" x-text="semEntry.source || '此条目没有可展示的工程内源码文件。'"></pre></details><details><summary>模型建议 · 不代表确认</summary><pre class="sem-evidence" x-text="JSON.stringify(semEntry.row.llm_review || {message:'没有可用的模型意见；请根据确定性证据人工判断。'},null,2)"></pre></details><details><summary>发现原始值与当前决定对照</summary><div class="sem-two"><div><p class="sem-muted">发现证据</p><pre class="sem-evidence" x-text="JSON.stringify(semEntry.evidence,null,2)"></pre></div><div><p class="sem-muted">当前条目</p><pre class="sem-evidence" x-text="JSON.stringify(semEntry.row,null,2)"></pre></div></div></details></section>
+              <section class="sem-card"><h3>人工审阅</h3><p class="sem-muted">确认前需要有效效果、精确身份，以及至少一个可执行的 applies 条件。仅修改状态无法跳过校验。</p><div class="sem-actions" x-show="semEntry.collection==='interfaces'"><select aria-label="审阅生效条件" x-model="semCondition"><option value="always">无条件生效</option><option value="return_nonnull">返回非空时生效</option><option value="return_zero">返回 0 时生效</option></select><button class="wb-button" @click="semApplyCondition()">将所选条件写入待审草稿</button></div><details><summary>编辑条目 YAML / 待审草稿</summary><textarea class="sem-yaml" aria-label="原语条目 YAML" spellcheck="false" x-model="semEntryContent" @input="semEntryDirty=true;semPersistDraft();semBatch=null"></textarea><div class="sem-actions"><button class="wb-button" @click="semSaveEntry()" :disabled="semBusy || !semEntryDirty">保存待审草稿</button><button class="wb-button" @click="semExport(semEntryContent)">导出草稿</button><button class="wb-button" @click="semReloadEntry()">放弃此草稿，载入当前条目</button><span class="sem-muted" x-text="semEntryDirty?'有本地草稿，尚未发布':'已保存'"></span></div></details><label class="sem-muted">审阅备注 / 拒绝原因<input class="sem-full" aria-label="条目审阅原因" x-model="semReason" @input="semBatch=null"></label><div class="sem-actions"><button class="wb-button wb-button-primary" @click="semPreviewReview('confirmed',true)" :disabled="semBusy || semEntryDirty">预检确认</button><button class="wb-button" @click="semPreviewReview('rejected',true)" :disabled="semBusy || semEntryDirty">预检拒绝</button><button class="wb-button" @click="semNextEntry()">下一条 →</button></div></section></div></template>
+          </div>
+        </div>
+        <section class="sem-card sem-review-banner" x-show="semBatch" role="region" aria-label="确认审阅提交"><template x-if="semBatch"><div><h3 x-text="'整批校验通过 · '+semBatch.count+' 项'"></h3><p class="sem-muted">请核对身份范围。提交将一次保存整批决定；版本变化时整批拒绝。</p><template x-for="identity in semBatch.scope" :key="identity"><p class="sem-path" x-text="identity"></p></template><div class="sem-actions"><button class="wb-button wb-button-primary" @click="semCommitReview()" :disabled="semBusy">提交本批审阅决定</button><button class="wb-button" @click="semBatch=null">返回调整</button></div></div></template></section>
+        <section class="sem-card sem-gap" x-show="semStatus.receipt?.evidence_ref"><h3>发现摘要与机器覆盖缺口</h3><p class="sem-muted" x-text="'分析函数实例：'+(semStatus.receipt?.analyzed_function_instances ?? '未测量')+'；接口候选：'+(semStatus.receipt?.interface_candidates ?? '未测量')+'；已记录缺口：'+(semStatus.coverage_gap_count ?? '未测量')"></p><p class="sem-muted">未闭合的间接调用等缺口单独记录。审阅完成只表示当前语义可用于扫描，不表示项目已经完整覆盖。</p><details><summary>缺口与模型初审诊断</summary><pre class="sem-evidence" x-text="JSON.stringify({coverage_gaps:semStatus.receipt?.coverage_gaps,blocking_coverage_gaps:semStatus.receipt?.blocking_coverage_gaps,llm:semStatus.receipt?.llm},null,2)"></pre></details><div class="sem-actions"><button class="wb-button wb-button-primary" @click="semAction('complete')" :disabled="semBusy || !semStatus.can_complete || semEntryDirty || semAdvancedDirty">已查看摘要，完成本轮审阅</button><button class="wb-button" @click="navigate('prepare')" :disabled="!semStatus.ready">前往扫描任务 →</button></div></section>
+        <details class="sem-card"><summary>从旧业务模型 XLSX 单向迁移</summary><p class="sem-muted">保留原工作簿；仅向尚未发现的空语义文档导入。迁移后必须重新发现并人工审阅。函数意图请维护在 Wiki；问题复核、误报反馈和业务回答保持独立。</p><label>工程内工作簿路径<input x-model="semWorkbook" aria-label="迁移工作簿路径"></label><div class="sem-actions"><button class="wb-button" @click="semAction('migrate',{workbook:semWorkbook})" :disabled="semBusy">迁移并查看报告</button><button class="wb-button" x-show="semMigrationReport" @click="semExport(semMigrationReport,'semantics-migration-report.json')">导出迁移报告</button></div><pre class="sem-evidence" x-show="semMigrationReport" x-text="JSON.stringify(semMigrationReport,null,2)"></pre></details>
+      </div></template>
+    </section>
+    <div class="wb-notice wb-notice-error" role="alert" x-cloak x-show="routeError"><span x-text="routeError"></span><button class="wb-button" @click="navigate('findings')">打开当前报告</button></div>
+    <div class="ui-subnav" x-cloak x-show="['prepare','jobs'].includes(activeTab)" aria-label="扫描导航"><button @click="navigate('prepare')" :aria-current="activeTab==='prepare' ? 'page' : null">新建扫描</button><button @click="navigate('jobs')" :aria-current="activeTab==='jobs' ? 'page' : null">运行与历史</button></div>
+    <div class="ui-subnav" x-cloak x-show="['project','rules','config'].includes(activeTab)" aria-label="设置导航"><button @click="navigate('project')" :aria-current="activeTab==='project' ? 'page' : null">工程与模型</button><button @click="navigate('semantics')">项目原语</button><button @click="navigate('rules')" :aria-current="activeTab==='rules' ? 'page' : null">规则目录</button></div>
+    <div class="ui-subnav" x-cloak x-show="['coverage','warnings'].includes(activeTab)" aria-label="诊断导航"><button @click="navigate('coverage')" :aria-current="activeTab==='coverage' ? 'page' : null">扫描覆盖</button><button @click="openDashboard()" :aria-current="activeTab==='warnings' ? 'page' : null">工具与配置告警</button></div>
+
+    <section class="wb-shell ui-overview" x-show="activeTab==='overview' && !routeError" x-cloak aria-labelledby="overview-title">
+        <div class="wb-heading"><div><div class="wb-eyebrow">PROJECT OVERVIEW</div><h2 id="overview-title">从这里，继续你的审计。</h2><p>扫描进展、需要处理的问题，以及尚未覆盖的范围。</p></div><button class="wb-button" @click="loadPreparation();loadJobs();loadAcceptance()">刷新概览</button></div>
+        <section class="ui-next-action">
+            <div class="ui-next-icon" aria-hidden="true">↗</div>
+            <div><div class="wb-eyebrow">下一步</div><h3 x-text="jobs.some(item=>['starting','running','stopping','queued'].includes(item.status)) ? '扫描正在后台进行' : !preparation || !preparationStartAllowed() || configDirty ? '检查工程，准备开始' : acceptanceLoaded && acceptanceIssues.length ? '查看扫描结果，处理需要关注的问题' : '工程已载入，开始新一轮扫描'"></h3><p x-text="jobsError || preparationError || '任务状态与覆盖结论分别记录。检查结果不代表模型连接或扫描完整性已经验证。'"></p></div>
+            <button class="wb-button wb-button-primary" @click="navigate(jobs.some(item=>['starting','running','stopping','queued'].includes(item.status)) ? 'jobs' : !preparation || !preparationStartAllowed() || configDirty ? 'prepare' : acceptanceLoaded && acceptanceIssues.length ? 'findings' : 'prepare')" x-text="jobs.some(item=>['starting','running','stopping','queued'].includes(item.status)) ? '查看运行' : !preparation || !preparationStartAllowed() || configDirty ? '检查工程' : acceptanceLoaded && acceptanceIssues.length ? '处理问题' : '新建扫描'"></button>
+        </section>
+        <div class="wb-stats ui-overview-stats">
+            <button class="wb-stat" @click="findingAcceptanceFilter='confirmed';navigate('findings')"><span>已确认问题</span><strong x-text="acceptanceLoaded ? acceptanceCount('confirmed') : '—'"></strong><small>已有系统验证结论</small></button>
+            <button class="wb-stat" @click="findingAcceptanceFilter='pending';navigate('findings')"><span>待验证问题</span><strong x-text="acceptanceLoaded ? acceptanceCount('pending') : '—'"></strong><small>证据尚待补充或复核</small></button>
+            <button class="wb-stat" @click="findingAcceptanceFilter='business_conditional';navigate('findings')"><span>业务前提待确认</span><strong x-text="acceptanceLoaded ? acceptanceCount('business_conditional') : '—'"></strong><small>需要你提供业务约定</small></button>
+            <button class="wb-stat" @click="navigate('coverage')"><span>扫描覆盖</span><strong class="ui-status-value" x-text="!acceptanceCoverage ? '未测量' : acceptanceCoverage.completeness === 'complete' ? '查看范围' : '需关注'"></strong><small x-text="coverageText(acceptanceCoverage)"></small></button>
+        </div>
+        <div class="wb-grid">
+            <section class="wb-card"><div class="wb-card-head"><h3>最近扫描任务</h3><button class="ui-text-button" @click="navigate('jobs')">全部任务 →</button></div><p class="wb-notice wb-notice-error" x-show="jobsError" x-text="jobsError"></p><p class="wb-empty" x-show="!jobs.length" x-text="jobsLoading ? '正在读取任务…' : '还没有任务。从检查工程开始第一次扫描。'"></p><div class="ui-recent-jobs"><template x-for="item in jobs.slice(0,4)" :key="item.job_id"><button class="wb-job-row" @click="navigate('jobs');loadJob(item.job_id)"><span><strong x-text="jobStatusText(item.status)"></strong><small x-text="timeText(item.started_at || item.updated_at)"></small></span><span class="ui-job-id" x-text="item.job_id.slice(0,8)"></span></button></template></div></section>
+            <section class="wb-card"><div class="wb-card-head"><h3>当前工程</h3><button class="ui-text-button" @click="navigate('project')">设置 →</button></div><dl class="wb-list"><div><dt>工程</dt><dd x-text="projectName()"></dd></div><div><dt>语言</dt><dd x-text="preparation?.project.language === 'c_cpp' ? 'C / C++' : preparation?.project.language === 'java' ? 'Java Preview' : '尚未读取'"></dd></div><div><dt>工程位置</dt><dd class="wb-path" x-text="preparation?.project.root || '尚未读取'"></dd></div><div><dt>配置状态</dt><dd x-text="configDirty ? '有未保存修改' : preparation ? '已读取保存的配置' : '等待检查'"></dd></div></dl><p class="wb-notice" x-show="preparationError" x-text="preparationError"></p><p class="wb-muted ui-card-note">同一工程的不同编译变体分别保留证据与结论。</p></section>
+        </div>
+        <p class="ui-source-note" x-text="acceptanceSource === 'current' ? '问题统计来自当前报告；暂无数据时不显示为零。' : '问题统计来自选定任务快照；进入当前问题工作台时将重新读取当前报告。'"></p>
+    </section>
 
     <section class="wb-shell" x-show="activeTab==='prepare'" x-cloak aria-labelledby="wb-prepare-title">
         <div class="wb-heading">
-            <div><div class="wb-eyebrow">01 / PREPARE</div><h2 id="wb-prepare-title">把工程准备好，交给这一夜。</h2><p>核对本轮实际范围和运行条件；已有配置可以直接开始。</p></div>
+            <div><div class="wb-eyebrow">SCAN / SCHEDULE</div><h2 id="wb-prepare-title">安排扫描时间</h2><p>选好开始与结束方式，再确认模式和工程准备状态。</p></div>
             <button type="button" class="wb-button" @click="activeTab='project'" x-text="'编辑项目配置'"></button>
         </div>
         <div class="wb-grid">
@@ -760,7 +853,7 @@
                     <p class="wb-muted">逐个核对已声明目标；能够读取配置，不代表每项能力都已参与执行。</p>
                     <dl class="wb-list">
                         <div><dt>目标平台</dt><dd x-text="preparation.version3.platform"></dd></div>
-                        <div><dt>分析预设</dt><dd x-text="presetLabel(preparation.version3.preset.preset) + ' · 当前映射为 ' + ({fast:'快速',balanced:'均衡',deep:'深入'})[preparation.version3.preset.mapped_depth]"></dd></div>
+                        <div><dt>扫描模式</dt><dd x-text="presetLabel(preparation.version3.preset.preset)"></dd></div>
                         <div><dt>声明的重点</dt><dd x-text="preparation.version3.focus.join('、') || '未指定'"></dd></div>
                         <div><dt>声明的复现</dt><dd x-text="({auto:'自动',off:'关闭',manual:'手动'})[preparation.version3.reproduction] || preparation.version3.reproduction"></dd></div>
                         <div><dt>声明的工作数</dt><dd x-text="numberText(preparation.version3.max_workers)"></dd></div>
@@ -782,22 +875,37 @@
                     <p class="wb-notice">准备检查只确认配置与工具存在性；工具能否运行、模型能否连接及实际覆盖会在执行时记录。</p>
                 </section>
             </div>
-            <section class="wb-card">
-                <h3>安排本轮扫描</h3>
+            <section class="wb-card scan-schedule-panel">
+                <h3>这次什么时候扫描？</h3>
                 <p class="wb-muted">关闭页面后，已启动的后台作业继续运行。请保持主机、WSL 和模型服务运行；休眠期间不会继续计算。</p>
-                <label class="wb-field">本轮分析深度<select aria-label="本轮分析深度" x-model="workbenchDepth"><option value="">沿用已保存配置 / 预设</option><option value="fast">快速检查</option><option value="balanced" :disabled="preparation?.project.language === 'java'">均衡分析</option><option value="deep" :disabled="preparation?.project.language === 'java'">深入分析</option></select><small x-show="isV3Config()">只覆盖本轮深度，不改写已保存的预设。</small></label>
-                <label class="wb-field">本轮停止时间（可选）<input type="datetime-local" step="1" aria-label="本轮停止时间（可选）" x-model="workbenchStopAt"><small>按浏览器时区 <span x-text="localTimezone()"></span>。留空使用已保存 v3 配置的停止窗口（如有）；无配置窗口则不设置截止。填写此处会覆盖配置窗口。</small></label>
-                <p class="wb-notice wb-notice-warning">到时停止新增工作，协作收尾并记录未决范围；仍可能留下未完成项，不保证逐实例候选与义务的完整恢复。</p>
+                <label class="wb-field">执行方式<select aria-label="执行方式" x-model="scheduleKind"><option value="once">单次扫描</option><option value="daily">每日时段续扫</option></select></label>
+                <div x-show="scheduleKind==='once'">
+                    <label class="wb-field">开始方式<select aria-label="开始方式" x-model="scheduleStart"><option value="now">立即开始</option><option value="later">指定开始时间</option></select></label>
+                    <label class="wb-field" x-show="scheduleStart==='later'">开始时间<input type="datetime-local" step="1" aria-label="扫描开始时间" x-model="scheduleStartAt"></label>
+                    <label class="wb-field">结束方式<select aria-label="结束方式" x-model="scheduleEnd"><option value="complete">直到扫描完成</option><option value="deadline">在指定时间停止</option></select></label>
+                    <label class="wb-field" x-show="scheduleEnd==='deadline'">停止时间<input type="datetime-local" step="1" aria-label="本轮停止时间（可选）" x-model="workbenchStopAt"></label>
+                    <p class="wb-muted">上述时间使用浏览器时区 <strong x-text="localTimezone()"></strong>。选择“直到扫描完成”不会套用 YAML 中旧的停止时间。</p>
+                </div>
+                <div x-show="scheduleKind==='daily'">
+                    <div class="schedule-time-grid"><label class="wb-field">每天开始<input type="time" aria-label="每天开始时间" x-model="scheduleDailyStart"></label><label class="wb-field">每天停止<input type="time" aria-label="每天停止时间" x-model="scheduleDailyEnd"></label></div>
+                    <label class="wb-field">时区<input aria-label="每日窗口时区" x-model="scheduleTimezone" placeholder="Asia/Taipei"></label>
+                    <p class="wb-notice">支持跨午夜，例如 23:00 到次日 07:00。到点停止；下一窗口核对输入后继续未完成作业，完成后不再启动。</p>
+                </div>
+                <label class="wb-field">扫描模式<select aria-label="本轮分析深度" x-model="workbenchDepth"><option value="">沿用项目默认模式</option><option value="fast">快速</option><option value="balanced" :disabled="preparation?.project.language === 'java'">均衡</option><option value="deep" :disabled="preparation?.project.language === 'java'">深度</option></select><small>模式只控制分析深度，和在哪个时段执行无关。</small></label>
+                <p class="wb-notice wb-notice-warning">到点后后台停止并保存可恢复状态。输入变化时计划会暂停等待处理；续扫可能重核或重做部分步骤，不保证只运行剩余项。</p>
                 <dl class="wb-list">
                     <div><dt>自动复现</dt><dd x-text="preparation?.version3 && !preparation.version3.machine_flags.reproduction_wired ? '配置意图尚未接入执行' : ({off: '关闭', shadow: '仅收集证据', on: '启用'})[preparation?.scan.reproduction] || '以已保存配置为准'"></dd></div>
                     <div><dt>独立产物位置</dt><dd class="wb-path" x-text="preparation?.scan.artifact_directory || '检查配置后显示'"></dd></div>
                 </dl>
                 <hr class="wb-rule">
-                <div class="wb-notice wb-notice-error" x-show="jobsError" role="alert"><strong>夜间作业暂不可用</strong><p x-text="jobsError"></p><button type="button" class="wb-button" @click="loadJobs()" :disabled="jobsLoading">重试连接</button></div>
+                <div class="wb-notice wb-notice-error" x-show="jobsError" role="alert"><strong>扫描任务暂不可用</strong><p x-text="jobsError"></p><button type="button" class="wb-button" @click="loadJobs()" :disabled="jobsLoading">重试连接</button></div>
                 <template x-for="(reason, index) in (jobCapabilities.reasons || [])" :key="index"><p class="wb-notice wb-notice-warning" x-text="capabilityReason(reason)"></p></template>
                 <p class="wb-muted" x-show="jobsLoading && !jobsReady" role="status">正在检查作业服务…</p>
                 <p class="wb-notice wb-notice-error" x-show="jobActionError" x-text="jobActionError" role="alert"></p>
-                <div class="wb-actions"><button type="button" class="wb-button wb-button-primary" @click="startWorkbenchJob()" :disabled="!canStartJob()" x-text="jobBusy ? '正在提交…' : '开始夜间扫描'"></button><button type="button" class="wb-button" @click="startWorkbenchJob(true)" :disabled="!canStartJob()">快速检查</button></div>
+                <p class="wb-notice wb-notice-error" x-show="schedulesError" x-text="schedulesError" role="alert"></p>
+                <div class="ui-launch-summary"><strong>本轮执行摘要</strong><p x-text="'模式：' + presetLabel(workbenchDepth || preparation?.scan.depth)"></p><p x-text="scheduleSummary()"></p><p class="wb-path" x-text="'配置：' + (preparation?.config_path || '尚未读取')"></p></div>
+                <div class="wb-actions"><button type="button" class="wb-button wb-button-primary" @click="submitSchedule()" :disabled="!canCreateSchedule()" x-text="schedulesBusy ? '正在提交…' : (scheduleKind==='once' && scheduleStart==='now' ? '开始扫描' : '保存扫描计划')"></button></div>
+                <div class="wb-notice wb-notice-warning" x-show="scheduleCommand && !schedulesBusy">计划请求尚未确认，重试使用相同标识。<button class="wb-button" @click="sendScheduleCommand()">核对并重试计划</button></div>
                 <div class="wb-notice wb-notice-warning" x-show="jobCommand && !jobBusy">上次请求结果尚未确认。重试会使用同一请求标识，不重复创建作业。<button type="button" class="wb-button" @click="sendJobCommand()">核对并重试原请求</button></div>
                 <p class="wb-muted" style="margin-top:16px">业务未知会保留为待验收问题，其他工作继续。未测范围与部分结果会清楚标记。</p>
             </section>
@@ -805,9 +913,13 @@
     </section>
 
     <section class="wb-shell" x-show="activeTab==='jobs'" x-cloak aria-labelledby="wb-jobs-title">
-        <div class="wb-heading"><div><div class="wb-eyebrow">02 / RUN</div><h2 id="wb-jobs-title">作业状态与进展，有据可查。</h2><p>页面重连后读取后台保存的状态；断线时保留最近一次记录。</p></div><button type="button" class="wb-button" @click="loadJobs(); if(job) loadJob(job.job_id)" :disabled="jobsLoading">刷新作业</button></div>
+        <div class="wb-heading"><div><div class="wb-eyebrow">SCAN / HISTORY</div><h2 id="wb-jobs-title">扫描任务与运行记录</h2><p>页面重连后读取后台保存的状态；断线时保留最近一次记录。</p></div><button type="button" class="wb-button" @click="loadJobs(); if(job) loadJob(job.job_id)" :disabled="jobsLoading">刷新作业</button></div>
         <p class="wb-notice wb-notice-error" x-show="jobsError" role="alert"><span x-text="jobsError"></span> 最近状态可能已过期，控制操作暂不可用。</p>
         <p class="wb-notice wb-notice-error" x-show="jobActionError" x-text="jobActionError" role="alert"></p>
+        <section class="wb-card schedule-history"><div class="wb-card-head"><h3>扫描计划</h3><button class="wb-button" @click="loadSchedules()">刷新计划</button></div><p class="wb-notice wb-notice-error" x-show="schedulesError" x-text="schedulesError"></p><p class="wb-empty" x-show="!schedules.length && !schedulesError">暂无计划。可以指定开始和结束时间，或选择每日窗口续扫。</p>
+            <template x-for="schedule in schedules" :key="schedule.schedule_id"><article class="schedule-history-row"><div><strong x-text="scheduleStatus(schedule.status)"></strong><p x-text="presetLabel(schedule.scan_depth)"></p><p x-show="schedule.next_start_at" x-text="'下次开始：' + timeText(schedule.next_start_at)"></p><p x-show="schedule.window_end_at" x-text="'本轮截止：' + timeText(schedule.window_end_at)"></p><p x-show="schedule.job_status" x-text="'实际作业：' + jobStatusText(schedule.job_status)"></p><p class="wb-notice wb-notice-warning" x-show="schedule.error" x-text="schedule.error?.message || schedule.error"></p></div><div class="wb-actions"><button class="wb-button" x-show="schedule.job_id" @click="loadJob(schedule.job_id)">查看运行记录</button><button class="wb-button wb-button-danger" x-show="['waiting','running','blocked'].includes(schedule.status)" @click="cancelSchedule(schedule)" :disabled="schedulesBusy || !!scheduleCommand">取消计划并停止当前运行</button></div></article></template>
+            <div class="wb-notice wb-notice-warning" x-show="scheduleCommand && !schedulesBusy">计划请求尚未确认。<button class="wb-button" @click="sendScheduleCommand()">核对并重试计划</button></div>
+        </section>
         <div class="wb-notice wb-notice-warning" x-show="jobCommand && !jobBusy">操作结果尚未确认，原请求标识已保留。<button type="button" class="wb-button" @click="sendJobCommand()">核对并重试原请求</button></div>
         <div class="wb-grid">
             <div class="wb-stack">
@@ -839,13 +951,16 @@
         </div>
     </section>
 
-    <section class="wb-shell" x-show="activeTab==='acceptance'" x-cloak aria-labelledby="wb-acceptance-title">
-        <div class="wb-heading"><div><div class="wb-eyebrow">03 / ACCEPT</div><h2 id="wb-acceptance-title">先看问题，再看它成立的条件。</h2><p>按报告中的根因逐条验收，保留对象、构建和来源的边界。</p></div><button type="button" class="wb-button" @click="loadAcceptance()" :disabled="acceptanceLoading">加载当前报告</button></div>
-        <p class="wb-notice" x-show="acceptanceSource !== 'current'">正在查看选定作业的报告。详细验收前将核对它是否仍是当前报告。</p>
-        <p class="wb-notice wb-notice-error" x-show="acceptanceError" x-text="acceptanceError" role="alert"></p>
-        <p class="wb-muted" x-show="acceptanceLoading" role="status">正在读取包含待复核项的完整问题列表…</p>
-        <div class="wb-stats"><template x-for="state in ['confirmed','business_conditional','pending','gaps']" :key="state"><button type="button" class="wb-stat" :aria-pressed="acceptanceFilter === state" @click="setAcceptanceFilter(state)"><span x-text="acceptanceLabel(state)"></span><strong x-text="acceptanceCount(state)"></strong><small x-text="({confirmed:'已有验证结论，查看触发条件',business_conditional:'技术证据与业务前提分开验收',pending:'证据尚未闭合，继续保留风险',gaps:'未覆盖或未完成的范围'})[state]"></small></button></template></div>
-        <p class="wb-notice" x-text="coverageText(acceptanceCoverage)"></p>
+    <section class="wb-shell" x-show="activeTab==='coverage' && !routeError" x-cloak aria-labelledby="coverage-title">
+        <div class="wb-heading"><div><div class="wb-eyebrow">COVERAGE & DIAGNOSTICS</div><h2 id="coverage-title">看清已经检查与尚未覆盖的范围。</h2><p>任务结束、没有发现问题，与覆盖完整是不同的状态。</p></div><button class="wb-button" @click="loadAcceptance()" :disabled="acceptanceLoading">加载当前报告</button></div>
+        <div class="ui-report-source"><span x-text="acceptanceSource === 'current' ? '当前报告' : '选定任务快照'"></span><span class="wb-path" x-text="acceptanceReportId ? '报告 ' + acceptanceReportId.slice(0,12) : '尚未载入报告'"></span><span x-text="coverageText(acceptanceCoverage)"></span></div>
+        <p class="wb-notice wb-notice-error" role="alert" x-show="acceptanceError" x-text="acceptanceError"></p>
+        <section class="wb-card">
+            <h3>覆盖范围与剩余工作</h3><p class="wb-muted">零问题不代表安全；未测量与已完成的范围分别记录。</p><p class="ui-card-note">已记录的具体缺口：<strong x-text="coverageGapCount()"></strong>。此数量不代表已测量全部范围。</p>
+            <dl class="wb-list"><div><dt>延期项</dt><dd x-text="numberText(acceptanceCoverage?.deferred_count)"></dd></div><div><dt>编译事实提取</dt><dd x-text="acceptanceCoverage?.build_coverage?.extraction_complete === true ? '提取完成' : acceptanceCoverage?.build_coverage?.extraction_complete === false ? '提取不完整' : '未测量'"></dd></div><div><dt>构建扫描覆盖</dt><dd x-text="acceptanceCoverage?.build_coverage?.scan_complete === true ? '覆盖已完成' : acceptanceCoverage?.build_coverage?.scan_complete === false ? '覆盖不完整' : '未测量'"></dd></div></dl>
+            <template x-for="(gap, index) in coverageGaps(acceptanceCoverage)" :key="index"><article class="wb-notice wb-notice-warning" x-text="gapText(gap)"></article></template>
+            <p class="wb-empty" x-show="!coverageGaps(acceptanceCoverage).length" x-text="acceptanceCoverage ? '报告未列出具体缺口，请结合上方完整性与构建覆盖判断。' : '尚无覆盖数据。'"></p>
+        </section>
         <section class="wb-card" aria-labelledby="wb-instance-title" x-show="acceptanceLoaded">
             <div class="wb-card-head"><h3 id="wb-instance-title">编译实例结果</h3><span class="wb-tag">按编译变体分别记录</span></div>
             <p class="wb-muted">同一函数在不同编译配置下可能产生不同结果。以下计数属于当前展示的报告；已分析数量可能包含复用结果。</p>
@@ -884,13 +999,16 @@
                 <template x-for="(reason, index) in (instancePlan?.scan_coverage_reasons || [])" :key="index"><p class="wb-path" x-text="reason"></p></template>
             </details>
         </section>
+    </section>
+
+    <section class="wb-shell" x-show="activeTab==='acceptance' && !routeError" x-cloak aria-labelledby="wb-acceptance-title">
+        <div class="wb-heading"><div><div class="wb-eyebrow">03 / ACCEPT</div><h2 id="wb-acceptance-title">任务结果快照</h2><p>保留选定运行的结果与来源。当前问题可进入工作台复核；历史快照保持只读。</p></div><button type="button" class="wb-button" @click="loadAcceptance()" :disabled="acceptanceLoading">加载当前报告</button></div>
+        <p class="wb-notice" x-show="acceptanceSource !== 'current'">正在查看选定作业的报告。详细验收前将核对它是否仍是当前报告。</p>
+        <p class="wb-notice wb-notice-error" x-show="acceptanceError" x-text="acceptanceError" role="alert"></p>
+        <p class="wb-muted" x-show="acceptanceLoading" role="status">正在读取包含待复核项的完整问题列表…</p>
+        <div class="wb-stats"><template x-for="state in ['confirmed','business_conditional','pending']" :key="state"><button type="button" class="wb-stat" :aria-pressed="acceptanceFilter === state" @click="setAcceptanceFilter(state)"><span x-text="acceptanceLabel(state)"></span><strong x-text="acceptanceCount(state)"></strong><small x-text="({confirmed:'已有验证结论，查看触发条件',business_conditional:'技术证据与业务前提分开验收',pending:'证据尚未闭合，继续保留风险',gaps:'未覆盖或未完成的范围'})[state]"></small></button></template></div>
+        <p class="wb-notice" x-text="coverageText(acceptanceCoverage)"></p>
         <p class="wb-notice wb-notice-warning" x-show="acceptanceLoaded && acceptanceIssues.some(item => !item.acceptance)">此报告尚无服务端验收投影，问题暂列待验证。请更新服务后刷新，不从置信度推定确认。</p>
-        <section class="wb-card" x-show="acceptanceFilter === 'gaps'">
-            <h3>覆盖范围与剩余工作</h3><p class="wb-muted">零问题不代表安全；未测量与已完成的范围分别记录。</p>
-            <dl class="wb-list"><div><dt>延期项</dt><dd x-text="numberText(acceptanceCoverage?.deferred_count)"></dd></div><div><dt>编译事实提取</dt><dd x-text="acceptanceCoverage?.build_coverage?.extraction_complete === true ? '提取完成' : acceptanceCoverage?.build_coverage?.extraction_complete === false ? '提取不完整' : '未测量'"></dd></div><div><dt>构建扫描覆盖</dt><dd x-text="acceptanceCoverage?.build_coverage?.scan_complete === true ? '覆盖已完成' : acceptanceCoverage?.build_coverage?.scan_complete === false ? '覆盖不完整' : '未测量'"></dd></div></dl>
-            <template x-for="(gap, index) in coverageGaps(acceptanceCoverage)" :key="index"><article class="wb-notice wb-notice-warning" x-text="gapText(gap)"></article></template>
-            <p class="wb-empty" x-show="!coverageGaps(acceptanceCoverage).length" x-text="acceptanceCoverage ? '报告未列出具体缺口，请结合上方完整性与构建覆盖判断。' : '尚无覆盖数据。'"></p>
-        </section>
         <section class="wb-card" x-show="acceptanceFilter !== 'gaps'" :aria-busy="acceptanceLoading">
             <div class="wb-card-head"><h3 x-text="acceptanceLabel(acceptanceFilter) + '问题'"></h3><button type="button" class="wb-button" @click="setAcceptanceFilter('ruled_out')" x-text="'已排除（' + acceptanceCount('ruled_out') + '）'"></button></div>
             <label class="wb-field">查找问题<input class="wb-search" type="search" x-model="acceptanceSearch" @input="acceptanceLimit=30" placeholder="函数、文件、资源、触发条件或构建"></label>
@@ -905,65 +1023,59 @@
     </section>
 
     <!-- ── Findings Tab ── -->
-    <div x-show="activeTab==='findings'" class="findings-shell">
+    <section class="ui-findings-heading" x-show="activeTab==='findings' && !routeError" x-cloak>
+        <div><h2>问题工作台</h2><p>从问题出发，沿证据完成复核。</p></div>
+        <div class="wb-actions"><button class="wb-button" @click="refreshData()">刷新</button><details class="ui-report-menu"><summary class="wb-button">导入与导出</summary><div><button @click="exportOfflinePage()" :disabled="exportingReport" x-text="exportingReport ? '导出中…' : '离线导出'"></button><button @click="triggerOfflineImport()" :disabled="importingReviews">导入 Markdown / ZIP</button><button @click="triggerDirectoryImport()" :disabled="importingReviews">导入目录</button></div></details><button class="wb-button" @click="saveFindings()" :disabled="savingFindings || savingSingleFinding" x-text="savingFindings ? '保存中…' : '保存全部复核草稿'"></button></div>
+        <div class="ui-report-source"><span>当前报告</span><span class="wb-path" x-text="currentReportId ? '报告 ' + currentReportId.slice(0,12) : '尚未载入报告'"></span><span>系统结论、人工复核与处置分别记录</span></div>
+    </section>
+    <input type="file" x-ref="reviewDirectoryInput" @change="importOfflinePage($event)" class="hidden" webkitdirectory multiple>
+    <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".md,.zip" multiple>
+    <div x-show="activeTab==='findings' && !routeError" class="findings-shell" x-cloak>
         <div class="mobile-findings-switch">
-            <button type="button" class="btn btn-sm flex-1" :class="mobileFindingView === 'queue' ? 'btn-primary' : 'btn-outline'" @click="mobileFindingView='queue'">发现队列</button>
-            <button type="button" class="btn btn-sm flex-1" :class="mobileFindingView === 'detail' ? 'btn-primary' : 'btn-outline'" @click="mobileFindingView='detail'">发现详情</button>
+            <button type="button" class="btn btn-sm flex-1" :class="mobileFindingView === 'queue' ? 'btn-primary' : 'btn-outline'" @click="mobileFindingView='queue'">问题列表</button>
+            <button type="button" class="btn btn-sm flex-1" :class="mobileFindingView === 'detail' ? 'btn-primary' : 'btn-outline'" @click="mobileFindingView='detail'">问题详情</button>
         </div>
 
         <div class="finding-queue-pane" :class="mobileFindingView === 'detail' ? 'mobile-hidden' : ''">
             <div class="glass rounded-lg p-4 gap-3">
                 <div class="flex items-center justify-between">
                     <div>
-                        <h2 class="text-sm font-semibold text-slate-950">发现队列</h2>
+                        <h2 class="text-sm font-semibold text-slate-950">问题列表</h2>
                         <p class="text-xs subtle-text">按风险、状态、模块定位复核项</p>
                     </div>
                     <span class="text-xs subtle-text"><span x-text="sortedFindings().length"></span> / <span x-text="findings.length"></span></span>
                 </div>
 
                 <div class="queue-toolbar">
-                    <div class="join w-full">
-                        <button
-                            class="btn btn-xs join-item flex-1"
-                            :class="reportView === 'default' ? 'btn-primary' : 'btn-ghost'"
-                            @click="setReportView('default')">
-                            默认发现
-                        </button>
-                        <button
-                            class="btn btn-xs join-item flex-1"
-                            :class="reportView === 'with_needs_review' ? 'btn-primary' : 'btn-ghost'"
-                            @click="setReportView('with_needs_review')">
-                            含待复核
-                        </button>
-                    </div>
-
+                    <label class="ui-filter-label">系统结论<select aria-label="系统结论筛选" x-model="findingAcceptanceFilter"><option value="active">全部未排除</option><option value="confirmed">已确认</option><option value="business_conditional">业务前提待确认</option><option value="pending">待验证</option><option value="ruled_out">已排除</option><option value="all">全部问题</option></select></label>
                     <input
                         class="input input-bordered input-sm w-full"
                         placeholder="搜索函数、文件、类别或描述"
-                        x-model="filterQuery">
+                        x-model="filterQuery" aria-label="查找问题">
 
                     <div class="flex flex-wrap gap-1.5">
                         <template x-for="status in ['pending','needs_review','uncertain','validated','rejected']" :key="status">
-                            <button type="button" class="quick-chip" :class="findingStatusFilterActive(status) ? 'active' : ''" @click="toggleFindingStatusFilter(status)" x-text="status"></button>
+                            <button type="button" class="quick-chip" :class="findingStatusFilterActive(status) ? 'active' : ''" @click="toggleFindingStatusFilter(status)" x-text="validationLabel(status)"></button>
                         </template>
                     </div>
 
                     <div class="flex flex-wrap gap-1.5">
                         <template x-for="level in ['critical','high','medium','low']" :key="level">
-                            <button type="button" class="quick-chip" :class="findingSeverityFilterActive(level) ? 'active' : ''" @click="toggleFindingSeverityFilter(level)" x-text="level"></button>
+                            <button type="button" class="quick-chip" :class="findingSeverityFilterActive(level) ? 'active' : ''" @click="toggleFindingSeverityFilter(level)" x-text="severityLabel(level)"></button>
                         </template>
                     </div>
 
                     <div class="flex items-center justify-between gap-2 text-[11px] subtle-text" x-show="viewSummary">
                         <span>
                             <span x-text="viewSummary?.[reportView]?.issue_count ?? findings.length"></span>
-                            findings,
+                            条问题，
                             <span x-text="viewSummary?.[reportView]?.included_needs_review_count ?? 0"></span>
-                            needs_review
+                            条需要复核
                         </span>
                         <button type="button" class="btn btn-ghost btn-xs" @click="showAdvancedFilters = !showAdvancedFilters" x-text="showAdvancedFilters ? '收起筛选' : '高级筛选'"></button>
                     </div>
 
+                    <div class="ui-scope-filters"><input aria-label="按文件筛选" placeholder="文件路径" x-model="findingFileFilter"><input aria-label="按构建筛选" placeholder="构建变体" x-model="findingBuildFilter"></div>
                     <div x-show="showAdvancedFilters" x-transition class="space-y-2 rounded-lg bg-slate-50 border border-slate-200 p-3">
                         <div class="flex items-center justify-between gap-2">
                             <span class="text-[11px] font-semibold uppercase tracking-wider subtle-text">高级检索</span>
@@ -994,16 +1106,16 @@
                                     <template x-for="status in validationStatusOptions" :key="status">
                                         <label class="flex items-center gap-1">
                                             <input type="checkbox" class="checkbox checkbox-xs" :value="status" x-model="rule.values">
-                                            <span x-text="status"></span>
+                                            <span x-text="validationLabel(status)"></span>
                                         </label>
                                     </template>
                                 </div>
                                 <select x-show="rule.field === 'impact_level'" class="select select-bordered select-xs w-full" x-model="rule.value">
                                     <option value="">全部风险</option>
-                                    <option value="critical">critical</option>
-                                    <option value="high">high</option>
-                                    <option value="medium">medium</option>
-                                    <option value="low">low</option>
+                                    <option value="critical">严重</option>
+                                    <option value="high">高危</option>
+                                    <option value="medium">中危</option>
+                                    <option value="low">低危</option>
                                 </select>
                                 <input
                                     x-show="rule.field !== 'validation_status' && rule.field !== 'impact_level'"
@@ -1027,21 +1139,21 @@
 
                 <div class="finding-list-scroll flex-1 pr-1 space-y-2">
                     <template x-for="finding in sortedFindings()" :key="finding.uid">
-                        <div
+                        <div role="button" tabindex="0" :aria-pressed="selectedFinding?.uid === finding.uid"
+                            @keydown.enter.prevent="selectFinding(finding)" @keydown.space.prevent="selectFinding(finding)"
                             @click="selectFinding(finding)"
                             class="audit-card p-3 cursor-pointer transition-all hover:border-blue-300"
                             :class="selectedFinding?.uid === finding.uid ? 'audit-card-active' : ''">
                             <div class="flex justify-between items-start gap-2 mb-2">
-                                <span class="badge badge-xs" :class="getSeverityClass(finding.impact_level)" x-text="finding.impact_level || 'unknown'"></span>
-                                <span class="badge badge-xs" :class="getValidationClass(finding.validation_status)" x-text="finding.validation_status || 'pending'"></span>
+                                <span class="badge badge-xs" :class="getSeverityClass(finding.impact_level)" x-text="severityLabel(finding.impact_level)"></span>
+                                <span class="wb-tag" :class="'wb-tag-' + acceptanceState(finding)" x-text="acceptanceLabel(acceptanceState(finding))"></span>
                             </div>
-                            <h3 class="finding-card-title font-semibold text-sm" x-text="finding.function || 'Unknown function'"></h3>
+                            <h3 class="finding-card-title font-semibold text-sm" x-text="finding.acceptance?.trigger_summary || finding.root_cause || finding.description || finding.function || '问题摘要未提供'"></h3>
                             <div class="text-[11px] subtle-text mt-1 min-w-0 truncate">
                                 <span x-text="findingModulePath(finding) || finding.location || 'unknown module'"></span>
-                                <span> · score </span>
-                                <span x-text="findingConfidenceScore(finding).toFixed(2)"></span>
+
                             </div>
-                            <p class="finding-card-description text-xs subtle-text mt-1" x-text="finding.description || finding.subcategory || finding.defect_class || '暂无描述'"></p>
+                            <p class="finding-card-description text-xs subtle-text mt-1" x-text="(finding.function || '函数未标注') + ' · ' + (finding.acceptance?.build_context_id || finding.build_context_id || finding.evidence_pack?.build_context_id || '构建未知')"></p>
                         </div>
                     </template>
                     <div x-show="!sortedFindings().length" class="soft-panel rounded-lg p-4 text-sm text-slate-600">
@@ -1057,7 +1169,7 @@
                     <section class="finding-summary-bar">
                         <div class="flex flex-wrap gap-3 justify-between items-start">
                             <div class="min-w-0">
-                                <h2 class="text-lg font-semibold text-slate-950 truncate" x-text="selectedFinding.function || 'Unknown function'"></h2>
+                                <h2 class="text-lg font-semibold text-slate-950 truncate" x-text="selectedFinding.acceptance?.trigger_summary || selectedFinding.root_cause || selectedFinding.description || selectedFinding.function || '问题摘要'"></h2>
                                 <p class="text-sm subtle-text code-font mt-1 truncate" x-text="selectedFinding.location || findingModulePath(selectedFinding) || 'unknown location'"></p>
                             </div>
                             <div class="flex flex-wrap gap-2 items-center">
@@ -1065,24 +1177,27 @@
                                 <button type="button" class="btn btn-ghost btn-xs" @click="selectNextFinding()" :disabled="!hasNextFinding()">下一条</button>
                                 <button type="button" class="btn btn-link btn-xs" x-show="selectedFinding.rule_id || selectedFinding.rule" @click="openRuleFromFinding(selectedFinding)" x-text="selectedFinding.rule_id || selectedFinding.rule"></button>
                                 <div class="badge badge-outline" x-text="selectedFinding.subcategory || selectedFinding.defect_class || 'uncategorized'"></div>
-                                <div class="badge" :class="getSeverityClass(selectedFinding.impact_level)" x-text="selectedFinding.impact_level || 'unknown'"></div>
-                                <div class="badge badge-info badge-outline" x-text="'score '+findingConfidenceScore(selectedFinding).toFixed(2)"></div>
+                                <div class="badge" :class="getSeverityClass(selectedFinding.impact_level)" x-text="severityLabel(selectedFinding.impact_level)"></div>
+                                <div class="wb-tag" x-text="'系统：' + acceptanceLabel(acceptanceState(selectedFinding))"></div>
                             </div>
                         </div>
-                        <div class="path-strip">
+                        <div class="path-strip" x-show="!findingTraceSummary(selectedFinding).includes('source unknown') || !findingTraceSummary(selectedFinding).includes('sink unknown')">
                             <span x-text="findingTraceSummary(selectedFinding)"></span>
                             <span class="code-font" x-text="activeEvidenceBreadcrumb(selectedFinding)"></span>
                         </div>
                     </section>
 
-                    <nav class="report-toc" aria-label="报告章节">
+                    <nav class="ui-detail-tabs" aria-label="问题详情导航"><button @click="detailSection='report'" :aria-current="detailSection==='report' ? 'page' : null">报告与证据</button><button @click="detailSection='review'" :aria-current="detailSection==='review' ? 'page' : null">复核与处置<span class="ui-unsaved" x-show="selectedFinding?._validation_dirty || businessAnswersChanged() || (disposition && dispositionChanged())"> · 未保存</span></button><button @click="detailSection='context'" :aria-current="detailSection==='context' ? 'page' : null">技术详情</button></nav>
+                    <nav class="report-toc" aria-label="报告章节" x-show="detailSection==='report'">
                         <template x-for="item in reportToc" :key="item.id"><button type="button" @click="jumpReport(item.id)" x-text="item.label"></button></template>
                     </nav>
-                    <div class="report-scroll" x-ref="reportScroll" :aria-busy="reportLoading">
+                    <div class="report-scroll" x-ref="reportScroll" :aria-busy="reportLoading" x-show="detailSection==='report'">
                         <p class="report-notice" x-show="reportLoading">正在加载完整 Markdown 报告…</p>
                         <p class="report-notice" x-show="reportError" x-text="reportError" role="alert"></p>
                         <article class="markdown-report" x-ref="markdownReport" x-show="!reportLoading && !reportError"></article>
                     </div>
+                    <div class="ui-review-scroll" x-show="detailSection==='review'">
+                    <p class="ui-review-intro">每个区块独立保存。人工复核记录你的判断，业务回答补充成立条件，处置记录后续行动。</p>
                     <section class="report-review-editor" x-show="businessReview?.questions?.length">
                         <strong>业务前提验收</strong>
                         <p class="report-notice">回答仅适用于报告列出的对象、调用路径和源码版本；不会直接改写历史结论或创建误报规则。</p>
@@ -1118,7 +1233,7 @@
                                 <option value="uncertain">尚不确定</option><option value="unvalidated">未验证</option>
                             </select>
                             <button class="btn btn-ghost btn-xs" @click="reviewPreview=!reviewPreview">预览说明</button>
-                            <button class="btn btn-primary btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError" x-text="savingSingleFinding ? '保存中…' : '保存当前条'"></button>
+                            <button class="btn btn-primary btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError" x-text="savingSingleFinding ? '保存中…' : '保存复核'"></button>
                             <span x-show="selectedFinding._validation_dirty">未保存</span>
                         </div>
                         <textarea x-ref="rebuttalInput" aria-label="人工反驳 / 复核说明" placeholder="填写人工复核依据，支持 Markdown。" :value="selectedFinding.user_rebuttal" @input="setFindingUserRebuttal(selectedFinding, $event.target.value)" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError"></textarea>
@@ -1126,7 +1241,7 @@
                         <p class="text-xs subtle-text" x-show="saveFeedbackStatus" x-text="saveFeedbackStatus"></p>
                     </section>
                     <details class="wb-disposition">
-                        <summary>其他处置：重复、风险接受、后续修复</summary>
+                        <summary>处理处置：重复、风险接受、后续修复</summary>
                         <p class="wb-muted">处置与验证结论分开保存。接受风险或标记重复不会把待验证问题变成安全，也不抑制相似问题。</p>
                         <p x-show="dispositionLoading" role="status">正在读取此问题的处置…</p>
                         <p class="wb-notice wb-notice-error" x-show="dispositionError" x-text="dispositionError" role="alert"></p>
@@ -1143,16 +1258,8 @@
                         </div></template>
                         <button type="button" class="wb-button" x-show="!disposition && !dispositionLoading" @click="loadDisposition(selectedFinding)">重试读取处置</button>
                     </details>
-                </div>
-            </template>
-            <template x-if="!selectedFinding">
-                <div class="h-full glass rounded-lg flex items-center justify-center opacity-70 flex-col gap-4">
-                    <p class="text-lg text-slate-600">请从左侧选择一条审计发现进行分析</p>
-                </div>
-            </template>
-        </div>
-
-        <aside class="context-rail">
+                    </div>
+        <aside class="context-rail ui-context-details" x-show="detailSection==='context'">
             <div class="context-rail-inner gap-3">
                 <section class="glass rounded-lg rail-card">
                     <div class="rail-section-title">
@@ -1214,7 +1321,7 @@
 
                     <div x-show="contextRailMode === 'finding'" class="space-y-3">
                         <section class="glass rounded-lg rail-card">
-                            <h3 class="text-sm font-semibold text-slate-950">Evidence Map</h3>
+                            <h3 class="text-sm font-semibold text-slate-950">证据概览</h3>
                             <div class="metric-grid">
                                 <template x-for="item in evidenceMetrics(selectedFinding)" :key="item.label">
                                     <div class="metric">
@@ -1226,7 +1333,7 @@
                         </section>
 
                         <section class="glass rounded-lg rail-card">
-                            <h3 class="text-sm font-semibold text-slate-950">File Coverage</h3>
+                            <h3 class="text-sm font-semibold text-slate-950">证据涉及文件</h3>
                             <template x-for="item in fileCoverageItems(selectedFinding)" :key="item.path">
                                 <div class="file-chip">
                                     <span class="text-xs code-font" x-text="item.path"></span>
@@ -1236,7 +1343,7 @@
                         </section>
 
                         <section class="glass rounded-lg rail-card">
-                            <h3 class="text-sm font-semibold text-slate-950">Confidence Breakdown</h3>
+                            <h3 class="text-sm font-semibold text-slate-950">评分明细</h3>
                             <template x-for="item in confidenceBreakdown(selectedFinding)" :key="item.label">
                                 <div class="confidence-row">
                                     <div class="confidence-row-head">
@@ -1263,13 +1370,23 @@
                                 <template x-for="ref in findingEvidenceRefs(selectedFinding).slice(0, 8)" :key="ref">
                                     <span class="badge badge-outline badge-sm code-font" x-text="ref"></span>
                                 </template>
-                                <span class="text-xs subtle-text" x-show="!findingEvidenceRefs(selectedFinding).length">暂无 evidence refs</span>
+                                <span class="text-xs subtle-text" x-show="!findingEvidenceRefs(selectedFinding).length">暂无证据引用</span>
                             </div>
                         </details>
                     </div>
                 </div>
             </div>
         </aside>
+                </div>
+            </template>
+            <template x-if="!selectedFinding">
+                <div class="h-full glass rounded-lg flex items-center justify-center opacity-70 flex-col gap-4">
+                    <p class="text-lg text-slate-600">请从左侧选择一条审计发现进行分析</p>
+                </div>
+            </template>
+        </div>
+
+
     </div><!-- end findings tab -->
 
     <!-- ── Read-only Rule Catalog Tab ── -->
@@ -1377,7 +1494,9 @@
             </div>
 
             <p class="wb-notice wb-notice-warning" role="alert" x-show="configError" x-text="configError"></p>
-            <section id="wb-config-preparation" class="soft-panel rounded-lg p-4 space-y-3">
+            <p class="wb-notice wb-notice-warning" role="status" x-show="configExecutionError" x-text="'配置可以继续编辑；执行前需处理：' + configExecutionError"></p>
+            <section class="wb-card setup-guide"><div class="wb-card-head"><h3>项目配置指引</h3><button class="wb-button" x-show="projectPickerEnabled" @click="leaveProject()">打开或创建其他项目</button></div><ol class="setup-steps"><li>1 确认 YAML 所在工程</li><li>2 填写构建目标</li><li>3 设置模型连接</li><li>4 保存并检查</li></ol><p class="wb-path" x-text="'工程根目录：' + (currentProject?.root || preparation?.project.root || '读取配置后显示')"></p><p class="wb-muted">工程根由 YAML 所在目录自动确定，无需另填 root 或 source_root。迁移工程时保持内部相对路径；本机工具和模型凭据在目标机器重新配置。</p><div class="wb-actions"><button class="wb-button" @click="loadPreparation()" :disabled="configDirty || configSaving || preparationLoading">检查已保存配置</button><button class="wb-button" @click="navigate(semStatus?.applicable ? 'semantics' : 'prepare')" :disabled="configDirty">下一步：原语引导 / 扫描</button></div></section>
+            <details id="wb-config-preparation" class="soft-panel rounded-lg p-4 space-y-3"><summary>已保存配置检查与路径详情</summary>
                 <div class="wb-config-heading">
                     <h3 class="font-semibold text-slate-950">扫描准备</h3>
                     <button @click="loadPreparation()" :disabled="preparationLoading || configDirty" class="btn btn-outline btn-sm" x-text="preparationLoading ? '检查中…' : '检查已保存配置'"></button>
@@ -1403,27 +1522,22 @@
                         <p class="text-xs subtle-text">这里只读检查已保存配置；工具是否能实际运行、模型连接和扫描覆盖将在后续执行时确认。</p>
                     </div>
                 </template>
-            </section>
+            </details>
 
             <template x-if="structuredConfigAvailable && v3Form">
             <div id="wb-v3-editor" class="wb-config-editor" :aria-busy="configSaving || configLoading">
-                <p class="wb-notice">相对 root 以配置文件所在目录为基准；各目标的 compile_commands 相对 root。未编辑的值与环境变量引用原样保留。</p>
+                <p class="wb-notice">本 YAML 所在目录就是工程根，编译数据库等项目相对路径均以此为基准。未编辑的值与环境变量引用原样保留。</p>
                 <div class="wb-config-grid">
                     <section class="wb-card">
                         <h3>工程与平台</h3>
-                        <label>项目根目录 root<input x-model="v3Form.project.root" @input="markConfigDirty()" autocomplete="off"></label>
-                        <label>项目语言<select aria-label="项目语言" x-model="v3Form.project.language" @change="markConfigDirty()"><option value="c_cpp">C/C++</option><option value="java">Java</option><template x-if="!['c_cpp','java'].includes(v3Form.project.language)"><option :value="v3Form.project.language" x-text="v3Form.project.language"></option></template></select></label>
-                        <p class="wb-muted" x-show="v3Form.project.language === 'java'">Java 当前仅支持 quick 预设；保存为 Java 时会移除各目标的编译数据库字段。</p>
-                        <label>目标平台<select aria-label="目标平台" x-model="v3Form.project.platform" @change="markConfigDirty()"><option value="linux_user">Linux 用户态</option><template x-if="v3Form.project.platform !== 'linux_user'"><option :value="v3Form.project.platform" x-text="v3Form.project.platform"></option></template></select></label>
-                        <p class="wb-muted">平台仅声明用途，尚未驱动执行策略。</p>
+                        <label>项目语言<select aria-label="项目语言" x-model="v3Form.project.language" @change="changeV3Language()"><option value="c_cpp">C/C++</option><option value="java">Java</option><template x-if="!['c_cpp','java'].includes(v3Form.project.language)"><option :value="v3Form.project.language" x-text="v3Form.project.language"></option></template></select></label>
+                        <p class="wb-muted" x-show="v3Form.project.language === 'java'">Java 当前仅支持快速；保存为 Java 时会移除各目标的编译数据库字段。</p>
+
                     </section>
                     <section class="wb-card">
                         <h3>扫描意图</h3>
-                        <label>扫描预设<select aria-label="扫描预设" x-model="v3Form.scan.preset" @change="markConfigDirty()"><option value="overnight">夜间分析 overnight</option><option value="quick">快速检查 quick</option><template x-if="!['overnight','quick'].includes(v3Form.scan.preset)"><option :value="v3Form.scan.preset" x-text="v3Form.scan.preset"></option></template></select></label>
-                        <label>扫描重点 focus<textarea rows="3" x-model="v3Form.scan.focus" @input="markConfigDirty()"></textarea></label>
-                        <p class="wb-muted">每行一个：memory、resources、async_lifecycle。扫描重点已声明，尚未参与执行。</p>
-                        <label>自动复现<select aria-label="自动复现" x-model="v3Form.scan.reproduction" @change="markConfigDirty()"><option value="auto">自动 auto</option><template x-if="v3Form.scan.reproduction !== 'auto'"><option :value="v3Form.scan.reproduction" x-text="v3Form.scan.reproduction"></option></template></select></label>
-                        <p class="wb-muted">auto 是配置意图，尚未启用自动复现。预设当前映射到既有扫描深度。</p>
+                        <label>默认扫描模式<select aria-label="扫描预设" x-model="v3Form.scan.preset" @change="markConfigDirty()"><option value="fast">快速</option><option value="balanced" :disabled="v3Form.project.language==='java'">均衡</option><option value="deep" :disabled="v3Form.project.language==='java'">深度</option></select></label>
+
                     </section>
                 </div>
                 <section class="wb-card">
@@ -1442,10 +1556,15 @@
                     <div class="wb-config-grid">
                         <label>运行时区 timezone<input placeholder="Asia/Taipei" x-model="v3Form.execution.timezone" @input="markConfigDirty()" autocomplete="off"></label>
                         <label>配置停止时间 stop_at<input placeholder="07:00 或 ${STOP_AT}" x-model="v3Form.execution.stop_at" @input="markConfigDirty()" autocomplete="off"></label>
-                        <label>最大工作数 max_workers<input inputmode="numeric" placeholder="留空使用默认值" x-model="v3Form.execution.max_workers" @input="markConfigDirty()" autocomplete="off"></label>
+
                     </div>
-                    <p class="wb-muted">停止时间用 HH:MM，必须同时填写 IANA 时区；配置窗口已用于扫描停止令牌与持久作业。新建作业未填显式时间时使用此窗口，显式时间按浏览器时区换算后覆盖它。未配置窗口时不设置截止。最大工作数 max_workers 仍仅声明，尚未驱动执行。</p>
+                    <p class="wb-muted">停止时间用 HH:MM，必须同时填写 IANA 时区。配置默认窗口用于 CLI 和直接作业；本页扫描计划使用本轮选择，选择“直到扫描完成”不继承旧窗口。最大工作数 max_workers 仍仅声明，尚未驱动执行。</p>
                 </section>
+                <details class="wb-card ui-planned-settings"><summary>高级配置 · 仅保存，当前执行不使用</summary><p class="wb-notice wb-notice-warning">以下值可以随配置保存，但不会改变当前扫描行为。</p><div class="wb-config-grid">                        <label>目标平台<select aria-label="目标平台" x-model="v3Form.project.platform" @change="markConfigDirty()"><option value="linux_user">Linux 用户态</option><template x-if="v3Form.project.platform !== 'linux_user'"><option :value="v3Form.project.platform" x-text="v3Form.project.platform"></option></template></select></label>
+                        <p class="wb-muted">平台仅声明用途，尚未驱动执行策略。</p>                        <label>扫描重点 focus<textarea rows="3" x-model="v3Form.scan.focus" @input="markConfigDirty()"></textarea></label>
+                        <p class="wb-muted">每行一个：memory、resources、async_lifecycle。扫描重点已声明，尚未参与执行。</p>
+                        <label>自动复现<select aria-label="自动复现" x-model="v3Form.scan.reproduction" @change="markConfigDirty()"><option value="auto">自动 auto</option><template x-if="v3Form.scan.reproduction !== 'auto'"><option :value="v3Form.scan.reproduction" x-text="v3Form.scan.reproduction"></option></template></select></label>
+                        <p class="wb-muted">auto 是配置意图，尚未启用自动复现。预设当前映射到既有扫描深度。</p>                        <label>最大工作数 max_workers<input inputmode="numeric" placeholder="留空使用默认值" x-model="v3Form.execution.max_workers" @input="markConfigDirty()" autocomplete="off"></label></div></details>
                 <section class="wb-card">
                     <h3>模型设置</h3>
                     <p class="wb-muted">保留所有命名 profile。连接参数的保存不代表模型连接已实测。密钥留空保留已有设置，也可输入 ${API_KEY} 引用。</p>
@@ -1470,23 +1589,13 @@
             <div class="grid grid-cols-1 xl:grid-cols-2 gap-4" x-show="!isV3Config() && structuredConfigAvailable">
                 <section class="soft-panel rounded-lg p-4 space-y-3">
                     <h3 class="font-semibold text-slate-950">项目范围</h3>
-                    <p class="text-xs subtle-text">路径字段说明来自根目录 zscope.c_cpp.yaml / zscope.java.yaml 注释：相对路径基于 project.root 或 source_root 解析。</p>
+                    <p class="text-xs subtle-text">项目相对路径统一基于当前 YAML 所在目录解析。</p>
                     <label class="form-control">
                         <span class="label-text">语言 language</span>
                         <select class="select select-bordered select-sm" x-model="configForm.project.language" @change="configLanguageChanged()">
                             <option value="c_cpp">C/C++</option>
                             <option value="java">Java</option>
                         </select>
-                    </label>
-                    <label class="form-control">
-                        <span class="label-text">项目根目录 root</span>
-                        <input class="input input-bordered input-sm" x-model="configForm.project.root" @input="markConfigDirty()">
-                        <span class="label-text-alt subtle-text">被分析项目根目录；相对路径基于当前工作目录解析。</span>
-                    </label>
-                    <label class="form-control">
-                        <span class="label-text">源码根目录 source_root</span>
-                        <input class="input input-bordered input-sm" x-model="configForm.project.source_root" @input="markConfigDirty()">
-                        <span class="label-text-alt subtle-text">源码根目录；相对路径基于 project.root 解析。</span>
                     </label>
                     <label class="form-control">
                         <span class="label-text">单入口函数 entry_function</span>
@@ -1506,12 +1615,12 @@
                     <label class="form-control">
                         <span class="label-text">include_paths</span>
                         <textarea class="textarea textarea-bordered textarea-sm" rows="3" x-model="configForm.project.include_paths" @input="markConfigDirty()"></textarea>
-                        <span class="label-text-alt subtle-text">每行一个路径；为空表示扫描 source_root 下全部支持源码文件。</span>
+                        <span class="label-text-alt subtle-text">每行一个路径；为空表示扫描工程目录下全部支持源码文件。</span>
                     </label>
                     <label class="form-control">
                         <span class="label-text">exclude_paths</span>
                         <textarea class="textarea textarea-bordered textarea-sm" rows="3" x-model="configForm.project.exclude_paths" @input="markConfigDirty()"></textarea>
-                        <span class="label-text-alt subtle-text">每行一个排除路径；相对路径基于 source_root 解析。</span>
+                        <span class="label-text-alt subtle-text">每行一个排除路径；相对路径基于 YAML 所在目录解析。</span>
                     </label>
                 </section>
 
@@ -1814,8 +1923,6 @@
                 configForm: {
                     project: {
                         language: 'c_cpp',
-                        root: '',
-                        source_root: '',
                         entry_function: '',
                         entry_functions_list: '',
                         compile_commands_path: '',
@@ -1876,7 +1983,9 @@
                 ptrForm: { pointer_location:'', scope:'local', targets_str:'' },
                 intentForm: { func_name:'', file_path:'', concurrency_group:'', concurrent_str:'', caller_constraints:'', notes:'' },
 
-                init() {
+                async init() {
+                    if (this.initProjects && !(await this.initProjects())) return;
+                    await this.initSemantics?.();
                     window.addEventListener('beforeunload', event => {
                         if (this.configDirty || this.configSaving) { event.preventDefault(); event.returnValue = ''; }
                     });
@@ -1886,9 +1995,11 @@
                     this.loadVersion();
                     this.refreshData();
                     this.loadStructuredConfig();
-                    this.loadWorkbookConfig();
+                    if (!this.semStatus?.applicable) this.loadWorkbookConfig();
                     this.pollCpgStatus();
                     this.initWorkbench();
+                    this.initNavigation?.();
+                    this.initSchedules?.();
                 },
 
                 get toastClass() {
@@ -2366,8 +2477,6 @@
                     const concurrency = cfg.concurrency || {};
                     this.configForm.project = {
                         language: project.language || 'c_cpp',
-                        root: project.root || '',
-                        source_root: project.source_root || '',
                         entry_function: project.entry_function || '',
                         entry_functions_list: project.entry_functions_list || '',
                         compile_commands_path: project.compile_commands_path || '',
@@ -2413,8 +2522,6 @@
                     cfg.scan = cfg.scan || {};
                     cfg.concurrency = cfg.concurrency || {};
                     cfg.project.language = this.configForm.project.language || 'c_cpp';
-                    cfg.project.root = this.configForm.project.root || '.';
-                    cfg.project.source_root = this.configForm.project.source_root || '.';
                     if (this.configForm.project.entry_function) {
                         cfg.project.entry_function = this.configForm.project.entry_function;
                     } else {
@@ -3720,7 +3827,7 @@
                 },
 
                 downloadWorkbook() {
-                    window.location.href = '/api/user_config/workbook/download';
+                    window.location.href = this.projectDownloadURL('/api/user_config/workbook/download');
                 },
 
                 triggerWorkbookImport() {
@@ -3840,7 +3947,11 @@
                     fetch('/api/user_config/function_intents',{method:'POST',headers:{'Content-Type':'application/json'},
                         body:JSON.stringify(p)
                     }).then(r=>r.json()).then(()=>{this.intentForm={func_name:'',file_path:'',concurrency_group:'',concurrent_str:'',caller_constraints:'',notes:''};this.loadAllConfigs();});
-                }
+                },
+                ...(window.ZScopeNavigation || {}),
+                ...(window.ZScopeProjects || {}),
+                ...(window.ZScopeSchedules || {}),
+                ...(window.ZScopeSemantics || {}),
             }
         }
     </script>
