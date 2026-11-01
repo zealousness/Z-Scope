@@ -51,7 +51,7 @@ interfaces:
   derived_from:
   - builtin:malloc
   review_reason: src/utils.c:13-38 directly returns malloc result. Logging changes neither the returned object
-    nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure 
+    nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure
     preservation and the conditional glibc zero-size release.
   variants:
   - target_id: range
@@ -115,7 +115,7 @@ interfaces:
   derived_from:
   - builtin:calloc
   review_reason: src/utils.c:13-38 directly returns calloc result. Logging changes neither the returned object
-    nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure 
+    nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure
     preservation and the conditional glibc zero-size release.
   variants:
   - target_id: range
@@ -245,8 +245,8 @@ interfaces:
   - builtin:free
   derived_from:
   - builtin:realloc
-  review_reason: src/utils.c:13-38 directly returns realloc result. Logging changes neither the returned 
-    object nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure 
+  review_reason: src/utils.c:13-38 directly returns realloc result. Logging changes neither the returned
+    object nor its ownership; NULL is not successful allocation. realloc transitions include nonzero failure
     preservation and the conditional glibc zero-size release.
   variants:
   - target_id: range
@@ -983,7 +983,7 @@ interfaces:
   - builtin:pthread_mutex_unlock
   derived_from:
   - range:lock_wrapper
-  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread 
+  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread
     failures remain MAY; the macro does not strengthen its callee.
   variants:
   - target_id: range
@@ -1093,7 +1093,7 @@ interfaces:
   pairs: []
   derived_from:
   - range:unlock_wrapper
-  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread 
+  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread
     failures remain MAY; the macro does not strengthen its callee.
   variants:
   - target_id: range
@@ -1205,7 +1205,7 @@ interfaces:
   - builtin:pthread_rwlock_unlock
   derived_from:
   - range:lock_read_wrapper
-  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread 
+  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread
     failures remain MAY; the macro does not strengthen its callee.
   variants:
   - target_id: range
@@ -1317,7 +1317,7 @@ interfaces:
   - builtin:pthread_rwlock_unlock
   derived_from:
   - range:lock_write_wrapper
-  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread 
+  review_reason: include/common.h:33-36 forwards operand 0 to the reviewed void wrapper. Hidden pthread
     failures remain MAY; the macro does not strengthen its callee.
   variants:
   - target_id: range
@@ -1427,7 +1427,7 @@ interfaces:
   pairs: []
   derived_from:
   - range:log_wrapper
-  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to 
+  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to
     _log_wrapper argument 3. Filtering depends on g_log_level.
   variants:
   - target_id: range
@@ -1537,7 +1537,7 @@ interfaces:
   pairs: []
   derived_from:
   - range:log_wrapper
-  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to 
+  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to
     _log_wrapper argument 3. Filtering depends on g_log_level.
   variants:
   - target_id: range
@@ -1647,7 +1647,7 @@ interfaces:
   pairs: []
   derived_from:
   - range:log_wrapper
-  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to 
+  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to
     _log_wrapper argument 3. Filtering depends on g_log_level.
   variants:
   - target_id: range
@@ -1757,7 +1757,7 @@ interfaces:
   pairs: []
   derived_from:
   - range:log_wrapper
-  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to 
+  review_reason: include/common.h:38-41 supplies a fixed severity and forwards fmt at macro operand 0 to
     _log_wrapper argument 3. Filtering depends on g_log_level.
   variants:
   - target_id: range
@@ -1866,7 +1866,7 @@ interfaces:
   pairs: []
   derived_from:
   - range:str_copy_wrapper
-  review_reason: include/common.h:47 forwards dst/src and sizeof(dst); operand 0 is written on successful 
+  review_reason: include/common.h:47 forwards dst/src and sizeof(dst); operand 0 is written on successful
     _str_copy_wrapper return. sizeof on a pointer is not array capacity; no bounds-safety assertion.
   variants:
   - target_id: range
@@ -2030,7 +2030,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:str_dup
-  review_reason: src/parser.c:263-283 returns the original duplicate base even after replacing its first 
+  review_reason: src/parser.c:263-283 returns the original duplicate base even after replacing its first
     whitespace with NUL.
   variants:
   - target_id: range
@@ -2085,7 +2085,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:safe_calloc
-  review_reason: src/parser.c:28-102 returns a newly allocated Task root. Payload fields have separate 
+  review_reason: src/parser.c:28-102 returns a newly allocated Task root. Payload fields have separate
     optional allocations; root acquisition does not prove all child allocations succeed or all paths are safe.
   variants:
   - target_id: range
@@ -2140,7 +2140,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:safe_calloc
-  review_reason: src/network.c:123-140 returns the new Connection root and may also retain its address in 
+  review_reason: src/network.c:123-140 returns the new Connection root and may also retain its address in
     g_connections; global aliasing is not a release or a separate allocation.
   variants:
   - target_id: range
@@ -2195,7 +2195,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:safe_malloc
-  review_reason: src/network.c:174-188 returns allocated buffer base on non-NULL return; negative receive 
+  review_reason: src/network.c:174-188 returns allocated buffer base on non-NULL return; negative receive
     result frees the buffer and returns NULL. No max_len+1 overflow safety assertion.
   variants:
   - target_id: range
@@ -2250,7 +2250,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:safe_malloc
-  review_reason: src/executor.c:215-240 returns newly allocated command base after checked additions; getenv 
+  review_reason: src/executor.c:215-240 returns newly allocated command base after checked additions; getenv
     content is appended, not an ownership source.
   variants:
   - target_id: range
@@ -2360,7 +2360,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:safe_calloc
-  review_reason: src/lifecycle.c:1118-1129 returns newly allocated node root; name/payload allocations can 
+  review_reason: src/lifecycle.c:1118-1129 returns newly allocated node root; name/payload allocations can
     independently fail, and mutex initialization result is discarded.
   variants:
   - target_id: range
@@ -2415,7 +2415,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:safe_calloc
-  review_reason: src/lifecycle.c:1131-1140 returns newly allocated child root; fd is copied, not duplicated, 
+  review_reason: src/lifecycle.c:1131-1140 returns newly allocated child root; fd is copied, not duplicated,
     and name allocation can fail.
   variants:
   - target_id: range
@@ -2470,7 +2470,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:safe_calloc
-  review_reason: src/lifecycle.c:1903-1931 returns newly allocated task root; NULL frame releases it. This 
+  review_reason: src/lifecycle.c:1903-1931 returns newly allocated task root; NULL frame releases it. This
     does not validate frame length or authorize the copy.
   variants:
   - target_id: range
@@ -2525,7 +2525,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:safe_malloc
-  review_reason: src/lifecycle.c:2658-2678 returns a heap allocation base, not an mmap region, on its two 
+  review_reason: src/lifecycle.c:2658-2678 returns a heap allocation base, not an mmap region, on its two
     successful return branches.
   variants:
   - target_id: range
@@ -2635,7 +2635,7 @@ interfaces:
   - builtin:free
   derived_from:
   - range:net_recv_string
-  review_reason: src/main.c:313-315 directly forwards the returned buffer and its ownership from 
+  review_reason: src/main.c:313-315 directly forwards the returned buffer and its ownership from
     _net_recv_string.
   variants:
   - target_id: range
@@ -3160,7 +3160,7 @@ interfaces:
   pairs: []
   derived_from:
   - builtin:close
-  review_reason: Nonnegative argument is passed to close, but the return value is discarded and the wrapper 
+  review_reason: Nonnegative argument is passed to close, but the return value is discarded and the wrapper
     always returns 0. Record MAY consumption, never prove closure from wrapper return.
   variants:
   - target_id: range
@@ -3216,7 +3216,7 @@ interfaces:
   pairs: []
   derived_from:
   - builtin:close
-  review_reason: Nonnegative argument is passed to close, but the return value is discarded and the wrapper 
+  review_reason: Nonnegative argument is passed to close, but the return value is discarded and the wrapper
     always returns 0. Record MAY consumption, never prove closure from wrapper return.
   variants:
   - target_id: range
@@ -3432,7 +3432,7 @@ interfaces:
   pairs: []
   derived_from:
   - range:net_send_data
-  review_reason: src/main.c:302-307 forwards data argument 1 and length to _net_send_data; its partial-send 
+  review_reason: src/main.c:302-307 forwards data argument 1 and length to _net_send_data; its partial-send
     behavior is preserved.
   variants:
   - target_id: range
@@ -3544,7 +3544,7 @@ interfaces:
   pairs: []
   derived_from:
   - builtin:free
-  review_reason: src/main.c:24-49 frees the non-NULL Task root after conditional payload cleanup. This 
+  review_reason: src/main.c:24-49 frees the non-NULL Task root after conditional payload cleanup. This
     assertion does not certify every nested payload or alias.
   variants:
   - target_id: range
@@ -3874,15 +3874,15 @@ discovery_receipt:
       src/utils.c: 35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544
     scope:
       platform: Linux glibc, default CMake executable; all source files are hash-bound
-      positive_scope: Source-reviewed wrapper effects, returned allocation roots/members, output ownership, 
+      positive_scope: Source-reviewed wrapper effects, returned allocation roots/members, output ownership,
         data-flow sinks and callback registration listed below. Each effect is a separate recall obligation.
       outside_scope:
       - General business-function summaries and whole-module lifecycle proofs
       - Uncompiled Windows/demo variants
       - Dynamic callback target sets and dispatcher branch inventories; these require per-callsite binding
-      - Interior-pointer pools and shared-registry ownership protocols that cannot be expressed faithfully by 
+      - Interior-pointer pools and shared-registry ownership protocols that cannot be expressed faithfully by
         the current executable roles
-      unknown_outputs: Require independent source review; never automatically mark an unlisted valid contract 
+      unknown_outputs: Require independent source review; never automatically mark an unlisted valid contract
         false.
       source_review:
       - 'include/common.h and src/utils.c: every wrapper declaration and macro body'

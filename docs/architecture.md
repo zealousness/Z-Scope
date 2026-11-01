@@ -332,12 +332,12 @@ public v2 提供 `fast / balanced / deep`，档位决定启用的分析阶段、
 
 ### 5.5 智能体平面：Agent + Skill + Tool
 
-Z-SCOPE 不再默认逐入口复活旧式全量多 Agent fanout；LLM 职责围绕增量接口建模、选择性语义、candidate-blind 发现和分层验证拆分：
+Z-SCOPE 不再默认逐入口运行旧式全量多 Agent fanout；独立原语准备先发布当前契约，扫描中的 LLM 职责围绕 deep 分层摘要、candidate-blind 发现和分层验证拆分：
 
 | Agent | 职责 | 关键输入 | 关键输出 |
 |-------|------|----------|----------|
-| Semantic Map enrichment | 仅补全高风险 audit unit 的关键契约 | 零 LLM 骨架、代码/后端事实 | 带可解析 evidence ref 的 semantic delta |
-| Active discovery worker | 对 coverage gap 做候选盲审 | audit unit、地图投影、Skill | hypothesis / observation，不能 confirmed |
+| `ContractDiscoveryAgent` 分层摘要 | deep 中组合函数、功能与模块契约及责任转移 | 精确 BuildContext/USR、真实链接组、函数事实与源码 | 保留未知业务前提的契约摘要，不授权证明 |
+| `ContractDiscoveryAgent` 主动发现 | 对已准入事实做候选盲探索并补充待验证语义 | 分层摘要、只读事实工具、Skill | hypothesis / semantic supplement，不能 confirmed |
 | `validator_agent` V1/V2 | 单次结构化判定与新增事实复判 | 有界 evidence slice / evidence delta | verified / rejected / uncertain 模型意见 |
 | `validator_agent` V3 | balanced/deep 调查全部非 shadow 未闭合义务 | 一次连续会话、只读工具、证据、Skill | 带可解析新增事实的 investigation synthesis |
 | `issue_reconciler_agent` | 增量维护中判断历史缺陷仍存在还是已修复 | 历史 issue、新代码 | still_exists / fixed |
@@ -387,7 +387,7 @@ Z-SCOPE 使用五类主要持久化区域：
 
 `zscope.semantics.yaml` 顶层固定为 `interfaces`、`dispatchers`、`function_pointer_bindings` 与 `discovery_receipt`。接口同时保存 primitive 标志、精确 selector、basis、人工 status、条件分支、类型化 effect、`otherwise: unknown`、pair、证据引用与逐 BuildContext variant。`discovery_receipt` 只保存有界的人读摘要、总数、摘要和少量 coverage gap 样本；逐函数 manifest、完整 gap 集合和模型原始响应只写入其 `evidence_ref` 指向的机器快照，避免把人工配置膨胀成第二份事实数据库。XLSX 只保留一次性迁移入口，运行时不再读取其语义；module lifecycle 与 function intent 在迁移报告中删除并转由 Wiki 表达。
 
-快照策略不再只区分“完整 LLM 语义”和“跳过”。`zscope/snapshots/policy.py` 会为短函数构造 syntactic snapshot，并把协议版本过滤、fd 编码/类型契约、协议长度、状态恢复、error status 和 facade forwarding 等短函数风险放入 `suspicious_points`。可证明的字面量语法，以及有可靠底层契约且可完整组合的透明封装，可以绕过 LLM；未知协议仍由入口前置的增量建模阶段发现，分配/释放/锁 wrapper 不按名称生成语义。
+快照策略不再只区分“完整 LLM 语义”和“跳过”。`zscope/snapshots/policy.py` 会为短函数构造 syntactic snapshot，并把协议版本过滤、fd 编码/类型契约、协议长度、状态恢复、error status 和 facade forwarding 等短函数风险放入 `suspicious_points`。这些怀疑点仅作验证背景，不独立生成候选。可证明的字面量语法及具备当前底层契约的透明封装可由静态分析组合；其余项目协议通过独立原语准备与人工审阅处理，分配/释放/锁 wrapper 不按名称生成执行语义。
 
 人工反馈不会只是前端状态。Web 保存验证结果时会持久化 baseline 和 suppression，下一次扫描会在验证前参与过滤和评分。`ReviewMemory` 封装 false-positive suppression、finding baseline 查询与 Validator 记忆写入；`UserConfigStore.get_finding_baseline_for_issue()` 先按 `dedup_key` 精确命中，再按 `stable_fingerprint` 或回填后的稳定指纹命中，并把 `match_strategy` 写回结果，避免行号漂移后人工 rejected 失效。
 
@@ -669,7 +669,7 @@ stdio MCP 适合作为本地 IDE/Agent 接入。协议优先协商 `2025-06-18`�
 | 新增本地候选规则 | 扩展对应 Regex/Clang/Java detector，同步 `builtin_catalog.yaml` descriptor/revision、正反例和目录校验 |
 | 新增跨函数图规则 | 扩展 `GraphCandidateGenerator`，经公共 emitter 输出 canonical ID 和完整 evidence，同步目录/测试 |
 | 新增外部确定性规则 | 简单正则使用 YAML pack；复杂算法使用严格 Provider V2，见 `docs/rule-development.md` |
-| 新增用户配置推断 | 扩展 `infer_user_config_rows()` 或 `UserConfigWorkbook` sheet 映射，保持人工行不被覆盖 |
+| 新增项目原语推导 | 扩展 `primitive_discovery` 与实例级契约消费者，保留当前 native 收据、人工决定及 stale 传播；不恢复 XLSX 运行时权威 |
 | 新增后端信号归一化 | 扩展 `zscope/core/candidates/backend_signals.py` 或 `adapters.py`，由 `CandidatePipeline` 汇总 |
 | 新增预算信号 | 扩展 `RiskBudgetPlanner` 的打分维度，继续保留硬上限与 metadata 可解释性 |
 | 新增工作流 | 添加 `zscope/workflows/*.yaml`，并实现对应 handler |

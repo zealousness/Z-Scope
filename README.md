@@ -6,7 +6,7 @@ v1.3.2 在 v1.3.1 稳定线之上引入 LLM Wiki 项目知识层、自适应语�
 
 ## 核心特性
 
-- **多智能体协作与声明式编排**：`AGENT.md` 与 `SKILL.md` 契约定义语义建模、漏洞扫描、验证、Issue Reconciler、Wiki Compiler 及聚焦型 Deep Worker 等智能体与技能，`zscope/workflows/*.yaml` 与 `WorkflowRunner` 驱动实际执行步骤。函数源码、调用图、污点追踪、指针别名等 14 个内置工具由 `ToolPolicy` 统一做参数校验、敏感路径拦截与审计日志。
+- **多智能体协作与声明式编排**：`AGENT.md` 与 `SKILL.md` 契约定义语义建模、漏洞扫描、验证、Issue Reconciler、Wiki Compiler 及聚焦型 Deep Worker 等智能体与技能，`zscope/workflows/*.yaml` 与 `WorkflowRunner` 驱动实际执行步骤。源码搜索、读取、语义上下文、图、流与静态发现六个证据工具由 `ToolPolicy` 统一做参数校验、敏感路径拦截与审计日志。
 - **项目级静态发现与分层验证**：fast/balanced/deep 共享按 BuildContext/USR 去重的静态 pass 与低成本裁决；balanced/deep 对非 shadow 未闭合义务追加自主 Validator 调查，风险仅决定排序。deep 进一步构建函数→功能→模块契约摘要，在候选盲约束下提出新 hypothesis，并向已有候选提供待验证语义。所有来源统一进入全局 Candidate Ledger。
 - **LLM Wiki 项目知识层**：扫描 workflow 在入口分析前执行一次 session 级 `wiki_compile`，把项目内说明性 Markdown 确定性分类、按 heading 切分为稳定 source section，并以不可变 revision 发布 Wiki 知识。批量入口、Validator、Web 与 MCP 共享同一个只读 `ProjectKnowledgeService`；Compiler 不可用或 Wiki 损坏时回退带路径、标题、行号与 digest 的原文摘录查询。`project.wiki.mode` 默认 `off`，`zscope-wiki` CLI 提供独立的状态、查询与维护入口。详见 [LLM Wiki](docs/modules/wiki.md)。
 - **证据优先的候选流水线**：`CandidatePipeline` 汇总本地规则、Clang AST/CFG、SVF/Saber、跨函数图候选与 KnowledgeDB/Joern 后端信号，覆盖 fd 表示契约、raw/encoded fd 混用、EAGAIN/EINTR 无预算重试、协议元素数与字节数错配、宏锁编译为空、部分资源初始化失败回滚等模式。后端按语言隔离：C/C++ 默认 `unified`，Java 默认 `java_unified`；弱后端必须显式选择，深度后端失败不会自动降级。
@@ -770,8 +770,8 @@ zscope --build-index -c zscope.yaml
 | `entry_functions_list.json` | `--discover-entries` 或 `project.entry_discovery.enabled` 生成的候选入口列表 |
 | `entry_functions_diff.json` | `--diff-base` 生成的差异影响入口列表，包含 `diff_impact.path_filters`、`analysis_obligations`、`coverage_summary`、`function_coverage` 和每个入口的 `diff_focus` |
 | `.zscope_snapshots/` | 语义快照缓存（加速重复扫描） |
-| `.zscope_snapshots/security_map.db` | 只读 Security Semantic Map sidecar；与历史函数 snapshot 分离 |
-| `.zscope_snapshots/security_semantic_map.json` | 本轮安全语义地图、coverage、unknown/conflict 与 audit unit 的只读导出（balanced/deep；实际目录取 `runtime.analysis.snapshot_dir`） |
+| `.zscope_snapshots/security_map.db` | 历史或显式离线对照的 Security Semantic Map sidecar；当前默认分层发现不依赖该文件 |
+| `.zscope_snapshots/security_semantic_map.json` | 旧地图路径的 coverage、unknown/conflict 与 audit unit 导出；文件存在不代表本轮启用了主动发现 |
 | `zscope.semantics.yaml` | 人工维护的唯一 C/C++ 原语与项目接口权威；discovery 合并 pending/stale 候选，正常扫描只读 |
 | `.zscope_snapshots/semantics/` | native/LLM 原始发现证据与 receipt；不构成第二份配置，不能直接授权规则 |
 | `.zscope_snapshots/user_config.state.db` | finding suppression、baseline 与版本化业务前提回答；与项目语义授权相互独立 |
@@ -785,7 +785,7 @@ zscope --build-index -c zscope.yaml
 
 集中验收按服务端证据展示已确认、条件性、待验证、已排除与覆盖缺口；未知覆盖显示未测。独立的重复标记、风险接受、后续待办和撤回记录保存在工程 `.zscope_acceptance/dispositions.sqlite3`，不改变验证结论、业务回答或误报规则。重复目标必须属于当前报告和同一构建；风险接受可过期，后续待办只保存在本地。报告证据或对象变化时，保存返回冲突并保留草稿，重新载入核对后再提交。
 
-单函数最终报告的 `metadata` 会记录 effective scan depth、实际 consumed token、按 agent/stage 的 usage、finish reason、候选漏斗、发现/决策归因、Validator verdict transition、Security Semantic Map coverage、主动发现单元，以及现有 rule/candidate/diff/report-view 统计。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。没有确定性反证时，LLM 的 rejected 也只能成为 needs-review，不能被静默隐藏。
+单函数最终报告的 `metadata` 会记录 effective scan depth、实际 consumed token、按 agent/stage 的 usage、finish reason、候选漏斗、发现/决策归因、Validator verdict transition、实际启用的发现阶段及覆盖缺口，以及现有 rule/candidate/diff/report-view 统计。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。有证据的模型反驳独立记为 `rejected_with_evidence`；缺少可解析引用、范围覆盖或仍有冲突的 rejected 保持 needs-review，不能被静默隐藏。
 
 退出码由 `--exit-policy` 控制，默认 `review`：报告中存在确认缺陷或 needs-review 观察项时返回 `1`，`clean` 返回 `0`；`confirmed` 策略只对确认缺陷返回 `1`，`legacy` 沿用 issues 计数语义。阶段因超时、取消、工具失败等原因未完成时，结果仍会保存并标记 `completeness=partial`，CLI 返回 `2`；fast 中未请求的语义/主动发现阶段不会触发 partial。token 成本超出 Benchmark 预期不会截断产品扫描。
 
@@ -816,7 +816,7 @@ v3 配置页可编辑工程、全部 targets、模型 profiles、preset 和执�
 - **扫描任务**：检查已保存配置，选择快速／均衡／深度及单次或每日时间安排；“运行与历史”查看持久任务、结果、停止与重新尝试。普通重新尝试不继承上轮窗口；每日计划在新窗口重新绑定截止时间。
 - **问题工作台**：保留上一轮已接入的问题队列、报告证据、复核与处置功能；本轮交互方案仍待取舍，没有把它列为本轮重做完成。人工复核、业务回答与处置各自保存，系统结论不由处置按钮改变。
 - **覆盖与诊断**：查看逐编译实例、未完成范围、工具状态和配置告警。已记录缺口数量与覆盖测量状态分别展示，未知不表示零或安全。
-- **项目设置**：编辑工程与模型并查看只读规则目录。项目语义 Web 编辑器尚未切换到新的存储服务，当前请直接复核 `zscope.semantics.yaml`；旧工作簿页面不再是 C/C++ 执行语义来源。
+- **项目设置与项目原语**：设置页编辑工程、模型并查看只读规则目录；项目原语页读写 `zscope.semantics.yaml`，提供独立发现、审阅和当前性检查。旧工作簿页面不再是 C/C++ 执行语义来源。
 
 #### 扫描开始、截止与每日时段
 
@@ -974,6 +974,8 @@ Agent 实施计划的开发评测准备使用 `python scripts/agent_plan_evaluat
 ## 更新日志
 
 ### v1.3.2
+
+以下记录版本早期能力；2026-11-02 主线的配置迁移、项目原语、分层发现和扫描计划变化见[主线同步说明](docs/releases/v1.3.2.md#2026-11-02-主线同步)，当前行为以上方使用指南与模块文档为准。
 - **LLM Wiki 项目知识层**：新增 `zscope/wiki` 子系统与 `zscope-wiki` CLI。扫描 workflow 在入口分析前执行一次 session 级 `wiki_compile`，把项目说明性 Markdown 确定性分类、按 heading 切分为稳定 source section，经不可变 revision 与原子 active pointer 发布；批量入口、Validator、Web 与 MCP 共享同一只读 `ProjectKnowledgeService`，Compiler 不可用或 Wiki 损坏时回退带路径、行号与 digest 的原文摘录查询。
 - **自适应语义发现与 Validator v3**：balanced/deep 构建 Security Semantic Map，coverage-gap worker 在 candidate-blind 约束下主动提出 hypothesis；验证收敛为 V0 确定性 proof、V1 单次结构化判定、V2 定向补证复判与高风险 V3 有界调查（每 cluster 一个最长 50 次模型迭代的连续会话，仅白名单只读工具）。验证结论保留完整 reasoning，并新增 `user_rebuttal` 人工复议字段。
 - **规则治理与 public config v2**：`zscope.yaml` 收敛为最小公共结构，Agent 拓扑、预算与稳定算法默认值移入可审计 RuntimeSpec；`rules.disabled_ids` 统一覆盖 Java local、C/C++ Regex/Clang/Graph、YAML pack 与 Python provider，且不抑制 backend signal 或 LLM 独立发现。
