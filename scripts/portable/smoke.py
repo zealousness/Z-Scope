@@ -135,9 +135,16 @@ def cpp():
     assert "main" in command("llvm-nm", WORK / "linked.bc")
     CHECKS["bitcode"] = True
     CHECKS["llvm18-isolation"] = True
-    command("wpa", "-ander", WORK / "linked.bc", timeout=600)
+    from zscope.retrieval.svf_runner import SvfRunner
+
+    runner = SvfRunner(timeout=600)
+    ander = runner.run_ander(WORK / "linked.bc", WORK / "ander")
+    LOGS["wpa"] = {"success": ander.success, "stderr": ander.stderr[-12000:]}
+    assert ander.success and ander.output_file and ander.output_file.is_file()
     CHECKS["wpa"] = True
-    command("saber", "-leak", WORK / "linked.bc", timeout=600)
+    saber = runner.run_saber(WORK / "linked.bc", WORK / "saber")
+    LOGS["saber"] = {"success": saber.success, "stderr": saber.stderr[-12000:]}
+    assert saber.success
     CHECKS["saber"] = True
     # Compilation database includes the same sysroot that compiled the TU. An
     # experiment may supply another toolchain through its own compile database.
@@ -172,13 +179,20 @@ def cpp():
     extractor = ClangExtractor(WORK, str(ROOT / "bin/clangd"), WORK, max_threads=2)
     try:
         assert extractor.start() and extractor.open_document(source)
-        assert extractor.get_ast(source)
+        document = {"uri": source.as_uri()}
+        position = {"line": 2, "character": 5}
+        assert extractor.send_request("textDocument/ast", {"textDocument": document})
         CHECKS["clangd-ast"] = True
         assert extractor.get_document_symbols(source)
-        symbol = extractor.get_symbol_info(source, 2, 5)
-        assert symbol and symbol.get("usr")
+        symbols = extractor.send_request(
+            "textDocument/symbolInfo", {"textDocument": document, "position": position}
+        )
+        assert symbols and symbols[0].get("usr")
         CHECKS["clangd-usr"] = True
-        assert extractor.get_references(source, 2, 5)
+        assert extractor.send_request(
+            "textDocument/references",
+            {"textDocument": document, "position": position, "context": {"includeDeclaration": True}},
+        )
         CHECKS["clangd-references"] = True
         items = extractor.prepare_call_hierarchy(source, 3, 5)
         assert items and extractor.get_outgoing_calls(items[0])
