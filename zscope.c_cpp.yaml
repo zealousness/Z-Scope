@@ -1,0 +1,21 @@
+# v1.2 configuration. Run from the target project directory.
+llms:
+  default:
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+    models: [your-model]
+
+project:
+  root: .
+  source_root: .
+  compile_commands_path: compile_commands.json
+  entry_function: main
+  agents:
+    - name: vulnerability_analyzer
+      task: Find and validate defects in this C/C++ project.
+
+indexing:
+  backend: unified
+  max_clangd_threads: 4
+  svf_heap_limit_mb: 8192
+  svf_timeout: 1800

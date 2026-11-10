@@ -1,0 +1,165 @@
+{
+  "apt_snapshot": {
+    "mantic": {
+      "sha256": "d5539f456b74f789f8977eeee5f3c2399225de8a424b4cfff66843b78697a311",
+      "url": "https://old-releases.ubuntu.com/ubuntu/dists/mantic/InRelease"
+    },
+    "mantic-security": {
+      "sha256": "5fca3465e4e80bccdd0eba53c90a6575a908c3b467fd293f2be58da42afd445e",
+      "url": "https://old-releases.ubuntu.com/ubuntu/dists/mantic-security/InRelease"
+    },
+    "mantic-updates": {
+      "sha256": "22d7500cff13df9ee4be385d661d63c964c72ff81487e737adc05b3d6e575520",
+      "url": "https://old-releases.ubuntu.com/ubuntu/dists/mantic-updates/InRelease"
+    }
+  },
+  "base_images": {
+    "aarch64": "docker.io/library/ubuntu@sha256:72c9c923b9807a752ba9c8ba41432e62bb88312de9d15b536caeaf3ea5965ad5",
+    "x86_64": "docker.io/library/ubuntu@sha256:c57e8a329cd805f341ed7ee7fcc010761b29b9b8771b02a4f74fc794f1d7eac5"
+  },
+  "build_glibc": "2.38",
+  "schema_version": "zscope.portable-toolchain.v1",
+  "sources": {
+    "build-packaging": {
+      "build_only": true,
+      "filename": "packaging-25.0-py3-none-any.whl",
+      "profiles": [
+        "cpp",
+        "java"
+      ],
+      "sha256": "29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484",
+      "size": 66469,
+      "url": "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl",
+      "version": "25.0"
+    },
+    "build-setuptools": {
+      "build_only": true,
+      "filename": "setuptools-80.9.0-py3-none-any.whl",
+      "profiles": [
+        "cpp",
+        "java"
+      ],
+      "sha256": "062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922",
+      "size": 1201486,
+      "url": "https://files.pythonhosted.org/packages/a3/dc/17031897dae0efacfea57dfd3a82fdd2a2aeb58e0ff71b77b87e44edc772/setuptools-80.9.0-py3-none-any.whl",
+      "version": "80.9.0"
+    },
+    "build-wheel": {
+      "build_only": true,
+      "filename": "wheel-0.45.1-py3-none-any.whl",
+      "profiles": [
+        "cpp",
+        "java"
+      ],
+      "sha256": "708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248",
+      "size": 72494,
+      "url": "https://files.pythonhosted.org/packages/0b/2c/87f3254fd8ffd29e4c02732eee68a83a1d3c346ae39bc6822dcbcb697f2b/wheel-0.45.1-py3-none-any.whl",
+      "version": "0.45.1"
+    },
+    "clangd": {
+      "filename": "llvm-project-22.1.7.src.tar.xz",
+      "profiles": [
+        "cpp"
+      ],
+      "sha256": "5cc4a3f12bba50b6bdfb4b61bdc852117a0ff2517807c3902fc13267fb93562e",
+      "size": 167066344,
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.7/llvm-project-22.1.7.src.tar.xz",
+      "version": "llvmorg-22.1.7"
+    },
+    "gllvm": {
+      "filename": "gllvm-1.3.0.tar.gz",
+      "profiles": [
+        "cpp"
+      ],
+      "sha256": "e8bcb9b93bc2d24283fe45f16891ec5d70116b5fc49144a9c98832ed074f8782",
+      "size": 608597,
+      "url": "https://codeload.github.com/SRI-CSL/gllvm/tar.gz/refs/tags/v1.3.0",
+      "version": "1.3.0"
+    },
+    "jdk-aarch64": {
+      "arch": "aarch64",
+      "filename": "OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.12.1_1.tar.gz",
+      "profiles": [
+        "java"
+      ],
+      "sha256": "23e37e026f12f3e706f18938ff611db3032d075b09d0879a25d06718c773e223",
+      "size": 205641175,
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.12.1_1.tar.gz",
+      "version": "21.0.12+101.0.LTS"
+    },
+    "jdk-x86_64": {
+      "arch": "x86_64",
+      "filename": "OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz",
+      "profiles": [
+        "java"
+      ],
+      "sha256": "ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
+      "size": 207473347,
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz",
+      "version": "21.0.12+101.0.LTS"
+    },
+    "joern-aarch64": {
+      "arch": "aarch64",
+      "filename": "joern-cli-linux-arm64.zip",
+      "profiles": [
+        "java"
+      ],
+      "sha256": "e38ae72c278079947ba914e33d286d85029c234a65afba5a23fa7b781c6f4097",
+      "size": 1825633047,
+      "url": "https://github.com/joernio/joern/releases/download/v4.0.620/joern-cli-linux-arm64.zip",
+      "version": "v4.0.620"
+    },
+    "joern-x86_64": {
+      "arch": "x86_64",
+      "filename": "joern-cli-linux-x86_64.zip",
+      "profiles": [
+        "java"
+      ],
+      "sha256": "095212e556335d4b59c1a2474d5525cf64f88baedfb5ee280f253950a95a745b",
+      "size": 1828208502,
+      "url": "https://github.com/joernio/joern/releases/download/v4.0.620/joern-cli-linux-x86_64.zip",
+      "version": "v4.0.620"
+    },
+    "llvm": {
+      "filename": "llvm-project-18.1.0.src.tar.xz",
+      "profiles": [
+        "cpp"
+      ],
+      "sha256": "758a048046ac5024f86c868bb17c631500eed8f8d2677ae6a72ab7ad01602277",
+      "size": 132034208,
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.0/llvm-project-18.1.0.src.tar.xz",
+      "version": "llvmorg-18.1.0"
+    },
+    "maven": {
+      "filename": "apache-maven-3.9.16-bin.tar.gz",
+      "profiles": [
+        "java"
+      ],
+      "sha256": "80ffca22aed9e8b9713a232f3394fd81d7f20322df75efdb2b047dbd3e3a23bb",
+      "size": 9278065,
+      "url": "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.tar.gz",
+      "version": "3.9.16"
+    },
+    "python": {
+      "filename": "Python-3.13.15.tar.xz",
+      "profiles": [
+        "cpp",
+        "java"
+      ],
+      "sha256": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76",
+      "size": 23160540,
+      "url": "https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tar.xz",
+      "version": "3.13.15"
+    },
+    "svf": {
+      "filename": "SVF-3.2.tar.gz",
+      "profiles": [
+        "cpp"
+      ],
+      "sha256": "91a02116a94ca7e70edab320ced5554d5019440ae9efbfb4abeffee185a30da1",
+      "size": 5498014,
+      "url": "https://codeload.github.com/SVF-tools/SVF/tar.gz/refs/tags/SVF-3.2",
+      "version": "3.2"
+    }
+  }
+}

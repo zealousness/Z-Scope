@@ -45,6 +45,7 @@ zscope = [
     "semantics/*.yaml",
     "workflows/*.yaml",
     "web/static/*.html",
+    "web/static/vendor/*",
 ]
 
 [tool.setuptools.dynamic]
