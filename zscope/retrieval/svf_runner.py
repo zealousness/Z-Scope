@@ -37,16 +37,14 @@ class SvfRunner:
         heap_limit_mb: int = 32768,
         timeout: int = 1800,
     ):
-        self.svf_bin_dir = Path(svf_bin_dir) if svf_bin_dir else None
+        self.svf_bin_dir = Path(svf_bin_dir).expanduser().resolve() if svf_bin_dir else None
         self.heap_limit_mb = heap_limit_mb
         self.timeout = timeout
 
     def _tool_path(self, name: str) -> str:
         """解析 SVF 工具的完整路径。"""
         if self.svf_bin_dir:
-            p = self.svf_bin_dir / name
-            if p.exists():
-                return str(p)
+            return str(self.svf_bin_dir / name)
         return name  # 依赖 PATH
 
     def _make_env(self) -> Dict[str, str]:
