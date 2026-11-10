@@ -149,6 +149,14 @@ def cpp_tools(root, prefix, manifest):
         target = root / "tools/llvm18/lib" / library
         if target.is_file():
             continue
+        built = prefix.parent / "build/llvm/lib" / library
+        if built.is_file():
+            receipt = json.loads((prefix / "llvm.complete.json").read_text())
+            copy_file(built, target)
+            manifest.setdefault("cached_clang_libraries", {})[library] = {
+                "sha256": sha256(built), "llvm_build_key": receipt["key"]
+            }
+            continue
         cached = prefix / "clang-indexer"
         relative = "lib/" + library
         receipt = json.loads((prefix / "clang-indexer.complete.json").read_text())
