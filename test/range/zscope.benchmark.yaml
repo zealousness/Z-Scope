@@ -94,7 +94,7 @@ indexing:
   gclang_path: gclang
   get_bc_path: get-bc
   llvm_link_path: llvm-link
-  svf_bin_dir: /home/zeal/.local/svf/SVF-linux-x86_64/bin
+  svf_bin_dir: ${HOME}/.local/svf/SVF-linux-x86_64/bin
   svf_heap_limit_mb: 8192
   svf_timeout: 600
 

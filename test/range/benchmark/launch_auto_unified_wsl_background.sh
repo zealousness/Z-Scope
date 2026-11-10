@@ -6,7 +6,7 @@ if [[ ! -r /proc/version ]] || ! grep -qiE 'microsoft|wsl' /proc/version; then
   exit 2
 fi
 
-repo_root="${Z_SCOPE_REPO_ROOT:-/mnt/c/Users/10273/home/work/Z-Scope}"
+repo_root="${Z_SCOPE_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 cd "${repo_root}"
 
 run_id="${1:-auto_unified_wsl_opt_$(date +%Y%m%d_%H%M%S)}"

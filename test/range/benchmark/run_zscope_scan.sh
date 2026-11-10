@@ -3,11 +3,12 @@ set -euo pipefail
 
 if [[ ! -r /proc/version ]] || ! grep -qiE 'microsoft|wsl' /proc/version; then
   echo "[range] ERROR: range benchmark must run inside WSL/Linux for SVF/Saber." >&2
-  echo "[range]        Launch with: wsl bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope && test/range/benchmark/run_zscope_scan.sh'" >&2
+  echo "[range]        Launch with: wsl bash -lc 'cd /path/to/Z-Scope && test/range/benchmark/run_zscope_scan.sh'" >&2
   exit 2
 fi
 
-cd /mnt/c/Users/10273/home/work/Z-Scope
+repo_root="${Z_SCOPE_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+cd "${repo_root}"
 
 if [[ -f test/range/zscope.local.env ]]; then
   # Local secret-bearing config. This file is ignored by git.

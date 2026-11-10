@@ -6,7 +6,7 @@ if [[ ! -r /proc/version ]] || ! grep -qiE 'microsoft|wsl' /proc/version; then
   exit 2
 fi
 
-repo_root="${Z_SCOPE_REPO_ROOT:-/mnt/c/Users/10273/home/work/Z-Scope}"
+repo_root="${Z_SCOPE_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 cd "${repo_root}"
 
 sarif_path="${1:-test/range/codeql_runs/codeql_cpp_security_quality_20260606_100438/results_pruned_global_minfp_73tp.sarif}"

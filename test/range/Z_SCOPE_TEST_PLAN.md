@@ -42,7 +42,7 @@ assumptions that are most stable under Linux.
 Recommended working directory:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 ```
 
 If clangd, gcc, make, or Python dependencies are missing inside WSL, install or
@@ -122,14 +122,14 @@ ground-truth issue are auditable instead of silently hidden.
 From the repository root in WSL:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 test/range/benchmark/run_auto_unified_wsl.sh
 ```
 
 For the older fixed-entry protocol, use:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 python -m pip install -e .
 make -C test/range clean
 make -C test/range

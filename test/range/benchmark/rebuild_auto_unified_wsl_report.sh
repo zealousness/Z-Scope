@@ -6,7 +6,7 @@ if [[ ! -r /proc/version ]] || ! grep -qiE 'microsoft|wsl' /proc/version; then
   exit 2
 fi
 
-repo_root="${Z_SCOPE_REPO_ROOT:-/mnt/c/Users/10273/home/work/Z-Scope}"
+repo_root="${Z_SCOPE_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 cd "${repo_root}"
 
 if [[ -f test/range/zscope.local.env ]]; then

@@ -9,7 +9,7 @@ CWE families with flow variants `01` through `05`.
 Generated suite:
 
 ```text
-/mnt/c/Users/10273/home/work/Z-Scope/benchmarks/external/workspace/juliet_memory_01_05
+/path/to/Z-Scope/benchmarks/external/workspace/juliet_memory_01_05
 ```
 
 Raw official archive used locally:
@@ -74,7 +74,7 @@ Per-CWE bad-entry distribution:
 ## Recreate
 
 ```powershell
-wsl bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope && \
+wsl bash -lc 'cd /path/to/Z-Scope && \
   python3 scripts/external_benchmark.py prepare-juliet \
     --source /mnt/c/tmp/juliet-c-cpp-v1.3-full/C \
     --workspace benchmarks/external/workspace \
@@ -88,7 +88,7 @@ wsl bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope && \
 Cheap regex/graph candidate run:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 python3 scripts/external_benchmark.py run-prepared \
   --suite-root benchmarks/external/workspace/juliet_memory_01_05 \
   --mode candidates
@@ -97,7 +97,7 @@ python3 scripts/external_benchmark.py run-prepared \
 Full Z-SCOPE LLM-backed run:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 python3 scripts/external_benchmark.py run-prepared \
   --suite-root benchmarks/external/workspace/juliet_memory_01_05 \
   --mode zscope \

@@ -27,7 +27,7 @@ benchmark files needed by the harness are present.
 Generated suite:
 
 ```text
-/mnt/c/Users/10273/home/work/Z-Scope/benchmarks/external/workspace/svcomp_c_memsafety
+/path/to/Z-Scope/benchmarks/external/workspace/svcomp_c_memsafety
 ```
 
 Scope:
@@ -71,7 +71,7 @@ Violating-task distribution:
 Recreate:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 python3 scripts/external_benchmark.py prepare-svcomp \
   --source /mnt/c/tmp/sv-benchmarks-c-main-full/c \
   --workspace benchmarks/external/workspace \
@@ -86,7 +86,7 @@ python3 scripts/external_benchmark.py prepare-svcomp \
 Generated suite:
 
 ```text
-/mnt/c/Users/10273/home/work/Z-Scope/benchmarks/external/workspace/svcomp_c_concurrency
+/path/to/Z-Scope/benchmarks/external/workspace/svcomp_c_concurrency
 ```
 
 Scope:
@@ -119,7 +119,7 @@ Violating-task distribution:
 Recreate:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 python3 scripts/external_benchmark.py prepare-svcomp \
   --source /mnt/c/tmp/sv-benchmarks-c-main-full/c \
   --workspace benchmarks/external/workspace \
@@ -134,7 +134,7 @@ python3 scripts/external_benchmark.py prepare-svcomp \
 Candidate-only run:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 python3 scripts/external_benchmark.py run-prepared \
   --suite-root benchmarks/external/workspace/svcomp_c_memsafety \
   --mode candidates
@@ -147,7 +147,7 @@ python3 scripts/external_benchmark.py run-prepared \
 Full Z-SCOPE LLM-backed run:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd /path/to/Z-Scope
 python3 scripts/external_benchmark.py run-prepared \
   --suite-root benchmarks/external/workspace/svcomp_c_memsafety \
   --mode zscope \

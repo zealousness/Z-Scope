@@ -3,11 +3,11 @@ set -euo pipefail
 
 if [[ ! -r /proc/version ]] || ! grep -qiE 'microsoft|wsl' /proc/version; then
   echo "[range-alert] ERROR: alert verification benchmark must run inside WSL/Linux." >&2
-  echo "[range-alert]        Launch with: wsl bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope && test/range/benchmark/run_alert_verify_wsl.sh <sarif>'" >&2
+  echo "[range-alert]        Launch with: wsl bash -lc 'cd /path/to/Z-Scope && test/range/benchmark/run_alert_verify_wsl.sh <sarif>'" >&2
   exit 2
 fi
 
-repo_root="${Z_SCOPE_REPO_ROOT:-/mnt/c/Users/10273/home/work/Z-Scope}"
+repo_root="${Z_SCOPE_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 cd "${repo_root}"
 
 if [[ -f test/range/zscope.local.env ]]; then
