@@ -4,6 +4,8 @@ Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 """
 
 import logging
+import json
+from collections import OrderedDict
 import os
 import re
 import threading
@@ -70,8 +72,16 @@ class CodeIndex:
         self._cache_lock = threading.RLock()
         self._declaration_comment_index_lock = threading.Lock()
         self._macro_definition_index_lock = threading.Lock()
+        self._index_epoch = 0
+        self._function_query_index: Dict[str, set[str]] = {}
+        self._function_record_variants: Dict[str, set[str]] = {}
+        self._shared_cache_budget_bytes = max(
+            0, int(getattr(indexing_config, "shared_cache_max_bytes", 512 * 1024 * 1024))
+        )
+        self._shared_cache_bytes = 0
+        self._shared_cache_lru: "OrderedDict[Tuple[str, Any], int]" = OrderedDict()
         self._file_lines_cache: Dict[str, Tuple[str, ...]] = {}
-        self._function_impl_cache: Dict[Tuple[str, int, bool], Dict[str, Any]] = {}
+        self._function_impl_cache: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
         self._macro_definition_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._macro_definition_miss_cache: set[str] = set()
 
@@ -223,6 +233,9 @@ class CodeIndex:
     def _build_index(self) -> None:
         """Build function index from project."""
         with self._cache_lock:
+            self._index_epoch += 1
+            self._function_query_index.clear()
+            self._function_record_variants.clear()
             self._function_index.clear()
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
@@ -270,6 +283,7 @@ class CodeIndex:
             index_key = self._unique_function_index_key(canonical_name, record)
             record["index_name"] = index_key
             self._function_index[index_key] = record
+            self._register_function_query_index(index_key, record)
             self._register_function_file_index(index_key, record)
             self._function_file_resolution_cache.clear()
 
@@ -374,7 +388,10 @@ class CodeIndex:
         records = self._function_records_for_file_hint(file_path)
         if not records:
             with self._cache_lock:
-                records = [(key, dict(info)) for key, info in self._function_index.items()]
+                candidate_keys: set[str] = set()
+                for variant in query_variants:
+                    candidate_keys.update(self._function_query_index.get(variant, ()))
+                records = [(key, dict(self._function_index[key])) for key in candidate_keys]
 
         result = self._resolve_function_match_from_records(query_variants, file_path, records)
         with self._cache_lock:
@@ -487,12 +504,12 @@ class CodeIndex:
                 # Use absolute() instead of resolve() to avoid symlink physical path jumping out of bounds
                 c_str = str(child.absolute())
                 p_str = str(parent.absolute())
-                
+
                 # Case-insensitive ONLY on Windows
                 if os.name == 'nt':
                     c_str = c_str.lower()
                     p_str = p_str.lower()
-                    
+
                 sep = os.sep
                 if not p_str.endswith(sep):
                     p_str += sep
@@ -504,7 +521,7 @@ class CodeIndex:
             for ex in self.exclude_paths:
                 if is_subpath(p, ex):
                     return False
-                    
+
         if self.include_paths:
             in_include = False
             for inc in self.include_paths:
@@ -513,7 +530,7 @@ class CodeIndex:
                     break
             if not in_include:
                 return False
-                
+
         return True
 
     def _normalize_cpp_function_name(self, name: str) -> str:
@@ -649,6 +666,7 @@ class CodeIndex:
         signature_text: str,
         lines: Optional[Sequence[str]] = None,
         start_line: int = 1,
+        type_scopes: Optional[Sequence[str]] = None,
     ) -> Optional[Dict[str, str]]:
         """Best-effort parser for C/C++ function, method, constructor, and destructor heads."""
         original = str(signature_text or "").strip()
@@ -678,7 +696,11 @@ class CodeIndex:
         if not canonical_name:
             return None
 
-        class_scope = self._enclosing_cpp_type_name(lines or (), start_line)
+        class_scope = (
+            type_scopes[start_line - 1]
+            if type_scopes is not None
+            else self._enclosing_cpp_type_name(lines or (), start_line)
+        )
         simple_name = self._cpp_simple_name(self._strip_cpp_template_args(canonical_name))
         parent_name = ""
         if "::" in canonical_name:
@@ -711,13 +733,14 @@ class CodeIndex:
         line: str,
         lines: Sequence[str],
         line_no: int,
+        type_scopes: Optional[Sequence[str]] = None,
     ) -> Optional[Dict[str, str]]:
         stripped = str(line or "").strip()
         if not stripped.endswith(";") or "(" not in stripped or "{" in stripped:
             return None
         if stripped.startswith(("#", "typedef ", "using ")):
             return None
-        return self._parse_cpp_function_signature(stripped[:-1], lines, line_no)
+        return self._parse_cpp_function_signature(stripped[:-1], lines, line_no, type_scopes)
 
     def _enclosing_cpp_type_name(self, lines: Sequence[str], start_line: int) -> str:
         """Return the innermost class/struct name active before start_line."""
@@ -936,7 +959,19 @@ class CodeIndex:
         """Return a stable per-run key for cached source file contents."""
         path = Path(file_path)
         key = str(path.absolute())
-        return key.lower() if os.name == "nt" else key
+        key = key.lower() if os.name == "nt" else key
+        try:
+            stat = path.stat()
+            # Editors and checkout tools can preserve mtime while replacing a
+            # file, and same-size edits can restore it explicitly. Include the
+            # change time and physical file identity so neither operation can
+            # reuse cached source (or a cached function body) from the old file.
+            return (
+                f"{key}|{stat.st_dev}|{stat.st_ino}|{stat.st_ctime_ns}"
+                f"|{stat.st_mtime_ns}|{stat.st_size}"
+            )
+        except OSError:
+            return f"{key}|missing"
 
     def _read_file_lines(self, file_path: Union[str, Path]) -> List[str]:
         """Read source file lines through the per-run cache."""
@@ -944,13 +979,20 @@ class CodeIndex:
         with self._cache_lock:
             cached = self._file_lines_cache.get(cache_key)
             if cached is not None:
+                self._touch_shared_cache("file", cache_key)
                 return list(cached)
 
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = tuple(f.readlines())
 
         with self._cache_lock:
-            cached = self._file_lines_cache.setdefault(cache_key, lines)
+            cached = self._file_lines_cache.get(cache_key)
+            if cached is None:
+                cached = lines
+                self._file_lines_cache[cache_key] = cached
+                self._record_shared_cache_value("file", cache_key, cached)
+            else:
+                self._touch_shared_cache("file", cache_key)
             return list(cached)
 
     def _read_file_text(self, file_path: Union[str, Path]) -> str:
@@ -987,26 +1029,33 @@ class CodeIndex:
 
     def _get_cached_function_impl(
         self,
-        cache_key: Tuple[str, int, bool],
+        cache_key: Tuple[Any, ...],
     ) -> Optional[Dict[str, Any]]:
         with self._cache_lock:
             cached = self._function_impl_cache.get(cache_key)
             if cached is None:
                 return None
+            self._touch_shared_cache("function", cache_key)
             return self._clone_function_impl(cached)
 
     def _store_function_impl_cache(
         self,
-        cache_key: Tuple[str, int, bool],
+        cache_key: Tuple[Any, ...],
         result: Dict[str, Any],
     ) -> Dict[str, Any]:
         with self._cache_lock:
-            self._function_impl_cache[cache_key] = self._clone_function_impl(result)
-            return self._clone_function_impl(self._function_impl_cache[cache_key])
+            cached = self._clone_function_impl(result)
+            self._function_impl_cache[cache_key] = cached
+            self._record_shared_cache_value("function", cache_key, cached)
+            return self._clone_function_impl(cached)
 
     def _clear_function_impl_cache(self) -> None:
         with self._cache_lock:
             self._function_impl_cache.clear()
+            self._file_lines_cache.clear()
+            self._shared_cache_lru.clear()
+            self._shared_cache_bytes = 0
+            self._declaration_comment_index = None
             self._function_file_resolution_cache.clear()
             self._macro_definition_index = None
             self._macro_definition_miss_cache.clear()
@@ -1149,7 +1198,15 @@ class CodeIndex:
             return None
 
         lookup_name = self._resolve_function_name(func_name, file_path=file_path)
-        cache_key = (lookup_name, max_lines, bool(include_context))
+        with self._cache_lock:
+            source_info = self._function_index.get(lookup_name, {})
+        source_file = str(source_info.get("file") or file_path or "")
+        fingerprint = (
+            self._source_fingerprint(self._resolve_file_path(source_file))
+            if source_file
+            else str(self._index_epoch)
+        )
+        cache_key = (lookup_name, max_lines, bool(include_context), fingerprint)
         cached_result = self._get_cached_function_impl(cache_key)
         if cached_result is not None:
             return cached_result
@@ -1182,14 +1239,20 @@ class CodeIndex:
             if not macro_result:
                 macro_result = self._find_macro_definition(func_name, max_lines=max_lines)
             if macro_result:
-                return self._store_function_impl_cache(cache_key, macro_result)
+                return self._clone_function_impl(macro_result)
             if warn_missing:
                 logger.warning(f"Function '{func_name}' not found in index")
             return None
 
-        file_path = self._resolve_file_path(func_info["file"])
+        resolved_path = self._resolve_file_path(func_info["file"])
+        cache_key = (
+            lookup_name,
+            max_lines,
+            bool(include_context),
+            self._source_fingerprint(resolved_path),
+        )
         try:
-            lines = self._read_file_lines(file_path)
+            lines = self._read_file_lines(resolved_path)
             start = func_info["start_line"] - 1
             end = func_info["end_line"]
             if end - start > max_lines:
@@ -1207,14 +1270,14 @@ class CodeIndex:
             if include_context:
                 comment_blocks = self._find_function_declaration_comments(
                     lookup_name,
-                    file_path,
+                    resolved_path,
                 )
                 impl_comment = self._find_leading_c_comment_block(lines, func_info["start_line"])
                 if impl_comment:
                     comment_blocks.append(
                         self._comment_block_payload(
                             kind="implementation",
-                            file_path=file_path,
+                            file_path=resolved_path,
                             lines=lines,
                             block=impl_comment,
                         )
@@ -1244,7 +1307,7 @@ class CodeIndex:
 
             result = {
                 "func_name": lookup_name,
-                "file": normalize_path(file_path, self.source_root),
+                "file": normalize_path(resolved_path, self.source_root),
                 "index_name": lookup_name,
                 "start_line": func_info["start_line"],
                 "end_line": min(func_info["end_line"], start + max_lines + 1),
@@ -1416,15 +1479,23 @@ class CodeIndex:
         )
         results = []
         globs = self._header_globs(header_files)
+        seen_files = set()
         for pattern in globs:
             for fp in self.source_root.rglob(pattern):
+                key = str(fp.resolve())
+                if key in seen_files:
+                    continue
+                seen_files.add(key)
                 try:
                     content = self._read_file_text(fp)
                 except Exception:
                     continue
                 lines = content.splitlines()
+                type_scopes = self._cpp_type_scopes(lines)
                 for line_no, line in enumerate(lines, start=1):
-                    parsed = self._parse_function_declaration_line(line, lines, line_no)
+                    parsed = self._parse_function_declaration_line(
+                        line, lines, line_no, type_scopes=type_scopes
+                    )
                     if not parsed:
                         continue
                     name = parsed["name"]
@@ -1437,7 +1508,7 @@ class CodeIndex:
                 for m in func_decl_re.finditer(content):
                     name = m.group("name")
                     line_no = content[:m.start()].count("\n") + 1
-                    if self._enclosing_cpp_type_name(lines, line_no):
+                    if type_scopes[line_no - 1]:
                         continue
                     if self._resolve_function_name(name) in self._function_index:
                         results.append({
@@ -1690,6 +1761,10 @@ class CodeIndex:
         with self._cache_lock:
             self._file_lines_cache.clear()
             self._function_impl_cache.clear()
+            self._file_lines_cache.clear()
+            self._shared_cache_lru.clear()
+            self._shared_cache_bytes = 0
+            self._declaration_comment_index = None
             self._function_file_resolution_cache.clear()
             self._declaration_comment_index = None
             self._function_alias_index.clear()
@@ -1698,3 +1773,107 @@ class CodeIndex:
             self._macro_definition_miss_cache.clear()
         if self._backend:
             self._backend.close()
+
+    def _register_function_query_index(self, index_key: str, record: Dict[str, Any]) -> None:
+        """Maintain postings on insert/replace, independently of evictable query caches."""
+        for variant in self._function_record_variants.pop(index_key, ()):
+            keys = self._function_query_index[variant]
+            keys.discard(index_key)
+            if not keys:
+                del self._function_query_index[variant]
+        variants = self._function_record_query_variants(index_key, record)
+        self._function_record_variants[index_key] = variants
+        for variant in variants:
+            self._function_query_index.setdefault(variant, set()).add(index_key)
+
+    def _source_fingerprint(self, file_path: Union[str, Path]) -> str:
+        return f"epoch={self._index_epoch}|source={self._file_cache_key(file_path)}"
+
+    @staticmethod
+    def _shared_cache_value_size(value: Any) -> int:
+        if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
+            return sum(len(item.encode("utf-8", errors="ignore")) for item in value)
+        try:
+            import json
+
+            return len(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            )
+        except Exception:
+            return len(repr(value).encode("utf-8", errors="ignore"))
+
+    def _touch_shared_cache(self, namespace: str, key: Any) -> None:
+        lru_key = (namespace, key)
+        if lru_key in self._shared_cache_lru:
+            self._shared_cache_lru.move_to_end(lru_key)
+
+    def _record_shared_cache_value(
+        self,
+        namespace: str,
+        key: Any,
+        value: Any,
+    ) -> None:
+        lru_key = (namespace, key)
+        previous = self._shared_cache_lru.pop(lru_key, 0)
+        size = self._shared_cache_value_size(value)
+        self._shared_cache_lru[lru_key] = size
+        self._shared_cache_bytes += size - previous
+        while self._shared_cache_bytes > self._shared_cache_budget_bytes and self._shared_cache_lru:
+            (evict_namespace, evict_key), evict_size = self._shared_cache_lru.popitem(last=False)
+            self._shared_cache_bytes = max(0, self._shared_cache_bytes - evict_size)
+            if evict_namespace == "file":
+                self._file_lines_cache.pop(evict_key, None)
+            elif evict_namespace == "function":
+                self._function_impl_cache.pop(evict_key, None)
+
+    @staticmethod
+    def _cpp_type_scopes(lines: Sequence[str]) -> List[str]:
+        """Scope before each line, plus the final scope, in a single file pass."""
+        scopes = [""]
+
+        stack: List[Tuple[str, int]] = []
+        brace_depth = 0
+        pending_type = ""
+        in_block_comment = False
+
+        for raw_line in lines:
+            line = raw_line
+            if in_block_comment:
+                if "*/" in line:
+                    line = line.split("*/", 1)[1]
+                    in_block_comment = False
+                else:
+                    scopes.append(scopes[-1])
+                    continue
+            while "/*" in line:
+                before, after = line.split("/*", 1)
+                if "*/" in after:
+                    line = before + after.split("*/", 1)[1]
+                else:
+                    line = before
+                    in_block_comment = True
+                    break
+            line = re.sub(r"//.*$", "", line)
+            line = re.sub(r'"(?:\\.|[^"\\])*"', '""', line)
+            line = re.sub(r"'(?:\\.|[^'\\])*'", "''", line)
+
+            type_match = re.search(r"\b(?:class|struct)\s+([A-Za-z_]\w*)\b", line)
+            if type_match:
+                pending_type = type_match.group(1)
+
+            if pending_type and "{" in line:
+                stack.append((pending_type, brace_depth + 1))
+                pending_type = ""
+
+            brace_depth += line.count("{")
+            brace_depth -= line.count("}")
+            while stack and brace_depth < stack[-1][1]:
+                stack.pop()
+            scopes.append("::".join(item[0] for item in stack))
+
+        return scopes

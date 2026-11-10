@@ -4,11 +4,12 @@ Persists function signatures, type definitions, call graph, macros, etc.
 """
 
 import logging
+from contextlib import contextmanager
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, Iterator, cast
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class KnowledgeDB:
         self._callee_cache_misses = 0
         self._indirect_callee_cache_hits = 0
         self._indirect_callee_cache_misses = 0
+        self._svf_materialization_lock = threading.RLock()
         self._closed = False
         self._create_tables()
 
@@ -480,6 +482,7 @@ class KnowledgeDB:
 
     def purge_tu_data(self, tu_id: int, purge_incoming_refs: bool = False):
         """清除某 TU 关联的所有提取数据。"""
+        self.set_metadata("svf_db_generation", str(self.get_svf_db_generation() + 1), commit=False)
         self._invalidate_callgraph_query_cache()
         self._conn.execute("DELETE FROM functions WHERE tu_id = ?", (tu_id,))
         # call_edges 没有 tu_id，通过 caller_file 联动清除
@@ -724,13 +727,14 @@ class KnowledgeDB:
         ).fetchone()
         return row["value"] if row else ""
 
-    def set_metadata(self, key: str, value: str) -> None:
+    def set_metadata(self, key: str, value: str, *, commit: bool = True) -> None:
         """Persist a metadata key/value pair."""
         self._conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             (key, value),
         )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
 
     def get_svf_hash(self) -> str:
         """获取上次 SVF 分析时的源码聚合哈希。"""
@@ -740,17 +744,28 @@ class KnowledgeDB:
         """记录 SVF 源码聚合哈希。"""
         self.set_metadata("svf_source_hash", hash_value)
 
-    def purge_svf_data(self, group: str = "default"):
+    def purge_svf_data(self, group: str = "default", *, commit: bool = True):
         """清除 SVF 产生的间接调用和污点数据（按分组）。"""
         self._invalidate_callgraph_query_cache()
         self._conn.execute("DELETE FROM indirect_calls WHERE svf_group = ?", (group,))
         self._conn.execute("DELETE FROM taint_signatures WHERE svf_group = ?", (group,))
-        self._conn.commit()
+        self._conn.executemany(
+            "DELETE FROM metadata WHERE key = ?",
+            [("svf_db_import:" + tool + ":" + group,) for tool in ("ander", "saber")],
+        )
+        if commit:
+            self._conn.commit()
 
     def purge_svf_data_except(self, groups: set[str]):
         """Remove stale SVF rows whose group is not part of the current refresh."""
         self._invalidate_callgraph_query_cache()
         clean_groups = sorted(str(group) for group in groups if str(group))
+        markers = self._conn.execute(
+            "SELECT key FROM metadata WHERE key LIKE 'svf_db_import:%'"
+        ).fetchall()
+        for marker in markers:
+            if str(marker["key"]).split(":", 2)[-1] not in clean_groups:
+                self._conn.execute("DELETE FROM metadata WHERE key = ?", (marker["key"],))
         if not clean_groups:
             self._conn.execute("DELETE FROM indirect_calls")
             self._conn.execute("DELETE FROM taint_signatures")
@@ -1287,3 +1302,28 @@ class KnowledgeDB:
 
         if hasattr(self._thread_local, "conn"):
             self._thread_local.conn = None
+
+    def get_svf_db_generation(self) -> int:
+        """Return the generation of SVF-derived rows in this database."""
+        raw = self.get_metadata("svf_db_generation")
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            logger.warning("Invalid svf_db_generation metadata %r; treating it as 0", raw)
+            return 0
+
+    @contextmanager
+    def svf_materialization_transaction(self) -> Iterator[None]:
+        """Serialize and atomically commit one SVF group replacement."""
+        with self._svf_materialization_lock:
+            conn = self._conn
+            savepoint = f"svf_materialization_{threading.get_ident()}"
+            conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                yield
+            except Exception:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                raise
+            else:
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")

@@ -172,14 +172,14 @@ def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> N
     assert huge_one not in old_tool["content"]
     assert len(old_tool["content"]) < 2200
     assert huge_two in latest_tool["content"]
-    assert all("reasoning_content" not in msg for msg in third_prompt)
+    assert any(msg.get("reasoning_content") == "hidden reasoning" * 200 for msg in third_prompt)
 
     full_transcript = json.dumps(result["conversation"], ensure_ascii=False)
     assert huge_one in full_transcript
     assert huge_two in full_transcript
 
 
-def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call(monkeypatch) -> None:
+def test_run_conversation_disables_repeated_tool_without_replaying_evidence(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",
@@ -191,8 +191,11 @@ def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call
     def fake_chat_completion(messages, **kwargs):
         chat_calls.append(list(messages))
         if len(chat_calls) == 4:
-            assert kwargs.get("tools") is None
-            assert "Tool use is now disabled" in messages[-1]["content"]
+            assert kwargs.get("tools") == []
+            assert (
+                "Other tools remain available" in messages[-2]["content"]
+                or "loop_guard_disabled_tool" in messages[-1]["content"]
+            )
             return {
                 "choices": [
                     {
@@ -250,20 +253,20 @@ def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call
     assert "truncated" not in result
     assert result["iterations"] == 4
     assert len(chat_calls) == 4
-    assert len(tool_calls) == 1
+    assert len(tool_calls) == 2
     assert result["content"].endswith("done")
     assert result["repeated_tool_call"]["tool"] == "get_file_snippet"
-    assert result["repeated_tool_call"]["repeat_count"] == 3
+    assert result["repeated_tool_call"]["repeat_count"] == 2
     cached_tool_messages = [
         msg
         for msg in result["conversation"]
         if msg.get("role") == "tool"
         and "cached_tool_result" in str(msg.get("content", ""))
     ]
-    assert cached_tool_messages
+    assert not cached_tool_messages
 
 
-def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> None:
+def test_get_file_snippet_covered_range_revalidates_and_keeps_requested_range(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",
@@ -341,15 +344,19 @@ def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> Non
 
     assert result["iterations"] == 3
     assert result["tool_call_count"] == 2
-    assert len(tool_calls) == 1
+    assert len(tool_calls) == 2
     covered_tool_messages = [
         msg
         for msg in result["conversation"]
         if msg.get("role") == "tool"
         and "covered_file_snippet_replay" in str(msg.get("content", ""))
     ]
-    assert covered_tool_messages
-    assert "cached_tool_result" in covered_tool_messages[0]["content"]
+    assert not covered_tool_messages
+    tool_messages = [
+        json.loads(msg["content"]) for msg in result["conversation"] if msg.get("role") == "tool"
+    ]
+    assert tool_messages[-1]["data"]["start_line"] == 5
+    assert tool_messages[-1]["data"]["end_line"] == 10
 
 
 def test_run_conversation_reports_final_tool_call_after_tools_disabled(monkeypatch) -> None:

@@ -2,10 +2,13 @@ import json
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+from zscope.config.function_entry import FunctionEntry
 from zscope.retrieval import svf_analyzer as svf_module
 from zscope.retrieval.knowledge_db import KnowledgeDB
 from zscope.retrieval.svf_analyzer import SvfAnalyzer
+from zscope.retrieval.svf_parser import CallGraphParser, SvfOutputMapper
 from zscope.retrieval.svf_runner import SvfResult
 
 
@@ -27,6 +30,21 @@ def _write_compile_commands(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     return source_root, compile_commands
+
+
+def _write_callgraph(dot_path: Path, edges: list[tuple[str, str]]) -> Path:
+    names = sorted({name for edge in edges for name in edge})
+    node_ids = {name: f"0x{index + 1:x}" for index, name in enumerate(names)}
+    lines = ["digraph {"]
+    lines.extend(f'  Node{node_ids[name]} [label="{{ {name} }}"];' for name in names)
+    lines.extend(
+        f"  Node{node_ids[caller]} -> Node{node_ids[callee]} [color=red];"
+        for caller, callee in edges
+    )
+    lines.append("}")
+    dot_path.parent.mkdir(parents=True, exist_ok=True)
+    dot_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return dot_path
 
 
 def test_svf_cache_fingerprint_includes_timeout_config(tmp_path: Path) -> None:
@@ -118,7 +136,10 @@ def test_svf_legacy_hash_does_not_skip_configured_run(tmp_path: Path, monkeypatc
 
         def run_ander(self, bc_path, output_dir):
             calls.append(self.timeout)
-            return SvfResult(tool="wpa-ander", success=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dot = output_dir / "callgraph_final.dot"
+            dot.write_text("digraph { }\n", encoding="utf-8")
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
 
         def run_saber(self, bc_path, output_dir):
             return SvfResult(tool="saber", success=True)
@@ -138,7 +159,7 @@ def test_svf_legacy_hash_does_not_skip_configured_run(tmp_path: Path, monkeypatc
     db.close()
 
 
-def test_svf_artifact_hash_skips_runner_when_source_hash_misses(
+def test_svf_artifact_hash_without_materialization_marker_reruns_tool(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -163,7 +184,10 @@ def test_svf_artifact_hash_skips_runner_when_source_hash_misses(
 
         def run_ander(self, bc_path, output_dir):
             calls.append("runner")
-            return SvfResult(tool="wpa-ander", success=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dot = output_dir / "callgraph_final.dot"
+            dot.write_text("digraph { }\n", encoding="utf-8")
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
 
         def run_saber(self, bc_path, output_dir):
             return SvfResult(tool="saber", success=True)
@@ -184,7 +208,7 @@ def test_svf_artifact_hash_skips_runner_when_source_hash_misses(
     )
 
     assert analyzer.run(source_root, tmp_path, compile_commands) is True
-    assert calls == ["build"]
+    assert calls == ["build", "runner"]
     assert db.get_svf_hash() == SvfAnalyzer._compute_aggregate_hash(
         compile_commands,
         groups,
@@ -193,7 +217,7 @@ def test_svf_artifact_hash_skips_runner_when_source_hash_misses(
     db.close()
 
 
-def test_svf_skips_runner_when_builder_reuses_all_merged_groups(
+def test_reused_merged_group_without_materialization_marker_reruns_tool(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -217,7 +241,10 @@ def test_svf_skips_runner_when_builder_reuses_all_merged_groups(
 
         def run_ander(self, bc_path, output_dir):
             calls.append("runner")
-            return SvfResult(tool="wpa-ander", success=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dot = output_dir / "callgraph_final.dot"
+            dot.write_text("digraph { }\n", encoding="utf-8")
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
 
         def run_saber(self, bc_path, output_dir):
             return SvfResult(tool="saber", success=True)
@@ -229,7 +256,7 @@ def test_svf_skips_runner_when_builder_reuses_all_merged_groups(
     db.set_svf_hash("older-successful-svf-hash")
 
     assert analyzer.run(source_root, tmp_path, compile_commands) is True
-    assert calls == ["build"]
+    assert calls == ["build", "runner"]
     assert db.get_metadata("svf_artifact_hash")
     db.close()
 
@@ -259,7 +286,10 @@ def test_partial_bitcode_build_retries_failed_tus_next_run(
 
         def run_ander(self, bc_path, output_dir):
             calls.append("runner")
-            return SvfResult(tool="wpa-ander", success=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dot = output_dir / "callgraph_final.dot"
+            dot.write_text("digraph { }\n", encoding="utf-8")
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
 
         def run_saber(self, bc_path, output_dir):
             return SvfResult(tool="saber", success=True)
@@ -569,4 +599,316 @@ def test_svf_resume_reruns_only_failed_groups(
     assert calls["ander"].count("retry.bc") == 2
     assert calls["saber"] == ["saber_default.bc"]
     assert db.get_svf_hash()
+    db.close()
+
+
+def test_wpa_valid_marker_skips_and_missing_marker_reimports_without_runner(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("td_init", "src/td.c", 1, 10)
+    db.commit()
+    bc_path = tmp_path / "default.bc"
+    bc_path.write_text("bitcode\n", encoding="utf-8")
+    calls = []
+
+    class Runner:
+        def run_ander(self, _bc_path, output_dir):
+            calls.append("ander")
+            dot = _write_callgraph(
+                output_dir / "callgraph_final.dot",
+                [("td_init", "_packet_receiver_thread")],
+            )
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
+
+    analyzer = SvfAnalyzer(db=db)
+    paths = {"default": bc_path}
+
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    assert calls == ["ander"]
+
+    db.purge_svf_data("default")
+    assert db.get_indirect_callees("td_init") == []
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    assert calls == ["ander"]
+    assert db.get_indirect_callees("td_init")[0]["name"] == "_packet_receiver_thread"
+    marker = json.loads(db.get_metadata("svf_db_import:ander:default"))
+    assert marker["imported_row_count"] == 1
+    db.close()
+
+
+def test_tu_purge_advances_generation_and_replays_indirect_edges(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_compile_commands(tmp_path)
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    tu_id = db.register_tu("src/main.c", 1.0)
+    functions = [
+        ("td_init", "src/main.c", 1, 10),
+        ("_packet_receiver_thread", "src/main.c", 20, 30),
+        ("_net_accept_connection", "src/main.c", 40, 50),
+    ]
+    for name, file_path, start, end in functions:
+        db.insert_function(name, file_path, start, end, tu_id=tu_id)
+    db.insert_call_edge(
+        "_packet_receiver_thread",
+        "src/main.c",
+        "_net_accept_connection",
+        "src/main.c",
+        25,
+    )
+    db.commit()
+    bc_path = tmp_path / "default.bc"
+    bc_path.write_text("bitcode\n", encoding="utf-8")
+    calls = {"build": 0, "ander": 0}
+
+    class Builder:
+        def __init__(self, *args, **kwargs):
+            self.failed_tus = []
+            self.reused_linked_groups = set()
+
+        def build(self, **kwargs):
+            calls["build"] += 1
+            return {"default": bc_path}
+
+    class Runner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_ander(self, _bc_path, output_dir):
+            calls["ander"] += 1
+            dot = _write_callgraph(
+                output_dir / "callgraph_final.dot",
+                [("td_init", "_packet_receiver_thread")],
+            )
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
+
+        def run_saber(self, _bc_path, _output_dir):
+            raise AssertionError("unexpected Saber run")
+
+    monkeypatch.setattr(svf_module, "BitcodeBuilder", Builder)
+    monkeypatch.setattr(svf_module, "SvfRunner", Runner)
+    analyzer = SvfAnalyzer(db=db)
+
+    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert calls == {"build": 1, "ander": 1}
+    assert db.get_svf_db_generation() == 0
+
+    db.purge_tu_data(tu_id)
+    assert db.get_svf_db_generation() == 1
+    for name, file_path, start, end in functions:
+        db.insert_function(name, file_path, start, end, tu_id=tu_id)
+    db.insert_call_edge(
+        "_packet_receiver_thread",
+        "src/main.c",
+        "_net_accept_connection",
+        "src/main.c",
+        25,
+    )
+    db.commit()
+
+    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert calls == {"build": 2, "ander": 1}
+    marker = json.loads(db.get_metadata("svf_db_import:ander:default"))
+    assert marker["db_generation"] == 1
+
+    assert db.get_indirect_callees("td_init")[0]["name"] == "_packet_receiver_thread"
+    db.close()
+
+
+def test_zero_edge_marker_is_a_valid_cache_hit(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    bc_path = tmp_path / "empty.bc"
+    bc_path.write_text("bitcode\n", encoding="utf-8")
+    calls = []
+
+    class Runner:
+        def run_ander(self, _bc_path, output_dir):
+            calls.append("ander")
+            dot = _write_callgraph(output_dir / "callgraph_final.dot", [])
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
+
+    analyzer = SvfAnalyzer(db=db)
+    paths = {"default": bc_path}
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    assert calls == ["ander"]
+    marker = json.loads(db.get_metadata("svf_db_import:ander:default"))
+    assert marker["imported_row_count"] == 0
+    db.close()
+
+
+def test_wpa_artifact_hash_mismatch_reruns_tool(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    bc_path = tmp_path / "default.bc"
+    bc_path.write_text("bitcode\n", encoding="utf-8")
+    calls = []
+
+    class Runner:
+        def run_ander(self, _bc_path, output_dir):
+            calls.append("ander")
+            dot = _write_callgraph(
+                output_dir / "callgraph_final.dot",
+                [("caller", f"callee_{len(calls)}")],
+            )
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
+
+    analyzer = SvfAnalyzer(db=db)
+    paths = {"default": bc_path}
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    artifact = tmp_path / ".zscope_svf" / "callgraph_final.dot"
+    artifact.write_text("corrupted\n", encoding="utf-8")
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    assert calls == ["ander", "ander"]
+    assert db.get_indirect_callees("caller")[0]["name"] == "callee_2"
+    db.close()
+
+
+def test_source_cache_hit_does_not_skip_missing_replay_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_compile_commands(tmp_path)
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    bc_path = tmp_path / "default.bc"
+    bc_path.write_text("bitcode\n", encoding="utf-8")
+    calls = {"build": 0, "ander": 0}
+
+    class Builder:
+        def __init__(self, *args, **kwargs):
+            self.failed_tus = []
+            self.reused_linked_groups = set()
+
+        def build(self, **kwargs):
+            calls["build"] += 1
+            return {"default": bc_path}
+
+    class Runner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_ander(self, _bc_path, output_dir):
+            calls["ander"] += 1
+            dot = _write_callgraph(output_dir / "callgraph_final.dot", [])
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
+
+        def run_saber(self, _bc_path, _output_dir):
+            raise AssertionError("unexpected Saber run")
+
+    monkeypatch.setattr(svf_module, "BitcodeBuilder", Builder)
+    monkeypatch.setattr(svf_module, "SvfRunner", Runner)
+    analyzer = SvfAnalyzer(db=db)
+    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert calls == {"build": 1, "ander": 1}
+
+    (tmp_path / ".zscope_svf" / "callgraph_final.dot").unlink()
+    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert calls == {"build": 2, "ander": 2}
+    db.close()
+
+
+def test_saber_persists_and_replays_stable_json(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    bc_path = tmp_path / "saber.bc"
+    bc_path.write_text("bitcode\n", encoding="utf-8")
+    calls = []
+
+    class Runner:
+        def run_saber(self, _bc_path, _output_dir):
+            calls.append("saber")
+            return SvfResult(
+                tool="saber",
+                success=True,
+                bugs=[{"line": 7, "file": "src/a.c", "type": "Double Free"}],
+            )
+
+    analyzer = SvfAnalyzer(db=db)
+    paths = {"saber:default": bc_path}
+    assert analyzer._run_saber_groups(Runner(), paths, tmp_path) is False
+    artifact = tmp_path / ".zscope_svf_saber_default" / "saber_results.json"
+    first_bytes = artifact.read_bytes()
+    db.purge_svf_data("saber:default")
+    assert analyzer._run_saber_groups(Runner(), paths, tmp_path) is False
+    assert calls == ["saber"]
+    assert artifact.read_bytes() == first_bytes
+    assert db.get_taint_bugs("Double Free")[0]["svf_group"] == "saber:default"
+    db.close()
+
+
+def test_materialization_failure_rolls_back_existing_group(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_indirect_call("old_caller", "old_callee", svf_group="default")
+    db.commit()
+    dot = _write_callgraph(
+        tmp_path / ".zscope_svf" / "callgraph_final.dot",
+        [("new_caller", "new_callee")],
+    )
+
+    def fail_import(mapper, dot_path, *, commit=True, existing_edges=None):
+        mapper.db.insert_indirect_call("new_caller", "new_callee", svf_group="default")
+        raise RuntimeError("injected import failure")
+
+    monkeypatch.setattr(svf_module.SvfOutputMapper, "import_callgraph", fail_import)
+    analyzer = SvfAnalyzer(db=db)
+    assert (
+        analyzer._materialize_group(
+            "ander",
+            "default",
+            "fingerprint",
+            dot,
+            analyzer._file_hash(dot),
+            ".zscope_svf/callgraph_final.dot",
+        )
+        is False
+    )
+    assert db.get_indirect_callees("old_caller")[0]["name"] == "old_callee"
+    assert db.get_indirect_callees("new_caller") == []
+    assert db.get_metadata("svf_db_import:ander:default") == ""
+    db.close()
+
+
+def test_multi_group_recovery_only_reimports_stale_group(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    paths = {
+        "alpha": tmp_path / "alpha.bc",
+        "beta": tmp_path / "beta.bc",
+    }
+    for path in paths.values():
+        path.write_text("bitcode\n", encoding="utf-8")
+    calls = []
+
+    class Runner:
+        def run_ander(self, bc_path, output_dir):
+            group = Path(bc_path).stem
+            calls.append(group)
+            dot = _write_callgraph(
+                output_dir / "callgraph_final.dot",
+                [(f"caller_{group}", f"callee_{group}")],
+            )
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
+
+    analyzer = SvfAnalyzer(db=db, parallel_workers=2)
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    db.purge_svf_data("alpha")
+    assert analyzer._run_wpa_groups(Runner(), paths, tmp_path) is False
+    assert sorted(calls) == ["alpha", "beta"]
+    assert db.get_indirect_callees("caller_alpha")[0]["name"] == "callee_alpha"
+    assert db.get_indirect_callees("caller_beta")[0]["name"] == "callee_beta"
+    db.close()
+
+
+def test_purge_svf_data_except_removes_only_stale_group_markers(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    for group in ("keep", "drop", "saber:drop"):
+        tool = "saber" if group.startswith("saber:") else "ander"
+        db.set_metadata(f"svf_db_import:{tool}:{group}", "{}")
+    db.purge_svf_data_except({"keep"})
+    assert db.get_metadata("svf_db_import:ander:keep") == "{}"
+    assert db.get_metadata("svf_db_import:ander:drop") == ""
+    assert db.get_metadata("svf_db_import:saber:saber:drop") == ""
     db.close()

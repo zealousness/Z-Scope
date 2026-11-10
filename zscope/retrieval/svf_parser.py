@@ -61,7 +61,9 @@ class SvfOutputMapper:
         self.db = db
         self.svf_group = svf_group
 
-    def import_callgraph(self, dot_path: Path, existing_edges: Optional[Dict] = None):
+    def import_callgraph(
+        self, dot_path: Path, existing_edges: Optional[Dict] = None, *, commit: bool = True
+    ):
         """将 SVF 调用图中的间接调用边导入 DB。
 
         只导入现有 direct call_edges 中不存在的边（即 SVF 解析出的间接调用）。
@@ -82,10 +84,13 @@ class SvfOutputMapper:
                     svf_group=self.svf_group,
                 )
                 count += 1
-        self.db.commit()
+        if commit:
+            self.db.commit()
         logger.info("Imported %d indirect call edges from SVF", count)
 
-    def import_saber_bugs(self, bugs: List[Dict[str, Any]]):
+        return count
+
+    def import_saber_bugs(self, bugs: List[Dict[str, Any]], *, commit: bool = True):
         """将 saber 检测到的 bug 写入 taint_signatures 表。"""
         for bug in bugs:
             self.db.insert_taint_signature(
@@ -97,5 +102,8 @@ class SvfOutputMapper:
                 tool="saber",
                 svf_group=self.svf_group,
             )
-        self.db.commit()
+        if commit:
+            self.db.commit()
         logger.info("Imported %d saber bugs (group: %s)", len(bugs), self.svf_group)
+
+        return len(bugs)

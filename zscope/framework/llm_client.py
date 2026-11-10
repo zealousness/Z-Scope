@@ -438,10 +438,10 @@ class LLMClient:
         if recorder and trace_session is None:
             trace_session = recorder.begin_session(trace_agent or "direct_chat", trace_label)
             created_trace_session = True
-        
+
         for model in self.models:
             logger.info(f"Using model: {model}")
-            
+
             payload = {
                 "model": model,
                 "messages": messages,
@@ -454,7 +454,7 @@ class LLMClient:
                 payload["tool_choice"] = tool_choice if tool_choice is not None else "auto"
             if response_format:
                 payload["response_format"] = response_format
-            
+
             # Force streaming to bypass middle-proxy timeouts (e.g. 504 on 120s limit)
             payload["stream"] = True
 
@@ -520,11 +520,11 @@ class LLMClient:
 
                     if response.status_code == 200:
                         assembled_message, finish_reason = self._assemble_chat_response(response)
-                            
+
                         # Estimate single API call cost and log prominently
                         prompt_tokens = LLMClient.estimate_tokens(messages)
                         completion_tokens = LLMClient.estimate_tokens([assembled_message])
-                        
+
                         logger.info(
                             f"[LLM API Trace] Model: {model} | "
                             f"Prompt ≈ {prompt_tokens:,} tk | "
@@ -562,7 +562,7 @@ class LLMClient:
                                 "estimated": True,
                             },
                         }
-                    
+
                     error_msg = f"HTTP {response.status_code}: {response.text}"
                     logger.warning(
                         "Model %s via %s failed (attempt %d/%d): %s",
@@ -572,7 +572,7 @@ class LLMClient:
                         total_attempts,
                         error_msg,
                     )
-                    
+
                     if response.status_code >= 500 or response.status_code == 429:
                         retry_after = self._retry_after_seconds(response)
                         wait_time = retry_after or min(2**attempt, 10) + random.uniform(0, 3)
@@ -587,7 +587,7 @@ class LLMClient:
                     else:
                         last_error = error_msg
                         break # Try next model
-                        
+
                 except Exception as e:
                     local_fd_exhausted = self._is_too_many_open_files(e)
                     wait_time = min(2**attempt, 10) + random.uniform(0, 3)
@@ -626,9 +626,9 @@ class LLMClient:
                     self._release_base_url(endpoint)
                     if post_attempt_delay > 0:
                         time.sleep(post_attempt_delay)
-            
+
             logger.info(f"Falling back from model {model}...")
-            
+
         raise Exception(f"All models failed. Last error: {last_error}")
 
     def _curl_chat_completion(
@@ -938,6 +938,7 @@ class LLMClient:
     def _prepare_messages_for_model(
         self,
         conversation: List[Dict[str, Any]],
+        preserve_reasoning_metadata: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Build the model-facing context without mutating the full transcript.
@@ -956,7 +957,7 @@ class LLMClient:
         for message in conversation:
             role = message.get("role")
             projected_message = self._copy_message_for_model(message)
-            if role == "assistant":
+            if role == "assistant" and not preserve_reasoning_metadata:
                 # reasoning_content is provider-specific scratchpad text. It is
                 # useful for local diagnostics but very expensive to replay.
                 projected_message.pop("reasoning_content", None)
@@ -1117,6 +1118,7 @@ class LLMClient:
         conversation = messages.copy()
         iterations = 0
         tool_call_history: Dict[str, List[Dict[str, Any]]] = {}
+        loop_guard_disabled_tools: set[str] = set()
         loop_guard_recovery: Optional[Dict[str, Any]] = None
         cumulative_prompt_tokens = 0
         cumulative_completion_tokens = 0
@@ -1136,8 +1138,7 @@ class LLMClient:
             iterations += 1
             remaining_after_this = max_iterations - iterations
             max_iteration_final = iterations >= max_iterations
-            force_no_tool_final = loop_guard_recovery is not None
-            final_iteration = max_iteration_final or force_no_tool_final
+            final_iteration = max_iteration_final
             if max_iteration_final:
                 conversation.append(
                     {
@@ -1150,8 +1151,6 @@ class LLMClient:
                         ),
                     }
                 )
-            elif force_no_tool_final:
-                pass
             elif (
                 not warned_low_iterations
                 and remaining_after_this <= low_iteration_threshold
@@ -1181,9 +1180,18 @@ class LLMClient:
             )
 
             # Call LLM
+            request_tools = (
+                None
+                if final_iteration
+                else [
+                    schema
+                    for schema in tools_schema
+                    if schema.get("function", {}).get("name") not in loop_guard_disabled_tools
+                ]
+            )
             response = self.chat_completion(
                 model_conversation,
-                tools=None if final_iteration else tools_schema,
+                tools=request_tools,
                 trace_agent=trace_agent,
                 trace_label=trace_label,
                 trace_iteration=iterations,
@@ -1246,7 +1254,7 @@ class LLMClient:
                         }
                     )
                 return result_payload
-                
+
             if finish_reason == "length":
                 logger.warning(f"Model {self.models[0] if self.models else 'unknown'} output truncated! Prompting to continue...")
                 conversation.append({"role": "user", "content": "请继续"})
@@ -1295,7 +1303,7 @@ class LLMClient:
                         }
                     )
                 return result_payload
-            
+
             # --- XML Fallback (For GLM/Minimax models that emit raw text invoke tags) ---
             content = message.get("content", "")
             if not final_iteration and not tool_calls and "<invoke name=" in content:
@@ -1312,7 +1320,7 @@ class LLMClient:
                         if str(xml_val).isdigit():
                             xml_val = int(xml_val)
                         xml_args[param_match.group(1)] = xml_val
-                        
+
                     tool_calls.append({
                         "id": f"call_xml_{uuid.uuid4().hex[:10]}",
                         "type": "function",
@@ -1358,7 +1366,6 @@ class LLMClient:
                 return result_payload
 
             # Execute each tool call
-            force_final_after_loop_guard = False
             for tool_call in tool_calls:
                 tool_id = tool_call.get("id")
                 function = tool_call.get("function", {})
@@ -1369,114 +1376,55 @@ class LLMClient:
 
                 try:
                     func_args = self._parse_tool_args(func_args_str)
-                    
+
                     # VERY IMPORTANT: Re-serialize the corrected dict back into the conversation history
                     # so that strict upstreams like GLM-4/5 do not throw 400 Bad Request on "Expecting ','"
                     function["arguments"] = json.dumps(func_args, ensure_ascii=False)
 
                     signature = self._tool_call_signature(func_name, func_args)
                     previous_calls = tool_call_history.get(signature, [])
-                    covered_snippet_call = None
-                    if not (
-                        max_identical_tool_calls > 0
-                        and len(previous_calls) >= max_identical_tool_calls
-                    ):
-                        covered_snippet_call = self._find_covering_file_snippet_call(
-                            tool_call_history,
-                            signature,
-                            func_args,
-                        )
-                    cached_replayed = any(call.get("cached_replay") for call in previous_calls)
-                    cached_previous_result = self._last_replayable_tool_result(previous_calls)
                     repeat_notice = self._build_repeat_tool_notice(
-                        func_name,
-                        func_args,
-                        tool_id,
-                        previous_calls,
+                        func_name, func_args, tool_id, previous_calls
                     )
-                    if covered_snippet_call is not None:
-                        repeated_call_count = 0
-                        covering_result = covered_snippet_call.get("result")
-                        result = dict(covering_result) if isinstance(covering_result, dict) else {}
-                        result["cached_tool_result"] = True
-                        result["covered_file_snippet_replay"] = True
-                        result["repeat_call_warning"] = self._build_covered_file_snippet_notice(
-                            func_args,
-                            tool_id,
-                            covered_snippet_call,
-                        )
-                        logger.warning(
-                            "Replayed cached result for covered get_file_snippet range: "
-                            "%s (covered by %s)",
-                            func_args,
-                            covered_snippet_call.get("arguments"),
-                        )
-                    elif (
-                        max_identical_tool_calls > 0
-                        and len(previous_calls) >= max_identical_tool_calls
-                    ):
+                    if func_name in loop_guard_disabled_tools:
                         repeated_call_count = len(previous_calls) + 1
-                        if cached_previous_result is not None and not cached_replayed:
-                            result = dict(cached_previous_result)
-                            result["cached_tool_result"] = True
-                            result["repeat_call_warning"] = {
-                                **repeat_notice,
-                                "instruction": (
-                                    "This is a cached replay of the previous successful "
-                                    "tool result for the identical call. Use this content "
-                                    "now; do not request the same tool arguments again."
-                                ),
-                            }
-                            logger.warning(
-                                "Replayed cached result for repeated identical tool call: "
-                                "%s %s (repeat #%d)",
-                                func_name,
-                                func_args,
-                                repeated_call_count,
-                            )
-                        else:
-                            result = {
-                                "success": False,
-                                "error": (
-                                    "Repeated identical tool call blocked by the loop guard. "
-                                    "The previous result was already replayed or unavailable; "
-                                    "produce the best final answer from available evidence."
-                                ),
-                                "repeat_call_guard": True,
-                                **repeat_notice,
-                            }
-                            logger.warning(
-                                "Blocked repeated identical tool call: %s %s (repeat #%d)",
-                                func_name,
-                                func_args,
-                                repeated_call_count,
-                            )
-                            if cached_previous_result is not None:
-                                result = dict(cached_previous_result)
-                                result["cached_tool_result"] = True
-                                result["repeat_call_guard"] = True
-                                result["repeat_call_warning"] = {
-                                    **repeat_notice,
-                                    "instruction": (
-                                        "This repeated tool call is blocked by the loop guard. "
-                                        "The latest tool message replays the previous successful "
-                                        "result. Use this content now and produce the final answer; "
-                                        "tool use will be disabled for the next response."
-                                    ),
-                                }
+                        result = {
+                            "success": False,
+                            "loop_guard_disabled_tool": True,
+                            "error": "This repeated tool was disabled; use another tool or finish.",
+                        }
                     else:
-                        repeated_call_count = 0
                         result = tool_executor(func_name, func_args)
+                        comparable = (
+                            dict(previous_calls[-1]["result"])
+                            if previous_calls and isinstance(previous_calls[-1].get("result"), dict)
+                            else None
+                        )
+                        if comparable is not None:
+                            comparable.pop("repeat_call_warning", None)
+                        if previous_calls and comparable != result:
+                            previous_calls = []
+                            tool_call_history[signature] = []
+                        repeated_call_count = len(previous_calls) + 1
                         if previous_calls and isinstance(result, dict):
                             result = dict(result)
                             result["repeat_call_warning"] = repeat_notice
+                        if (
+                            max_identical_tool_calls > 0
+                            and len(previous_calls) >= max_identical_tool_calls
+                        ):
+                            result = dict(result) if isinstance(result, dict) else {"data": result}
+                            result["repeat_call_guard"] = True
+                            loop_guard_disabled_tools.add(func_name)
 
                     tool_result_message_index = len(conversation) + 1
-                    conversation.append({
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    })
+                    conversation.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        }
+                    )
                     tool_call_history.setdefault(signature, []).append(
                         {
                             "iteration": iterations,
@@ -1512,8 +1460,8 @@ class LLMClient:
                             "repeat_count": repeated_call_count,
                         }
                         logger.error(
-                            "Conversation hit repeated identical tool call; forcing final "
-                            "no-tool response: "
+                            "Conversation hit repeated identical tool call; disabling only the repeated "
+                            "tool: "
                             "%s %s (repeat #%d)",
                             func_name,
                             func_args,
@@ -1522,18 +1470,11 @@ class LLMClient:
                         conversation.append(
                             {
                                 "role": "user",
-                                "content": (
-                                    "The loop guard blocked a repeated identical tool call. "
-                                    "The latest tool message contains the cached result or the "
-                                    "available evidence for that request. Tool use is now disabled. "
-                                    "Produce the required final answer from the evidence already in "
-                                    "this conversation. If the expected output is JSON, output one "
-                                    "valid JSON block now."
-                                ),
+                                "content": "The loop guard disabled only these repeated tools: "
+                                + ", ".join(sorted(loop_guard_disabled_tools))
+                                + ". Other tools remain available; obtain any missing evidence, then finish.",
                             }
                         )
-                        force_final_after_loop_guard = True
-                        break
 
                 except Exception as e:
                     logger.error(f"Tool execution failed: {e}")
@@ -1551,8 +1492,6 @@ class LLMClient:
                             {},
                             error=str(e),
                         )
-            if force_final_after_loop_guard:
-                continue
 
         if iterations >= max_iterations:
             logger.warning(f"Conversation reached max iterations ({max_iterations}). Possible loop.")
@@ -1628,7 +1567,8 @@ class LLMClient:
         prompt_messages: List[Dict[str, Any]],
         assistant_message: Dict[str, Any],
     ) -> tuple[int, int]:
-        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        usage_data = response.get("usage")
+        usage = usage_data if isinstance(usage_data, dict) else {}
         prompt_tokens = usage.get("prompt_tokens")
         completion_tokens = usage.get("completion_tokens")
         if not isinstance(prompt_tokens, int):

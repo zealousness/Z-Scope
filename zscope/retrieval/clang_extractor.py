@@ -4,6 +4,7 @@ Adapted from historical lsp_client.py, repurposed for batch extraction into SQLi
 """
 
 import json
+import queue
 import logging
 import os
 import subprocess
@@ -11,7 +12,7 @@ import threading
 import time
 import re
 import hashlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
@@ -48,14 +49,25 @@ class ClangExtractor:
         self.process: Optional[subprocess.Popen] = None
         self._id_counter = 0
         self._responses: Dict[int, Any] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
+        self._pending_requests: set[int] = set()
+        self._request_deadlines: Dict[int, float] = {}
+        self._transport_closed = False
+        self._generation = 0
+        self._progress_tokens: Dict[Any, Tuple[str, float]] = {}
+        self._stderr_tail: "deque[str]" = deque(maxlen=32)
+        self._write_queue: "queue.Queue[Optional[Tuple[bytes, Any, Optional[float]]]]" = (
+            queue.Queue()
+        )
+        self._writer_thread: Optional[threading.Thread] = None
         self._io_lock = threading.Lock()
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_thread: Optional[threading.Thread] = None
         self._running = False
         self._initialized = False
         self._call_hierarchy_supported = False
-        self._last_progress_time = time.time()
+        self._last_progress_time = time.monotonic()
         self._opened_documents: Dict[str, int] = {}
         self._source_text_cache: OrderedDict[Tuple[str, int, int], str] = OrderedDict()
         self._source_text_cache_lock = threading.RLock()
@@ -66,7 +78,9 @@ class ClangExtractor:
     def start(self) -> bool:
         """启动 clangd 子进程并完成 LSP 握手。"""
         if self.process:
-            return True
+            if self.process.poll() is None and self._initialized:
+                return True
+            self.stop()
         try:
             cmd = [
                 self.clangd_path,
@@ -88,6 +102,14 @@ class ClangExtractor:
                 bufsize=0,
             )
             self._running = True
+            self._transport_closed = False
+            self._generation += 1
+            self._write_queue = queue.Queue()
+            self._last_progress_time = time.monotonic()
+            self._writer_thread = threading.Thread(
+                target=self._writer_loop, name="ClangWriter", daemon=True
+            )
+            self._writer_thread.start()
 
             self._reader_thread = threading.Thread(
                 target=self._read_loop, name="ClangReader", daemon=True
@@ -102,6 +124,7 @@ class ClangExtractor:
             time.sleep(0.5)
             if self.process.poll() is not None:
                 logger.error("clangd process exited immediately")
+                self.stop()
                 return False
 
             # LSP initialize 握手
@@ -148,48 +171,77 @@ class ClangExtractor:
             return False
 
     def stop(self):
-        """关闭 clangd 进程。"""
+        """Stop the transport and wake requests before joining I/O threads."""
+        self._close_transport()
         self._running = False
-        if self.process:
+        self._write_queue.put(None)
+        process = self.process
+        if process is not None:
             try:
-                self.send_notification("exit", None)
-            except Exception:
-                pass
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-            self.process = None
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            except (OSError, ProcessLookupError):
+                logger.debug("clangd was already stopped")
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        for worker in (self._writer_thread, self._reader_thread, self._stderr_thread):
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=2)
+        self.process = None
         self._initialized = False
         self._opened_documents.clear()
+        self._source_text_cache.clear()
+        with self._condition:
+            self._progress_tokens.clear()
+            self._responses.clear()
+
+    def _close_transport(self, generation: Optional[int] = None):
+        with self._condition:
+            if generation is not None and generation != self._generation:
+                return
+            self._transport_closed = True
+            self._condition.notify_all()
 
     # ── JSON-RPC 通信 ──
 
-    def send_request(self, method: str, params: Any, timeout: int = 120) -> Any:
-        """发送 JSON-RPC 请求并阻塞等待响应。"""
-        with self._lock:
+    def send_request(self, method: str, params: Any, timeout: float = 120) -> Any:
+        """Wait within a fixed monotonic deadline, including queued pipe writes."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._condition:
+            if self._transport_closed:
+                return None
             self._id_counter += 1
             msg_id = self._id_counter
-
-        msg = {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
-        self._write_message(msg)
-
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            with self._lock:
-                if msg_id in self._responses:
-                    resp = self._responses.pop(msg_id)
-                    if "error" in resp:
-                        logger.debug("LSP error for %s: %s", method, resp["error"])
-                        return None
-                    return resp.get("result")
-            # 如果索引仍在进行，延长 deadline
-            if time.time() - self._last_progress_time < 2.0:
-                deadline = max(deadline, time.time() + 30)
-            time.sleep(0.05)
-        logger.warning("LSP request '%s' timed out (id=%d)", method, msg_id)
-        return None
+            self._pending_requests.add(msg_id)
+            self._request_deadlines[msg_id] = deadline
+            generation = self._generation
+        try:
+            self._write_message(
+                {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
+            )
+            with self._condition:
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or self._transport_closed or generation != self._generation:
+                        break
+                    if msg_id in self._responses:
+                        response = self._responses.pop(msg_id)
+                        return response.get("result") if "error" not in response else None
+                    self._condition.wait(timeout=remaining)
+            if not self._transport_closed and generation == self._generation:
+                self.send_notification("$/cancelRequest", {"id": msg_id})
+                logger.warning("LSP request '%s' timed out (id=%d)", method, msg_id)
+            return None
+        finally:
+            with self._condition:
+                self._pending_requests.discard(msg_id)
+                self._request_deadlines.pop(msg_id, None)
+                self._responses.pop(msg_id, None)
 
     def send_notification(self, method: str, params: Any):
         """发送 JSON-RPC 通知（无响应）。"""
@@ -199,17 +251,41 @@ class ClangExtractor:
         self._write_message(msg)
 
     def _write_message(self, msg: dict):
-        """写入 LSP 消息到 stdin。"""
-        body = json.dumps(msg)
-        header = f"Content-Length: {len(body)}\r\n\r\n"
-        with self._io_lock:
-            if self.process and self.process.stdin:
-                try:
-                    self.process.stdin.write(header.encode("utf-8"))
-                    self.process.stdin.write(body.encode("utf-8"))
-                    self.process.stdin.flush()
-                except (BrokenPipeError, OSError):
-                    logger.error("Failed to write to clangd stdin")
+        body = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+        frame = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+        deadline = (
+            self._request_deadlines.get(msg["id"]) if "method" in msg and "id" in msg else None
+        )
+        self._write_queue.put((frame, msg.get("id"), deadline))
+
+    def _writer_loop(self):
+        generation = self._generation
+        write_queue = self._write_queue
+        while self._running:
+            item = write_queue.get()
+            if item is None:
+                return
+            if generation != self._generation:
+                return
+            frame, request_id, deadline = item
+            if deadline is not None and time.monotonic() >= deadline:
+                continue
+            process = self.process
+            if process is None or process.stdin is None:
+                self._close_transport(generation)
+                return
+            try:
+                remaining = memoryview(frame)
+                while remaining:
+                    written = process.stdin.write(remaining)
+                    if not written:
+                        raise BrokenPipeError("clangd pipe stopped accepting bytes")
+                    remaining = remaining[written:]
+                process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                logger.warning("clangd pipe closed; stderr=%s", list(self._stderr_tail))
+                self._close_transport(generation)
+                return
 
     # ── 消息读取 ──
 
@@ -219,10 +295,19 @@ class ClangExtractor:
         if not self.process or not self.process.stdout:
             return
         fd = self.process.stdout.fileno()
+        generation = self._generation
         while self._running:
             try:
                 chunk = os.read(fd, 4096)
                 if not chunk:
+                    unexpected = not self._transport_closed
+                    self._close_transport(generation)
+                    if unexpected:
+                        logger.warning(
+                            "clangd exited: returncode=%s stderr=%s",
+                            self.process.poll() if self.process else None,
+                            list(self._stderr_tail),
+                        )
                     break
                 buf += chunk
                 while buf:
@@ -243,19 +328,56 @@ class ClangExtractor:
                     buf = buf[body_start + content_len :]
                     try:
                         msg = json.loads(body)
-                        self._dispatch_message(msg)
+                        if isinstance(msg, dict):
+                            self._dispatch_message(msg, generation=generation)
                     except json.JSONDecodeError:
                         logger.debug("Failed to parse LSP message")
-            except OSError:
+            except (OSError, ValueError):
+                self._close_transport(generation)
                 break
 
-    def _dispatch_message(self, msg: dict):
-        """分发收到的 LSP 消息。"""
-        if "id" in msg:
-            with self._lock:
-                self._responses[msg["id"]] = msg
-        elif msg.get("method") == "$/progress":
-            self._last_progress_time = time.time()
+    def _dispatch_message(self, msg: dict, *, generation: Optional[int] = None):
+        if generation is not None and generation != self._generation:
+            return
+        method = msg.get("method")
+        if method is not None and "id" in msg:
+            if method == "window/workDoneProgress/create":
+                token = (msg.get("params") or {}).get("token")
+                if isinstance(token, (str, int)):
+                    with self._condition:
+                        self._progress_tokens[token] = ("created", time.monotonic())
+                result = None
+            elif method == "workspace/configuration":
+                result = [None for _ in (msg.get("params") or {}).get("items", [])]
+            elif method in {"client/registerCapability", "client/unregisterCapability"}:
+                result = None
+            else:
+                self._write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": msg["id"],
+                        "error": {"code": -32601, "message": "Method not found"},
+                    }
+                )
+                return
+            self._write_message({"jsonrpc": "2.0", "id": msg["id"], "result": result})
+        elif method == "$/progress":
+            params = msg.get("params") or {}
+            token = params.get("token")
+            kind = (params.get("value") or {}).get("kind")
+            with self._condition:
+                self._last_progress_time = time.monotonic()
+                if isinstance(token, (str, int)):
+                    if kind == "end":
+                        self._progress_tokens.pop(token, None)
+                    elif kind in {"begin", "report"}:
+                        self._progress_tokens[token] = (kind, self._last_progress_time)
+                self._condition.notify_all()
+        elif method is None and "id" in msg:
+            with self._condition:
+                if msg["id"] in self._pending_requests:
+                    self._responses[msg["id"]] = msg
+                    self._condition.notify_all()
 
     def _stderr_loop(self):
         """后台线程：读取 clangd stderr 日志。"""
@@ -265,8 +387,10 @@ class ClangExtractor:
                 if not line:
                     break
                 text = ANSI_ESCAPE.sub("", line.decode("utf-8", errors="ignore")).strip()
+                if text:
+                    self._stderr_tail.append(text)
                 if text and "Indexing" in text:
-                    self._last_progress_time = time.time()
+                    self._last_progress_time = time.monotonic()
                     logger.debug("clangd: %s", text)
             except OSError:
                 break
@@ -363,20 +487,27 @@ class ClangExtractor:
 
     # ── 索引等待 ──
 
-    def wait_for_indexing(self, timeout: int = 300, idle_threshold: float = 5.0) -> bool:
-        """等待 clangd 后台索引完成。通过检测 progress 消息空闲来判断。"""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            elapsed = time.time() - self._last_progress_time
-            if elapsed >= idle_threshold and self._initialized:
-                logger.info("clangd indexing appears idle (%.1fs no progress)", elapsed)
-                return True
-            # 索引活跃时延长 deadline
-            if elapsed < 2.0:
-                deadline = max(deadline, time.time() + 30)
-            time.sleep(0.5)
-        logger.warning("wait_for_indexing timed out after %ds", timeout)
-        return False
+    def wait_for_indexing(self, timeout: float = 120, idle_threshold: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._condition:
+            while not self._transport_closed:
+                now = time.monotonic()
+                self._progress_tokens = {
+                    key: value
+                    for key, value in self._progress_tokens.items()
+                    if now - value[1] < 900
+                }
+                active = any(
+                    kind in {"begin", "report"} for kind, _ in self._progress_tokens.values()
+                )
+                idle = max(0.0, idle_threshold - (now - self._last_progress_time))
+                if self._initialized and not active and not idle:
+                    return True
+                remaining = deadline - now
+                if remaining <= 0:
+                    return False
+                self._condition.wait(timeout=min(remaining, idle or 1.0))
+            return False
 
     # ── 批量提取 ──
 

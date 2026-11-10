@@ -19,7 +19,7 @@ import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from .bitcode_scope import (
     BitcodeScopeConfig,
@@ -115,6 +115,7 @@ class BitcodeBuilder:
         project_root: Optional[Path] = None,
         auto_entry_clusters: bool = False,
         saber_groups: bool = False,
+        only_sources: Optional[Set[str]] = None,
         saber_full_group: bool = False,
     ) -> Dict[str, Path]:
         """执行完整构建流程，返回各分组合并后的 .bc 路径字典。
@@ -135,6 +136,12 @@ class BitcodeBuilder:
             logger.error("No compile commands loaded")
             return {}
 
+        if only_sources is not None:
+            planned_commands = self._filter_commands_for_scope_plan(commands, only_sources)
+            if planned_commands:
+                commands = planned_commands
+            else:
+                logger.warning("Scope plan matched no commands; retaining the full build")
         logger.info("Building bitcode for %d translation units", len(commands))
 
         # 逐 TU 编译
@@ -193,7 +200,7 @@ class BitcodeBuilder:
                 group_name,
                 Path(project_root or self.source_root),
             )
-            
+
             group_bcs = []
             bc_items = sorted(
                 self._bc_to_src.items(),
@@ -274,7 +281,13 @@ class BitcodeBuilder:
                     symbol_reader=symbol_reader,
                 )
 
-            for selected_group_name, selected_bcs, plan, reuse_bcs, direct_link in selected_items:
+            for (
+                selected_group_name,
+                selected_bcs,
+                selected_plan,
+                reuse_bcs,
+                direct_link,
+            ) in selected_items:
                 if not selected_bcs:
                     logger.warning("No .bc files selected for group '%s'", selected_group_name)
                     continue
@@ -286,8 +299,8 @@ class BitcodeBuilder:
                     )
                     if merged:
                         results[selected_group_name] = merged
-                    if plan:
-                        self._write_scope_plan(plan)
+                    if selected_plan:
+                        self._write_scope_plan(selected_plan)
                     continue
                 link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
                     group_name=selected_group_name,
@@ -297,14 +310,14 @@ class BitcodeBuilder:
                     pool_classifier=pool_classifier,
                     symbol_reader=symbol_reader,
                 )
-                if plan:
-                    plan.duplicate_symbols = duplicate_symbols
+                if selected_plan:
+                    selected_plan.duplicate_symbols = duplicate_symbols
 
                 for variant in link_variants:
                     variant_name = str(variant["group_name"])
                     variant_bcs = list(variant["bc_files"])
-                    if plan:
-                        plan.link_variants.append(
+                    if selected_plan:
+                        selected_plan.link_variants.append(
                             {
                                 "group_name": variant_name,
                                 "exclusive_pool": variant.get("exclusive_pool", ""),
@@ -329,8 +342,8 @@ class BitcodeBuilder:
                     if merged:
                         results[variant_name] = merged
                         continue
-                    if plan:
-                        plan.skipped_variants.append(
+                    if selected_plan:
+                        selected_plan.skipped_variants.append(
                             {
                                 "group_name": variant_name,
                                 "exclusive_pool": variant.get("exclusive_pool", ""),
@@ -342,8 +355,8 @@ class BitcodeBuilder:
                             }
                         )
 
-                if plan:
-                    self._write_scope_plan(plan)
+                if selected_plan:
+                    self._write_scope_plan(selected_plan)
 
         self._save_manifest()
         return results
@@ -1336,7 +1349,7 @@ class BitcodeBuilder:
                     group_name,
                     link_fingerprint,
                 )
-            
+
             # 其他链接错误（可能存在多重定义或 IR 版本不兼容）
             logger.error("llvm-link failed (exit code %d).", e.returncode)
             logger.error("llvm-link stderr (first 1000 chars):\n%s", stderr[:1000])
@@ -1367,7 +1380,7 @@ class BitcodeBuilder:
             except subprocess.CalledProcessError as e:
                 logger.error("Chunk linking failed: %s\n%s", e, (e.stderr or "")[:1000])
                 return None
-        
+
         # 链接所有 chunk
         try:
             cmd = [self.llvm_link, "-o", str(final_output)] + [str(p) for p in intermediate_bcs]
@@ -1535,3 +1548,117 @@ class BitcodeBuilder:
                 len(rewritten), Path(src_file).name, rewritten,
             )
         return cleaned
+
+    def _filter_commands_for_scope_plan(
+        self,
+        commands: Sequence[dict],
+        only_sources: Set[str],
+    ) -> List[dict]:
+        """Keep only the compile commands whose source is in the scope plan."""
+        planned = {str(Path(source).resolve()) for source in only_sources}
+        selected: List[dict] = []
+        for cmd in commands:
+            src_file = str(cmd.get("file") or "")
+            directory = str(cmd.get("directory") or self.source_root)
+            try:
+                resolved = self._resolve_source_file(src_file, directory)
+            except (OSError, ValueError):
+                continue
+            if str(resolved) in planned:
+                selected.append(cmd)
+        logger.info(
+            "Lazy bitcode scope plan: %d/%d translation unit(s) required",
+            len(selected),
+            len(commands),
+        )
+        return selected
+
+    def plan_required_sources(
+        self,
+        *,
+        groups: Optional[Dict[str, List[str]]] = None,
+        scope_config: Optional[BitcodeScopeConfig] = None,
+        entry_functions: Optional[Sequence[Any]] = None,
+        knowledge_db: Optional[Any] = None,
+        project_root: Optional[Path] = None,
+        auto_entry_clusters: bool = False,
+    ) -> Optional[Set[str]]:
+        """Return the union of scope-selected source files WITHOUT compiling.
+
+        Cluster and reachability planning are driven by KnowledgeDB facts and
+        path mappings only, so prospective bitcode paths (which do not exist
+        yet) are sufficient inputs.  llvm-nm symbol closure degrades to a
+        no-op on the missing files; it is re-applied on the real bitcode after
+        the lazy build and can then only pull in already-compiled TUs.
+
+        Returns None whenever planning cannot bound the build (full mode, no
+        selector inputs, empty plan) so the caller keeps the full compile.
+        """
+        commands = self._load_compile_commands()
+        if not commands or knowledge_db is None or scope_config is None:
+            return None
+        if scope_config.mode == "full" or not entry_functions:
+            return None
+
+        selector = EntryBitcodeSelector(
+            db=knowledge_db,
+            source_root=self.source_root,
+            project_root=Path(project_root or self.source_root),
+            config=scope_config,
+        )
+        bc_to_src: Dict[Path, Path] = {}
+        all_sources: Set[Path] = set()
+        for idx, cmd in enumerate(commands):
+            src_file = str(cmd.get("file") or "")
+            directory = str(cmd.get("directory") or self.source_root)
+            try:
+                resolved = self._resolve_source_file(src_file, directory)
+            except (OSError, ValueError):
+                continue
+            prospective_bc = self.output_dir / f"tu_{idx}_{Path(src_file).stem}.o.bc"
+            bc_to_src[prospective_bc] = resolved
+            all_sources.add(resolved)
+        if not bc_to_src:
+            return None
+
+        required: Set[Path] = set()
+        for group_name, exclude_list in (groups or {"default": []}).items():
+            group_bcs = [
+                bc
+                for bc, src in bc_to_src.items()
+                if not any(ex in Path(src).name for ex in (exclude_list or []))
+            ]
+            if not group_bcs:
+                continue
+            if auto_entry_clusters:
+                clusters = selector.cluster_entries(
+                    group_prefix=f"plan_{group_name}",
+                    candidate_bcs=group_bcs,
+                    bc_to_src=bc_to_src,
+                    entries=entry_functions,
+                )
+                selected_bcs: List[Path] = [
+                    Path(bc).resolve() for cluster in clusters for bc in cluster.selected_bcs
+                ]
+            else:
+                selected, _plan = selector.select(
+                    group_name=f"plan_{group_name}",
+                    candidate_bcs=group_bcs,
+                    bc_to_src=bc_to_src,
+                    entries=entry_functions,
+                )
+                selected_bcs = [Path(bc).resolve() for bc in selected]
+            for bc in selected_bcs:
+                src = bc_to_src.get(bc)
+                if src is not None:
+                    required.add(src)
+
+        required.update(selector._always_include_sources(all_sources))
+        if not required:
+            return None
+        logger.info(
+            "SVF lazy bitcode plan: %d/%d source file(s) required by scope",
+            len(required),
+            len(all_sources),
+        )
+        return {str(src) for src in required}

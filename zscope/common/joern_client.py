@@ -16,6 +16,15 @@ from typing import Any, Dict, List, Optional, cast
 logger = logging.getLogger(__name__)
 
 
+def _scala_string(value: str) -> str:
+    """Encode one ordinary Scala string literal, including its quotes.
+
+    JSON's quote, backslash, control-character and Unicode escapes are valid
+    in ordinary Scala strings. Never use interpolation or triple quotes here.
+    """
+    return json.dumps(str(value), ensure_ascii=True)
+
+
 class JoernClient:
     """Client for Joern CPG server via cpgqls-client WebSocket."""
 
@@ -351,7 +360,7 @@ class JoernClient:
             return self._query_via_cli(cpgql)
         try:
             from cpgqls_client import CPGQLSClient  # type: ignore[import-untyped]
-            
+
             # Workaround for cpgqls-client concurrent UUID broadcast bug
             if not hasattr(CPGQLSClient, '_zscope_patched'):
                 import asyncio
@@ -367,24 +376,24 @@ class JoernClient:
                             post_res = self._transport.post(endpoint, json={"query": query_str}, auth=self._auth_creds)
                             if post_res.status_code != 200:
                                 raise Exception(f"HTTP Post failed: {post_res.status_code}")
-                                
+
                             target_uuid = post_res.json()["uuid"]
                             while True:
                                 msg = await asyncio.wait_for(ws_conn.recv(), timeout=3600)
                                 if msg == target_uuid:
                                     break
-                                    
+
                             endpoint = self.get_result_endpoint(target_uuid)
                             get_res = self._transport.get(endpoint, auth=self._auth_creds)
                             if get_res.status_code != 200:
                                 raise Exception(f"HTTP Get failed: {get_res.status_code}")
                             return get_res.json()
-                            
+
                     CPGQLSClient._send_query = patched_send_query
                     CPGQLSClient._zscope_patched = True
-            
+
             import os
-            
+
             for attempt in range(30):
                 try:
                     # Temporarily bypass any global proxies that might hijack local WS connections
@@ -392,7 +401,7 @@ class JoernClient:
                     old_https = os.environ.get("HTTPS_PROXY")
                     old_no = os.environ.get("NO_PROXY")
                     os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
-                    
+
                     try:
                         import asyncio
                         try:
@@ -400,16 +409,20 @@ class JoernClient:
                         except RuntimeError:
                             loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(loop)
-                            
+
                         # cpgqls_client adds "ws://" internally. Do not pass it here or it creates ws://ws://...
                         client = CPGQLSClient(f"{self.host}:{self.port}", event_loop=loop)
                         result = client.execute(cpgql)
                     finally:
-                        if old_http is not None: os.environ["HTTP_PROXY"] = old_http
-                        if old_https is not None: os.environ["HTTPS_PROXY"] = old_https
-                        if old_no is not None: os.environ["NO_PROXY"] = old_no
-                        elif "NO_PROXY" in os.environ: del os.environ["NO_PROXY"]
-                        
+                        if old_http is not None:
+                            os.environ["HTTP_PROXY"] = old_http
+                        if old_https is not None:
+                            os.environ["HTTPS_PROXY"] = old_https
+                        if old_no is not None:
+                            os.environ["NO_PROXY"] = old_no
+                        elif "NO_PROXY" in os.environ:
+                            del os.environ["NO_PROXY"]
+
                     if isinstance(result, dict) and "stdout" in result:
                         stdout = result["stdout"]
                         import re
@@ -431,7 +444,7 @@ class JoernClient:
                                 return json.loads(json_str)
                             except (SyntaxError, ValueError, json.JSONDecodeError):
                                 pass
-                                
+
                         # Fallback for plain unquoted JSON array/object inside stdout
                         match_json = re.search(r'([\[\{].*[\]\}])', clean_stdout, re.DOTALL)
                         if match_json:
@@ -439,7 +452,7 @@ class JoernClient:
                                 return json.loads(match_json.group(1))
                             except json.JSONDecodeError:
                                 pass
-                                
+
                         return clean_stdout
                     return result
                 except Exception as e:
@@ -449,7 +462,7 @@ class JoernClient:
                             time.sleep(5)
                             continue
                     raise e
-                    
+
         except ImportError:
             return self._query_via_cli(cpgql)
         except Exception as e:
@@ -535,12 +548,12 @@ class JoernClient:
     def get_method(self, name: str) -> Optional[Dict[str, Any]]:
         """Get method node by exact name."""
         result = self.query(
-            f'cpg.method.name("{name}").map(m => Map('
+            f"cpg.method.name({_scala_string(name)}).map(m => Map("
             f'"name" -> m.name, "filename" -> m.filename, '
             f'"lineNumber" -> m.lineNumber.getOrElse(-1), '
             f'"lineNumberEnd" -> m.lineNumberEnd.getOrElse(-1), '
             f'"signature" -> m.signature'
-            f')).l.toJson'
+            f")).l.toJson"
         )
         if isinstance(result, list) and result:
             return cast(Dict[str, Any], result[0])
@@ -553,14 +566,13 @@ class JoernClient:
         callee_file: str = "",
     ) -> List[Dict[str, Any]]:
         """Get functions that call the given function."""
-        method_query = f'cpg.method.name("{name}")'
+        method_query = f"cpg.method.name({_scala_string(name)})"
         clean_file = str(callee_file or "").replace("\\", "/").strip()
         if clean_file:
-            escaped_file = clean_file.replace('"', '\\"')
             method_query += (
-                f'.filter(m => m.filename == "{escaped_file}" || '
-                f'm.filename.endsWith("/{escaped_file}") || '
-                f'"{escaped_file}".endsWith("/" + m.filename))'
+                f".filter(m => m.filename == {_scala_string(clean_file)} || "
+                f'm.filename.endsWith({_scala_string("/" + clean_file)}) || '
+                f'{_scala_string(clean_file)}.endsWith("/" + m.filename))'
             )
         result = self.query(
             f'{method_query}.callIn.method.distinct'
@@ -573,20 +585,20 @@ class JoernClient:
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Get functions called by the given function."""
         result = self.query(
-            f'cpg.method.name("{name}").callee.distinct'
+            f"cpg.method.name({_scala_string(name)}).callee.distinct"
             f'.map(m => Map("name" -> m.name, "filename" -> m.filename, '
             f'"lineNumber" -> m.lineNumber.getOrElse(-1)))'
-            f'.take({limit}).l.toJson'
+            f".take({limit}).l.toJson"
         )
         return result if isinstance(result, list) else []
 
     def get_type_decl(self, name: str) -> Optional[Dict[str, Any]]:
         """Get type declaration (struct/union/enum) by name."""
         result = self.query(
-            f'cpg.typeDecl.name("{name}").map(t => Map('
+            f"cpg.typeDecl.name({_scala_string(name)}).map(t => Map("
             f'"name" -> t.name, "filename" -> t.filename, '
             f'"lineNumber" -> t.lineNumber.getOrElse(-1)'
-            f')).l.toJson'
+            f")).l.toJson"
         )
         if isinstance(result, list) and result:
             return cast(Dict[str, Any], result[0])
@@ -595,16 +607,16 @@ class JoernClient:
     def get_type_members(self, name: str) -> List[Dict[str, Any]]:
         """Get members of a type declaration."""
         result = self.query(
-            f'cpg.typeDecl.name("{name}").member'
+            f"cpg.typeDecl.name({_scala_string(name)}).member"
             f'.map(m => Map("name" -> m.name, "typeFullName" -> m.typeFullName))'
-            f'.l.toJson'
+            f".l.toJson"
         )
         return result if isinstance(result, list) else []
 
     def find_methods(self, pattern: str, limit: int = 50) -> List[str]:
         """Find method names matching a regex pattern."""
         result = self.query(
-            f'cpg.method.name("{pattern}").name.distinct.take({limit}).l.toJson'
+            f"cpg.method.name({_scala_string(pattern)}).name.distinct.take({limit}).l.toJson"
         )
         return result if isinstance(result, list) else []
 
@@ -613,23 +625,23 @@ class JoernClient:
     ) -> List[Dict[str, Any]]:
         """Trace data flow from source parameter to sink calls."""
         result = self.query(
-            f'def src = cpg.method.name("{source_func}").parameter.name("{source_param}")\n'
-            f'def snk = cpg.call.name("{sink_pattern}").argument\n'
-            f'sink(snk).reachableByFlows(source(src))'
+            f"def src = cpg.method.name({_scala_string(source_func)}).parameter.name({_scala_string(source_param)})\n"
+            f"def snk = cpg.call.name({_scala_string(sink_pattern)}).argument\n"
+            f"sink(snk).reachableByFlows(source(src))"
             f'.map(f => Map("path" -> f.elements.map(e => '
             f'Map("code" -> e.code, "lineNumber" -> e.lineNumber.getOrElse(-1), '
             f'"filename" -> e.file.name.headOption.getOrElse(""))).l'
-            f')).l.toJson'
+            f")).l.toJson"
         )
         return result if isinstance(result, list) else []
 
     def find_function_pointers(self, func_name: str) -> List[Dict[str, Any]]:
         """Find assignments/references to function as pointer."""
         result = self.query(
-            f'cpg.identifier.name("{func_name}").inAssignment'
+            f"cpg.identifier.name({_scala_string(func_name)}).inAssignment"
             f'.map(a => Map("code" -> a.code, '
             f'"filename" -> a.file.name.headOption.getOrElse(""), '
             f'"lineNumber" -> a.lineNumber.getOrElse(-1)))'
-            f'.l.toJson'
+            f".l.toJson"
         )
         return result if isinstance(result, list) else []

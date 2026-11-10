@@ -5,10 +5,11 @@ Provides precise C/C++ code structure extraction without Joern dependency.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .backend_base import CodeBackend
 from .clang_extractor import ClangExtractor
+from .clang_extractor_pool import ClangExtractorPool
 from .knowledge_db import KnowledgeDB
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class ClangBackend(CodeBackend):
         self._db_path = db_path
         self._batch_size = batch_size
         self._max_threads = max_threads
-        self._extractor: Optional[ClangExtractor] = None
+        self._extractor: Optional[Union[ClangExtractor, ClangExtractorPool]] = None
         self._db: Optional[KnowledgeDB] = None
         self._status = "idle"
         self._source_path: Optional[Path] = None
@@ -54,7 +55,7 @@ class ClangBackend(CodeBackend):
 
         self._source_path = Path(source_path).absolute()
         project_root = Path(project_root).absolute() if project_root else self._source_path
-        
+
         self._include_paths = [Path(p).absolute() for p in (kwargs.get("include_paths", []) or [])]
         self._exclude_paths = [Path(p).absolute() for p in (kwargs.get("exclude_paths", []) or [])]
 
@@ -79,11 +80,15 @@ class ClangBackend(CodeBackend):
         if self._source_path is None:
             return False
         cc_dir = Path(self._compile_commands_path).parent if self._compile_commands_path else None
-        self._extractor = ClangExtractor(
-            project_root=self._source_path,   # clangd cwd/rootUri = source_root
+        shard_count = ClangExtractorPool.shard_count_from_env()
+        extractor_factory = ClangExtractor if shard_count == 1 else ClangExtractorPool
+        shard_kwargs = {} if shard_count == 1 else {"shard_count": shard_count}
+        self._extractor = extractor_factory(
+            project_root=self._source_path,  # clangd cwd/rootUri = source_root
             clangd_path=self._clangd_path,
             compile_commands_dir=cc_dir,
             max_threads=self._max_threads,
+            **shard_kwargs,
         )
         if not self._extractor.start():
             logger.error("Failed to start clangd extractor")
@@ -222,18 +227,18 @@ class ClangBackend(CodeBackend):
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
         import os
-        
+
         def is_subpath(child: Path, parent: Path) -> bool:
             try:
                 # Use absolute() instead of resolve() to avoid symlink physical path jumping out of bounds
                 c_str = str(child.absolute())
                 p_str = str(parent.absolute())
-                
+
                 # Case-insensitive ONLY on Windows
                 if os.name == 'nt':
                     c_str = c_str.lower()
                     p_str = p_str.lower()
-                    
+
                 sep = os.sep
                 if not p_str.endswith(sep):
                     p_str += sep
@@ -245,7 +250,7 @@ class ClangBackend(CodeBackend):
             for ex in self._exclude_paths:
                 if is_subpath(p, ex):
                     return False
-                    
+
         if self._include_paths:
             in_include = False
             for inc in self._include_paths:
@@ -254,7 +259,7 @@ class ClangBackend(CodeBackend):
                     break
             if not in_include:
                 return False
-                
+
         return True
 
     def _collect_source_files(self) -> List[Path]:
@@ -263,16 +268,16 @@ class ClangBackend(CodeBackend):
         if self._source_path is None:
             return []
         extensions = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl"}
-        
+
         bases_to_search = self._include_paths if self._include_paths else [self._source_path]
-        
+
         for base in bases_to_search:
             for file_path in base.rglob("*"):
                 if file_path.suffix.lower() not in extensions:
                     continue
                 if self._is_path_allowed(file_path):
                     files.append(file_path.resolve())
-                        
+
         # Remove duplicates
         return sorted(list(set(files)))
 
