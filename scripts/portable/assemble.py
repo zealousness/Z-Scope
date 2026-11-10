@@ -140,6 +140,29 @@ def bundle_libraries(root):
 def cpp_tools(root, prefix, manifest):
     for name in ("clangd22", "llvm18", "svf", "gllvm"):
         copy_tree(prefix / name, root / "tools" / name)
+    # A reusable SDK cache can contain a Clang driver linked to libclang-cpp.
+    # Recover its verified library without installing the newer batch frontend.
+    driver = root / "tools/llvm18/bin/clang"
+    for library in inspect_elf(driver)["needed"]:
+        if not library.startswith("libclang-cpp"):
+            continue
+        target = root / "tools/llvm18/lib" / library
+        if target.is_file():
+            continue
+        cached = prefix / "clang-indexer"
+        relative = "lib/" + library
+        receipt = json.loads((prefix / "clang-indexer.complete.json").read_text())
+        origin = cached / relative
+        if (
+            receipt["inputs"]["arch"] != manifest["arch"]
+            or receipt["capability"]["clang_version"] != "18.1.0"
+            or receipt["files"].get(relative) != sha256(origin)
+        ):
+            raise ValueError("Cached Clang shared library identity mismatch")
+        copy_file(origin, target)
+        manifest.setdefault("cached_clang_libraries", {})[library] = {
+            "sha256": sha256(origin), "sdk": receipt["inputs"]["sdk"]
+        }
     manifest["index_frontend"] = "clangd-lsp-v1.2"
     # LLVM's build configuration introspector is only needed while producing
     # SVF; its output refers to the build tree and is not a runtime tool.
