@@ -133,6 +133,8 @@ test/java_range/entry_functions_list.json
 test/java_range/entry_functions_diff*.json
 
 # External benchmark generated data
+# Internal evaluation corpus stays local and is not distributed with the repository.
+/test/realworld-bench/
 benchmarks/external/workspace/
 benchmarks/external/sources/
 benchmarks/external/runs/
