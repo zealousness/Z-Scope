@@ -38,14 +38,17 @@ applies to every artifact. Fix them in all four locks in the same change;
 `tests/test_release_contract.py::test_every_lock_pins_the_same_security_fixed_runtime_versions`
 fails if the locks disagree or drop below the fixed floor.
 
-Two `black` advisories are knowingly deferred, because both need `black>=26` and that
-release reformats roughly 300 files that this repository keeps as reviewed debt in
-`black-baseline.json`. Neither path is reachable here:
+The development formatter is pinned to `black==26.10.1` in `pyproject.toml`,
+`dev.in` and the hashed development constraints. This fixes
+[GHSA-cg8m-r9f2-5wm2](https://github.com/advisories/GHSA-cg8m-r9f2-5wm2)
+(`CVE-2026-114134`, bundled GitHub Action version validation) and
+[GHSA-3936-cmfr-pm3m](https://github.com/advisories/GHSA-3936-cmfr-pm3m)
+(`CVE-2026-32274`, cache filename path handling).
+Black is not included in the release or portable runtime inventories.
+Keep the existing formatting-debt baseline non-expanding when upgrading it;
+the formatter upgrade is not permission to accept new formatting debt.
 
-- GHSA-v53h-f6m7-xcgm (`CVE-2026-31900`) is in the `psf/black` GitHub Action with
-  `use_pyproject: true`; this repository runs no black action (zero matches under
-  `.github/workflows/`).
-- GHSA-3936-cmfr-pm3m (`CVE-2026-32274`) needs attacker control of
-  `--python-cell-magics`; the gate only runs `black --check` on repository paths.
-
-Bump `black` together with the formatting migration, then delete this section.
+The Java Range fixture and the portable Maven cache use XStream 1.4.21 to fix
+[CVE-2024-47072](https://x-stream.github.io/CVE-2024-47072.html). The cache lock is
+refreshed from checksum-verified Maven Central artifacts; this does not change
+the Java fixture's intentional source-level vulnerabilities or ground truth.

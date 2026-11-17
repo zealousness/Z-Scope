@@ -666,30 +666,20 @@
       "size": 17651,
       "url": "https://repo.maven.apache.org/maven2/com/thoughtworks/qdox/qdox/2.2.0/qdox-2.2.0.pom"
     },
-    "com/thoughtworks/xstream/xstream/1.4.20/_remote.repositories": {
-      "sha256": "4a2fac0efca8cd0cb4da4342c01b727baa2937de4ab021a71be70042b643df43",
-      "size": 196,
-      "inline_base64": "I05PVEU6IFRoaXMgaXMgYSBNYXZlbiBSZXNvbHZlciBpbnRlcm5hbCBpbXBsZW1lbnRhdGlvbiBmaWxlLCBpdHMgZm9ybWF0IGNhbiBiZSBjaGFuZ2VkIHdpdGhvdXQgcHJpb3Igbm90aWNlLgojU3VuIFNlcCAwNiAwODo0Nzo1OCBVVEMgMjAyNgp4c3RyZWFtLTEuNC4yMC5qYXI+Y2VudHJhbD0KeHN0cmVhbS0xLjQuMjAucG9tPmNlbnRyYWw9Cg=="
+    "com/thoughtworks/xstream/xstream/1.4.21/xstream-1.4.21.jar": {
+      "sha256": "f56586f3de59ae2a49430acbc9f27942b8c5cebec9245c869fae7136733333ec",
+      "size": 646504,
+      "url": "https://repo.maven.apache.org/maven2/com/thoughtworks/xstream/xstream/1.4.21/xstream-1.4.21.jar"
     },
-    "com/thoughtworks/xstream/xstream/1.4.20/xstream-1.4.20.jar": {
-      "sha256": "87df0f0be57c92037d0110fbb225a30b651702dc275653d285afcfef31bc2e81",
-      "size": 644649,
-      "url": "https://repo.maven.apache.org/maven2/com/thoughtworks/xstream/xstream/1.4.20/xstream-1.4.20.jar"
+    "com/thoughtworks/xstream/xstream/1.4.21/xstream-1.4.21.pom": {
+      "sha256": "d93157bd2952b4c4a9e10d915e28f297c2a219211054b43becdeb8207262767b",
+      "size": 24486,
+      "url": "https://repo.maven.apache.org/maven2/com/thoughtworks/xstream/xstream/1.4.21/xstream-1.4.21.pom"
     },
-    "com/thoughtworks/xstream/xstream/1.4.20/xstream-1.4.20.pom": {
-      "sha256": "73d81ece39e94a1d2d7fcd0184662aa3d4106bfe9709b793964892e3e7f4fdc4",
-      "size": 24850,
-      "url": "https://repo.maven.apache.org/maven2/com/thoughtworks/xstream/xstream/1.4.20/xstream-1.4.20.pom"
-    },
-    "com/thoughtworks/xstream/xstream-parent/1.4.20/_remote.repositories": {
-      "sha256": "3a9f0001e68e4bff585c9b88905a53c816051ab1f0aaa012deac3aee754fa43a",
-      "size": 175,
-      "inline_base64": "I05PVEU6IFRoaXMgaXMgYSBNYXZlbiBSZXNvbHZlciBpbnRlcm5hbCBpbXBsZW1lbnRhdGlvbiBmaWxlLCBpdHMgZm9ybWF0IGNhbiBiZSBjaGFuZ2VkIHdpdGhvdXQgcHJpb3Igbm90aWNlLgojU3VuIFNlcCAwNiAwODo0Nzo1NyBVVEMgMjAyNgp4c3RyZWFtLXBhcmVudC0xLjQuMjAucG9tPmNlbnRyYWw9Cg=="
-    },
-    "com/thoughtworks/xstream/xstream-parent/1.4.20/xstream-parent-1.4.20.pom": {
-      "sha256": "111889e302165a0f44a54de4db705250d1de0dc91ba78a198a1d2278344beee7",
-      "size": 43605,
-      "url": "https://repo.maven.apache.org/maven2/com/thoughtworks/xstream/xstream-parent/1.4.20/xstream-parent-1.4.20.pom"
+    "com/thoughtworks/xstream/xstream-parent/1.4.21/xstream-parent-1.4.21.pom": {
+      "sha256": "00157e30fc1dcfe5e6543e88cb8763db6dca566e52589ced852bbf798dacdde6",
+      "size": 43893,
+      "url": "https://repo.maven.apache.org/maven2/com/thoughtworks/xstream/xstream-parent/1.4.21/xstream-parent-1.4.21.pom"
     },
     "com/vladsch/flexmark/flexmark/0.42.14/_remote.repositories": {
       "sha256": "af5bd998d6bef45f614378cfdfd785a574e127b8c897deab91ed4c3f7ea0334e",

@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from zscope._version import __version__
@@ -29,6 +30,19 @@ SHIPPED_LOCKS = (
 # every lock at once. The minimum is where the advisory range ends:
 # urllib3 CVE-2026-97687/97688/97689 and certifi GHSA-6q48-6c7w-9gw2.
 SECURITY_FLOORS = {"urllib3": (2, 8, 0), "certifi": (2026, 10, 19)}
+
+
+def test_development_formatter_security_pin_is_consistent() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declarations = project["project"]["optional-dependencies"]["dev"]
+    declarations += (ROOT / "requirements/dev.in").read_text(encoding="utf-8").splitlines()
+    versions = [
+        value.removeprefix("black==") for value in declarations if value.startswith("black==")
+    ]
+    assert len(versions) == 2
+    versions.append(_locked_versions(ROOT / "requirements/constraints/py313.txt")["black"])
+    assert len(set(versions)) == 1
+    assert _version_tuple(versions[0]) >= (26, 10, 1)
 
 
 def test_project_semantics_yaml_runtime_is_in_every_shipped_lock() -> None:

@@ -1,5 +1,6 @@
 import json
 import shutil
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,24 @@ def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def test_xstream_dependency_and_portable_cache_have_binary_reader_security_fix() -> None:
+    namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
+    pom = ET.parse(BENCHMARK_ROOT / "pom.xml")
+    dependency = pom.find(".//m:dependencies/m:dependency[m:artifactId='xstream']", namespace)
+    assert dependency is not None
+    assert dependency.findtext("m:groupId", namespaces=namespace) == "com.thoughtworks.xstream"
+    version = dependency.findtext("m:version", namespaces=namespace)
+    assert version is not None
+    assert tuple(int(part) for part in version.split(".")) >= (1, 4, 21)
+    cache = _load_json(BENCHMARK_ROOT.parents[1] / "requirements/portable/maven.lock.json")["files"]
+    artifacts = [path for path in cache if path.startswith("com/thoughtworks/xstream/xstream/")]
+    assert artifacts
+    assert all(
+        tuple(int(part) for part in path.split("/")[4].split(".")) >= (1, 4, 21)
+        for path in artifacts
+    )
+
+
 def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatch) -> None:
     config_path = BENCHMARK_ROOT / "zscope.benchmark.yaml"
     raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -28,9 +47,10 @@ def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatc
     config = ConfigLoader.load(str(config_path))
 
     assert "java_profile" not in raw_config["project"]
+    assert raw_config["config_version"] == config.user_config_version == 3
+    assert "source_root" not in raw_config["project"]
     assert config.project.language == "java"
     assert config.project.project_root == BENCHMARK_ROOT.resolve()
-    assert config.project.source_root == BENCHMARK_ROOT.resolve()
     assert config.indexing.backend == "java_unified"
     assert config.indexing.java_structure_frontend == "auto"
     assert config.indexing.java_signal_backends == ["joern"]

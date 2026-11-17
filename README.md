@@ -87,7 +87,7 @@ Z-SCOPE 基于 Python 3.13 开发、测试和交付；源码安装要求 Python 
 
 开发依赖（可选）：`pytest`、`pytest-cov`、`black`、`mypy`、`types-PyYAML`、`types-requests`。
 
-质量门禁固定使用 `mypy==1.19.1` 与 `black==25.11.0`，两者目标均为 Python 3.13；存量质量债务采用不可扩张基线管理。
+质量门禁固定使用 `mypy==1.19.1` 与 `black==26.10.1`，两者目标均为 Python 3.13；存量质量债务采用不可扩张基线管理。
 
 ### 外部工具依赖（按后端）
 
