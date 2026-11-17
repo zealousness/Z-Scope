@@ -43,7 +43,7 @@ window.ZScopeConfigEditor = {
         this.structuredConfigAvailable = false; this.structuredConfigStatus = '未找到配置文件';
         return;
       }
-      if (![2, 3].includes(cfg.config_version)) throw new Error('此配置版本尚不支持编辑，请检查配置文件。');
+      if (cfg.config_version !== 3) throw new Error('仅支持 config_version: 3，请先使用 zscope-config migrate 显式迁移旧配置。');
       this.structuredConfig = this.cloneConfig(cfg);
       this.populateConfigForm(cfg); this.structuredConfigAvailable = true;
       this.configDirty = false; this.structuredConfigStatus = data.execution_error ? '配置已载入，执行条件尚未就绪' : '配置已载入';
@@ -71,7 +71,7 @@ window.ZScopeConfigEditor = {
     this.v3Form = {
       project: {language: project.language, platform: project.platform ?? 'linux_user', semantics_file: project.semantics_file || ''},
       targets: (project.targets || []).map(target => ({...target, _key: this.workbenchId()})),
-      scan: {preset: scan.preset ?? 'deep', focus: this.configLines(scan.focus ?? ['memory', 'resources', 'async_lifecycle']), reproduction: scan.reproduction ?? 'auto'},
+      scan: {preset: scan.preset ?? 'fast', focus: this.configLines(scan.focus ?? ['memory', 'resources', 'async_lifecycle']), reproduction: scan.reproduction ?? 'auto'},
       execution: {timezone: execution.timezone ?? '', stop_at: execution.stop_at ?? '', max_workers: String(execution.max_workers ?? '')},
       profiles: Object.entries(cfg.llms || {}).map(([name, profile]) => {
         const row = {name, base_urls: this.configLines(profile.base_urls), models: this.configLines(profile.models), api_key: ''};

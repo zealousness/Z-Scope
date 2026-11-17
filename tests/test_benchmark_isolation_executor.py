@@ -333,7 +333,7 @@ def test_formal_runner_routes_every_scan_phase_through_executor(
     def write_config(_spec: Any, project: Path, path: Path, *, scan_depth: str) -> dict[str, Any]:
         assert scan_depth == "fast"
         assert path.parent == project
-        raw = {"config_version": 2, "project": {"language": "c_cpp"}}
+        raw = {"config_version": 3, "project": {"targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}], "language": "c_cpp"}}
         path.write_text(benchmark_runner.yaml.safe_dump(raw), encoding="utf-8")
         return raw
 

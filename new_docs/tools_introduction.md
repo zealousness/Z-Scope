@@ -12,7 +12,7 @@
 
 ## 一、全部工具的介绍
 
-Z-SCOPE 运行时支持的全部本地工具共 13 个，其 OpenAI Schema 声明与参数校验在 [runtime.py](file:///Ubuntu-22.04/home/jager/Z-Scope/zscope/tools/runtime.py) 中定义，功能涵盖代码基础检索、图结构查询、底层指针与污点静态分析等。以下是每个工具的详细输入参数和输出数据结构：
+Z-SCOPE 运行时支持的全部本地工具共 13 个，其 OpenAI Schema 声明与参数校验在 [runtime.py](../zscope/tools/runtime.py) 中定义，功能涵盖代码基础检索、图结构查询、底层指针与污点静态分析等。以下是每个工具的详细输入参数和输出数据结构：
 
 ### 1 `get_function_info`
 

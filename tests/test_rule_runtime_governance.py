@@ -133,7 +133,7 @@ def _rule_validator_result(
 
 def _config(root: Path, *, disabled_ids: list[str] | None = None) -> dict[str, Any]:
     data: dict[str, Any] = {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://localhost/v1"],
@@ -142,6 +142,7 @@ def _config(root: Path, *, disabled_ids: list[str] | None = None) -> dict[str, A
             }
         },
         "project": {
+            "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
             "language": "c_cpp",
             "entry_discovery": {
                 "enabled": True,

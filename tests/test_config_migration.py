@@ -1,167 +1,144 @@
-from __future__ import annotations
-
+from copy import deepcopy
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
-from zscope.cli.config_cli import main, migrate_legacy_document
+from zscope.cli.config_cli import main, migrate_document
+from zscope.config.config import ConfigLoader
 
 
-def _legacy(root: Path) -> dict:
+def _legacy(root: Path, language: str = "c_cpp") -> dict:
     return {
-        "llm": {
-            "provider": "openai",
-            "base_url": "http://localhost/v1",
-            "model": "unit-model",
-            "api_key": "unit-key",
-            "temperature": 0.1,
+        "config_version": 2,
+        "llms": {
+            "default": {
+                "base_urls": ["${MIGRATION_URL}"],
+                "models": ["unit"],
+                "api_key": "${MIGRATION_KEY}",
+            }
         },
         "project": {
-            "root": str(root),
-            "source_root": ".",
-            "language": "cpp",
-            "compile_commands": "build/compile_commands.json",
-            "entry_discovery": {
-                "enabled": True,
-                "root": "src",
-                "header_files": ["include/**/*.h"],
-                "max_candidates": 30,
-            },
-            "agents": [
-                {"name": "semantic_modeler", "llm_ref": "default"},
-                {
-                    "name": "vulnerability_analyzer",
-                    "llm_ref": "default",
-                    "task": "focus on ownership",
-                    "skills": ["memory-safety"],
-                },
-            ],
+            "language": language,
+            **(
+                {"compile_commands_path": "build/compile_commands.json"}
+                if language == "c_cpp"
+                else {}
+            ),
         },
-        "indexing": {
-            "backend": "unified",
-            "max_clangd_threads": 6,
-            "svf_scope": "entry",
-        },
-        "analysis": {
-            "parallel_workers": 3,
-            "entry_workers": 5,
-            "index_workers": 8,
-            "svf_workers": 2,
-            "validator_workers": 2,
-            "llm_max_inflight": 7,
-        },
+        "scan": {"task": "focus on ownership", "llm_profiles": {"analysis": "default"}},
+        "indexing": {"backend": "unified" if language == "c_cpp" else "java_unified"},
+        "concurrency": {"entry_workers": 3, "llm_max_inflight": 7},
+        "rules": {"disabled_ids": ["example-rule"]},
     }
 
 
-def test_known_legacy_fields_have_deterministic_v2_mapping(tmp_path: Path) -> None:
-    migrated, warnings = migrate_legacy_document(_legacy(tmp_path))
-
-    assert migrated["config_version"] == 2
-    assert migrated["llms"]["default"]["base_urls"] == ["http://localhost/v1"]
-    assert migrated["llms"]["default"]["models"] == ["unit-model"]
-    assert migrated["project"]["language"] == "c_cpp"
-    assert migrated["project"]["compile_commands_path"] == "build/compile_commands.json"
-    assert migrated["project"]["entry_discovery"] == {
-        "enabled": True,
-        "search_root": "src",
-        "interface_files": ["include/**/*.h"],
-        "max_entries": 30,
-    }
-    assert migrated["scan"]["task"] == "focus on ownership"
-    assert migrated["concurrency"] == {
-        "entry_workers": 5,
-        "validator_workers": 2,
-        "investigator_workers": 1,
-        "evidence_completion_workers": 2,
-        "index_workers": 8,
-        "llm_max_inflight": 7,
-        "svf_workers": 2,
-    }
-    assert any("provider" in warning for warning in warnings)
-    assert any("review concurrency" in warning for warning in warnings)
-
-
-def test_migrate_command_preserves_source_and_refuses_overwrite(tmp_path: Path) -> None:
+@pytest.mark.parametrize("language", ["c_cpp", "java"])
+@pytest.mark.parametrize("depth", [None, "fast", "balanced", "deep"])
+def test_migration_preserves_depth_and_advanced_settings(tmp_path, language, depth, monkeypatch):
+    raw = _legacy(tmp_path, language)
+    if depth is not None:
+        raw["scan"]["depth"] = depth
     source = tmp_path / "old.yaml"
-    destination = tmp_path / "new.yaml"
-    original = yaml.safe_dump(_legacy(tmp_path), sort_keys=False)
-    source.write_text(original, encoding="utf-8")
-    runner = CliRunner()
-
-    first = runner.invoke(
-        main,
-        ["migrate", "--input", str(source), "--output", str(destination)],
-    )
-    assert first.exit_code == 0, first.output
-    assert source.read_text(encoding="utf-8") == original
-    assert yaml.safe_load(destination.read_text(encoding="utf-8"))["config_version"] == 2
-
-    second = runner.invoke(
-        main,
-        ["migrate", "--input", str(source), "--output", str(destination)],
-    )
-    assert second.exit_code != 0
-    assert "refusing to overwrite" in second.output
-
-
-def test_unknown_legacy_field_fails_without_creating_output(tmp_path: Path) -> None:
-    source = tmp_path / "old.yaml"
-    destination = tmp_path / "new.yaml"
-    legacy = _legacy(tmp_path)
-    legacy["project"]["mystery"] = True
-    source.write_text(yaml.safe_dump(legacy, sort_keys=False), encoding="utf-8")
-
+    source.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    before = source.read_bytes()
+    destination = tmp_path / "zscope.yaml"
     result = CliRunner().invoke(
-        main,
-        ["migrate", "--input", str(source), "--output", str(destination)],
+        main, ["migrate", "--input", str(source), "--output", str(destination)]
     )
-
-    assert result.exit_code != 0
-    assert "unknown legacy key(s) at project: mystery" in result.output
-    assert not destination.exists()
-
-
-def test_force_replaces_destination_and_reports_dropped_fields(tmp_path: Path) -> None:
-    source = tmp_path / "old.yaml"
-    destination = tmp_path / "new.yaml"
-    source.write_text(yaml.safe_dump(_legacy(tmp_path), sort_keys=False), encoding="utf-8")
-    destination.write_text("stale\n", encoding="utf-8")
-
-    result = CliRunner().invoke(
-        main,
-        [
-            "migrate",
-            "--input",
-            str(source),
-            "--output",
-            str(destination),
-            "--force",
-        ],
-    )
-
+    assert source.read_bytes() == before
+    if language == "java" and depth in {"balanced", "deep"}:
+        assert result.exit_code != 0
+        assert "use 'fast'" in result.output
+        assert not destination.exists()
+        return
     assert result.exit_code == 0, result.output
-    assert "dropped ineffective field llm.provider" in result.output
-    assert destination.read_text(encoding="utf-8").startswith("config_version: 2\n")
+    migrated = yaml.safe_load(destination.read_text())
+    assert migrated["config_version"] == 3
+    assert migrated["scan"]["preset"] == (depth or "fast")
+    assert "depth" not in migrated["scan"]
+    assert "compile_commands_path" not in migrated["project"]
+    for key in ("llms", "concurrency", "rules"):
+        assert migrated[key] == raw[key]
+    monkeypatch.setenv("MIGRATION_URL", "http://localhost/v1")
+    monkeypatch.setenv("MIGRATION_KEY", "dummy")
+    config = ConfigLoader.load(str(destination), read_only=True)
+    assert config.scan.depth == (depth or "fast")
+    assert config.scan.task == "focus on ownership"
+    assert config.project.entry_discovery.enabled is False
+    assert config.concurrency.entry_workers == 3
+    if language == "c_cpp":
+        assert config.indexing.svf_heap_limit_mb == 32768
+        assert config.project.compile_commands_path == tmp_path / "build/compile_commands.json"
 
 
-def test_force_still_refuses_to_overwrite_migration_source(tmp_path: Path) -> None:
-    source = tmp_path / "old.yaml"
-    original = yaml.safe_dump(_legacy(tmp_path), sort_keys=False)
-    source.write_text(original, encoding="utf-8")
+@pytest.mark.parametrize(
+    "preset,expected",
+    [(None, "deep"), ("quick", "fast"), ("overnight", "deep"), ("balanced", "balanced")],
+)
+def test_historical_v3_default_is_materialized(tmp_path, preset, expected):
+    raw, _ = migrate_document(_legacy(tmp_path))
+    raw["scan"].pop("preset")
+    if preset:
+        raw["scan"]["preset"] = preset
+    converted, _ = migrate_document(raw)
+    assert converted["scan"]["preset"] == expected
 
-    result = CliRunner().invoke(
-        main,
-        [
-            "migrate",
-            "--input",
-            str(source),
-            "--output",
-            str(source),
-            "--force",
-        ],
+
+def test_force_does_not_overwrite_source_or_invalid_destination(tmp_path):
+    source, destination = tmp_path / "old.yaml", tmp_path / "new.yaml"
+    raw = _legacy(tmp_path)
+    raw["project"]["mystery"] = True
+    source.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    before = source.read_bytes()
+    destination.write_text("keep existing\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["migrate", "--input", str(source), "--output", str(destination), "--force"]
     )
-
     assert result.exit_code != 0
+    assert "project.mystery" in result.output
+    assert destination.read_text() == "keep existing\n"
+    assert source.read_bytes() == before
+    result = runner.invoke(
+        main, ["migrate", "--input", str(source), "--output", str(source), "--force"]
+    )
     assert "migration never overwrites source" in result.output
-    assert source.read_text(encoding="utf-8") == original
+    assert source.read_bytes() == before
+
+
+def test_existing_output_requires_force(tmp_path):
+    source, destination = tmp_path / "old.yaml", tmp_path / "new.yaml"
+    source.write_text(yaml.safe_dump(_legacy(tmp_path)), encoding="utf-8")
+    destination.write_text("keep\n", encoding="utf-8")
+    args = ["migrate", "--input", str(source), "--output", str(destination)]
+    assert "refusing to overwrite" in CliRunner().invoke(main, args).output
+    result = CliRunner().invoke(main, args + ["--force"])
+    assert result.exit_code == 0, result.output
+    assert yaml.safe_load(destination.read_text())["config_version"] == 3
+
+
+@pytest.mark.parametrize("version", [None, 1, 4, "2", True])
+def test_unsupported_migration_versions_are_explicit(tmp_path, version):
+    raw = _legacy(tmp_path)
+    raw["config_version"] = version
+    with pytest.raises(ValueError, match="zscope-init"):
+        migrate_document(raw)
+
+
+def test_conversion_does_not_mutate_input(tmp_path):
+    raw = _legacy(tmp_path)
+    original = deepcopy(raw)
+    migrate_document(raw)
+    assert raw == original
+
+
+def test_missing_compile_database_preserves_old_lookup_location(tmp_path):
+    raw = _legacy(tmp_path)
+    raw["project"].pop("compile_commands_path")
+    converted, warnings = migrate_document(raw)
+    assert converted["project"]["targets"] == [
+        {"id": "main", "compile_commands": "compile_commands.json"}
+    ]
+    assert any("verify it before scanning" in warning for warning in warnings)

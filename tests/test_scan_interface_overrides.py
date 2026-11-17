@@ -14,7 +14,22 @@ from zscope.web.services import ConfigService
 def test_web_config_service_returns_effective_depth_and_usage(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "zscope.yaml"
     path.write_text(
-        json.dumps({"config_version": 2, "project": {"language": "c_cpp"}}),
+        json.dumps(
+            {
+                "config_version": 3,
+                "llms": {
+                    "default": {
+                        "base_urls": ["http://example.invalid"],
+                        "models": ["test"],
+                        "api_key": "test",
+                    }
+                },
+                "project": {
+                    "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
+                    "language": "c_cpp",
+                },
+            }
+        ),
         encoding="utf-8",
     )
     effective = SimpleNamespace(
@@ -47,7 +62,7 @@ def test_interface_scan_request_passes_only_depth_and_returns_usage(
     # is covered with real configuration in test_semantics_workflow.
     monkeypatch.setattr("zscope.config.semantics_workflow.require_workflow", lambda _: None)
     config_path = tmp_path / "zscope.yaml"
-    config_path.write_text("config_version: 2\n", encoding="utf-8")
+    config_path.write_text("config_version: 3\n", encoding="utf-8")
     effective = SimpleNamespace(
         project=SimpleNamespace(project_root=tmp_path),
         scan=SimpleNamespace(depth="balanced", depth_source="cli", rollout={}),
@@ -98,7 +113,7 @@ def test_interface_scan_child_inherits_parent_cwd(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setattr("zscope.config.semantics_workflow.require_workflow", lambda _: None)
     config_path = tmp_path / "zscope.yaml"
-    config_path.write_text("config_version: 2\n", encoding="utf-8")
+    config_path.write_text("config_version: 3\n", encoding="utf-8")
     effective = SimpleNamespace(
         project=SimpleNamespace(project_root=tmp_path),
         scan=SimpleNamespace(depth="fast", depth_source="cli", rollout={}),

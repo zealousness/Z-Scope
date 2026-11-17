@@ -2284,7 +2284,7 @@ def _write_integrity_suite(tmp_path: Path) -> tuple[Path, Path, str]:
         encoding="utf-8",
     )
     original_config = (
-        "config_version: 2\n"
+        "config_version: 3\n"
         "llms:\n"
         "  default:\n"
         '    base_urls: ["http://localhost/v1"]\n'
@@ -2292,6 +2292,7 @@ def _write_integrity_suite(tmp_path: Path) -> tuple[Path, Path, str]:
         "    api_key: unit-key\n"
         "project:\n"
         "  language: c_cpp\n"
+        "  targets: [{id: main, compile_commands: compile_commands.json}]\n"
         '  entry_functions_list: "../benchmark/entries.json"\n'
         "scan:\n"
         '  task: ""\n'

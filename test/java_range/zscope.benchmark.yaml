@@ -1,6 +1,6 @@
 # Canonical Java Range benchmark configuration. Runtime entries contain no
 # expected rule, CWE, truth ID, or audit-hint metadata.
-config_version: 2
+config_version: 3
 
 llms:
   default:
@@ -14,9 +14,9 @@ llms:
     timeout: 120
 
 project:
-  root: test/java_range
-  source_root: .
   language: java
+  targets:
+    - id: main
   entry_functions_list: benchmark/entries.json
   entry_discovery:
     enabled: false
@@ -26,6 +26,7 @@ project:
     max_functions: 10000
 
 scan:
+  preset: fast
   # Empty activates every Java-applicable Skill; non-empty text narrows focus.
   task: ""
 

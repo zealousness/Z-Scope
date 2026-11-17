@@ -4,7 +4,7 @@
 Consumes one or more zscope trial/formal run directories (each containing
 ``score.json``, ``report.json``, and optionally ``llm_usage_events.jsonl``)
 in rung order and emits the marginal contribution table required by
-``new_docs/balanced_confirmed_tp_plan.md`` Phase 5:
+the historical ``docs/archive/design-plans/balanced_confirmed_tp_plan.md`` Phase 5:
 
 * confirmed-TP truth set per run, decomposed by ``confirmed_via``
 * per-rung marginal ``TP_added / TP_lost / FP_added / tokens_added`` and

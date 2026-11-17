@@ -1,4 +1,4 @@
-"""Backend-aware environment diagnostics for strict Z-SCOPE config v2."""
+"""Backend-aware environment diagnostics for strict Z-SCOPE config v3."""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ def _configured_checks(config: Any, checks: List[Dict[str, Any]]) -> None:
 )
 @click.option("--json-output", is_flag=True, help="Emit machine-readable diagnostics.")
 def main(config_path: Optional[Path], profile: str, json_output: bool) -> None:
-    """Check config v2, selected backend, toolchain, paths, and runtime provenance."""
+    """Check config v3, selected backend, toolchain, paths, and runtime provenance."""
 
     checks: List[Dict[str, Any]] = []
     checks.append(

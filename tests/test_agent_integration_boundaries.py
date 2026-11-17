@@ -78,7 +78,7 @@ def test_compile_planning_does_not_hide_analysis_coverage_gap():
 def test_actual_job_engine_over_http_with_controlled_scanner(tmp_path, monkeypatch):
     """Real SQLite/owner/HTTP; scanner emits explicitly synthetic evidence."""
     from semantics_fixtures import reviewed_control_plane_project
-    from test_config_v2 import _config, _write
+    from test_config_options import _config, _write
     from zscope.orchestration.jobs.service import ScanJobService
 
     project = tmp_path / "real job HTTP with spaces"

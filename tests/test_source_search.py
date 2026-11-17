@@ -267,6 +267,24 @@ def test_binary_invalid_encoding_long_line_empty_and_mode_errors(tmp_path):
         )
 
 
+def test_text_search_empty_kind_filter_preserves_matching_and_pagination(tmp_path):
+    write(tmp_path, "macros.h", "#define STR_COPY(a,b) copy(a,b)\n// STR_COPY use\n")
+    rt = runtime(tmp_path)
+    args = {"scope": "text", "query": "STR_COPY", "match_mode": "substring", "limit": 1}
+    first = rt.execute_tool("search_code", {**args, "kinds": [], "view_id": None})
+    plain = rt.execute_tool("search_code", args)
+    assert first["data"]["matches"] == plain["data"]["matches"]
+    assert first["coverage"] == plain["coverage"]
+    assert first["page"] == plain["page"]
+    second = rt.execute_tool(
+        "search_code", {**args, "kinds": [], "offset": 1, "view_id": first["data"]["view_id"]}
+    )
+    assert second["data"]["matches"][0]["line"] == 2
+    for invalid in ({"match_mode": "exact"}, {"kinds": ["macro"]}, {"view_id": "null"}):
+        result = rt.execute_tool("search_code", {**args, **invalid})
+        assert result["status"] == "invalid_request"
+
+
 def test_output_trims_complete_lines_and_keeps_a_usable_continuation(tmp_path):
     write(tmp_path, "many.c", ("x" * 300 + "\n") * 300)
     result = runtime(tmp_path).execute_tool(

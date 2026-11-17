@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional, Tuple
 
 from .contracts import (
@@ -20,11 +21,10 @@ from .symbols import (
     public_symbol,
     valid_symbol_id,
 )
-from .source_access import ProjectSourceAccess, SourceAccessError
+from .source_access import ProjectSourceAccess, SourceAccessError, source_lines
 
-DESCRIPTION = """Read exact source by symbol_id from search_code or by project-relative line
-range. Returns numbered source, symbol metadata, and continuation/truncation
-fields. Prefer symbol_id; this tool does not infer calls or data flow."""
+DESCRIPTION = """Read numbered source by search_code symbol_id (preferred) or project-relative lines.
+Reports truncation and continuation, not calls or flow."""
 
 
 READ_CONTRACT = ToolContract(
@@ -230,6 +230,12 @@ class ReadCodeTool(ContractTool):
         requested_end = arguments.get("end_line")
         if requested_end is None:
             requested_end = definition_end
+        elif int(requested_end) < start:
+            return invalid_request(
+                code="invalid_line_range",
+                path="end_line",
+                message=f"end_line must be at least the resolved start line {start}",
+            )
         elif int(requested_end) > definition_end:
             return invalid_request(
                 code="line_outside_symbol",
@@ -274,7 +280,7 @@ class ReadCodeTool(ContractTool):
                 ]
                 if len(exact) == 1:
                     details = exact[0]
-            if details is None:
+            else:
                 details = self.code_index.get_type_info(
                     str(record.get("qualified_name") or record["name"])
                 )
@@ -360,7 +366,11 @@ class ReadCodeTool(ContractTool):
             "symbol": symbol,
             "source": source,
             "definition": {
-                "complete": bool(definition_complete and not truncated),
+                "complete": bool(
+                    definition_complete
+                    and not truncated
+                    and (symbol is None or start_line == symbol["location"]["start_line"])
+                ),
                 "origin": origin,
             },
         }
@@ -381,7 +391,7 @@ class ReadCodeTool(ContractTool):
     def _scan_global_end(self, file_path: str, start_line: int) -> Tuple[int, bool]:
         if self.source_access is not None:
             try:
-                lines = self.source_access.read(file_path)[0].splitlines(keepends=True)
+                lines = source_lines(self.source_access.read(file_path)[0])
             except SourceAccessError:
                 return start_line, False
         else:
@@ -392,12 +402,21 @@ class ReadCodeTool(ContractTool):
         quote = ""
         escaped = False
         block_comment = False
+        raw_end = ""
+        depth = 0
         for line_number in range(start_line, min(len(lines), start_line + 499) + 1):
             line = lines[line_number - 1]
             index = 0
             while index < len(line):
                 char = line[index]
                 nxt = line[index + 1] if index + 1 < len(line) else ""
+                if raw_end:
+                    end = line.find(raw_end, index)
+                    if end < 0:
+                        break
+                    index = end + len(raw_end)
+                    raw_end = ""
+                    continue
                 if block_comment:
                     if char == "*" and nxt == "/":
                         block_comment = False
@@ -416,9 +435,19 @@ class ReadCodeTool(ContractTool):
                     continue
                 elif char == "/" and nxt == "/":
                     break
+                elif char == "R" and nxt == '"':
+                    raw_start = re.match(r'R"([^ ()\\\t\v\f\r\n]{0,16})\(', line[index:])
+                    if raw_start:
+                        raw_end = ")" + raw_start.group(1) + '"'
+                        index += raw_start.end()
+                        continue
                 elif char in {"'", '"'}:
                     quote = char
-                elif char == ";":
+                elif char in "({[":
+                    depth += 1
+                elif char in ")}]":
+                    depth -= 1
+                elif char == ";" and depth == 0:
                     return line_number, True
                 index += 1
         return min(len(lines), start_line + 499), False

@@ -58,7 +58,10 @@ SENSITIVE_PATH_VALUE_PARTS = (
 
 SENSITIVE_TEXT_PATTERNS = (
     (re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"), r"\1[redacted]"),
-    (re.compile(r"(?i)((?:api[_-]?key|apikey|token|session|password|secret)\s*[:=]\s*)[^\s,;]+"), r"\1[redacted]"),
+    (
+        re.compile(r"(?i)((?:api[_-]?key|apikey|token|session|password|secret)\s*[:=]\s*)[^\s,;]+"),
+        r"\1[redacted]",
+    ),
 )
 
 
@@ -330,7 +333,9 @@ class ToolPolicy:
         for hook in self.pre_hooks:
             hook_result = hook(dict(hook_payload))
             if hook_result:
-                reason = str(hook_result.get("error") or hook_result.get("reason") or "blocked by pre-hook")
+                reason = str(
+                    hook_result.get("error") or hook_result.get("reason") or "blocked by pre-hook"
+                )
                 self._audit(kind, name, "deny", reason, arguments, actor)
                 return self._error(kind, name, "deny", reason)
 
@@ -432,7 +437,7 @@ class ToolPolicy:
             kind=kind,
             name=name,
             action=action,
-            reason=reason,
+            reason=self._summarize_string(reason),
             actor=actor,
             args_summary=self._summarize_args(arguments),
             result_summary=self._summarize_result(result or {}),
@@ -475,7 +480,11 @@ class ToolPolicy:
         for key in ("success", "error", "policy_decision", "policy_kind"):
             if key in result:
                 value = result[key]
-                summary[key] = cls._summarize_string(value) if isinstance(value, str) else value
+                summary[key] = (
+                    cls._summarize_args(value)
+                    if isinstance(value, dict)
+                    else cls._summarize_string(value) if isinstance(value, str) else value
+                )
         data = result.get("data")
         if isinstance(data, dict):
             for key, value in data.items():

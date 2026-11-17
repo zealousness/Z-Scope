@@ -1,4 +1,4 @@
-from typing import Any, Dict, Set, TYPE_CHECKING
+from typing import Any, Dict, TYPE_CHECKING
 
 from ..framework.base import BaseTool
 
@@ -17,11 +17,19 @@ class GetCallGraphTool(BaseTool):
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        from ..common.utils import sanitize_func_name
-
-        func_name = sanitize_func_name(arguments.get("func_name", ""))
-        depth = arguments.get("depth", 1)
-        limit = arguments.get("limit", 30)
+        func_name = str(arguments.get("func_name") or "").strip()
+        if not func_name:
+            return {"success": False, "error": "Function name is empty"}
+        try:
+            depth = int(arguments.get("depth", 1))
+            limit = int(arguments.get("limit", 30))
+        except (TypeError, ValueError, OverflowError):
+            return {"success": False, "error": "depth and limit must be integers"}
+        if not 0 <= depth <= 64 or limit < 1:
+            return {
+                "success": False,
+                "error": "depth must be between 0 and 64; limit must be positive",
+            }
         # An explicit value type keeps mypy from joining the heterogeneous
         # initial literal into Sequence[str] and rejecting the truncated flag.
         result: Dict[str, Any] = {
@@ -30,24 +38,26 @@ class GetCallGraphTool(BaseTool):
             "callees": [],
         }
         # Build graph up to requested depth
-        visited_up: Set[str] = set()
-        visited_down: Set[str] = set()
-        self._collect_callers(func_name, result["callers"], visited_up, depth, limit)
-        self._collect_callees(func_name, result["callees"], visited_down, depth, limit)
-        # A side hitting its node limit means the graph is incomplete; report
-        # it so the model does not treat a full-looking list as exhaustive.
-        if len(result["callers"]) >= limit or len(result["callees"]) >= limit:
+        visited_up: Dict[str, int] = {}
+        visited_down: Dict[str, int] = {}
+        self._collect_callers(func_name, result["callers"], visited_up, depth, limit + 1)
+        self._collect_callees(func_name, result["callees"], visited_down, depth, limit + 1)
+        # One extra row distinguishes an incomplete neighborhood from an exact fit.
+        if len(result["callers"]) > limit or len(result["callees"]) > limit:
             result["truncated"] = True
             result["note"] = (
                 f"The caller or callee list hit the {limit}-node limit; re-run "
                 "with a larger limit for the complete neighborhood."
             )
+        result["callers"] = result["callers"][:limit]
+        result["callees"] = result["callees"][:limit]
         return {"success": True, "data": result}
 
     def _collect_callers(self, name, out, visited, depth, limit):
-        if depth <= 0 or name in visited or len(out) >= limit:
+        if depth <= 0 or visited.get(name, 0) >= depth or len(out) >= limit:
             return
-        visited.add(name)
+        # A shorter route may leave more depth to inspect an already seen node.
+        visited[name] = depth
         callers = self.code_index.get_callers(name, limit=limit - len(out))
         for c in callers:
             if len(out) >= limit:
@@ -57,9 +67,9 @@ class GetCallGraphTool(BaseTool):
             self._collect_callers(c.get("name", ""), out, visited, depth - 1, limit)
 
     def _collect_callees(self, name, out, visited, depth, limit):
-        if depth <= 0 or name in visited or len(out) >= limit:
+        if depth <= 0 or visited.get(name, 0) >= depth or len(out) >= limit:
             return
-        visited.add(name)
+        visited[name] = depth
         callees = self.code_index.get_callees(name, limit=limit - len(out))
         for c in callees:
             if len(out) >= limit:
@@ -77,9 +87,23 @@ class GetCallGraphTool(BaseTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "func_name": {"type": "string", "description": "Center function of the call graph"},
-                        "depth": {"type": "integer", "default": 1, "description": "Traversal depth (default 1)"},
-                        "limit": {"type": "integer", "default": 30, "description": "Max nodes to return"},
+                        "func_name": {
+                            "type": "string",
+                            "description": "Center function of the call graph",
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 64,
+                            "default": 1,
+                            "description": "Traversal depth (default 1)",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 30,
+                            "description": "Max nodes to return",
+                        },
                     },
                     "required": ["func_name"],
                 },

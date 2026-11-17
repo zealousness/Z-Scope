@@ -16,6 +16,7 @@ authors = [
 dependencies = [
     "openai>=1.0.0",
     "requests>=2.31.0",
+    "regex>=2026.11.15",
     "httpx>=0.28.1,<1",
     "click>=8.1.0",
     "tqdm>=4.66.0",
@@ -36,6 +37,7 @@ dev = [
     "mypy==1.19.1",
     "types-PyYAML>=6.0.0",
     "types-requests>=2.31.0",
+    "types-regex>=2026.11.15.20261116",
 ]
 
 [project.scripts]

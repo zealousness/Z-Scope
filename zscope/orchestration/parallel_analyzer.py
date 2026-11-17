@@ -738,9 +738,11 @@ class ParallelAnalyzer:
         llm_clients: Optional[Dict[str, LLMClient]] = None,
         semantic_result: Any = None,
         reproduction_service: Any = None,
+        artifact_reuse_enabled: bool = True,
     ):
         preflight_rules(config)
         self.base_config = config
+        self._artifact_reuse_enabled = artifact_reuse_enabled
         self.semantic_result = semantic_result
         from ..core.validation.reproduction_planner import SessionReproductionPlanner
 
@@ -2862,6 +2864,7 @@ class ParallelAnalyzer:
         if getattr(self, "_hierarchical_discovery_done", False):
             return
         from .hierarchical_discovery import HierarchicalDiscovery, build_hierarchy, make_function
+        from .hierarchical_reuse import select_reference_bindings
 
         inputs = getattr(self, "_hierarchical_static_inputs", None)
         if not inputs or not self._fast_static_scan_state.get("activated"):
@@ -2895,8 +2898,9 @@ class ParallelAnalyzer:
             require_current=current,
             max_iterations=self.base_config.analysis.max_tool_iterations,
             timeout=self.base_config.analysis.active_investigation_timeout_seconds,
-            model_identity={"analysis": list(getattr(client, "models", []) or []),
-                            "modeling": list(getattr(modeling_client, "models", []) or [])},
+            model_identity={"analysis": self._summary_model_identity(client),
+                            "modeling": self._summary_model_identity(modeling_client)},
+            enable_cross_build_reuse=getattr(self, "_artifact_reuse_enabled", True),
             cancellation_token=self._cancellation_token, modeling_client=modeling_client)
         result = discovery.run(hierarchy, lifecycle)
         current()
@@ -2912,6 +2916,10 @@ class ParallelAnalyzer:
                         for unit in hierarchy["units"] if row["id"] in unit["members"]
                         and unit["id"] in result["summaries"]],
                     "authority": "unverified_context"}
+                supplement = self._hierarchical_supplements[(row["build_context_id"], row["usr"])]
+                supplement["reference_bindings"] = select_reference_bindings(
+                    supplement, result["reference_bindings"]
+                )
         static_clusters = {record.validation_cluster_uid for record in self._candidate_ledger.records()}
         for candidate in result["candidates"]:
             scope, data = owners[(candidate["build_context_id"], candidate["function_usr"])]
@@ -2932,14 +2940,30 @@ class ParallelAnalyzer:
             "functions": [{k: f[k] for k in ("id", "usr", "build_context_id", "function", "file")}
                           for f in functions], "edges": hierarchy["edges"],
             "summaries": result["summaries"], "gaps": result["gaps"],
+            "reference_bindings": result["reference_bindings"],
             "authority": "unverified_context"})
         self._hierarchical_discovery_done = True
         self._hierarchical_static_inputs = None
-        self._active_discovery_state = {k: v for k, v in result.items() if k not in {"summaries", "candidates"}}
+        self._active_discovery_state = {k: v for k, v in result.items()
+            if k not in {"summaries", "candidates", "reference_bindings"}}
         self._active_discovery_state.update({"enabled": True, "profile": "deep",
             "path": "hierarchical_contracts", "candidate_count": len(result["candidates"]),
             "summary_count": len(result["summaries"]), "duration_seconds": result["elapsed_seconds"]})
         self._active_discovery_state["contracts_path"] = str(contract_path)
+
+    @staticmethod
+    def _summary_model_identity(client: Any) -> Dict[str, Any]:
+        routes = list(getattr(client, "base_urls", []) or [])
+        if not routes and getattr(client, "base_url", None):
+            routes = [client.base_url]
+        return {
+            "models": list(getattr(client, "models", []) or []),
+            "routing": hashlib.sha256(json.dumps(routes).encode()).hexdigest(),
+            "max_tokens": getattr(client, "max_tokens", None),
+            "supports_structured_output": getattr(client, "supports_structured_output", False),
+            "context_window": getattr(client, "context_window", None),
+            "model_context_windows": getattr(client, "model_context_windows", {}),
+        }
 
     def _base_validation_helper(self) -> Analyzer:
         """The scan-level validation helper for an unscoped batch."""
@@ -2947,6 +2971,7 @@ class ParallelAnalyzer:
         return Analyzer(
             self.base_config,
             semantic_result=self.semantic_result,
+            artifact_reuse_enabled=getattr(self, "_artifact_reuse_enabled", True),
             reproduction_service=getattr(self, "reproduction_service", None),
             code_index=self.code_index,
             snapshot_store=self.snapshot_store,
@@ -2985,6 +3010,7 @@ class ParallelAnalyzer:
         return Analyzer(
             self.base_config,
             semantic_result=None,
+            artifact_reuse_enabled=getattr(self, "_artifact_reuse_enabled", True),
             reproduction_service=getattr(self, "reproduction_service", None),
             code_index=wrap_scoped_code_index(self.code_index, scope),
             snapshot_store=self.snapshot_store,
@@ -3152,6 +3178,7 @@ class ParallelAnalyzer:
             helper = Analyzer(
                 self.base_config,
                 semantic_result=self.semantic_result,
+                artifact_reuse_enabled=getattr(self, "_artifact_reuse_enabled", True),
                 reproduction_service=getattr(self, "reproduction_service", None),
                 code_index=self.code_index,
                 snapshot_store=self.snapshot_store,
@@ -5639,6 +5666,7 @@ class ParallelAnalyzer:
             self.base_config,
             semantic_result=self.semantic_result,
             reproduction_service=getattr(self, "reproduction_service", None),
+            artifact_reuse_enabled=getattr(self, "_artifact_reuse_enabled", True),
             code_index=self.code_index,
             snapshot_store=self.snapshot_store,
             user_config=self.user_config,
@@ -6470,6 +6498,7 @@ class ParallelAnalyzer:
                 defer_validation_to_scan=self._uses_scan_validation_queue(),
                 project_knowledge_service=self.project_knowledge_service,
                 semantic_result=entry_semantic_result,
+                artifact_reuse_enabled=getattr(self, "_artifact_reuse_enabled", True),
                 instance_scope=instance_scope,
                 reproduction_service=getattr(self, "reproduction_service", None),
                 instance_semantics_snapshot=instance_snapshot,
@@ -7418,6 +7447,17 @@ class ParallelAnalyzer:
             else 0.0
         )
         validation_performance_summary = self._validation_performance_summary(current_results)
+        from ..reporting.artifact_reuse import artifact_reuse_summary, merge_initial_reuse, merge_query_reuse
+
+        initial_reuse = merge_initial_reuse([
+            *(result.metadata.get("validator_initial_reuse", {}) for result in current_results.values()),
+            getattr(self, "_global_validation_state", {}).get("validator_initial_reuse", {}),
+        ])
+        query_reuse = merge_query_reuse([
+            *(result.metadata.get("validator_query_reuse", {}) for result in current_results.values()),
+            getattr(self, "_global_validation_state", {}).get("validator_query_reuse", {}),
+        ])
+        artifact_reuse = artifact_reuse_summary(active_discovery_state, initial_reuse, query_reuse)
         va_candidate_coverage_summary = self._va_candidate_coverage_summary(results)
         entry_budget_summary = self._entry_budget_summary(current_results)
         llm_iteration_budget_summary = self._llm_iteration_budget_summary(current_results)
@@ -7665,6 +7705,8 @@ class ParallelAnalyzer:
                 "diff_relevance": diff_relevance_summary["issues"],
                 "diff_coverage": diff_coverage.get("coverage_summary", {}),
                 "validation_performance": validation_performance_summary,
+                "validator_initial_reuse": initial_reuse,
+                "artifact_reuse": artifact_reuse,
                 "global_validation_queue": dict(global_validation_report),
                 "project_deterministic_fact_pass": project_fact_state,
                 "fast_static_scan": fast_static_state,
@@ -7756,6 +7798,8 @@ class ParallelAnalyzer:
                 "llm_usage": llm_usage_summary,
                 "wiki_telemetry": wiki_telemetry,
                 "validation_performance": validation_performance_summary,
+                "validator_initial_reuse": initial_reuse,
+                "artifact_reuse": artifact_reuse,
                 "global_validation_queue": dict(global_validation_report),
                 "project_deterministic_fact_pass": project_fact_state,
                 "fast_static_scan": fast_static_state,
@@ -8620,6 +8664,11 @@ class ParallelAnalyzer:
             f"- **Audit Observations**: {len(review_items)}",
             f"- **Deferred Entry Candidates**: {deferred_count}",
         ]
+        from ..reporting.artifact_reuse import artifact_reuse_markdown
+
+        reuse_section = artifact_reuse_markdown(metadata)
+        if reuse_section:
+            md.append(reuse_section)
         funnel = metadata.get("mode_outcomes") or summary.get("mode_outcomes") or {}
         if funnel:
             md.extend(["", "## Mode Outcomes", "",

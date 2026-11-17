@@ -1,0 +1,722 @@
+[
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_af4655266fb4b5b99b34c18f",
+    "rows": [
+      {
+        "index": 321,
+        "rule_id": "error_path_allocation_not_released",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 322,
+        "rule_id": "clang_cfg_log_error_path_allocation_not_released",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_8a6b291d1bf1cadc6badf4dc",
+    "rows": [
+      {
+        "index": 337,
+        "rule_id": "clang_cfg_nonliteral_format_string",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 338,
+        "rule_id": "nonliteral_format_string",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_40c56d8f7529ad3a8f842bd8",
+    "rows": [
+      {
+        "index": 339,
+        "rule_id": "clang_cfg_log_error_path_allocation_not_released",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 340,
+        "rule_id": "error_path_allocation_not_released",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_eac463ffaf25996ff2c64fab",
+    "rows": [
+      {
+        "index": 345,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 346,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_13d20ca0761aa9c53f446cef",
+    "rows": [
+      {
+        "index": 381,
+        "rule_id": "clang_cfg_system_with_nonliteral_command",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 382,
+        "rule_id": "system_with_constructed_command",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_8c19e76f9a198c88bee272b3",
+    "rows": [
+      {
+        "index": 392,
+        "rule_id": "object_published_before_initialization",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 393,
+        "rule_id": "clang_cfg_object_published_before_initialization",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_58e1442a8e9e9f088d196c2e",
+    "rows": [
+      {
+        "index": 420,
+        "rule_id": "clang_cfg_unbounded_vla_or_stack_array",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 421,
+        "rule_id": "unbounded_vla_or_stack_array",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_31947365f48018c6274eda1a",
+    "rows": [
+      {
+        "index": 428,
+        "rule_id": "object_published_before_initialization",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 429,
+        "rule_id": "clang_cfg_object_published_before_initialization",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_ed41b6f39cab88fd2b2d2cbd",
+    "rows": [
+      {
+        "index": 436,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 437,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_60f70816e3fe69cc35144cf2",
+    "rows": [
+      {
+        "index": 438,
+        "rule_id": "sizeof_index_write",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 439,
+        "rule_id": "clang_cfg_sizeof_index_write",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_c3ba871edde97c594a74042a",
+    "rows": [
+      {
+        "index": 440,
+        "rule_id": "write_without_sigpipe_handling",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 441,
+        "rule_id": "peer_write_without_sigpipe_handling",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_742948cd297c3644d5243965",
+    "rows": [
+      {
+        "index": 444,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 445,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_c57d6cb7b6333d481a1e25e2",
+    "rows": [
+      {
+        "index": 446,
+        "rule_id": "clang_cfg_system_with_nonliteral_command",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 447,
+        "rule_id": "system_with_constructed_command",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_3dc2c1c6d3f5c9cc262c11ee",
+    "rows": [
+      {
+        "index": 450,
+        "rule_id": "double_checked_global_without_atomic",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 451,
+        "rule_id": "clang_cfg_double_checked_global_without_atomic",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "fast",
+    "candidate_uid": "CAND_5f12f9c41654ca3f713aeac0",
+    "rows": [
+      {
+        "index": 454,
+        "rule_id": "same_function_helper_alloc_wrapper_member_leak",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 455,
+        "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_67ad5c983171fb7f749d37a8",
+    "rows": [
+      {
+        "index": 189,
+        "rule_id": "clang_cfg_object_published_before_initialization",
+        "terminal_disposition": "rejected_with_evidence"
+      },
+      {
+        "index": 444,
+        "rule_id": "object_published_before_initialization",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_a77266277c0fdfef284458f8",
+    "rows": [
+      {
+        "index": 278,
+        "rule_id": "error_path_allocation_not_released",
+        "terminal_disposition": "rejected_with_evidence"
+      },
+      {
+        "index": 283,
+        "rule_id": "clang_cfg_log_error_path_allocation_not_released",
+        "terminal_disposition": "rejected_with_evidence"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_2d77cd92e6aecd11fb47bc2a",
+    "rows": [
+      {
+        "index": 356,
+        "rule_id": "system_with_constructed_command",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 357,
+        "rule_id": "clang_cfg_system_with_nonliteral_command",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_4495354287568325850e4cc2",
+    "rows": [
+      {
+        "index": 372,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 373,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_0fcd90fbe4b7117e315ee7fe",
+    "rows": [
+      {
+        "index": 376,
+        "rule_id": "unbounded_vla_or_stack_array",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 377,
+        "rule_id": "clang_cfg_unbounded_vla_or_stack_array",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_9e6e6de6cbe465e52c8e54fb",
+    "rows": [
+      {
+        "index": 380,
+        "rule_id": "same_function_helper_alloc_wrapper_member_leak",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 381,
+        "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_58c52ad9fdd1816f1129d452",
+    "rows": [
+      {
+        "index": 382,
+        "rule_id": "sizeof_index_write",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 383,
+        "rule_id": "clang_cfg_sizeof_index_write",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_86bd40b4d3cffac1efc32b1e",
+    "rows": [
+      {
+        "index": 394,
+        "rule_id": "system_with_constructed_command",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 395,
+        "rule_id": "clang_cfg_system_with_nonliteral_command",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_209f22c6b50918d667ca7701",
+    "rows": [
+      {
+        "index": 403,
+        "rule_id": "clang_cfg_object_published_before_initialization",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 404,
+        "rule_id": "object_published_before_initialization",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_ecd34c6853ec543e9b2bd88a",
+    "rows": [
+      {
+        "index": 411,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 412,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_c5a790ee2e7fcb9051705a33",
+    "rows": [
+      {
+        "index": 415,
+        "rule_id": "nonliteral_format_string",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 416,
+        "rule_id": "clang_cfg_nonliteral_format_string",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_2f2c70b9274a4fa05ebb649e",
+    "rows": [
+      {
+        "index": 423,
+        "rule_id": "double_checked_global_without_atomic",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 424,
+        "rule_id": "clang_cfg_double_checked_global_without_atomic",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_2975d3765d01a73d2769b188",
+    "rows": [
+      {
+        "index": 429,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 430,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_3fe52b4ca329ff0d2f7a07db",
+    "rows": [
+      {
+        "index": 431,
+        "rule_id": "clang_cfg_log_error_path_allocation_not_released",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 432,
+        "rule_id": "error_path_allocation_not_released",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "balanced",
+    "candidate_uid": "CAND_c8dcbc67234d66e51abe95ab",
+    "rows": [
+      {
+        "index": 456,
+        "rule_id": "peer_write_without_sigpipe_handling",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 457,
+        "rule_id": "write_without_sigpipe_handling",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_05be2e2ba6410f8b86160b1a",
+    "rows": [
+      {
+        "index": 64,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 439,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "rejected_with_evidence"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_6c450ffd20c5c8c8ab34e53c",
+    "rows": [
+      {
+        "index": 79,
+        "rule_id": "clang_cfg_log_error_path_allocation_not_released",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 84,
+        "rule_id": "error_path_allocation_not_released",
+        "terminal_disposition": "engine_failed"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_72e4f1405608a0c1515a1a15",
+    "rows": [
+      {
+        "index": 404,
+        "rule_id": "error_path_allocation_not_released",
+        "terminal_disposition": "rejected_with_evidence"
+      },
+      {
+        "index": 453,
+        "rule_id": "clang_cfg_log_error_path_allocation_not_released",
+        "terminal_disposition": "rejected_with_evidence"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_4f58b0bd0a6feb8c5c96769c",
+    "rows": [
+      {
+        "index": 454,
+        "rule_id": "clang_cfg_object_published_before_initialization",
+        "terminal_disposition": "rejected_with_evidence"
+      },
+      {
+        "index": 578,
+        "rule_id": "object_published_before_initialization",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_dad06a8e44a228d3393e4f92",
+    "rows": [
+      {
+        "index": 483,
+        "rule_id": "object_published_before_initialization",
+        "terminal_disposition": "rejected_with_evidence"
+      },
+      {
+        "index": 534,
+        "rule_id": "clang_cfg_object_published_before_initialization",
+        "terminal_disposition": "rejected_with_evidence"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_a608927fc4a708bd838b8e68",
+    "rows": [
+      {
+        "index": 548,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 549,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_6e098d9892af429e786a6051",
+    "rows": [
+      {
+        "index": 550,
+        "rule_id": "same_function_helper_alloc_wrapper_member_leak",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 551,
+        "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_11f01ce20ec8319662df166e",
+    "rows": [
+      {
+        "index": 552,
+        "rule_id": "peer_write_without_sigpipe_handling",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 553,
+        "rule_id": "write_without_sigpipe_handling",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_816d6283fec0a21c0804d2e4",
+    "rows": [
+      {
+        "index": 554,
+        "rule_id": "double_checked_global_without_atomic",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 555,
+        "rule_id": "clang_cfg_double_checked_global_without_atomic",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_9ce33c97976f96d87690b742",
+    "rows": [
+      {
+        "index": 573,
+        "rule_id": "clang_cfg_system_with_nonliteral_command",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 574,
+        "rule_id": "system_with_constructed_command",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_3fe81c5952dcbd497abb25be",
+    "rows": [
+      {
+        "index": 579,
+        "rule_id": "system_with_constructed_command",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 580,
+        "rule_id": "clang_cfg_system_with_nonliteral_command",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_5f363aa67d0d5c605d0baf5a",
+    "rows": [
+      {
+        "index": 587,
+        "rule_id": "clang_cfg_sizeof_index_write",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 588,
+        "rule_id": "sizeof_index_write",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_af9c50ff58ee6f1736b9f3f9",
+    "rows": [
+      {
+        "index": 602,
+        "rule_id": "unbounded_vla_or_stack_array",
+        "terminal_disposition": "needs_review"
+      },
+      {
+        "index": 603,
+        "rule_id": "clang_cfg_unbounded_vla_or_stack_array",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_b5abb848ebee27a051752e0a",
+    "rows": [
+      {
+        "index": 618,
+        "rule_id": "clang_cfg_nonliteral_format_string",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 619,
+        "rule_id": "nonliteral_format_string",
+        "terminal_disposition": "confirmed"
+      }
+    ]
+  },
+  {
+    "mode": "deep",
+    "candidate_uid": "CAND_ccf8aa8f68da5ea5b920da7d",
+    "rows": [
+      {
+        "index": 626,
+        "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+        "terminal_disposition": "confirmed"
+      },
+      {
+        "index": 627,
+        "rule_id": "inline_allocation_size_overflow",
+        "terminal_disposition": "needs_review"
+      }
+    ]
+  }
+]

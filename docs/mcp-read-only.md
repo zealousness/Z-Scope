@@ -1,6 +1,6 @@
 # 只读 MCP 与 Codex 接入
 
-Z-Scope 使用原有 MCP server，通过启动参数选择权限。profile 不属于 public Config v2；不要在 `zscope.yaml` 中添加它。默认仍是 `default`，正常扫描、Clang AST+SVF、六工具词汇和语义刷新策略保持原样。
+Z-Scope 使用原有 MCP server，通过启动参数选择权限。profile 不属于 public Config v3；不要在 `zscope.yaml` 中添加它。默认仍是 `default`，正常扫描、Clang AST+SVF、六工具词汇和语义刷新策略保持原样。
 
 ## 选择权限与启动方式
 
@@ -110,6 +110,6 @@ startup_timeout_sec = 30
 tool_timeout_sec = 30
 ```
 
-Windows `cwd` 是客户端启动 wsl.exe 的目录；`--cd` 与 `--config` 是 WSL 路径。只读模式不需要模型密钥，不配置 env_vars，也不假设 Windows 环境变量会自动转发给 WSL。项目 YAML 仍需符合严格 Config v2；模型字段可以沿用现有项目配置，但不会调用模型。人工复核需要报告资源时可显式选 read_only。
+Windows `cwd` 是客户端启动 wsl.exe 的目录；`--cd` 与 `--config` 是 WSL 路径。只读模式不需要模型密钥，不配置 env_vars，也不假设 Windows 环境变量会自动转发给 WSL。项目 YAML 仍需符合严格 Config v3；模型字段可以沿用现有项目配置，但不会调用模型。人工复核需要报告资源时可显式选 read_only。
 
 检查客户端 `codex --version`、`codex mcp --help` 与服务器 `python -m zscope.mcp.server --help`。连接后应看到上述五个盲调查工具，先执行 text 搜索→read，然后请求 cache_only 并确认扫描被拒绝。无索引的临时项目也能搜索读取。当前批次的真实客户端、协议与未执行项见 [T03 记录](handoffs/2026-10-08-zscope/records/T03-readonly-mcp.md)。

@@ -127,7 +127,7 @@ def test_validator_system_message_contains_the_complete_agent_contract() -> None
     registry = SpecRegistry()
     spec = registry.get_agent("validator_agent")
     assert spec is not None
-    assert len(spec.body) > 5000
+    assert spec.body
 
     context = {}
     attach_agent_contract(context, "validator_agent", registry)
@@ -137,8 +137,9 @@ def test_validator_system_message_contains_the_complete_agent_contract() -> None
     assert context["agent_contract"] == spec.to_prompt_block()
     assert system_prompt.endswith(spec.body)
     assert "[truncated]" not in system_prompt
-    assert "Field requirements:" in system_prompt
-    assert "must be in Chinese." in system_prompt
+    assert "Separate code facts, inferred conditions, and unresolved assumptions." in system_prompt
+    assert "Write report-facing free text in Simplified Chinese" in system_prompt
+    assert "Field requirements:" not in system_prompt
 
 
 def test_builtin_skills_declare_strict_language_scopes() -> None:

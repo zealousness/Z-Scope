@@ -3843,6 +3843,219 @@ interfaces:
     evidence_sha256: 28181298ca7bb0d5b4f97ba02644d14fee445f707c7a0b9213eb0b60a49589f5
     native_input_hash: 28181298ca7bb0d5b4f97ba02644d14fee445f707c7a0b9213eb0b60a49589f5
     identity_status: exact
+- id: range:net_recv_string:recv
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _net_recv_string
+    usr: c:@F@_net_recv_string
+    signature: char *(int, unsigned long)
+    file: src/network.c
+  cases:
+  - when:
+      op: compare
+      left:
+        kind: return
+      operator: '!='
+      right:
+        kind: literal
+        value: null
+    effect: applies
+  effects:
+  - domain: taint
+    role: recv_source
+    operation: recv_source
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:net_recv_data
+  review_reason: 'src/network.c:174-188: a non-NULL returned buffer may contain bytes from _net_recv_data.
+    Zero-byte receive is possible. This is a source declaration, not proof of length, termination safety
+    or complete return-buffer taint propagation in unified consumers.'
+  variants:
+  - target_id: range
+    build_context_id: 2f76a861fe989b983111e660a799e26f78bf3b06f28f7169d31e4a2b95ee5fd6
+    source_sha256: 86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4
+    usr: c:@F@_net_recv_string
+    signature: char *(int, unsigned long)
+    file: src/network.c
+    identity_status: exact
+- id: range:td_receive_string:recv
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: td_receive_string
+    usr: c:@F@td_receive_string
+    signature: char *(int, unsigned long)
+    file: src/main.c
+  cases:
+  - when:
+      op: compare
+      left:
+        kind: return
+      operator: '!='
+      right:
+        kind: literal
+        value: null
+    effect: applies
+  effects:
+  - domain: taint
+    role: recv_source
+    operation: recv_source
+    carrier:
+      root: return
+      phase: post
+      dereference: 0
+      members: []
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:net_recv_string:recv
+  review_reason: src/main.c:313-315 directly forwards the possibly network-derived returned buffer from
+    _net_recv_string. Allocation ownership is a separate contract. Complete return-buffer taint propagation
+    remains a consumer limitation.
+  variants:
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    source_sha256: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+    usr: c:@F@td_receive_string
+    signature: char *(int, unsigned long)
+    file: src/main.c
+    identity_status: exact
+- id: range:lifecycle_recv_packet
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: _lifecycle_recv_packet
+    usr: c:@F@_lifecycle_recv_packet
+    signature: int (int, char *, unsigned long)
+    file: src/lifecycle.c
+  cases:
+  - when:
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: argument
+          index: 1
+        operator: '!='
+        right:
+          kind: literal
+          value: null
+      - op: compare
+        left:
+          kind: argument
+          index: 2
+        operator: '>'
+        right:
+          kind: literal
+          value: 0
+    effect: applies
+  effects:
+  - domain: taint
+    role: recv_source
+    operation: recv_source
+    carrier:
+      root: argument
+      index: 1
+      phase: pre
+      dereference: 0
+      members: []
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:net_recv_data
+  review_reason: 'src/lifecycle.c:311-325: non-NULL dst and positive dst_size reach _net_recv_data into
+    local temp, then memcpy to argument 1; bytes may originate from the network. Negative received is
+    cast to size_t before copying, so failure is unknown, never no_effect. No capacity, actual-length,
+    full-initialization or safe-copy guarantee.'
+  variants:
+  - target_id: range
+    build_context_id: 2ee40054d9a2776658ff1008430b7a1c1f34e7051b26fe3da72440ebb4893e53
+    source_sha256: daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31
+    usr: c:@F@_lifecycle_recv_packet
+    signature: int (int, char *, unsigned long)
+    file: src/lifecycle.c
+    identity_status: exact
+- id: range:td_receive_message
+  primitive: false
+  basis: derived_wrapper
+  status: confirmed
+  selector:
+    kind: function
+    name: td_receive_message
+    usr: c:@F@td_receive_message
+    signature: int (int, char *, unsigned long)
+    file: src/main.c
+  cases:
+  - when:
+      op: all
+      items:
+      - op: compare
+        left:
+          kind: argument
+          index: 1
+        operator: '!='
+        right:
+          kind: literal
+          value: null
+      - op: compare
+        left:
+          kind: argument
+          index: 2
+        operator: '>'
+        right:
+          kind: literal
+          value: 0
+    effect: applies
+  effects:
+  - domain: taint
+    role: recv_source
+    operation: recv_source
+    carrier:
+      root: argument
+      index: 1
+      phase: pre
+      dereference: 0
+      members: []
+    strength: may
+    resource_family: ''
+    protocol: {}
+  otherwise: unknown
+  pairs: []
+  derived_from:
+  - range:lifecycle_recv_packet
+  review_reason: src/main.c:317-319 forwards fd/dst/dst_size and the signed result from _lifecycle_recv_packet.
+    Argument 1 may receive network-derived bytes; failure and copy extent remain unknown. The current
+    signed I/O-result rules consume the receive role, not a complete buffer-length contract.
+  variants:
+  - target_id: range
+    build_context_id: c56dbeafde07fecf5cad72ce7463af28a37b1bcaa2831b3c9737f410802541da
+    source_sha256: 9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b
+    usr: c:@F@td_receive_message
+    signature: int (int, char *, unsigned long)
+    file: src/main.c
+    identity_status: exact
 dispatchers: []
 function_pointer_bindings: []
 discovery_receipt:
@@ -3992,5 +4205,5 @@ discovery_receipt:
       - calloc
       resource_family: malloc
       reason: '2608-2615: borrowed shared-zone lookup.'
-    decisions_digest: c81c8372617696cfb6422843b7712cf22147996fc9634f478f000574199fa893
+    decisions_digest: 3563fd87ed5c5236842cf5e014588d36a0f2f168c7210544a72bd60a2e8de813
     scope_digest: 94d98a6566b20438275ddac604c23856a7be6da84d755717fd4f1342f4a377eb

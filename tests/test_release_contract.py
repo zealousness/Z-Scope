@@ -41,6 +41,13 @@ def test_project_semantics_yaml_runtime_is_in_every_shipped_lock() -> None:
             assert policy["packages"][package] == "MIT"
 
 
+def test_bounded_regex_runtime_is_in_every_shipped_lock() -> None:
+    policy = json.loads((ROOT / "requirements/license-policy.json").read_text())
+    for relative in SHIPPED_LOCKS:
+        assert _locked_versions(ROOT / relative).get("regex") == "2026.11.15"
+    assert policy["packages"]["regex"] == "Apache-2.0 AND CNRI-Python"
+
+
 def _locked_versions(lock: Path) -> dict[str, str]:
     """Read `name==version` pins, including CRLF-generated locks."""
     pins: dict[str, str] = {}

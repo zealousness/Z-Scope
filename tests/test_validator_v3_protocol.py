@@ -10,8 +10,9 @@ from zscope.common.validator_protocol import (
     parse_validator_result_v3,
     validator_result_provider_schema_v3,
     validator_result_schema_v3,
+    validator_decision_schema_v3,
 )
-from zscope.framework.base import BaseTool
+from zscope.framework.base import BaseTool, validate_function_arguments
 
 
 def _slice() -> dict:
@@ -81,6 +82,34 @@ class _FailingStructuredLLM(_DirectLLM):
     def chat_completion(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
         raise RuntimeError("provider rejected the declared response format")
+
+
+@pytest.mark.parametrize("structured", [True, False])
+def test_initial_reuse_descriptor_matches_actual_closed_request(structured):
+    llm = _DirectLLM([{"content": json.dumps(_result())}])
+    llm.supports_structured_output = structured
+    agent = ValidatorAgent(llm, [])
+    request = {"evidence_slice": _slice(), "agent_contract": "exact runtime skill contract"}
+    descriptor = agent.initial_reuse_descriptor(request)
+    response = agent.run(request)
+    assert response.success
+    messages, options = llm.calls[0]
+    assert descriptor["messages"] == messages
+    assert descriptor["request_options"] == {
+        key: value for key, value in options.items() if not key.startswith("trace_")
+    }
+    assert response.metadata["validator_provider_model"] == "unit-model"
+    if not structured:
+        assert [tool["function"]["name"] for tool in options["tools"]] == [
+            "emit_validator_result_v3"
+        ]
+    assert (
+        agent.initial_reuse_descriptor(
+            {"evidence_slice": {**_slice(), "validation_pass": "evidence_recheck"}}
+        )
+        is None
+    )
+    assert agent.initial_reuse_descriptor({**request, "_review_session": object()}) is None
 
 
 class _ReasoningOnlyLLM(_DirectLLM):
@@ -260,7 +289,7 @@ def test_validator_v3_uses_one_direct_strict_completion() -> None:
     assert llm.calls[0][1]["response_format"]["json_schema"]["strict"] is True
     wire_schema = llm.calls[0][1]["response_format"]["json_schema"]["schema"]
     assert "oneOf" not in wire_schema
-    assert set(wire_schema["required"]) == set(validator_result_schema_v3()["required"])
+    assert set(wire_schema["required"]) == set(validator_decision_schema_v3()["required"])
     assert response.metadata["validator_api_call_count"] == 1
 
 
@@ -282,7 +311,10 @@ def test_validator_provider_schema_enforces_candidate_missing_fact_policy() -> N
 
     assert exhausted["properties"]["missing_fact_request"]["type"] == "null"
     assert "missing_fact" not in exhausted["properties"]["stop_reason"]["enum"]
-    assert requestable["properties"]["missing_fact_request"]["properties"]["fact_kind"]["enum"] == [
+    branches = requestable["properties"]["missing_fact_request"]["anyOf"]
+    assert branches[0] == {"type": "null"}
+    assert branches[1]["type"] == "object"
+    assert branches[1]["properties"]["fact_kind"]["enum"] == [
         "guard_dominance",
         "value_range",
     ]
@@ -320,8 +352,9 @@ def test_validator_direct_schema_and_prompt_close_exhausted_provider_requests() 
     assert wire_schema["properties"]["missing_fact_request"]["type"] == "null"
     assert wire_schema["properties"]["evidence_refs"]["items"]["enum"] == ["FACT_1"]
     prompt = llm.calls[0][0][-1]["content"]
-    assert "stop_reason=no_evidence_gain" in prompt
-    assert "never use decision_complete for an uncertain verdict" in prompt
+    assert "stop_reason" not in wire_schema["properties"]
+    assert "stop_reason=" not in prompt
+    assert "runtime binds identities, stage and stop status" in prompt
 
 
 def test_validator_v3_does_not_add_tool_fallback_after_structured_call_failure() -> None:
@@ -340,6 +373,8 @@ def test_validator_v3_does_not_add_tool_fallback_after_structured_call_failure()
     assert len(llm.calls) == 1
     assert "response_format" in llm.calls[0][1]
     assert "tools" not in llm.calls[0][1]
+    assert response.metadata["validator_api_call_count"] == 1
+    assert response.metadata["validator_turn_count"] == 0
 
 
 def test_validator_v3_never_accepts_reasoning_metadata_as_terminal_output() -> None:
@@ -454,6 +489,7 @@ def test_validator_v3_length_retry_failure_still_degrades_to_uncertain() -> None
     assert response.success
     assert response.data["verdict"] == "uncertain"
     assert response.data["stop_reason"] == "output_truncated"
+    assert parse_validator_result_v3(response.data) is not None
     assert len(llm.calls) == 2
     assert "max_tokens" not in llm.calls[0][1]
     assert response.metadata["validator_length_retry_count"] == 1
@@ -476,6 +512,31 @@ def test_validator_v3_length_retry_exception_keeps_first_response() -> None:
     assert response.data["stop_reason"] == "output_truncated"
     assert len(llm.calls) == 2
     assert response.metadata["validator_length_retry_count"] == 1
+    assert response.metadata["validator_api_call_count"] == 2
+    assert response.metadata["validator_turn_count"] == 1
+
+
+def test_v3_uncertain_prompt_does_not_require_legacy_fields():
+    llm = _DirectLLM(
+        [
+            {
+                "content": json.dumps(
+                    _result(
+                        verdict="uncertain",
+                        stop_reason="no_evidence_gain",
+                    )
+                )
+            }
+        ]
+    )
+    response = ValidatorAgent(llm, []).run({"evidence_slice": _slice()})
+    system = "\n".join(
+        message["content"] for message in llm.calls[0][0] if message["role"] == "system"
+    )
+    shared_contract = system.split("The following object is retained only for legacy", 1)[0]
+    assert "finding_kind" not in shared_contract
+    assert response.data["verdict"] == "uncertain"
+    assert len(llm.calls) == 1
 
 
 def test_validator_v3_rejects_extra_fields_and_unknown_evidence_refs() -> None:
@@ -573,6 +634,51 @@ def test_validator_v3_runtime_dataclass_self_validates() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "verdict,reason,needs_fact,accepted",
+    [
+        ("uncertain", "malformed_output", False, True),
+        ("uncertain", "investigation_exhausted", False, True),
+        ("uncertain", "output_truncated", False, True),
+        ("uncertain", "no_evidence_gain", False, True),
+        ("uncertain", "missing_fact", True, True),
+        ("verified", "decision_complete", False, True),
+        ("rejected", "investigation_complete", False, True),
+        ("verified", "investigation_exhausted", False, False),
+        ("rejected", "malformed_output", False, False),
+        ("uncertain", "decision_complete", False, False),
+        ("uncertain", "investigation_complete", False, False),
+        ("uncertain", "missing_fact", False, False),
+        ("uncertain", "investigation_exhausted", True, False),
+        ("verified", "decision_complete", True, False),
+        ("rejected", "missing_fact", True, False),
+    ],
+)
+def test_validator_stop_states_agree_across_wire_parser_and_runtime(
+    verdict, reason, needs_fact, accepted
+):
+    payload = _result(
+        verdict=verdict,
+        stop_reason=reason,
+        missing_fact_request=(
+            {"fact_kind": "value_range", "reason": "Need the bound"} if needs_fact else None
+        ),
+    )
+    payload["pass"] = "investigation_synthesis"
+    assert (validate_function_arguments(validator_result_schema_v3(), payload) is None) == accepted
+    assert (parse_validator_result_v3(payload) is not None) == accepted
+    fields = {key: value for key, value in payload.items() if key not in {"schema_version", "pass"}}
+    fields["validation_pass"] = payload["pass"]
+    for name in ("positive_evidence", "negative_evidence", "evidence_refs"):
+        fields[name] = tuple(fields[name])
+    if accepted:
+        result = ValidatorResultV3(**fields)
+        assert parse_validator_result_v3(result.to_dict()) == result
+    else:
+        with pytest.raises(ValueError):
+            ValidatorResultV3(**fields)
+
+
 def test_validator_v3_investigation_uses_one_50_turn_session_and_records_tool_facts() -> None:
     llm = _InvestigationLLM()
     evidence_slice = _slice()
@@ -634,9 +740,7 @@ def test_validator_window_failure_keeps_facts_but_cannot_accept_earlier_decision
             # Even schema-valid, evidence-backed text from before the stop
             # cannot become a completed verdict after an incomplete session.
             result["content"] = result["message"]["tool_calls"][0]["function"]["arguments"]
-            result.update(
-                finish_reason="context_window_exceeded", truncated=True, api_call_count=3
-            )
+            result.update(finish_reason="context_window_exceeded", truncated=True, api_call_count=3)
             return result
 
     evidence_slice = _slice()
@@ -655,6 +759,49 @@ def test_validator_window_failure_keeps_facts_but_cannot_accept_earlier_decision
     assert response.metadata["validator_api_call_count"] == 3
     assert len(response.metadata["validator_tool_fact_catalog"]) == 2
     assert len(response.metadata["validator_investigation_facts"]) == 1
+    assert parse_validator_result_v3(response.data) is not None
+
+
+def test_complete_json_in_truncated_direct_response_still_requires_repair():
+    llm = _DirectLLM(
+        [
+            {"content": json.dumps(_result()), "finish_reason": "length"},
+            {"content": json.dumps(_result(verdict="uncertain", stop_reason="unsupported_fact"))},
+        ]
+    )
+    response = ValidatorAgent(llm, []).run({"evidence_slice": _slice()})
+    assert len(llm.calls) == 2
+    assert response.data["verdict"] == "uncertain"
+    assert response.metadata["validator_length_retry_count"] == 1
+
+
+@pytest.mark.parametrize("failure", [{"terminal_tool_valid": False}, {"finish_reason": "length"}])
+def test_failed_investigation_terminal_cannot_be_recovered_from_earlier_json(failure):
+    class IncompleteLLM(_InvestigationLLM):
+        def run_conversation_with_tools(self, **kwargs):
+            result = super().run_conversation_with_tools(**kwargs)
+            result["content"] = result["message"]["tool_calls"][0]["function"]["arguments"]
+            return {**result, **failure}
+
+    response = ValidatorAgent(IncompleteLLM(), [_ReadOnlyEvidenceTool()]).investigate(
+        {"evidence_slice": _slice()}
+    )
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["stop_reason"] == "investigation_exhausted"
+    assert len(response.metadata["validator_investigation_facts"]) == 1
+    assert response.metadata["validator_protocol_audit"]["parsed"] is False
+
+
+def test_investigation_failure_keeps_error_category_without_logging_provider_body(caplog):
+    class FailedLLM:
+        def run_conversation_with_tools(self, **kwargs):
+            raise RuntimeError("private-endpoint-body-DO-NOT-LOG")
+
+    response = ValidatorAgent(FailedLLM(), []).investigate({"evidence_slice": _slice()})
+    assert response.data["verdict"] == "uncertain"
+    assert response.metadata["validator_error_type"] == "RuntimeError"
+    assert "RuntimeError" in caplog.text
+    assert "private-endpoint-body-DO-NOT-LOG" not in caplog.text
 
 
 def test_dynamic_reproduction_v4_contract_is_reserved_but_not_dispatched() -> None:

@@ -5,13 +5,18 @@ from __future__ import annotations
 import hashlib
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import regex
+
 SYMBOL_KINDS = {"function", "method", "macro", "type", "global", "external"}
 SEARCHABLE_KINDS = ("function", "method", "macro", "type", "global")
 SYMBOL_ID_PATTERN = r"^zs1:(?:function|method|macro|type|global|external):[0-9a-f]{24}$"
+_MACRO_TEXT_LIMIT = 2000
+_REGEX_QUERY_SECONDS = 1.0
 
 
 def valid_symbol_id(value: Any) -> bool:
@@ -94,7 +99,8 @@ SYMBOL_REF_SCHEMA: Dict[str, Any] = {
 
 
 def normalize_project_path(value: Any) -> str:
-    return str(value or "").replace("\\", "/").removeprefix("./")
+    normalized = PurePosixPath(str(value or "").replace("\\", "/")).as_posix()
+    return "" if normalized == "." else normalized
 
 
 def _positive_line(value: Any, fallback: int = 0) -> int:
@@ -113,7 +119,7 @@ def project_relative_path_error(value: Any) -> str:
         return "path must be non-empty"
     if re.search(r"[\x00-\x1f\x7f]", normalized):
         return "path must not contain control characters"
-    if normalized.startswith("/") or re.match(r"^[A-Za-z]:/", normalized):
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
         return "path must be project-root relative"
     if ".." in PurePosixPath(normalized).parts:
         return "path must not contain '..' segments"
@@ -166,8 +172,10 @@ def _balanced_outer_parentheses(value: str) -> bool:
 
 
 def classify_direct_literal(replacement: str) -> Optional[Dict[str, str]]:
-    """Classify a direct literal without evaluating expressions or other macros."""
+    """Classify a bounded direct literal without evaluating expressions or macros."""
     raw = str(replacement or "").strip()
+    if len(raw) > _MACRO_TEXT_LIMIT:
+        return None
     value = raw
     while _balanced_outer_parentheses(value):
         value = value[1:-1].strip()
@@ -231,9 +239,9 @@ def macro_metadata(name: str, definition: str, is_function_like: bool) -> Dict[s
     replacement = replacement.strip()
     return {
         "form": "function_like" if is_function_like else "object_like",
-        "definition": raw[:2000],
-        "definition_truncated": len(raw) > 2000,
-        "replacement_text": replacement[:2000],
+        "definition": raw[:_MACRO_TEXT_LIMIT],
+        "definition_truncated": len(raw) > _MACRO_TEXT_LIMIT,
+        "replacement_text": replacement[:_MACRO_TEXT_LIMIT],
         "literal": None if is_function_like else classify_direct_literal(replacement),
     }
 
@@ -255,6 +263,7 @@ class SymbolCatalog:
         self._lock = threading.RLock()
         self._snapshot: Optional[SymbolSnapshot] = None
         self.permitted_source: Any = None
+        self.allow_external = True
 
     @property
     def epoch(self) -> int:
@@ -293,18 +302,23 @@ class SymbolCatalog:
 
     def resolve(self, identifier: str) -> Optional[Dict[str, Any]]:
         record = self.snapshot().by_id.get(str(identifier or ""))
-        return dict(record) if record else None
+        return dict(record) if record and self._permitted(record) else None
+
+    def _permitted(self, record: Dict[str, Any]) -> bool:
+        if record["kind"] == "external":
+            return self.allow_external
+        return self.permitted_source is None or bool(self.permitted_source(record["file"]))
 
     def resolve_cached(self, identifier: str) -> Optional[Dict[str, Any]]:
         """Resolve published in-memory function identities without derived queries."""
         with self._lock:
             if self._snapshot is not None and self._snapshot.epoch == self.epoch:
                 item = self._snapshot.by_id.get(identifier)
-                return dict(item) if item else None
+                return dict(item) if item and self._permitted(item) else None
             records = self._function_records()
         for item in records:
             item["symbol_id"] = symbol_id_for(item)
-            if item["symbol_id"] == identifier:
+            if item["symbol_id"] == identifier and self._permitted(item):
                 return item
         return None
 
@@ -315,11 +329,17 @@ class SymbolCatalog:
         match_mode: str,
         path_prefix: Optional[str],
     ) -> List[Dict[str, Any]]:
-        pattern = re.compile(query) if match_mode == "regex" else None
+        pattern = regex.compile(query, regex.VERSION0) if match_mode == "regex" else None
         normalized_prefix = normalize_project_path(path_prefix).rstrip("/")
         requested = set(kinds or SEARCHABLE_KINDS)
         result: List[Tuple[int, Dict[str, Any]]] = []
-        for record in self.snapshot().records:
+        records = self.snapshot().records
+        deadline = time.monotonic() + _REGEX_QUERY_SECONDS if pattern is not None else None
+        for record in records:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("symbol regex query exceeded its time budget")
+            if not self._permitted(record):
+                continue
             kind = str(record.get("kind") or "")
             if kind == "external":
                 if "function" not in requested and "method" not in requested:
@@ -331,15 +351,12 @@ class SymbolCatalog:
                 file_path == normalized_prefix or file_path.startswith(normalized_prefix + "/")
             ):
                 continue
-            fields = tuple(
-                field[:4096]
-                for field in (
-                    str(record.get("name") or ""),
-                    str(record.get("qualified_name") or ""),
-                    str(record.get("signature") or ""),
-                )
+            fields = (
+                str(record.get("name") or ""),
+                str(record.get("qualified_name") or ""),
+                str(record.get("signature") or ""),
             )
-            score = self._match_score(query, fields, match_mode, pattern)
+            score = self._match_score(query, fields, match_mode, pattern, deadline)
             if score is not None:
                 result.append((score, record))
         kind_order = {kind: index for index, kind in enumerate(SEARCHABLE_KINDS)}
@@ -353,6 +370,8 @@ class SymbolCatalog:
                 str(item[1].get("symbol_id") or ""),
             )
         )
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("symbol regex query exceeded its time budget")
         return [dict(record) for _, record in result]
 
     @staticmethod
@@ -360,7 +379,8 @@ class SymbolCatalog:
         query: str,
         fields: Iterable[str],
         match_mode: str,
-        pattern: Optional[re.Pattern[str]],
+        pattern: Optional[regex.Pattern[str]],
+        deadline: Optional[float] = None,
     ) -> Optional[int]:
         best: Optional[int] = None
         for field in fields:
@@ -370,7 +390,12 @@ class SymbolCatalog:
                 candidate = 1
             elif match_mode == "substring" and query in field:
                 candidate = 2 + field.find(query)
-            elif match_mode == "regex" and pattern is not None and pattern.search(field):
+            elif match_mode == "regex" and pattern is not None:
+                remaining = deadline - time.monotonic() if deadline is not None else None
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("symbol regex query exceeded its time budget")
+                if not pattern.search(field, timeout=remaining):
+                    continue
                 candidate = 3
             else:
                 continue
@@ -431,9 +456,7 @@ class SymbolCatalog:
                     "raw": item,
                 }
             )
-        return [
-            r for r in records if self.permitted_source is None or self.permitted_source(r["file"])
-        ]
+        return [record for record in records if self._permitted(record)]
 
     def _collect_records(self) -> Tuple[List[Dict[str, Any]], set[str]]:
         records = self._function_records()
@@ -588,7 +611,7 @@ class SymbolCatalog:
 
         deduped: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
         for item in records:
-            if self.permitted_source is not None and not self.permitted_source(item["file"]):
+            if not self._permitted(item):
                 continue
             dedup_key = (
                 item["kind"],

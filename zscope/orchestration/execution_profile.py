@@ -38,7 +38,7 @@ re-resolving it:
   present or unverifiable environment is refused instead of guessed.
 
 An explicit, non-empty request ``stop_at`` wins over the config boundary.
-v2 documents and v3 documents without a stop window keep the current
+Documents without a stop window keep the current
 window-less behaviour.  A boundary that has already passed is never silently
 rolled to tomorrow's occurrence: the CLI refuses to start a scan whose
 window is closed, and an expired persisted window stops the job at once.
@@ -56,8 +56,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from ..common.cancellation import CancellationToken
-from ..config.v2 import (
-    PUBLIC_CONFIG_VERSION_V3,
+from ..config.support import (
     _expand_env,
     _resolve_config_path,
     load_yaml_unique,
@@ -108,9 +107,8 @@ class PersistedStopWindow:
 def stop_window_from_config(config: Any) -> Optional[StopWindow]:
     """Return the once-resolved v3 stop window of a loaded config, if any.
 
-    ``EffectiveConfig.user_config_v3`` is only set for v3 documents; v2
-    configs and v3 documents without ``execution.stop_at`` return ``None``
-    so both keep the current window-less behaviour.
+    Internal programmatic configs and documents without ``execution.stop_at``
+    return ``None`` and keep the current window-less behaviour.
     """
 
     model = getattr(config, "user_config_v3", None)
@@ -140,16 +138,14 @@ def resolve_saved_config_stop_window(
 
     The document is read once and the version gate shares that read with the
     v3 parse (``parse_user_config_v3_document``), so the gated document and
-    the parsed model cannot drift apart.  Returns ``None`` for v2 documents
-    and v3 documents without a stop window.  Resolution keeps the strict v3
+    the parsed model cannot drift apart. Returns ``None`` for documents
+    without a stop window; old formats fail the public version gate.  Resolution keeps the strict v3
     rules — unknown timezone, daylight-saving gap and fold are rejected —
     against ``now`` (default: the real current time).
     """
 
     path = _resolve_config_path(str(config_path) if config_path is not None else None)
     raw: Mapping[str, Any] = _expand_env(load_yaml_unique(path))
-    if raw.get("config_version") != PUBLIC_CONFIG_VERSION_V3:
-        return None
     model = parse_user_config_v3_document(path, raw, now=now)
     window = model.execution.stop_window
     if window is None:

@@ -5,8 +5,7 @@ refusal, one-read config resolution, DST rejection, capability disclosure);
 real-state tests cover the actual consumers: the SQLite job store through
 ``ScanJobService``, the HTTP and MCP bindings on top of it, a real detached
 owner enforcing a config-derived window on a real scanner process, and the
-real CLI entry with only the model endpoint and waits controlled.  v2
-documents and window-less v3 documents keep the window-less behaviour
+real CLI entry with only the model endpoint and waits controlled. Documents without execution.stop_at keep the window-less behaviour
 everywhere.
 """
 
@@ -26,6 +25,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import pytest
 from click.testing import CliRunner
+from semantics_fixtures import reviewed_control_plane_project
 
 from zscope.cli import cli as cli_module
 from zscope.cli.cli import main as cli_main
@@ -95,9 +95,9 @@ def _v3_document(*, execution: Optional[Dict[str, Any]] = None) -> Dict[str, Any
     return document
 
 
-def _v2_document(root: str = ".") -> Dict[str, Any]:
+def _windowless_document(root: str = ".") -> Dict[str, Any]:
     return {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://127.0.0.1:9/v1"],
@@ -105,7 +105,10 @@ def _v2_document(root: str = ".") -> Dict[str, Any]:
                 "api_key": "unit-key",
             }
         },
-        "project": {"language": "c_cpp"},
+        "project": {
+            "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
+            "language": "c_cpp",
+        },
         "scan": {"task": ""},
         "indexing": {"backend": "regex"},
         "concurrency": {
@@ -163,6 +166,7 @@ def _make_project(
     project = _materialize_cpp_project(tmp_path / name)
     data = document if document is not None else _v3_document(execution=execution)
     (project / "zscope.yaml").write_text(json.dumps(data, indent=2), encoding="utf-8")
+    reviewed_control_plane_project(project / "zscope.yaml")
     return project
 
 
@@ -210,10 +214,10 @@ def test_stop_window_from_config_only_sees_v3_windows(tmp_path: Path) -> None:
     bare = _make_project(tmp_path, name="bare", execution=None)
     assert stop_window_from_config(ConfigLoader.load(str(bare / "zscope.yaml"))) is None
 
-    v2 = _make_project(
-        tmp_path, name="legacy", document=_v2_document(root=str(tmp_path / "legacy"))
+    windowless = _make_project(
+        tmp_path, name="legacy", document=_windowless_document(root=str(tmp_path / "legacy"))
     )
-    assert stop_window_from_config(ConfigLoader.load(str(v2 / "zscope.yaml"))) is None
+    assert stop_window_from_config(ConfigLoader.load(str(windowless / "zscope.yaml"))) is None
 
 
 def test_remaining_seconds_is_exact_then_expired_without_rolling(tmp_path: Path) -> None:
@@ -349,7 +353,7 @@ def test_tightened_deadline_follows_the_monotonic_clock(
 def test_arm_session_deadline_puts_the_budget_on_the_real_runner_token(
     tmp_path: Path,
 ) -> None:
-    project = _make_project(tmp_path, document=_v2_document(root=str(tmp_path / "project")))
+    project = _make_project(tmp_path, document=_windowless_document(root=str(tmp_path / "project")))
     config = ConfigLoader.load(str(project / "zscope.yaml"))
     runner = ScanSessionRunner(config, task_id="stop-budget")
     token = session_cancellation_token(runner)
@@ -470,7 +474,7 @@ def test_real_http_wait_is_bounded_by_the_config_stop_window(tmp_path: Path) -> 
     server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHeaders)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    project = _make_project(tmp_path, document=_v2_document(root=str(tmp_path / "project")))
+    project = _make_project(tmp_path, document=_windowless_document(root=str(tmp_path / "project")))
     config = ConfigLoader.load(str(project / "zscope.yaml"))
     runner = ScanSessionRunner(config, task_id="stop-http-budget")
     token = session_cancellation_token(runner)
@@ -537,7 +541,7 @@ def test_cancel_if_deadline_distinguishes_first_causes() -> None:
 
 
 def test_earlier_deadline_reason_survives_the_config_watcher(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, document=_v2_document(root=str(tmp_path / "project")))
+    project = _make_project(tmp_path, document=_windowless_document(root=str(tmp_path / "project")))
     config = ConfigLoader.load(str(project / "zscope.yaml"))
     runner = ScanSessionRunner(config, task_id="stop-reason-earlier")
     token = session_cancellation_token(runner)
@@ -620,8 +624,8 @@ def test_resolve_saved_config_stop_window_one_read_fixed_clock(tmp_path: Path) -
 
 
 def test_resolve_saved_config_stop_window_returns_none_outside_v3(tmp_path: Path) -> None:
-    v2 = _make_project(tmp_path / "legacy", document=_v2_document())
-    assert resolve_saved_config_stop_window(str(v2 / "zscope.yaml"), now=FIXED_NOW) is None
+    windowless = _make_project(tmp_path / "legacy", document=_windowless_document())
+    assert resolve_saved_config_stop_window(str(windowless / "zscope.yaml"), now=FIXED_NOW) is None
     bare = _make_project(tmp_path / "bare", execution=None)
     assert resolve_saved_config_stop_window(str(bare / "zscope.yaml"), now=FIXED_NOW) is None
     # A v3 document with only a timezone (no stop_at) declares no window.
@@ -724,15 +728,15 @@ def test_start_explicit_stop_at_overrides_the_config_window(tmp_path: Path) -> N
 
 
 def test_start_without_a_config_window_keeps_windowless_behaviour(tmp_path: Path) -> None:
-    # v2 resolves project.root against the process CWD, so the fixture pins
+    # The windowless fixture keeps the same project identity.
     # the absolute project root to keep the store inside the test project.
-    v2 = _make_project(
-        tmp_path, name="legacy", document=_v2_document(root=str(tmp_path / "legacy"))
+    windowless = _make_project(
+        tmp_path, name="legacy", document=_windowless_document(root=str(tmp_path / "legacy"))
     )
-    service = _service(v2)
-    job = service.start(request_id="req-v2").payload["job"]
+    service = _service(windowless)
+    job = service.start(request_id="req-windowless").payload["job"]
     assert job["resolved_stop_time"] is None
-    store = _store_for(v2)
+    store = _store_for(windowless)
     row = store.get_job(job["job_id"])
     assert row is not None and row["stop_at_epoch"] is None
 
@@ -1141,8 +1145,8 @@ def test_cli_keeps_current_behaviour_without_a_config_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bare = _make_project(tmp_path, name="bare", execution=None)
-    v2 = _make_project(
-        tmp_path, name="legacy", document=_v2_document(root=str(tmp_path / "legacy"))
+    windowless = _make_project(
+        tmp_path, name="legacy", document=_windowless_document(root=str(tmp_path / "legacy"))
     )
 
     captured: Dict[str, Any] = {}
@@ -1155,7 +1159,7 @@ def test_cli_keeps_current_behaviour_without_a_config_window(
             return ScanSessionResult(is_batch=True, exit_code=0)
 
     monkeypatch.setattr(cli_module, "ScanSessionRunner", FakeRunner)
-    for project in (bare, v2):
+    for project in (bare, windowless):
         result = CliRunner().invoke(cli_main, ["-c", str(project / "zscope.yaml")])
         assert result.exit_code == 0, result.output
         assert "Stop window armed:" not in result.output

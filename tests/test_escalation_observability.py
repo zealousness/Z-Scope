@@ -1,4 +1,6 @@
-"""Tests for escalation-ladder rung observability (balanced_confirmed_tp_plan.md).
+"""Tests for escalation-ladder rung observability.
+
+Historical plan: docs/archive/design-plans/balanced_confirmed_tp_plan.md.
 
 Covers the M1 contract surface: the three ``runtime.analysis`` rung flags,
 the ``uncertain`` high-confidence confirmation rung, ``confirmed_via``
@@ -16,7 +18,7 @@ import pytest
 
 from zscope.benchmarking.protocol import attribution_summary, finding_attribution
 from zscope.benchmarking.runner import _validate_usage_event_v1
-from zscope.config.v2 import _runtime_analysis, load_runtime_spec
+from zscope.config.support import _runtime_analysis, load_runtime_spec
 from zscope.framework.llm_usage import (
     LLMUsageAttribution,
     LLMUsageEvent,

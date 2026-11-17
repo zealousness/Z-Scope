@@ -169,15 +169,15 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 | Tools | `zscope/tools/` | LLM 工具运行时、参数校验、ToolPolicy、敏感路径 hook 和审计 |
 | Web / MCP | `zscope/web/`、`zscope/mcp/` | Dashboard service layer、stdio/HTTP MCP、远程安全校验 |
 
-### 3.1 配置边界：UserConfigV2/V3 + RuntimeSpec
+### 3.1 配置边界：UserConfigV3 + RuntimeSpec
 
 配置加载分为三层：
 
-1. `UserConfigV2` / `UserConfigV3` 按版本严格解析用户 YAML：v2 保留语言后端拓扑、SVF 规划、并发和规则扩展；v3 使用 llms、project、scan 与可选 execution，工程目标逐项保留，多目标执行仍明确拒绝。两版本均以 YAML 父目录为唯一工程根，不接受独立 root/source_root；项目内相对路径从该目录解析。
+1. `UserConfigV3` 严格解析用户 YAML，包含 llms、project、scan、indexing、concurrency 与可选 rules；工程目标逐项保留，多目标执行仍明确拒绝。YAML 父目录是唯一工程根，不接受独立 root/source_root；项目内相对路径从该目录解析。
 2. 打包的 `runtime_defaults.yaml` 解析为 `RuntimeSpec`，提供 Agent 启用状态/LLM 角色、分析预算、缓存、报告策略和稳定算法默认值。
 3. loader 把两者组合为内部 `EffectiveConfig`，并把 RuntimeSpec 的版本、来源路径和 SHA-256 写入配置哈希、缓存身份与报告 metadata。
 
-产品运行时接受严格 `config_version: 2` / `3`，不保留 v1 或旧双根字段别名。v3 preset 与有效深度统一为 fast/balanced/deep，Java 仅 fast；旧 quick/overnight 只能显式迁移为 fast/deep。旧配置由独立的 `zscope-config migrate` 读取，迁移到原工程目录并核对原路径基准，不静默扩大或缩小扫描范围。开发者覆盖必须同时设置 `Z_SCOPE_DEVELOPER_MODE=1` 和绝对路径 `Z_SCOPE_RUNTIME_SPEC`；覆盖文件也执行重复键、未知键、类型和枚举校验。
+产品运行时仅接受严格 `config_version: 3`，不保留 v1 或旧双根字段别名。v3 preset 与有效深度统一为 fast/balanced/deep，Java 仅 fast；旧 quick/overnight 只能显式迁移为 fast/deep。旧配置由独立的 `zscope-config migrate` 读取，迁移到原工程目录并核对原路径基准，不静默扩大或缩小扫描范围。开发者覆盖必须同时设置 `Z_SCOPE_DEVELOPER_MODE=1` 和绝对路径 `Z_SCOPE_RUNTIME_SPEC`；覆盖文件也执行重复键、未知键、类型和枚举校验。
 
 `AGENT.md`、`SKILL.md` 和 workflow YAML 分别保持 Agent prompt、Skill/Tool 和流程契约，不复制进 RuntimeSpec。KnowledgeDB、snapshot 与默认 user-config 状态路径统一相对 YAML 所在工程目录，避免跨目录运行污染进程工作目录。
 
@@ -197,7 +197,7 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 
 当 `${snapshot_dir}/balanced_rollout_state.json` 存在时，配置生效边界在创建 usage 账本之前执行统一灰度策略。状态必须是由受保护控制面使用专用环境密钥生成的 HMAC-SHA256 信封，并通过 schema/policy/language/release identity、单调 sequence、签发时间、有效期和内部状态校验，才有权改变省略档位：telemetry/回退状态强制 fast，validator opt-in 不启用语义/发现，semantic shadow 运行候选盲发现但将其闭合为不进入用户视图的 `shadow_observation`，10/50/100 依据稳定 project-id bucket 做确定性 enrollment。CLI、Web、MCP 和报告均回显 requested/effective depth、rollout stage、bucket、认证状态与语义/发现可见性；无密钥、裸文件、篡改、过期或 identity 不匹配均视为 unmanaged，不能把省略档位切为 balanced，但不会阻断用户显式 `--scan-depth balanced|deep`。没有安装状态文件的开发/既有部署保持原配置行为。
 
-Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模型。CLI 选择运行模式：默认使用 `default`，`--resume` 切换到 `resume`，`--maintain` 切换到 `maintain`；`--mode ruledriven` 和 `--mode alert-verify` 走各自的专用入口，但仍共享 call-level usage 账本和验证协议。`ScanSessionRunner` 会在 session 步骤后决定入口形态：显式 `entry_functions_list`、入口发现候选或 diff impact 候选进入批量模式，否则回退到 `entry_function` 单入口模式。public v2 不暴露 workflow 或 `analysis` 区块，扫描成本由报告计量而不是运行时 token 门限控制。
+Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模型。CLI 选择运行模式：默认使用 `default`，`--resume` 切换到 `resume`，`--maintain` 切换到 `maintain`；`--mode ruledriven` 和 `--mode alert-verify` 走各自的专用入口，但仍共享 call-level usage 账本和验证协议。`ScanSessionRunner` 会在 session 步骤后决定入口形态：显式 `entry_functions_list`、入口发现候选或 diff impact 候选进入批量模式，否则回退到 `entry_function` 单入口模式。public v3 不暴露 workflow 或 `analysis` 区块，扫描成本由报告计量而不是运行时 token 门限控制。
 
 ### 4.2 批量、断点续扫和增量维护
 
@@ -255,7 +255,7 @@ diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `-
 
 Clang 后端把增量缓存分成两层：基础 TU 事实只由源码哈希、真实 pending 状态、删除影响和基础 extractor 版本失效，`indexed + hash unchanged` 的 TU 不会因为派生格式变化重新执行 documentSymbol；`function_symbol_context` 与 `function_type_refs` 则用 schema v14 既有 metadata 记录独立的 `dirty/in_progress/current/failed` 生命周期。基础刷新以有界并发执行 clangd/源码收集，再由单个 SQLite writer 用每 TU SAVEPOINT 和每批一次提交原子发布；收集失败时旧事实保持完整。派生重建同样按文件有界并发执行源码与 clangd 查询，worker 只返回行和统计，调用线程作为唯一 SQLite writer 将结果分批写入 TEMP staging；事实替换与 `current` 状态仍在同一事务发布，因此进程中断后可保留旧完整结果并只恢复派生阶段。两类派生索引同时失效时使用每文件一次的 combined semantic pass；解析按 clangd symbol identity 合并重复声明，并以 references 坐标反向映射做常数时间匹配，只有无法消歧的位置才请求 definition。semantic/source/references 缓存均有容量边界和并发 single-flight，避免超大项目常驻全量 token 或对同一声明重复发起 RPC。删除文件仍会清理对应 TU、函数、类型、调用边和 macro，并按 include/callee 影响标记相关文件强制刷新。KnowledgeDB 使用 WAL 与线程本地 SQLite connection，并对直接/间接 callee 查询做版本化缓存，写入调用图或 SVF 数据时会自动失效。
 
-Unified 后端的 SVF 路径支持入口裁剪和入口聚类。public v2 使用 `indexing.svf.scope`、`entry_depth`、`max_selected_tus`、`fallback`、`exclusive_pools` 和 `shared_pools` 表达项目规划。`EntryBitcodeSelector` 会从入口函数沿 KnowledgeDB 调用图选择翻译单元，再通过 `llvm-nm` 的 undefined symbol 闭包补齐依赖；pool 名称必须全局唯一、路径非空且冲突引用有效。每个 SVF 分组会写入裁剪计划、入口聚类布局和 bitcode/link manifest；这些布局及 RuntimeSpec provenance 一同参与缓存身份。
+Unified 后端的 SVF 路径支持入口裁剪和入口聚类。public v3 使用 `indexing.svf.scope`、`entry_depth`、`max_selected_tus`、`fallback`、`exclusive_pools` 和 `shared_pools` 表达项目规划。`EntryBitcodeSelector` 会从入口函数沿 KnowledgeDB 调用图选择翻译单元，再通过 `llvm-nm` 的 undefined symbol 闭包补齐依赖；pool 名称必须全局唯一、路径非空且冲突引用有效。每个 SVF 分组会写入裁剪计划、入口聚类布局和 bitcode/link manifest；这些布局及 RuntimeSpec provenance 一同参与缓存身份。
 
 ### 5.3 证据平面：CandidatePipeline + Backend Signals
 
@@ -324,7 +324,7 @@ C/C++ 确定性引擎对外保留 `RegexCandidateGenerator`、`ClangAstCfgCandid
 
 ### 5.4 Scan-wide token 计量
 
-public v2 提供 `fast / balanced / deep`，档位决定启用的分析阶段、规划风险阈值和 V3 调查范围。产品运行时没有 scan-wide token 硬上限，也没有 `scan.max_llm_tokens`；2M/12M/30M 等数值只属于 Range Benchmark policy，在完整扫描结束后评价成本是否符合预期，绝不参与请求准入或提前终止。
+public v3 提供 `fast / balanced / deep`，档位决定启用的分析阶段、规划风险阈值和 V3 调查范围。产品运行时没有 scan-wide token 硬上限，也没有 `scan.max_llm_tokens`；2M/12M/30M 等数值只属于 Range Benchmark policy，在完整扫描结束后评价成本是否符合预期，绝不参与请求准入或提前终止。
 
 `ScanTokenUsageLedger` 在每次真实 HTTP attempt 前登记安全估算，仅用于连接中断且 provider usage 缺失时保守计量。provider 返回后按原始 prompt+completion 结算，cached/reasoning 只作子项统计；重试、repair 和 fallback 分别计量。它不会缩短 completion allowance、拒绝新调用或取消在途请求。
 
@@ -344,7 +344,7 @@ Z-SCOPE 不再默认逐入口运行旧式全量多 Agent fanout；独立原语�
 
 Skill 是漏洞领域契约，用于约束分析目标和证据要求，不是检测规则。每个 `SKILL.md` 通过 frontmatter `languages` 声明适用于 `c_cpp`、`java` 或两者。`scan.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等；空字符串启用当前语言全部适用 Skill，非空文本只表达审计重点。规则 descriptor 必须引用一个存在且支持相同语言的 Skill。
 
-LLMClient 是所有 Agent 的 OpenAI-compatible 调用门面。它支持多 endpoint 容量选择、限流/cooldown、线程本地 session 和共享 scan token 计量。V1/V2 各只发起一次无工具调用：V1/V2 的 truncated 或 malformed 输出直接保持可复核并交给 V3 资格判断，不追加格式修复调用。V3 使用一个最长 50 次模型迭代的连续会话；多轮 reasoning metadata 可在会话内传递，但永不落入普通日志或报告。
+LLMClient 是所有 Agent 的 OpenAI-compatible 调用门面。它支持多 endpoint 容量选择、限流/cooldown、线程本地 session 和共享 scan token 计量。V1/V2 各发起一次无工具结构化判定；输出截断或不符合协议时，最多追加一次精简请求修复，不拼接残缺 JSON。修复仍失败则保留待复核状态，并交给 V3 资格判断。V3 使用一个最长 50 次模型迭代的连续会话；多轮 reasoning metadata 可在会话内传递，但永不落入普通日志或报告。
 
 ToolsRuntime 原子暴露六个证据导向工具：`search_code`、`read_code`、`get_semantic_context`、`query_code_graph`、`trace_data_flow`、`query_static_findings`。调用从轻量搜索得到 revision-aware `symbol_id`，后续源码、语义、图和流查询都绑定该精确身份；finding 查询只返回紧凑 evidence ref，再由模型按需读取原始证据。这避免名称清洗、重载歧义和一次性高聚合结果污染上下文。
 
@@ -358,6 +358,8 @@ ToolsRuntime 原子暴露六个证据导向工具：`search_code`、`read_code`�
 - `ToolPolicy` 约束工具、资源、文件读取、知识库查询和 subagent spawn allowlist，并通过敏感路径 hook 降低远程或自动化场景中的越界访问风险。
 
 ### 5.6 验证平面：ValidationRunner + ValidationPipeline
+
+跨版本 AI 复用沿用这条主线：Deep 摘要以稳定任务视图复用并重绑当前构建；Validator 仅对输入一致的 initial 结构化调用复用模型结果，本轮事实准备、证明重放及后续调查仍执行。当前候选发现不会因历史复用而缩减。两类复用及本轮用量进入 `metadata.artifact_reuse`，详细范围见执行与编排、分析流水线模块。
 
 自 v1.0 起，验证逻辑已经从 `Analyzer` 主流程中拆出：
 
@@ -464,7 +466,7 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 | 代码事实 | AST/CFG/CPG/规则匹配，各工具侧重点不同 | 专有前端和数据流引擎 | `CodeIndex` 统一 Clang、Joern、Regex、Unified 后端 |
 | 跨函数关系 | 依赖数据流查询、库模型或指针分析能力 | 专有模型和框架配置 | SVF Andersen、Saber、调用图、语义快照共同补强 |
 | 候选生成 | 查询或规则命中即输出告警 | 内置规则和数据流引擎输出告警 | 确定性规则、后端信号、candidate-blind hypothesis、外部 SARIF 统一入 ledger |
-| 深度验证 | 主要依赖规则精度和人工复核 | 平台化 triage 与审计流转 | V0 proof + V1/V2 结构化复判 + 高风险 V3 短调查 |
+| 深度验证 | 主要依赖规则精度和人工复核 | 平台化 triage 与审计流转 | V0 proof + V1/V2 结构化复判 + V3 调查未闭合义务；风险用于排序 |
 
 ### 8.2 入口覆盖
 
@@ -573,7 +575,7 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | 报告安全 | 覆盖批量 JSON 前自动备份，标准 SARIF 导出不改写主报告 |
 | Benchmark v4 / formal v3 | 记录双视图、候选漏斗、发现×决策归因、raw/effective FP、usage 守恒、隔离 evidence、成本和五轮稳定性；policy v1 是唯一门禁源 |
 | 多模型策略 | `llms` 多 profile + Agent 级 `llm_ref` + 模型列表回退 + profile 内多 `base_urls` 容量控制 |
-| 代理模型兼容 | 流式调用、JSON 修复、XML tool-call fallback、自动续写 |
+| 代理模型兼容 | 流式调用、结构化输出修复、原生 `tool_calls`；正文及 XML 示例不作为工具调用执行 |
 
 ## 11. 对外接口
 

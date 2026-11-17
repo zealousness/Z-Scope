@@ -14,10 +14,9 @@ keys the existing ``GET /api/config/structured`` contract serves.
 Saving never builds a second parser or a weakened schema.  A v3 candidate is
 validated with ``v3.parse_user_config_v3`` — the formal model without
 composing execution — so a multi-target document can be legally edited and
-saved while the single-target execution chain still refuses to run it.  A v2
-candidate (and any invalid version) keeps the existing loader gate through
-``ConfigLoader.load``.  The candidate is always materialized as a temporary
-file in the same directory first, because both versions use the
+saved while the single-target execution chain still refuses to run it.
+The candidate is always materialized as a temporary file in the same
+directory first, because configurations use the
 configuration file directory as their only project root; validation failure raises before any replace,
 so the saved file is never overwritten with an invalid document.
 """
@@ -32,8 +31,7 @@ from typing import Any, Dict, Iterator, Mapping
 
 import yaml
 
-from .config import ConfigLoader
-from .v2 import ENV_PATTERN, PUBLIC_CONFIG_VERSION_V3, load_yaml_unique
+from .support import ENV_PATTERN, load_yaml_unique
 from .v3 import parse_user_config_v3, parse_user_config_v3_document
 
 STRUCTURED_DOCUMENT_HEADER = (
@@ -95,33 +93,21 @@ def _available_environment(document: Any) -> tuple[Any, Dict[str, list[str]]]:
 
 
 def validate_document_file(path: Path, *, expand_environment: bool = True) -> None:
-    """Validate one on-disk document; v3 parses the formal model only.
-
-    v3 documents go through ``parse_user_config_v3``, which validates the
-    full strict schema without composing the single-target execution chain,
-    so every declared target is checked and multi-target documents pass.
-    Everything else (v2 and invalid versions) keeps the existing loader gate
-    and its diagnostics unchanged.
-    """
-
-    raw = load_yaml_unique(path)
-    if raw.get("config_version") == PUBLIC_CONFIG_VERSION_V3:
-        if expand_environment:
-            parse_user_config_v3(str(path))
-        else:
-            available, unresolved = _available_environment(raw)
-            try:
-                parse_user_config_v3_document(Path(path), available)
-            except ValueError as error:
-                for field, names in unresolved.items():
-                    if field in str(error) and "removed:" not in str(error):
-                        raise ValueError(
-                            f"{error}; cannot structurally validate {field} while "
-                            f"environment variable(s) are unset: {', '.join(sorted(set(names)))}"
-                        ) from error
-                raise
+    """Validate the only public schema, including every declared target."""
+    if expand_environment:
+        parse_user_config_v3(str(path))
         return
-    ConfigLoader.load(str(path))
+    available, unresolved = _available_environment(load_yaml_unique(path))
+    try:
+        parse_user_config_v3_document(Path(path), available)
+    except ValueError as error:
+        for field, names in unresolved.items():
+            if field in str(error) and "removed:" not in str(error):
+                raise ValueError(
+                    f"{error}; cannot structurally validate {field} while "
+                    f"environment variable(s) are unset: {', '.join(sorted(set(names)))}"
+                ) from error
+        raise
 
 
 def validate_document_text(

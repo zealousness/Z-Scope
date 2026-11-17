@@ -17,6 +17,7 @@
     "pydantic": "MIT",
     "pydantic-core": "MIT",
     "pyyaml": "MIT",
+    "regex": "Apache-2.0 AND CNRI-Python",
     "requests": "Apache-2.0",
     "ruamel-yaml": "MIT",
     "ruamel-yaml-clib": "MIT",

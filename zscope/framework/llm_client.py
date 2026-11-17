@@ -3620,6 +3620,22 @@ class LLMClient:
         """
         from .base import _validate_json_value
 
+        # Some compatible providers serialize absent opaque IDs as the string
+        # "null". Neither ID vocabulary contains that value. Restore absence
+        # only when the alternative locator/first-page request is explicit;
+        # never rewrite literal search text, file names or continuation IDs.
+        if (
+            tool_name == "read_code"
+            and arguments.get("symbol_id") == "null"
+            and arguments.get("file_path")
+        ) or (
+            tool_name == "search_code"
+            and arguments.get("view_id") == "null"
+            and arguments.get("offset", 0) == 0
+        ):
+            arguments = dict(arguments)
+            arguments["symbol_id" if tool_name == "read_code" else "view_id"] = None
+
         parameters: Dict[str, Any] = {}
         for tool in tools_schema:
             function = tool.get("function") if isinstance(tool, dict) else None

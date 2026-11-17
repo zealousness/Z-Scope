@@ -226,6 +226,22 @@ def test_strict_nullable_required_arguments_restore_portable_optionality() -> No
     assert search_tool.validate_arguments(restored_search) is None
 
 
+def test_provider_null_string_only_restores_absent_opaque_navigation_ids() -> None:
+    registry = build_tool_registry(None, None)
+    schemas = [registry[name].get_schema() for name in ("read_code", "search_code")]
+    restore = LLMClient._restore_portable_tool_args
+    read = {"file_path": "null", "start_line": 1, "symbol_id": "null"}
+    assert restore("read_code", read, schemas) == {**read, "symbol_id": None}
+    assert read["symbol_id"] == "null"  # Preserve the provider payload for audit.
+    assert restore("read_code", {"symbol_id": "null"}, schemas) == {"symbol_id": "null"}
+    search = {"scope": "text", "query": "null", "view_id": "null", "offset": 0}
+    assert restore("search_code", search, schemas) == {**search, "view_id": None}
+    continuation = {**search, "offset": 20}
+    assert restore("search_code", continuation, schemas) == continuation
+    valid = {**search, "view_id": "current-page-id"}
+    assert restore("search_code", valid, schemas) == valid
+
+
 def test_http_400_strict_schema_rejection_retries_once_with_portable_schema(
     monkeypatch,
 ) -> None:

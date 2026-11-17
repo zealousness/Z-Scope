@@ -615,9 +615,11 @@ def test_config_loader_parses_java_structure_and_signal_options(tmp_path: Path) 
     config = tmp_path / "zscope.yaml"
     config.write_text(
         f"""
-config_version: 2
+config_version: 3
 project:
   language: java
+  targets:
+    - id: main
   entry_function: demo.App.run:void()
 llms:
   default:
@@ -675,9 +677,11 @@ def test_config_loader_rejects_removed_scan_after_discovery(tmp_path: Path) -> N
     config = tmp_path / "zscope.yaml"
     config.write_text(
         f"""
-config_version: 2
+config_version: 3
 project:
   language: java
+  targets:
+    - id: main
   entry_function: demo.App.run:void()
   entry_discovery:
     enabled: true
@@ -708,9 +712,11 @@ def test_config_loader_defaults_java_structure_to_auto(tmp_path: Path) -> None:
     config = tmp_path / "zscope.yaml"
     config.write_text(
         f"""
-config_version: 2
+config_version: 3
 project:
   language: java
+  targets:
+    - id: main
   entry_function: demo.App.run:void()
 llms:
   default:
@@ -802,6 +808,69 @@ def test_external_java_signal_provider_accepts_object_schema_and_caches_per_entr
     assert second[0].rule_id == "r_B"
     assert first_edges[0].caller == "A"
     assert second_edges[0].caller == "B"
+
+
+@pytest.mark.parametrize("failure", ["exit", "json", "empty", "shape", "timeout", "degraded"])
+def test_failed_java_provider_is_not_success_or_cached(tmp_path, monkeypatch, failure):
+    import subprocess
+    from zscope.retrieval.java_unified_backend import JavaUnifiedBackend
+
+    provider = ExternalJavaSignalProvider("wala", command=["test-provider"])
+    assert provider.initialize(tmp_path, tmp_path, None)
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired("test-provider", 900)
+            return subprocess.CompletedProcess(
+                args[0],
+                1 if failure == "exit" else 0,
+                stdout={"json": "not JSON", "empty": "", "shape": "42"}.get(
+                    failure, '{"metadata":{"degraded_reason":"missing bytecode"}}'
+                ),
+                stderr="provider failed" if failure == "exit" else "",
+            )
+        return subprocess.CompletedProcess(args[0], 0, stdout='{"signals": [], "call_edges": []}')
+
+    monkeypatch.setattr(subprocess, "run", run)
+    backend = JavaUnifiedBackend()
+    backend._providers = [provider]
+    with pytest.raises(RuntimeError):
+        backend.collect_java_signal_matches("main")
+    assert provider.status().degraded_reason
+    assert backend.collect_java_signal_matches("main") == []
+    assert len(calls) == 2
+    assert provider.status().degraded_reason == ""
+
+
+def test_failed_joern_collection_can_retry(monkeypatch):
+    from zscope.retrieval import java_signal_providers as module
+
+    provider = module.JoernJavaSignalProvider(joern_client=object())
+    provider._ready = True
+    calls = []
+
+    def scan():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("Joern query failed")
+        return []
+
+    engine = SimpleNamespace(
+        run_builtin_scan=scan,
+        run_semantic_cpg_rule_library=lambda: [],
+        run_java_framework_data_flow_checks=lambda: [],
+        run_paired_function_checks=lambda: [],
+        run_configured_data_flow_checks=lambda: [],
+    )
+    monkeypatch.setattr(module, "RuleEngine", lambda *args: engine)
+    with pytest.raises(RuntimeError, match="Joern query failed"):
+        provider.collect_rule_matches("main")
+    assert provider.collect_rule_matches("main") == []
+    assert len(calls) == 2
+    assert provider.status().degraded_reason == ""
 
 
 def test_java_unified_backend_merges_provider_call_edges(tmp_path: Path) -> None:

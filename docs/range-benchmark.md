@@ -1,5 +1,7 @@
 # Range C/C++ benchmark protocol
 
+配置输入统一为 `config_version: 3`，扫描档位写入 `scan.preset`；C/C++ 与 Java 共用同一格式。旧输入先用 `zscope-config migrate` 显式迁移，历史评分/报告 schema 版本不受此变更影响。
+
 ## 唯一入口
 
 所有本地与发布执行都通过 `zscope-benchmark`：

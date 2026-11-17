@@ -108,27 +108,13 @@ class ToolCallingAgent(BaseAgent):
                 )
             return policy_error
         start = time.perf_counter()
-        result = cast(Dict[str, Any], tool.execute(args))
-        if isinstance(tool, ContractTool):
-            result = ToolsRuntime._enforce_result_limit(result)
-            result_error = tool.validate_result(result)
-            if result_error:
-                logger.error(
-                    "Tool %s returned a result outside its contract: %s",
-                    name,
-                    result_error,
-                )
-                result = tool_result(
-                    status="internal_error",
-                    data=None,
-                    coverage_level="unavailable",
-                    error={
-                        "code": "invalid_tool_result",
-                        "path": result_error.partition(": ")[0] or "$",
-                        "message": result_error,
-                        "retryable": False,
-                    },
-                )
+        try:
+            result = cast(Dict[str, Any], tool.execute(args))
+            result = ToolsRuntime.finalize_result(tool, result)
+        except CancellationError:
+            raise
+        except Exception as exc:
+            result = ToolsRuntime.execution_failure(name, exc)
         self.tool_policy.run_post_hooks(
             "tool",
             name,
@@ -1043,7 +1029,7 @@ class JsonToolAgent(ToolCallingAgent):
                 logger.warning(
                     "JSON repair call failed for %s: %s",
                     json_output_spec.type_name,
-                    exc,
+                    type(exc).__name__,
                 )
                 return None
             try:
@@ -1069,8 +1055,8 @@ class JsonToolAgent(ToolCallingAgent):
                 logger.warning(
                     "JSON repair call failed for %s after structured fallback: %s; fallback_error=%s",
                     json_output_spec.type_name,
-                    exc,
-                    fallback_exc,
+                    type(exc).__name__,
+                    type(fallback_exc).__name__,
                 )
                 return None
 
@@ -1090,12 +1076,12 @@ class JsonToolAgent(ToolCallingAgent):
             "last_assistant_preview": result.get("last_assistant_preview")
             or str(result.get("content") or "")[:500],
         }
-        candidates = list(JsonToolAgent._final_tool_payloads(
-            result, result.get("conversation") or [], json_output_spec
-        ))
-        for text in JsonToolAgent._text_sources(
-            str(result.get("content") or ""), result, []
-        ):
+        candidates = list(
+            JsonToolAgent._final_tool_payloads(
+                result, result.get("conversation") or [], json_output_spec
+            )
+        )
+        for text in JsonToolAgent._text_sources(str(result.get("content") or ""), result, []):
             candidates.extend(extract_json_blocks(text))
         if candidates:
             candidate = candidates[0]

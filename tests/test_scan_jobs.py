@@ -49,7 +49,7 @@ from zscope.orchestration.jobs.store import JobStore
 from zscope.reporting.json_io import read_report, write_report_atomic
 
 CONFIG_TEMPLATE = """\
-config_version: 2
+config_version: 3
 llms:
   default:
     base_urls: ["http://127.0.0.1:9/"]
@@ -57,8 +57,11 @@ llms:
     api_key: "dummy-key"
 project:
   language: c_cpp
+  targets:
+    - id: main
+      compile_commands: build/compile_commands.json
 scan:
-  depth: fast
+  preset: fast
 indexing:
   backend: regex
 concurrency:
@@ -93,13 +96,6 @@ def make_build_project(tmp_path: Path, *, name: str = "buildproject") -> Path:
 
     project = make_project(tmp_path, name=name)
     config = project / "zscope.yaml"
-    config.write_text(
-        config.read_text(encoding="utf-8").replace(
-            "  language: c_cpp\n",
-            "  language: c_cpp\n  compile_commands_path: build/compile_commands.json\n",
-        ),
-        encoding="utf-8",
-    )
     (project / "build").mkdir()
     (project / "build" / "compile_commands.json").write_text("[]\n", encoding="utf-8")
     reviewed_control_plane_project(config)

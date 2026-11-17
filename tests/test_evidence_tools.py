@@ -485,15 +485,15 @@ def test_semantic_context_preserves_pinned_coverage_rebuild_failure(tmp_path: Pa
     assert "snapshot_outside_pinned_semantic_coverage" in result["coverage"]["missing"]
 
 
-def test_search_rejects_ambiguous_or_nested_regex_repetition(tmp_path: Path) -> None:
+def test_search_accepts_nested_regex_with_a_bounded_matching_engine(tmp_path: Path) -> None:
     tool = SearchCodeTool(SymbolCatalog(_prepare_project(tmp_path)))
 
     nested = tool.validate_arguments({"query": "(a{1,3})+", "match_mode": "regex"})
     ambiguous = tool.validate_arguments({"query": "(a|aa)+$", "match_mode": "regex"})
 
-    assert nested["status"] == "invalid_request"
-    assert nested["error"]["path"] == "query"
-    assert ambiguous["status"] == "invalid_request"
+    assert nested is None
+    assert ambiguous is None
+    assert tool.execute({"query": "(r|ro)+", "match_mode": "regex"})["status"] == "ok"
 
 
 def test_symbol_ids_disambiguate_overloads_and_go_stale_after_identity_change(

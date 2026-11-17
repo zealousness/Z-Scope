@@ -19,6 +19,11 @@ from typing import Any, Callable, Mapping
 from ..agents.base import JsonOutputSpec, JsonToolAgent
 from ..framework.base import AgentResponse
 from .hierarchical_context import PROJECTION_VERSION, read_evidence, unit_view
+from .hierarchical_reuse import (
+    SummaryReuseView,
+    VIEW_VERSION as REUSE_VIEW_VERSION,
+    select_reference_bindings,
+)
 from ..rules.validation_obligations import profile_for_defect_class, supported_defect_classes
 from ..reporting.attribution import FindingAttribution
 from ..common.cancellation import (
@@ -47,8 +52,12 @@ Only member_index units are readable in this task. Call edges may reference unit
 those edges establish relationships, not access to their implementations. Preserve dependencies on
 unread callees as explicit unknowns. Higher-level composition investigates the relevant member units.
 Do not request outside units or retry refused reads. A leaf already has its only member's source.
-Large native facts and build receipts are referenced by unit_id/JSON pointer/SHA-256, not missing.
-Use read_semantic_evidence to page those original fields when relevant. Referenced-only data is not
+Large native facts are referenced by unit_id/JSON pointer/SHA-256, not missing.
+Build identities can be task-local aliases; current compiler receipts remain program-validated.
+Function and unit IDs are stable logical references. Prefer function names in explanations; when
+using an ID in prose or example code, use only an exact ID from this task. The program attaches a
+current reference_bindings table to the result. These aliases and summaries grant no proof authority.
+Use read_semantic_evidence to page the admitted model-view fields when relevant. Referenced-only data is not
 read evidence and cannot establish absence or universal coverage. Complete receipts stay program-validated.
 The initial function's source is already provided; do not read that unit again. Start with source and
 the visible contract/CFG metadata, and fetch only specific original facts needed to resolve a hypothesis.
@@ -192,6 +201,7 @@ def validate_lifecycle(value: Any) -> dict[str, Any]:
 def make_function(scope: Any, impl: Mapping[str, Any], facts: Any) -> dict[str, Any]:
     """Only called with the current static pass's native FunctionFactSummary."""
     unit = "FN_" + digest([scope.build_context_id, scope.usr])[:32]
+    program_facts = facts.facts_copy()
     return {
         "id": unit,
         "level": "function",
@@ -203,7 +213,8 @@ def make_function(scope: Any, impl: Mapping[str, Any], facts: Any) -> dict[str, 
         "end_line": int(impl["end_line"]),
         "source": str(impl["code"]),
         "manifest": facts.manifest(),
-        "facts": facts.facts_copy(),
+        "facts": program_facts,
+        "command_id": str((program_facts.get("build_context") or {}).get("command_id") or ""),
     }
 
 
@@ -451,6 +462,7 @@ class ContractDiscoveryAgent(JsonToolAgent):
         self.require_current = require_current
         self.expires = time.monotonic() + timeout
         self.queries: set[str] = set()
+        self.reusable_reads = True
         self.tools_schema = [
             {
                 "type": "function",
@@ -483,11 +495,13 @@ class ContractDiscoveryAgent(JsonToolAgent):
         self.require_current()
         unit_id = str(args.get("unit_id") or "") if isinstance(args, dict) else ""
         if time.monotonic() >= self.expires:
+            self.reusable_reads = False
             return {"success": False, "error": "deadline; preserve unknowns and finish"}
         if (
             name not in {"read_semantic_unit", "read_semantic_evidence"}
             or unit_id not in self.members
         ):
+            self.reusable_reads = False
             return {
                 "success": False,
                 "error": "unit outside admitted composition; preserve dependency as unknown, do not retry",
@@ -495,6 +509,7 @@ class ContractDiscoveryAgent(JsonToolAgent):
             }
         query = digest([name, args])
         if query in self.queries:
+            self.reusable_reads = False
             return {
                 "success": False,
                 "error": "duplicate query; no new evidence; finish or query a new member",
@@ -510,6 +525,7 @@ class ContractDiscoveryAgent(JsonToolAgent):
                     args["limit"],
                 )
             except (KeyError, IndexError, TypeError, ValueError) as exc:
+                self.reusable_reads = False
                 return {"success": False, "error": str(exc)}
             self.require_current()
             self.queries.add(query)
@@ -611,12 +627,14 @@ class HierarchicalDiscovery:
         model_identity: Any = None,
         cancellation_token: Any = None,
         modeling_client: Any = None,
+        enable_cross_build_reuse: bool = True,
     ):
         self.client, self.cache_dir, self.require_current = client, cache_dir, require_current
         self.max_iterations, self.timeout = max_iterations, timeout
         self.model_identity = model_identity
         self.cancellation_token = cancellation_token
         self.modeling_client = modeling_client or client
+        self.enable_cross_build_reuse = enable_cross_build_reuse
 
     def run(
         self,
@@ -626,7 +644,9 @@ class HierarchicalDiscovery:
         compose: bool = True,
         propagate: bool = True,
     ) -> dict[str, Any]:
-        inventory = hierarchy["functions"]
+        runtime_hierarchy = hierarchy
+        runtime_inventory = hierarchy["functions"]
+        inventory = runtime_inventory
         identity = digest(
             [
                 VERSION,
@@ -645,12 +665,19 @@ class HierarchicalDiscovery:
                 propagate,
             ]
         )
+        view = SummaryReuseView(hierarchy, lifecycle)
+        if view.available:
+            hierarchy, lifecycle = view.hierarchy, view.lifecycle
+            inventory = hierarchy["functions"]
+        runtime_units = {u["id"]: u for u in runtime_hierarchy["units"]}
+        runtime_units.update(runtime_inventory)
         summaries: dict[str, Any] = {}
         result: dict[str, Any] = {
             "schema_version": VERSION,
             "status": "complete",
             "input_digest": identity,
             "summaries": summaries,
+            "reference_bindings": {},
             "candidates": [],
             "gaps": deepcopy(hierarchy["gaps"]),
             "cache_hits": 0,
@@ -658,6 +685,17 @@ class HierarchicalDiscovery:
             "tokens": 0,
             "tokens_complete": True,
             "elapsed_seconds": 0.0,
+            "reuse": {
+                "enabled": self.enable_cross_build_reuse,
+                "view_version": REUSE_VIEW_VERSION,
+                "eligible_units": 0,
+                "lookups": 0,
+                "hits": 0,
+                "exact_hits": 0,
+                "cross_build_hits": 0,
+                "recomputed_units": 0,
+                "miss_reasons": {},
+            },
         }
         started = time.monotonic()
         units = list(inventory.values())
@@ -667,6 +705,10 @@ class HierarchicalDiscovery:
         for unit in units:
             self.require_current()
             members = unit.get("members", [unit["id"]])
+            stats = result["reuse"]
+            stats["lookups"] += 1
+            if view.available:
+                stats["eligible_units"] += 1
             children = {u: deepcopy(summaries[u]) for u in members if u in summaries}
             if unit["level"] == "module":
                 children.update(
@@ -684,10 +726,15 @@ class HierarchicalDiscovery:
             # summaries additionally depend on every member and child summary;
             # changing an unrelated function does not invalidate a leaf.
             member_builds = {inventory[m]["build_context_id"] for m in members}
+            scope_gaps = [
+                g for g in hierarchy["gaps"] if not g.get("caller") or g["caller"] in members
+            ]
+            child_gaps = [g for g in result["gaps"] if g.get("unit") in members]
             cache_key = digest(
                 [
                     VERSION,
                     PROJECTION_VERSION,
+                    REUSE_VIEW_VERSION,
                     CONTRACT,
                     SUMMARY_SCHEMA,
                     unit,
@@ -705,9 +752,31 @@ class HierarchicalDiscovery:
                     self.timeout,
                     compose,
                     propagate,
+                    scope_gaps,
+                    child_gaps,
                 ]
             )
-            path = self.cache_dir / (cache_key + ".json")
+            binding_digest = view.bindings_digest(unit) if view.available else digest(unit["id"])
+            contract_digest = digest(
+                [
+                    VERSION,
+                    PROJECTION_VERSION,
+                    REUSE_VIEW_VERSION,
+                    CONTRACT,
+                    SUMMARY_SCHEMA,
+                    self.model_identity,
+                    self.max_iterations,
+                    self.timeout,
+                    compose,
+                    propagate,
+                ]
+            )
+            if view.available and self.enable_cross_build_reuse:
+                path = self.cache_dir / "cross_build" / (digest(unit["id"]) + ".json")
+            else:
+                # The counterfactual uses the same model view, while retaining
+                # exact-build caching only. A fresh directory disables all reuse.
+                path = self.cache_dir / (digest([cache_key, binding_digest]) + ".json")
             try:
                 cached = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -715,11 +784,48 @@ class HierarchicalDiscovery:
             if not isinstance(cached, dict):
                 cached = {}
             summary = cached.get("summary")
-            if cached.get("cache_key") == cache_key and validate_summary(
-                summary, inventory, set(members)
-            ):
+            hit = (
+                cached.get("cache_key") == cache_key
+                and cached.get("contract_digest") == contract_digest
+                and cached.get("view_version") == REUSE_VIEW_VERSION
+                and validate_summary(summary, inventory, set(members))
+            )
+            if hit:
                 result["cache_hits"] += 1
+                stats["hits"] += 1
+                kind = (
+                    "cross_build_hits"
+                    if cached.get("binding_digest") != binding_digest
+                    else "exact_hits"
+                )
+                stats[kind] += 1
+                if kind == "cross_build_hits":
+                    self.require_current()
+                    try:
+                        write_json(
+                            path,
+                            {**cached, "binding_digest": binding_digest, "input_digest": identity},
+                        )
+                    except OSError:
+                        stats["cache_refresh_unavailable"] = (
+                            stats.get("cache_refresh_unavailable", 0) + 1
+                        )
             else:
+                reason = (
+                    view.reason or "view_unavailable"
+                    if not view.available
+                    else (
+                        "task_contract_changed"
+                        if cached and cached.get("contract_digest") != contract_digest
+                        else (
+                            "observable_input_changed"
+                            if cached and cached.get("cache_key") != cache_key
+                            else "invalid_cached_summary" if cached else "no_prior_result"
+                        )
+                    )
+                )
+                stats["miss_reasons"][reason] = stats["miss_reasons"].get(reason, 0) + 1
+                stats["recomputed_units"] += 1
                 client = self.modeling_client if unit["level"] == "function" else self.client
                 agent = ContractDiscoveryAgent(
                     client,
@@ -752,12 +858,8 @@ class HierarchicalDiscovery:
                     ],
                     "lifecycle_declarations": lifecycle,
                     "edges": [e for e in hierarchy["edges"] if any(m in e for m in members)],
-                    "coverage_gaps": [
-                        g
-                        for g in hierarchy["gaps"]
-                        if not g.get("caller") or g["caller"] in members
-                    ],
-                    "child_summary_gaps": [g for g in result["gaps"] if g.get("unit") in members],
+                    "coverage_gaps": scope_gaps,
+                    "child_summary_gaps": child_gaps,
                     "initial_units": local,
                     "max_iterations": self.max_iterations,
                 }
@@ -801,18 +903,62 @@ class HierarchicalDiscovery:
                     )
                     continue
                 summary = response.data
-                try:
-                    write_json(
-                        path, {"cache_key": cache_key, "input_digest": identity, "summary": summary}
+                if agent.reusable_reads and (
+                    not view.available or view.template_supported(summary)
+                ):
+                    try:
+                        write_json(
+                            path,
+                            {
+                                "cache_key": cache_key,
+                                "input_digest": identity,
+                                "summary": summary,
+                                "binding_digest": binding_digest,
+                                "contract_digest": contract_digest,
+                                "view_version": REUSE_VIEW_VERSION,
+                            },
+                        )
+                    except OSError:
+                        result["gaps"].append(
+                            {"unit": unit["id"], "reason": "cache_write_unavailable"}
+                        )
+                else:
+                    reason = (
+                        "tool_read_incomplete"
+                        if not agent.reusable_reads
+                        else "unsupported_summary_reference"
                     )
-                except OSError:
-                    result["gaps"].append({"unit": unit["id"], "reason": "cache_write_unavailable"})
+                    stats["miss_reasons"][reason] = stats["miss_reasons"].get(reason, 0) + 1
             assert isinstance(summary, dict)  # Both cache and model paths passed the schema gate.
             summaries[unit["id"]] = summary
-            for hypothesis in summary["hypotheses"]:
-                candidate = self.candidate(hypothesis, inventory, unit, identity)
+            current_summary = view.bind_summary(summary) if view.available else summary
+            current_unit = runtime_units[view.reverse[unit["id"]]] if view.available else unit
+            if not validate_summary(
+                current_summary,
+                runtime_inventory,
+                {view.reverse[m] if view.available else m for m in members},
+            ):
+                raise ValueError("hierarchical summary failed current reference binding")
+            for hypothesis in current_summary["hypotheses"]:
+                candidate = self.candidate(hypothesis, runtime_inventory, current_unit, identity)
+                if view.available:
+                    candidate["evidence_pack"]["hierarchical_contract"]["reference_bindings"] = (
+                        select_reference_bindings(hypothesis, view.reference_bindings)
+                    )
                 result["candidates"].append(candidate)
         self.require_current()
+        if view.available:
+            result["summaries"] = {
+                view.reverse[uid]: view.bind_summary(summary) for uid, summary in summaries.items()
+            }
+            result["reference_bindings"] = select_reference_bindings(
+                result["summaries"], view.reference_bindings
+            )
+            result["gaps"] = [view.bind_gap(gap) for gap in result["gaps"]]
+            if "incomplete_usage_units" in result:
+                result["incomplete_usage_units"] = [
+                    view.reverse[u] for u in result["incomplete_usage_units"]
+                ]
         result["status"] = "complete_with_gaps" if result["gaps"] else "complete"
         result["elapsed_seconds"] = round(time.monotonic() - started, 4)
         return result
@@ -911,6 +1057,7 @@ def rule_proposals(
                 "negative_example": h.get("negative_example"),
                 "required_facts": h.get("required_facts", []),
                 "assumptions": h.get("assumptions", []),
+                "reference_bindings": deepcopy(contract.get("reference_bindings", {})),
                 "auto_enable": False,
             }
         )

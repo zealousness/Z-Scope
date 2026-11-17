@@ -7,7 +7,7 @@ from zscope.config.config import ConfigLoader, SemanticDedupConfig
 
 def _base_config(tmp_path):
     return {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://localhost/v1"],
@@ -15,7 +15,7 @@ def _base_config(tmp_path):
                 "api_key": "unit-key",
             }
         },
-        "project": {"language": "c_cpp"},
+        "project": {"targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}], "language": "c_cpp"},
         "scan": {"task": ""},
         "indexing": {"backend": "regex"},
         "concurrency": {

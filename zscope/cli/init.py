@@ -24,8 +24,13 @@ import click
 import yaml
 
 from ..config.config import detect_project_language
-from ..config.v2 import SCAN_DEPTHS_BY_LANGUAGE
-from ..config.v3 import PRESET_DEPTH_MAPPING, SCAN_PRESETS, parse_user_config_v3_document
+from ..config.support import SCAN_DEPTHS_BY_LANGUAGE
+from ..config.v3 import (
+    DEFAULT_SCAN_PRESET,
+    PRESET_DEPTH_MAPPING,
+    SCAN_PRESETS,
+    parse_user_config_v3_document,
+)
 from ..config.project_semantics import render_empty_project_semantics
 
 
@@ -59,8 +64,7 @@ def _compile_commands(project_root: Path) -> str:
 
 
 def _default_preset(language: str) -> str:
-    # Preserve the existing C/C++ default execution depth; Java supports fast only.
-    return "deep" if language == "c_cpp" else "fast"
+    return DEFAULT_SCAN_PRESET
 
 
 def _preset_allowed(preset: str, language: str) -> bool:
@@ -173,7 +177,7 @@ def render_project_config(
     "--preset",
     type=click.Choice(list(SCAN_PRESETS)),
     default=None,
-    help="Quality tier (default: deep for c_cpp, fast for java).",
+    help="Quality tier (default: fast for both languages).",
 )
 @click.option(
     "--target-id",

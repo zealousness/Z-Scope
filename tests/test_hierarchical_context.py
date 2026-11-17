@@ -12,7 +12,7 @@ from zscope.orchestration.hierarchical_discovery import (
     build_hierarchy,
     summary_validation_error,
 )
-from test_hierarchical_discovery import function, summary, EMPTY_LIFECYCLE
+from test_hierarchical_discovery import function, summary, EMPTY_LIFECYCLE, reusable_function
 
 
 def large_unit():
@@ -253,3 +253,63 @@ def test_full_receipt_still_invalidates_leaf_cache_and_prompt_is_scoped(tmp_path
         "exists"
     ] = True
     assert discovery.run(hierarchy, EMPTY_LIFECYCLE, compose=False)["model_calls"] == 1
+
+
+def test_cross_build_model_tools_read_the_same_stable_store_not_raw_receipts():
+    from zscope.orchestration.hierarchical_reuse import SummaryReuseView
+
+    old, new = reusable_function(), reusable_function(build="receipt-new")
+    before = deepcopy(new)
+    left = SummaryReuseView(build_hierarchy([old], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    right = SummaryReuseView(build_hierarchy([new], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    assert left.available and right.available
+    assert left.hierarchy == right.hierarchy
+    uid = next(iter(right.hierarchy["functions"]))
+    model = right.hierarchy["functions"][uid]
+    assert "dependencies" not in model["facts"]["build_context"]
+    assert new == before  # Current program evidence has not been rewritten.
+    agent = ContractDiscoveryAgent(
+        SimpleNamespace(), right.hierarchy["functions"], [], [uid], lambda: None, 120
+    )
+    shown = agent._tool_executor("read_semantic_unit", {"unit_id": uid})
+    assert shown["unit"] == unit_view(model)
+    page = agent._tool_executor(
+        "read_semantic_evidence",
+        {
+            "unit_id": uid,
+            "pointer": "/facts/build_context",
+            "offset": 0,
+            "limit": 32,
+        },
+    )
+    assert page["success"] and "bytes-receipt-new" not in str(page)
+    refused = agent._tool_executor(
+        "read_semantic_evidence",
+        {
+            "unit_id": uid,
+            "pointer": "/facts/build_context/dependencies",
+            "offset": 0,
+            "limit": 1,
+        },
+    )
+    assert not refused["success"] and not agent.reusable_reads
+
+
+def test_cross_build_unread_paged_fact_hash_and_returned_content_change_together():
+    from zscope.orchestration.hierarchical_reuse import SummaryReuseView
+    from zscope.orchestration.hierarchical_context import read_evidence
+
+    old = reusable_function()
+    old["facts"]["payload"] = {"code": "x" * 20000}
+    new = deepcopy(old)
+    new["facts"]["payload"]["code"] += "changed"
+    views = [
+        SummaryReuseView(build_hierarchy([u], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+        for u in (old, new)
+    ]
+    units = [next(iter(v.hierarchy["functions"].values())) for v in views]
+    shown = [unit_view(u)["facts"]["payload"] for u in units]
+    assert shown[0] != shown[1]
+    pages = [read_evidence(u, "/facts/payload/code", 12000, 1) for u in units]
+    assert pages[0]["sha256"] != pages[1]["sha256"]
+    assert pages[0]["data"] != pages[1]["data"]

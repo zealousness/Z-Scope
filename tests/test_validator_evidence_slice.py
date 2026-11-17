@@ -1,6 +1,7 @@
 import json
 
 from zscope.agents.validator_agent.agent import ValidatorAgent
+from zscope.agents.validator_agent.legacy import LegacyResult
 from zscope.core.validation.evidence import build_validator_evidence_slice_v2
 
 
@@ -58,9 +59,7 @@ def test_alias_growth_does_not_copy_alias_uids_into_validator_payload() -> None:
 def test_evidence_slice_keeps_one_representative_path_and_compact_code() -> None:
     issue = _issue(20)
     issue["entry_paths"] = [["entry", "wrapper", "sink"], ["other", "sink"]]
-    evidence = {
-        "function_context": {"code": "\n".join(f"line_{line};" for line in range(200))}
-    }
+    evidence = {"function_context": {"code": "\n".join(f"line_{line};" for line in range(200))}}
 
     result = build_validator_evidence_slice_v2(issue, evidence, "")
 
@@ -175,7 +174,7 @@ def test_validator_json_candidate_counter_accepts_repair_output_spec() -> None:
         "",
         result,
         [],
-        json_output_spec=agent._validation_json_output_spec(),
+        json_output_spec=LegacyResult.output_spec(),
     )
 
     assert count == 1

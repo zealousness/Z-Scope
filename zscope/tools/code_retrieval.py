@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 class GetFunctionImplTool(BaseTool):
     """Tool to retrieve function implementation."""
-    
+
     def __init__(self, code_index: "CodeIndex", user_config=None):
         super().__init__(
             name="get_function_impl",

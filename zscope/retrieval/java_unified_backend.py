@@ -222,7 +222,9 @@ class JavaUnifiedBackend(CodeBackend):
                     for signal in provider.collect_taint_signals(entry_func=entry_func)
                 )
             except Exception as exc:
-                logger.debug("Java provider %s match collection failed: %s", provider.name, exc)
+                raise RuntimeError(
+                    f"Java provider {provider.name} match collection failed: {exc}"
+                ) from exc
         return matches
 
     def java_signal_capabilities(self) -> List[Dict[str, Any]]:
@@ -239,7 +241,9 @@ class JavaUnifiedBackend(CodeBackend):
                     edge.to_dict() for edge in provider.collect_call_edges(entry_func=entry_func)
                 )
             except Exception as exc:
-                logger.debug("Java provider %s call edge collection failed: %s", provider.name, exc)
+                raise RuntimeError(
+                    f"Java provider {provider.name} call edge collection failed: {exc}"
+                ) from exc
         return edges
 
     @staticmethod

@@ -419,15 +419,15 @@ def test_uncertain_estimate_never_refuses_contract_or_schema_before_http(
     assert client.usage_snapshot()["successful_calls"] == 2
 
 
-@pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize("advanced", [False, True])
 @pytest.mark.parametrize(
     "windows", [{}, {"context_window": 65536, "model_context_windows": {"small": 16384}}]
 )
-def test_public_config_capacities_and_shared_client_factory(tmp_path, version, windows):
+def test_public_config_capacities_and_shared_client_factory(tmp_path, advanced, windows):
     from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
     document = {
-        "config_version": version,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://example.invalid"],
@@ -436,10 +436,10 @@ def test_public_config_capacities_and_shared_client_factory(tmp_path, version, w
                 **windows,
             }
         },
-        "project": {"language": "java"},
-        "scan": {"depth": "fast"} if version == 2 else {"preset": "fast"},
+        "project": {"language": "java", "targets": [{"id": "default"}]},
+        "scan": {"preset": "fast"},
     }
-    if version == 2:
+    if advanced:
         document["indexing"] = {"backend": "java_source"}
         document["concurrency"] = {
             "entry_workers": 1,
@@ -449,8 +449,6 @@ def test_public_config_capacities_and_shared_client_factory(tmp_path, version, w
             "index_workers": 1,
             "llm_max_inflight": 1,
         }
-    else:
-        document["project"].update(platform="linux_user", targets=[{"id": "default"}])
     path = tmp_path / "zscope.yaml"
     path.write_text(json.dumps(document))
     config = ConfigLoader.load(str(path))
@@ -480,7 +478,7 @@ def test_public_config_capacities_and_shared_client_factory(tmp_path, version, w
     ],
 )
 def test_capacity_config_rejects_invalid_values(field, value):
-    from zscope.config.v2 import _parse_llms
+    from zscope.config.support import _parse_llms
 
     with pytest.raises(ValueError, match=field):
         _parse_llms(

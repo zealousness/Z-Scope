@@ -177,7 +177,7 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     "--scan-depth",
     type=click.Choice(["fast", "balanced", "deep"]),
     default=None,
-    help="Override scan.depth for this run. Java currently accepts fast only.",
+    help="Override scan.preset for this run (after validating the YAML). Java currently accepts fast only.",
 )
 def main(
     config: Path,

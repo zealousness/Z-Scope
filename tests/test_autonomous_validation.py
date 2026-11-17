@@ -58,6 +58,79 @@ def test_grounded_llm_rejection_is_terminal_but_never_a_deterministic_proof():
     assert not issue.get("decision_proof")
 
 
+@pytest.mark.parametrize("source_present", [False, True])
+def test_real_source_read_controls_counterclaim_admission(tmp_path, source_present):
+    import json
+
+    from zscope.agents.validator_agent.agent import ValidatorAgent
+    from zscope.tools.read_code import ReadCodeTool
+    from zscope.tools.source_access import ProjectSourceAccess
+
+    if source_present:
+        (tmp_path / "current.c").write_text("void release(void *base) { free(base); }\n")
+    issue = _issue()
+    issue.update(validation_mode="balanced", source_identity="base-object")
+
+    class CounterclaimLLM:
+        def run_conversation_with_tools(self, **kwargs):
+            executor = kwargs["tool_executor"]
+            read = executor("read_code", {"file_path": "current.c", "start_line": 1})
+            assert read["validator_new_evidence"] is source_present
+            recorded = executor(
+                executor.fact_tool_name,
+                {
+                    "fact_kind": "counterexample",
+                    "summary": "The deallocation consumes the allocation root.",
+                    "claim_scope": "candidate_premise",
+                    "subject_uid": "base-object",
+                    "evidence_refs": [read.get("evidence_ref", "TOOLFACT_NOT_READ")],
+                },
+            )
+            assert recorded["success"] is source_present
+            payload = {
+                **_rejected(),
+                "pass": "investigation_synthesis",
+                "blocking_negative_evidence": True,
+                "evidence_refs": [
+                    "FACT_SOURCE",
+                    "FACT_SINK",
+                    recorded.get("fact", {}).get("fact_uid", "FACT_NOT_RECORDED"),
+                ],
+            }
+            accepted = kwargs["terminal_tool_handler"](payload)
+            assert accepted["valid"] is source_present
+            return {
+                "content": json.dumps(payload),
+                "iterations": 1,
+                "terminal_tool_valid": accepted["valid"],
+            }
+
+    tool = ReadCodeTool(None, None, source_access=ProjectSourceAccess(tmp_path))
+    response = ValidatorAgent(CounterclaimLLM(), [tool]).investigate(
+        {
+            "autonomous_validation": True,
+            "candidate_subject_uid": "base-object",
+            "candidate_build_context_id": "build-current",
+            "evidence_slice": {
+                "obligation": {"candidate_uid": "CAND_1", "validation_cluster_uid": "VAL_1"},
+                "evidence_ref_catalog": issue["validator_evidence_ref_catalog"],
+                "allowed_missing_fact_kinds": [],
+            },
+        }
+    )
+    ValidationRunner._apply_v3_investigation_facts(issue, response.data, response.metadata)
+    outcome = ValidationPipeline(_Config()).apply_validator_result(
+        issue,
+        response.data,
+        verdict=response.data["verdict"],
+        score_data={"final_score": 0.1},
+    )
+    assert outcome.memory_status == ("rejected" if source_present else "needs_review")
+    assert infer_candidate_disposition(issue) == (
+        "rejected_with_evidence" if source_present else "needs_review"
+    )
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["fast", "universal", "stale", "conflict", "missing", "forged_ref", "wrong_candidate"],

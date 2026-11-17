@@ -36,7 +36,10 @@ class GetDataFlowTool(BaseTool):
                     "properties": {
                         "source_func": {"type": "string", "description": "Source function name"},
                         "source_param": {"type": "string", "description": "Source parameter name"},
-                        "sink_pattern": {"type": "string", "description": "Sink function name pattern (regex)"},
+                        "sink_pattern": {
+                            "type": "string",
+                            "description": "Sink function name pattern (regex)",
+                        },
                     },
                     "required": ["source_func", "source_param", "sink_pattern"],
                 },

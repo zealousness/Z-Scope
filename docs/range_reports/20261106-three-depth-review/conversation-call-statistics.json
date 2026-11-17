@@ -1,0 +1,91 @@
+{
+  "fast": {
+    "jsonl_files": 608,
+    "bytes_read": 20297471,
+    "event_types": {
+      "session_start": 607,
+      "exchange": 607,
+      "session_end": 607,
+      "None": 607
+    },
+    "invalid_json_lines": 0,
+    "unique_exchanges": 607,
+    "duplicate_usage_event_ids": 0,
+    "tool_calls_from_exchange_responses": {
+      "emit_validator_result_v3": 582
+    },
+    "exact_argument_repeat_within_same_file": {},
+    "repeat_definition": "Count each latest response tool call once, after deduplicating usage_event_id; repeat = same tool name + canonical JSON arguments already seen in this conversation file. Prior request history is never recounted. Repetition does not by itself prove waste."
+  },
+  "balanced": {
+    "jsonl_files": 965,
+    "bytes_read": 308113573,
+    "event_types": {
+      "session_start": 964,
+      "exchange": 4160,
+      "session_end": 964,
+      "tool_call": 5049,
+      "tool_result": 5049,
+      "iteration_control": 297,
+      "terminal_tool": 698,
+      "loop_guard": 31,
+      "None": 964
+    },
+    "invalid_json_lines": 0,
+    "unique_exchanges": 4160,
+    "duplicate_usage_event_ids": 0,
+    "tool_calls_from_exchange_responses": {
+      "emit_validator_result_v3": 1289,
+      "read_code": 1726,
+      "search_code": 2417,
+      "query_code_graph": 73,
+      "record_validator_investigation_fact": 816,
+      "query_guard_coverage": 2,
+      "query_validation_facts": 19,
+      "check_validation_claim": 19,
+      "get_semantic_context": 6,
+      "query_static_findings": 8
+    },
+    "exact_argument_repeat_within_same_file": {
+      "search_code": 3
+    },
+    "repeat_definition": "Count each latest response tool call once, after deduplicating usage_event_id; repeat = same tool name + canonical JSON arguments already seen in this conversation file. Prior request history is never recounted. Repetition does not by itself prove waste."
+  },
+  "deep": {
+    "jsonl_files": 1789,
+    "bytes_read": 615779415,
+    "event_types": {
+      "session_start": 1788,
+      "exchange": 7302,
+      "session_end": 1788,
+      "tool_call": 9572,
+      "tool_result": 9532,
+      "terminal_tool": 1141,
+      "iteration_control": 471,
+      "loop_guard": 29,
+      "attempt": 53,
+      "None": 1788
+    },
+    "invalid_json_lines": 0,
+    "unique_exchanges": 7302,
+    "duplicate_usage_event_ids": 0,
+    "tool_calls_from_exchange_responses": {
+      "emit_validator_result_v3": 1729,
+      "read_code": 2702,
+      "search_code": 4189,
+      "record_validator_investigation_fact": 1345,
+      "read_semantic_evidence": 910,
+      "emit_contract_summary": 284,
+      "query_code_graph": 159,
+      "read_semantic_unit": 353,
+      "get_semantic_context": 18,
+      "trace_data_flow": 2,
+      "query_static_findings": 16
+    },
+    "exact_argument_repeat_within_same_file": {
+      "search_code": 4,
+      "emit_validator_result_v3": 1
+    },
+    "repeat_definition": "Count each latest response tool call once, after deduplicating usage_event_id; repeat = same tool name + canonical JSON arguments already seen in this conversation file. Prior request history is never recounted. Repetition does not by itself prove waste."
+  }
+}

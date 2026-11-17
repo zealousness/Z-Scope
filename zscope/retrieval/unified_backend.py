@@ -179,6 +179,13 @@ class UnifiedBackend(CodeBackend):
                 missing.append("saber")
         return missing
 
+    def svf_signals_current(self) -> bool:
+        """Stored rows alone cannot authorize signals after a failed refresh."""
+        if not self._svf_ran or not self._svf_available or self._svf is None:
+            return False
+        project_root = self._project_root or self._source_path or Path(".")
+        return self._svf._materialization_current(project_root)
+
     def close(self) -> None:
         self._clang.close()
         self._svf = None
@@ -389,6 +396,8 @@ class UnifiedBackend(CodeBackend):
         return cast(List[Dict[str, Any]], db.get_indirect_callees(func_name, limit=limit))
 
     def get_taint_bugs(self, bug_type: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        if not self.svf_signals_current():
+            raise RuntimeError("SVF signals are unavailable or their materialization is stale")
         db = self.db
         if not db:
             return []

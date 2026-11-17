@@ -7,7 +7,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from test_config_v2 import _config
+from test_config_options import _config
 from test_config_v3 import _document
 from zscope.cli.config_cli import main as config_cli
 from zscope.cli.init import main as init_cli, render_project_config
@@ -61,10 +61,9 @@ def test_unresolved_numeric_environment_is_an_explicit_structural_validation_err
         save_document_data(tmp_path / "zscope.yaml", document, expand_environment=False)
 
 
-@pytest.mark.parametrize("version", [2, 3])
 @pytest.mark.parametrize("key", ["root", "source_root"])
-def test_even_equivalent_old_roots_require_migration(tmp_path, version, key):
-    document = _config(tmp_path) if version == 2 else _document()
+def test_even_equivalent_old_roots_require_migration(tmp_path, key):
+    document = _document()
     document["project"][key] = "."
     path = tmp_path / "zscope.yaml"
     path.write_text(yaml.safe_dump(document), encoding="utf-8")
@@ -153,6 +152,8 @@ def test_migration_refuses_wrong_destination_ambiguous_v2_cwd_and_split_roots(tm
     project.mkdir()
     source = tmp_path / "old.yaml"
     raw = _config(project)
+    raw["config_version"] = 2
+    raw["project"]["compile_commands_path"] = raw["project"].pop("targets")[0]["compile_commands"]
     raw["project"]["root"] = "project"
     source.write_text(yaml.safe_dump(raw), encoding="utf-8")
     target = project / "zscope.yaml"

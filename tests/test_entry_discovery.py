@@ -180,7 +180,10 @@ static void* WorkerMain(void* arg) {
 
     result = discovery.discover()
 
-    assert [candidate.function_name for candidate in result.candidates] == ["WorkerMain", "StartWorkers"]
+    assert [candidate.function_name for candidate in result.candidates] == [
+        "WorkerMain",
+        "StartWorkers",
+    ]
     candidate = result.candidates[0]
     assert candidate.exposure == "thread"
     assert "thread_entry:pthread_create" in candidate.reasons
@@ -566,7 +569,7 @@ def test_config_loader_accepts_absolute_entry_discovery_search_root(tmp_path):
     config_path.write_text(
         json.dumps(
             {
-                "config_version": 2,
+                "config_version": 3,
                 "llms": {
                     "default": {
                         "base_urls": ["http://localhost/v1"],
@@ -575,6 +578,7 @@ def test_config_loader_accepts_absolute_entry_discovery_search_root(tmp_path):
                     }
                 },
                 "project": {
+                    "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
                     "language": "c_cpp",
                     "entry_discovery": {
                         "enabled": True,
@@ -643,9 +647,7 @@ def test_discovery_keeps_same_name_functions_from_different_files(tmp_path):
     assert all(candidate.signature for candidate in handles)
 
 
-def test_discovery_filters_implementations_outside_active_translation_units(
-    tmp_path, monkeypatch
-):
+def test_discovery_filters_implementations_outside_active_translation_units(tmp_path, monkeypatch):
     src = tmp_path / "src"
     build = tmp_path / "build"
     src.mkdir()

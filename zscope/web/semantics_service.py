@@ -35,7 +35,7 @@ from ..config.semantics_workflow import (
     save_document,
     workflow_status,
 )
-from ..config.v2 import load_yaml_unique, _UniqueKeyLoader
+from ..config.support import load_yaml_unique, _UniqueKeyLoader
 from ..orchestration.primitive_tasks import PrimitiveTasks
 
 

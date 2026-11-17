@@ -28,3 +28,5 @@
 ## 后续开发规划
 
 [Agent 与专业扫描实施计划](../Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md) 记录本地能力核对、内存/资源扫描改进、夜间自主运行与用户体验路线。该包是未来设计，不替代本目录的当前行为说明；实施相关工作包时再同步对应模块、用户指南和配置。新建顶层包仍须在上表及唯一一份模块文档的 `covers` 中登记。
+
+已被替代的方案见[历史文档归档](../archive/README.md)，日期化交接与验证记录见[历史交接包](../handoffs/README.md)；这些文档用于追溯，不作为当前接口或待办清单。

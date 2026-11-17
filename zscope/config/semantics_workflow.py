@@ -130,7 +130,7 @@ def project_inputs(root: Path, config_path: Path | None = None) -> dict[str, Any
                 files[path.relative_to(root).as_posix()] = revision(path)
     config = {}
     if config_path is not None:
-        from .v2 import load_yaml_unique
+        from .support import load_yaml_unique
 
         raw = load_yaml_unique(config_path)
         config = {

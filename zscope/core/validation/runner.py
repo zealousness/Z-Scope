@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
 import time
 from collections import OrderedDict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -29,6 +30,7 @@ from .execution_context import (
 )
 from ...config.function_entry import FunctionEntry
 from ...framework.llm_client import LLMClient
+from ...framework.base import AgentResponse
 from ...orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
 from ...orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
@@ -68,6 +70,17 @@ from .dynamic_reproduction import (
     make_dynamic_reproduction_policy,
     release_issue_dynamic_reproduction_authority,
 )
+from .initial_reuse import (
+    INITIAL_REUSE_PROTOCOL,
+    INITIAL_REUSE_RECORD,
+    initial_request_view,
+    initial_reuse_metrics,
+    merge_initial_reuse_metrics,
+    parse_initial_response,
+    rebind_initial_response,
+    reusable_initial_response,
+)
+from . import investigation_reuse
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +243,7 @@ class ValidationRunner:
         instance_scope: Optional[Any] = None,
         input_current_guard: Optional[Callable[[], None]] = None,
         instance_semantics_digest: str = "",
+        initial_reuse_enabled: bool = True,
     ):
         self.config = config
         self.llm_clients = llm_clients
@@ -242,6 +256,7 @@ class ValidationRunner:
         self.remember_validation_result = remember_validation_result
         self._input_current_guard = input_current_guard
         self._instance_semantics_digest = instance_semantics_digest
+        self._initial_reuse_enabled = bool(initial_reuse_enabled)
         self.issue_key_fn = issue_key_fn
         self.deduplicate_issues = deduplicate_issues_fn
         self.validator_agent_factory = validator_agent_factory
@@ -933,8 +948,11 @@ class ValidationRunner:
             replace(
                 item,
                 allow_v3=id(item) in selected_ids,
-                v3_max_iterations=min(50, max(1, int(getattr(analysis_cfg, "max_tool_iterations", 50))))
-                if id(item) in selected_ids else 0,
+                v3_max_iterations=(
+                    min(50, max(1, int(getattr(analysis_cfg, "max_tool_iterations", 50))))
+                    if id(item) in selected_ids
+                    else 0
+                ),
             )
             for item in prepared
         ]
@@ -1491,7 +1509,7 @@ class ValidationRunner:
             validator_agent = validator_agent or self._build_validator_agent()
             token_metadata = self._empty_token_metadata()
             cheap_started = time.monotonic()
-            val_resp = validator_agent.run(val_input)
+            val_resp = self._run_initial_validator(validator_agent, val_input, item)
             response_metadata = getattr(val_resp, "metadata", {}) or {}
             self._record_validator_protocol_audit(
                 item.raw_issue,
@@ -1499,6 +1517,10 @@ class ValidationRunner:
                 validation_pass="initial",
             )
             self._merge_response_metadata(token_metadata, response_metadata)
+            if "validator_initial_reuse" in response_metadata:
+                token_metadata["validator_initial_reuse"] = response_metadata[
+                    "validator_initial_reuse"
+                ]
 
             if not val_resp.success:
                 if not item.allow_v3 or not self._recoverable_v1_failure(val_resp):
@@ -1549,7 +1571,10 @@ class ValidationRunner:
             )
             item.raw_issue["provider_validation_cost"] = {
                 "elapsed_seconds": round(time.monotonic() - provider_started, 4),
-                "tokens": max(0, int(token_metadata.get("cumulative_total_tokens", 0)) - provider_tokens_before),
+                "tokens": max(
+                    0,
+                    int(token_metadata.get("cumulative_total_tokens", 0)) - provider_tokens_before,
+                ),
             }
             if self._review_enabled():
                 item.raw_issue.setdefault("review_prior_results", []).append(deepcopy(val_data))
@@ -1582,6 +1607,176 @@ class ValidationRunner:
             if cache_owner and cache_key:
                 self._validator_result_cache.abandon(cache_key)
             self._close_thread_llm_sessions()
+
+    def _run_initial_validator(
+        self, validator_agent: Any, val_input: Dict[str, Any], item: _PreparedValidation
+    ) -> AgentResponse:
+        """Reuse only a closed V1 response; current V2/V3 and policy still run."""
+        metrics = initial_reuse_metrics()
+        view = val_input
+        descriptor = None
+        raw_model_result: Any = None
+        raw_model_audit: Dict[str, Any] = {}
+        if type(validator_agent) is ValidatorAgent:
+            evidence = val_input.get("evidence_slice")
+            if (
+                isinstance(evidence, dict)
+                and evidence.get("protocol_version") == VALIDATOR_PROTOCOL_V3
+                and str(
+                    val_input.get("validation_pass") or evidence.get("validation_pass") or "initial"
+                )
+                == "initial"
+                and "_review_session" not in val_input
+            ):
+                view = initial_request_view(val_input)
+                descriptor = validator_agent.initial_reuse_descriptor(view)
+
+        def model_response() -> AgentResponse:
+            nonlocal raw_model_result, raw_model_audit
+            self._require_current_inputs()
+            response = validator_agent.run(view)
+            self._require_current_inputs()
+            metadata = deepcopy(getattr(response, "metadata", {}) or {})
+            raw_model_result = deepcopy(response.data)
+            raw_model_audit = deepcopy(metadata.get("validator_protocol_audit") or {})
+            metrics["model_tasks"] = 1
+            metrics["tokens"] = int(metadata.get("cumulative_total_tokens", 0) or 0)
+            metadata["validator_initial_reuse"] = metrics
+            if view is not val_input:
+                metadata = rebind_initial_response(metadata, val_input)
+            return AgentResponse(
+                success=response.success,
+                data=(
+                    rebind_initial_response(response.data, val_input)
+                    if view is not val_input
+                    else response.data
+                ),
+                error=response.error,
+                metadata=metadata,
+            )
+
+        evidence = val_input.get("evidence_slice") or {}
+        pre_llm = item.raw_issue.get("validator_pre_llm_fact_resolution") or {}
+        build_id = issue_build_context_id(item.raw_issue)
+        bypass = ""
+        if descriptor is None:
+            bypass = "unsupported_request"
+        elif not self._initial_reuse_enabled:
+            bypass = "disabled"
+        elif self._validator_result_cache_size <= 0 or not self._validator_result_cache.enabled:
+            bypass = "cache_disabled"
+        elif not build_id:
+            bypass = "build_identity_missing"
+        elif evidence.get("decision_critical_omissions"):
+            bypass = "decision_input_omitted"
+        elif pre_llm.get("status") == "failed":
+            bypass = "current_fact_preparation_failed"
+        if bypass:
+            metrics["bypassed"] = 1
+            metrics["bypass_reasons"][bypass] = 1
+            return model_response()
+
+        assert descriptor is not None
+        project = getattr(self.config, "project", None)
+        contract_digest = self._stable_hash(
+            {
+                "protocol": INITIAL_REUSE_PROTOCOL,
+                "project_root": Path(getattr(project, "project_root", ".") or ".")
+                .resolve()
+                .as_posix(),
+                "build_context_id": build_id,
+                "effective_rules_sha256": self._effective_rules_sha256(),
+                "instance_semantics_digest": self._instance_semantics_digest,
+                "model_contract": descriptor["model_contract"],
+            }
+        )
+        request_digest = self._stable_hash(descriptor)
+        key = "V1_INITIAL_" + self._stable_hash([contract_digest, request_digest])
+        metrics["queries"] = 1
+        self._require_current_inputs()
+        cached = self._validator_result_cache.get(key)
+        miss_reason = "not_found"
+        loader = getattr(self.snapshot_store, "load_validation_result", None)
+        if cached is None and callable(loader):
+            try:
+                cached = loader(
+                    key,
+                    protocol=INITIAL_REUSE_PROTOCOL,
+                    candidate_schema_version=CANDIDATE_SCHEMA_VERSION,
+                    environment_fingerprint=contract_digest,
+                )
+            except (sqlite3.Error, OSError, ValueError):
+                logger.exception("Initial Validator cache read failed.")
+                miss_reason = "cache_read_failed"
+        if isinstance(cached, dict):
+            if (
+                cached.get("schema_version") == INITIAL_REUSE_RECORD
+                and cached.get("request_digest") == request_digest
+                and cached.get("contract_digest") == contract_digest
+                and reusable_initial_response(cached.get("result"), view)
+            ):
+                self._require_current_inputs()
+                metrics["hits"] = 1
+                metadata = {
+                    **self._empty_token_metadata(),
+                    **validator_agent._execution_context_metadata(),
+                    "validator_initial_reuse": metrics,
+                    "validator_initial_cache_hit": 1,
+                    "validator_protocol_audit": rebind_initial_response(
+                        cached.get("protocol_audit") or {}, val_input
+                    ),
+                    "validator_protocol": VALIDATOR_PROTOCOL_V3,
+                    "validator_pass": "initial",
+                }
+                item.raw_issue["validator_initial_cache_replayed"] = True
+                return AgentResponse(
+                    success=True,
+                    data=rebind_initial_response(
+                        parse_initial_response(cached["result"], view), val_input
+                    ),
+                    metadata=metadata,
+                )
+            self._validator_result_cache.discard(key)
+            miss_reason = "cached_response_invalid"
+        metrics["misses"] = 1
+        metrics["miss_reasons"][miss_reason] = 1
+        response = model_response()
+        # Parse the local-ID response again. No runtime issue, proof receipt or
+        # final policy disposition is ever serialized into this record.
+        canonical_result = raw_model_result
+        provider_model = str(response.metadata.get("validator_provider_model") or "")
+        primary_model = descriptor["model_contract"]["models"][0]
+        if not response.success or not reusable_initial_response(canonical_result, view):
+            metrics["write_skip_reasons"]["nonterminal_or_invalid_response"] = 1
+        elif provider_model != primary_model:
+            metrics["write_skip_reasons"]["fallback_or_unknown_model"] = 1
+        else:
+            record = {
+                "schema_version": INITIAL_REUSE_RECORD,
+                "request_digest": request_digest,
+                "contract_digest": contract_digest,
+                "result": canonical_result,
+                "protocol_audit": raw_model_audit,
+            }
+            self._require_current_inputs()
+            self._validator_result_cache.put(key, record)
+            metrics["writes"] = 1
+            saver = getattr(self.snapshot_store, "save_validation_result", None)
+            if callable(saver):
+                try:
+                    saver(
+                        key,
+                        record,
+                        protocol=INITIAL_REUSE_PROTOCOL,
+                        candidate_schema_version=CANDIDATE_SCHEMA_VERSION,
+                        environment_fingerprint=contract_digest,
+                        max_entries=max(1, self._validator_result_cache_size * 2),
+                    )
+                except (sqlite3.Error, OSError, ValueError):
+                    logger.exception("Initial Validator cache write failed.")
+                    metrics["write_skip_reasons"]["persistent_write_failed"] = 1
+        response.metadata["validator_initial_reuse"] = metrics
+        return response
 
     @staticmethod
     def _recoverable_v1_failure(response: Any) -> bool:
@@ -2236,7 +2431,8 @@ class ValidationRunner:
         if attribution["decided_by"] == "deterministic_proof":
             attribution["decision_level"] = "V0"
         # Escalation-rung observability: record the confirmation path for
-        # confirmed findings (balanced_confirmed_tp_plan.md Phase 5).  Unset
+        # confirmed findings (historical plan Phase 5:
+        # docs/archive/design-plans/balanced_confirmed_tp_plan.md).  Unset
         # for everything else so ``confirmed_via`` stays a confirmed-only key.
         if policy_disposition in {"confirmed", "validated"}:
             if attribution["decided_by"] == "deterministic_proof":
@@ -2622,7 +2818,10 @@ class ValidationRunner:
         investigation_input["candidate_build_context_id"] = issue_build_context_id(item.raw_issue)
         investigation_input["candidate_subject_uid"] = str(
             _as_dict(item.raw_issue.get("security_obligation")).get("subject_uid")
-            or item.raw_issue.get("resource_identity") or item.raw_issue.get("source_identity") or "")
+            or item.raw_issue.get("resource_identity")
+            or item.raw_issue.get("source_identity")
+            or ""
+        )
         if self._review_enabled():
             positive = (
                 self._review_flag("validation_positive_case")
@@ -2639,13 +2838,12 @@ class ValidationRunner:
             item.raw_issue.setdefault("review_prior_results", []).append(deepcopy(val_data))
             self._review_checkpoint(item.raw_issue, "before_v3")
         investigation_started = time.monotonic()
-        response = investigate(
-            investigation_input,
-            max_iterations=item.v3_max_iterations or 50,
-        )
+        response = self._investigate_with_query_reuse(item, validator_agent, investigation_input)
         item.raw_issue["autonomous_validation_cost"] = {
             "elapsed_seconds": round(time.monotonic() - investigation_started, 4),
-            "tokens": int((getattr(response, "metadata", {}) or {}).get("cumulative_total_tokens", 0) or 0),
+            "tokens": int(
+                (getattr(response, "metadata", {}) or {}).get("cumulative_total_tokens", 0) or 0
+            ),
         }
         self._record_validator_protocol_audit(
             item.raw_issue,
@@ -2702,6 +2900,124 @@ class ValidationRunner:
             int(token_metadata.get("validator_targeted_investigation_count", 0) or 0) + 1
         )
         return revised
+
+    def _investigate_with_query_reuse(
+        self, item: _PreparedValidation, agent: Any, request: Dict[str, Any]
+    ) -> AgentResponse:
+        """Persist query subscriptions; all observations and decisions stay current."""
+        counts = investigation_reuse.metrics()
+        key = contract = ""
+        loader = getattr(self.snapshot_store, "load_validation_result", None)
+        saver = getattr(self.snapshot_store, "save_validation_result", None)
+        context_getter = getattr(self.code_index, "get_build_contexts", None)
+        enabled = (
+            investigation_reuse.ENABLED
+            and self._initial_reuse_enabled
+            and self._validator_result_cache.enabled
+            and self._validator_result_cache_size > 0
+            and type(agent) is ValidatorAgent
+            and callable(loader)
+            and callable(saver)
+            and callable(context_getter)
+            and not request.get("review_protocol_enabled")
+            and "_review_session" not in request
+        )
+        if enabled:
+            build_id = issue_build_context_id(item.raw_issue)
+            contexts = [
+                value
+                for value in context_getter(str(item.raw_issue.get("file_path") or ""))
+                if value.get("build_context_id") == build_id and value.get("command_id")
+            ]
+            if len(contexts) == 1:
+                initial = {**request, "validation_pass": "initial"}
+                descriptor = agent.initial_reuse_descriptor(initial)
+                if descriptor is not None:
+                    contract = self._stable_hash(
+                        {
+                            "protocol": investigation_reuse.PROTOCOL,
+                            "model": descriptor["model_contract"],
+                            "prompt": agent._messages(request, ""),
+                            "tools": agent.tools_schema,
+                            "rules": self._effective_rules_sha256(),
+                        }
+                    )
+                    # A query plan is a retrieval hint, not a semantic result.
+                    # The build-bound semantics receipt still authorizes the
+                    # current tools/policy; it must not prevent fresh reads.
+                    obligation = item.raw_issue.get("security_obligation") or {}
+                    key = "QUERY_PLAN_" + self._stable_hash(
+                        {
+                            "project": str(
+                                Path(getattr(self.config.project, "project_root", ".")).resolve()
+                            ),
+                            "command": contexts[0]["command_id"],
+                            "function": item.issue_func,
+                            "location": item.raw_issue.get("location"),
+                            "subject": obligation.get("subject_uid"),
+                            "rule": item.raw_issue.get("rule_id"),
+                            "defect": item.raw_issue.get("defect_class")
+                            or item.raw_issue.get("category"),
+                            "contract": contract,
+                        }
+                    )
+        if key:
+            counts["queries"] = 1
+            self._require_current_inputs()
+            try:
+                record = loader(
+                    key,
+                    protocol=investigation_reuse.PROTOCOL,
+                    candidate_schema_version=CANDIDATE_SCHEMA_VERSION,
+                    environment_fingerprint=contract,
+                )
+            except (sqlite3.Error, OSError, ValueError):
+                logger.exception("Validator query-plan cache read failed.")
+                record = None
+                counts["reasons"]["cache_read_failed"] = 1
+            if investigation_reuse.load_steps(record):
+                request["_investigation_query_plan"] = record
+                counts["hits"] = 1
+            else:
+                counts["reasons"]["no_compatible_plan"] = 1
+        else:
+            counts["bypassed"] = 1
+            counts["reasons"]["disabled_or_unsupported_scope"] = 1
+        self._require_current_inputs()
+        response = agent.investigate(request, max_iterations=item.v3_max_iterations or 50)
+        self._require_current_inputs()
+        observed = response.metadata.pop("validator_observed_queries", [])
+        condition_plan = response.metadata.pop("validator_condition_plan", None)
+        if "validator_condition_table" in response.metadata:
+            item.raw_issue["validator_condition_table"] = deepcopy(response.metadata["validator_condition_table"])
+        # A successful read remains useful when the surrounding investigation
+        # is incomplete. Save only its query, never the unfinished decision;
+        # the next investigation executes every read against current inputs.
+        if key and response.success and observed:
+            try:
+                saver(
+                    key,
+                    {"schema_version": investigation_reuse.PROTOCOL, "queries": observed,
+                     "condition_plan": condition_plan},
+                    protocol=investigation_reuse.PROTOCOL,
+                    candidate_schema_version=CANDIDATE_SCHEMA_VERSION,
+                    environment_fingerprint=contract,
+                    max_entries=max(1, self._validator_result_cache_size * 2),
+                )
+                counts["writes"] = 1
+            except (sqlite3.Error, OSError, ValueError):
+                logger.exception("Validator query-plan cache write failed.")
+                counts["reasons"]["cache_write_failed"] = 1
+        response.metadata["validator_query_reuse"] = investigation_reuse.merge_metrics(
+            [
+                counts,
+                response.metadata.get("validator_query_reuse", {}),
+            ]
+        )
+        item.raw_issue["validator_query_reuse"] = deepcopy(
+            response.metadata["validator_query_reuse"]
+        )
+        return response
 
     _V2B_MAX_ITERATIONS = 12
 
@@ -3048,6 +3364,13 @@ class ValidationRunner:
     def _merge_response_metadata(target: Dict[str, Any], metadata: Dict[str, Any]) -> None:
         if not isinstance(metadata, dict):
             return
+        if "validator_query_reuse" in metadata:
+            target["validator_query_reuse"] = investigation_reuse.merge_metrics(
+                [
+                    target.get("validator_query_reuse", {}),
+                    metadata["validator_query_reuse"],
+                ]
+            )
 
         def token_value(key: str, fallback_key: Optional[str] = None) -> int:
             value = metadata.get(key)
@@ -3183,6 +3506,13 @@ class ValidationRunner:
     def _accumulate_token_metadata(state: Dict[str, Any], metadata: Dict[str, Any]) -> None:
         if not isinstance(metadata, dict):
             return
+        if "validator_query_reuse" in metadata:
+            state["validator_query_reuse"] = investigation_reuse.merge_metrics([
+                state.get("validator_query_reuse", {}), metadata["validator_query_reuse"],
+            ])
+        reuse = metadata.get("validator_initial_reuse")
+        if isinstance(reuse, dict):
+            merge_initial_reuse_metrics(state.setdefault("validator_initial_reuse", {}), reuse)
 
         def token_value(key: str, fallback_key: Optional[str] = None) -> int:
             value = metadata.get(key)
@@ -3674,10 +4004,14 @@ class ValidationRunner:
                 if isinstance(knowledge, dict):
                     evidence_slice["project_knowledge"] = knowledge
             obligation = _as_dict(evidence_slice.get("obligation"))
+            candidate_evidence = _as_dict(evidence_pack.get("candidate_evidence"))
             for context_key in ("hierarchical_contract", "hierarchical_supplement"):
-                context_value = evidence_pack.get(context_key)
+                context_value = evidence_pack.get(context_key, candidate_evidence.get(context_key))
                 if isinstance(context_value, dict):
-                    evidence_slice[context_key] = {**context_value, "authority": "unverified_context"}
+                    evidence_slice[context_key] = {
+                        **context_value,
+                        "authority": "unverified_context",
+                    }
             if evidence_pack.get("protocol_assessment"):
                 evidence_slice["protocol_assessment"] = evidence_pack["protocol_assessment"]
             obligation["candidate_uid"] = finding_uid

@@ -27,7 +27,11 @@ class VerifyTaintReachabilityTool(BaseTool):
         if backend and hasattr(backend, "get_taint_bugs"):
             fetched = backend.get_taint_bugs(bug_type, limit=parsed_limit + 1)
         else:
-            fetched = []
+            return {
+                "success": False,
+                "status": "unavailable",
+                "error": "The current backend cannot query imported taint findings.",
+            }
         truncated = len(fetched) > parsed_limit
         bugs = fetched[:parsed_limit]
         data = {"bugs": bugs, "count": len(bugs), "truncated": truncated}

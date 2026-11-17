@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from zscope.benchmarking.runner import copy_scan_input
+from zscope.config.v3 import parse_user_config_v3_document, compose_effective_config
 from zscope.orchestration.entry_discovery import EntryDiscovery
 from zscope.retrieval.code_index import CodeIndex
 
@@ -230,10 +231,12 @@ def test_range_benchmark_is_provider_neutral_auto_unified() -> None:
 
     assert "${Z_SCOPE_LLM_BASE_URL}" in config
     assert "${Z_SCOPE_LLM_MODEL}" in config
-    assert "config_version: 2" in config
-    assert "backend: unified" in config
-    assert "entry_discovery:\n    enabled: true" in config
-    assert 'task: ""' in config
+    assert "config_version: 3" in config
+    model = parse_user_config_v3_document(BENCHMARK_CONFIG_PATH, yaml.safe_load(config))
+    effective = compose_effective_config(model)
+    assert effective.indexing.backend == "unified"
+    assert effective.project.entry_discovery.enabled is True
+    assert effective.scan.task == ""
     assert "/home/" not in config
     assert "\nanalysis:\n" not in config
     assert "\nreporting:\n" not in config
@@ -244,21 +247,26 @@ def test_range_flush_is_reachable_from_discovered_public_api(tmp_path: Path) -> 
     scan_root = tmp_path / "scan"
     copy_scan_input(BENCHMARK_CONFIG_PATH.parent, scan_root, "c_cpp")
     config = yaml.safe_load(BENCHMARK_CONFIG_PATH.read_text(encoding="utf-8"))
-    discovery_config = config["project"]["entry_discovery"]
+    effective = compose_effective_config(
+        parse_user_config_v3_document(BENCHMARK_CONFIG_PATH, config)
+    )
+    discovery_config = effective.project.entry_discovery
     index = CodeIndex(scan_root, source_root=scan_root)
     try:
         result = EntryDiscovery(
             index,
             project_root=scan_root,
             source_root=scan_root,
-            search_root=scan_root / discovery_config["search_root"],
-            interface_files=discovery_config["interface_files"],
-            max_functions=discovery_config["max_functions"],
-        ).discover(max_candidates=discovery_config["max_entries"])
+            search_root=(
+                scan_root / discovery_config.search_root.relative_to(effective.project.project_root)
+                if discovery_config.search_root
+                else scan_root
+            ),
+            interface_files=discovery_config.interface_files,
+            max_functions=discovery_config.max_functions,
+        ).discover(max_candidates=discovery_config.max_entries)
         entries = [
-            entry
-            for entry in result.candidates
-            if entry.function_name == "td_schedule_flush"
+            entry for entry in result.candidates if entry.function_name == "td_schedule_flush"
         ]
         assert len(entries) == 1
         assert entries[0].file_path == "src/main.c"

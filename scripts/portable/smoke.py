@@ -389,7 +389,7 @@ def interfaces(profile):
     project = WORK if profile == "cpp" else WORK / "java-project"
     config = project / "zscope.yaml"
     data = {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://127.0.0.1:9/v1"],
@@ -402,8 +402,9 @@ def interfaces(profile):
         },
         "indexing": {"backend": "clang" if profile == "cpp" else "java_source"},
     }
+    data["project"]["targets"] = [{"id": "main"}]
     if profile == "cpp":
-        data["project"]["compile_commands_path"] = str(WORK / "compile_commands.json")
+        data["project"]["targets"][0]["compile_commands"] = str(WORK / "compile_commands.json")
     data["concurrency"] = {
         key: 1
         for key in (

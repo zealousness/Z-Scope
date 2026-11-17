@@ -18,25 +18,21 @@ class ListFunctionsTool(BaseTool):
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         pattern = arguments.get("pattern")
-        limit = arguments.get("limit", 50)
-        offset = arguments.get("offset", 0)
         try:
-            parsed_offset = max(0, int(offset))
-        except (TypeError, ValueError):
-            parsed_offset = 0
-        functions = self.code_index.list_functions(
+            limit = int(arguments.get("limit", 50))
+            offset = int(arguments.get("offset", 0))
+        except (TypeError, ValueError, OverflowError):
+            return {"success": False, "error": "limit and offset must be integers"}
+        if limit < 1 or offset < 0:
+            return {"success": False, "error": "limit must be positive and offset non-negative"}
+        # A single bounded query probes for the next row without repeating a scan.
+        fetched = self.code_index.list_functions(
             pattern=pattern,
-            limit=limit,
-            offset=parsed_offset,
+            limit=limit + 1,
+            offset=offset,
         )
-        # Detect overflow with one extra row so truncation is reported with
-        # the pre-truncation total instead of a post-truncation count.
-        probe = self.code_index.list_functions(
-            pattern=pattern,
-            limit=1,
-            offset=parsed_offset + len(functions),
-        )
-        truncated = bool(probe)
+        functions = fetched[:limit]
+        truncated = len(fetched) > limit
         data = {
             "functions": functions,
             "count": len(functions),
@@ -70,11 +66,13 @@ class ListFunctionsTool(BaseTool):
                         },
                         "limit": {
                             "type": "integer",
+                            "minimum": 1,
                             "default": 50,
                             "description": "Max functions to return for this page",
                         },
                         "offset": {
                             "type": "integer",
+                            "minimum": 0,
                             "default": 0,
                             "description": "Number of matching functions to skip before this page",
                         },

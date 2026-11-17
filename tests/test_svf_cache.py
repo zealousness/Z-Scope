@@ -47,6 +47,14 @@ def _write_compile_commands(tmp_path: Path) -> tuple[Path, Path]:
     return source_root, compile_commands
 
 
+def test_missing_compile_database_is_not_successful_svf(tmp_path):
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        assert SvfAnalyzer(db=db).run(tmp_path, tmp_path, None) is False
+    finally:
+        db.close()
+
+
 def _write_callgraph(dot_path: Path, edges: list[tuple[str, str]]) -> Path:
     names = sorted({name for edge in edges for name in edge})
     node_ids = {name: f"0x{index + 1:x}" for index, name in enumerate(names)}
@@ -60,6 +68,53 @@ def _write_callgraph(dot_path: Path, edges: list[tuple[str, str]]) -> Path:
     dot_path.parent.mkdir(parents=True, exist_ok=True)
     dot_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return dot_path
+
+
+def test_unified_signals_require_successful_current_materialization(tmp_path, monkeypatch):
+    from zscope.retrieval.unified_backend import UnifiedBackend
+
+    source_root, compile_commands = _write_compile_commands(tmp_path)
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+
+    class Builder:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def build(self, **kwargs):
+            return {"saber:default": tmp_path / "all.bc"}
+
+    class Runner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_saber(self, bc_path, output_dir):
+            return SvfResult(
+                tool="saber",
+                success=True,
+                bugs=[{"type": "Never Free", "file": "main.c", "line": 1}],
+            )
+
+    monkeypatch.setattr(svf_module, "BitcodeBuilder", Builder)
+    monkeypatch.setattr(svf_module, "SvfRunner", Runner)
+    backend = UnifiedBackend()
+    backend._clang._db = db
+    backend._source_path = source_root
+    backend._project_root = tmp_path
+    backend._compile_commands_path = str(compile_commands)
+    monkeypatch.setattr(backend, "_check_svf_tools", lambda: [])
+    try:
+        assert backend._run_svf_exclusive(["main"]) is True
+        assert backend.svf_signals_current() is True
+        assert len(backend.get_taint_bugs()) == 1
+        marker = json.loads(db.get_metadata("svf_db_import:saber:saber:default"))
+        artifact = tmp_path / marker["artifact_path"]
+        artifact.write_text("corrupted artifact", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="stale"):
+            backend.get_taint_bugs()
+        # The consumer refuses stale evidence without erasing diagnostics.
+        assert len(db.get_taint_bugs()) == 1
+    finally:
+        db.close()
 
 
 def test_svf_mapper_imports_only_explicit_red_indirect_edges(tmp_path: Path) -> None:

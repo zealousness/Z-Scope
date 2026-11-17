@@ -17,7 +17,7 @@ sources:
   - zscope/web/services.py
   - zscope/core/validation/runner.py
   - zscope/config/config.py
-  - zscope/config/v2.py
+  - zscope/config/support.py
 tests:
   - tests/test_review_memory_acceptance_gaps.py
   - tests/test_review_memory_extractor_boundaries.py
@@ -27,7 +27,7 @@ tests:
   - tests/test_validator_replay.py
   - tests/test_validation_runner.py
   - tests/test_web_user_config_workbook_api.py
-  - tests/test_config_v2.py
+  - tests/test_config_options.py
   - tests/test_agent_docs.py
 ---
 
@@ -150,7 +150,7 @@ cache identity 包括 Review Memory schema、project ID、active revision/digest
 
 ## 配置与 CLI
 
-以下是合并到现有 `config_version: 2` YAML 的项目配置片段，不是完整配置文件：
+以下是合并到现有 `config_version: 3` YAML 的项目配置片段，不是完整配置文件：
 
 ```yaml
 project:
@@ -208,7 +208,7 @@ zscope-review-memory -c zscope.yaml export --output review-memory.json
 - CLI 抽取通过共享 conversation recorder 将完整 LLM 会话归档到
   `<YAML 所在工程目录>/.zscope_conversations/`，与其他 Agent 使用相同的 JSONL/Markdown
   格式；`records/` 和 `proposals/` 仍分别保存原始反馈与结构化抽取结果。
-- 公共配置：`config/config.py`、`config/v2.py`；不要向用户 YAML 暴露 RuntimeSpec 私有字段。
+- 公共配置：`config/config.py`、`config/v3.py`、`config/support.py`；不要向用户 YAML 暴露 RuntimeSpec 私有字段。
 - 运行时能力变化同步本文及对应跨模块文档；本次文档建立不修复上述实现限制。
 
 ## 对应测试与验证命令
@@ -216,7 +216,7 @@ zscope-review-memory -c zscope.yaml export --output review-memory.json
 ```bash
 python -m pytest -q tests/test_agent_docs.py
 python -m pytest -q tests/test_review_memory_acceptance_gaps.py tests/test_review_memory_extractor_boundaries.py tests/test_review_memory_lifecycle.py tests/test_review_memory_replay.py tests/test_validator_review_memory.py
-python -m pytest -q tests/test_config_v2.py tests/test_web_user_config_workbook_api.py tests/test_validation_runner.py tests/test_validator_evidence_slice.py tests/test_validator_replay.py
+python -m pytest -q tests/test_config_options.py tests/test_web_user_config_workbook_api.py tests/test_validation_runner.py tests/test_validator_evidence_slice.py tests/test_validator_replay.py
 ```
 
 这些测试是定向契约/回归入口，不代表所有设计门禁或生产安全已验收；不需要启动 benchmark 扫描。

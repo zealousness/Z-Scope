@@ -31,6 +31,8 @@ including Precision, Recall, matched pairs, and the expected disposition
 transition for the documented label precondition.
 
 The canonical fixture configuration intentionally contains only currently
-supported public v2 fields. Wiki `off`/`active` mode is supplied by the caller
+supported public v3 fields. Keep the YAML in the fixture root, use `scan.preset`
+for the scan tier, and complete discovery and review for `project.semantics_file`
+before scanning. Wiki `off`/`active` mode is supplied by the caller
 or a temporary configuration overlay after the Wiki runtime is enabled; it is
 not encoded as answer metadata in this fixture.

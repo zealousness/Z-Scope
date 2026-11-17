@@ -116,7 +116,7 @@ if (process.argv.includes('--browser-config')) (async () => {
     assert.equal(changed.scan.preset,'fast'); assert.deepEqual(changed.scan.focus,['resources','memory']);
     await navigatePage(page,'prepare');
     await page.locator('#wb-v3-preparation').waitFor();
-    await page.locator('#wb-v3-preparation').getByText('快速 · 当前映射为 快速',{exact:true}).waitFor();
+    await page.locator('#wb-v3-preparation').getByText('快速',{exact:true}).waitFor();
     await navigatePage(page,'project');
     await page.setViewportSize({width:390,height:844});
     await page.screenshot({path:`${output}/02-editor-mobile.png`,fullPage:true});
@@ -266,8 +266,11 @@ if (!process.argv.some(value => value.startsWith('--browser'))) (async () => {
   editor.structuredConfig=javaDocument; editor.populateConfigForm(javaDocument);
   assert.equal(JSON.stringify(editor.buildStructuredConfig()),JSON.stringify(javaDocument));
   const legacy={config_version:2,project:{language:'java'},llms:original.llms};
-  editor.structuredConfig=legacy; editor.populateConfigForm(legacy);
-  assert.equal(editor.v3Form,null); assert.equal(editor.buildStructuredConfig().config_version,2);
+  transport=async()=>reply({config:legacy});
+  await editor.loadStructuredConfig({discard:true});
+  assert.equal(editor.structuredConfigAvailable,false);
+  assert.equal(editor.buildStructuredConfig().config_version,3);
+  assert.match(editor.configError,/migrate/);
 
   // The schedule controls serialize the three modes independently from windows.
   const planned={...app(),...context.window.ZScopeSchedules,canCreateSchedule:()=>true,

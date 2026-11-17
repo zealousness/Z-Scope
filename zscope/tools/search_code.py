@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict
+
+import regex
 
 from .contracts import (
     ContractTool,
@@ -23,8 +24,8 @@ from .symbols import (
 )
 from .source_access import ProjectSourceAccess
 
-DESCRIPTION = """Search symbols (default; preserve symbol_id), literal text, or file paths.
-Text/files return read_code locations; page with view_id. Hits are not flow evidence."""
+DESCRIPTION = """Find symbols (default), literal text, or file paths; preserve symbol_id.
+Text/files locate code for read_code, not flow evidence."""
 
 
 SEARCH_CONTRACT = ToolContract(
@@ -34,16 +35,22 @@ SEARCH_CONTRACT = ToolContract(
         {
             "query": {"type": "string", "minLength": 1, "maxLength": 256},
             "scope": {"type": "string", "enum": ["symbols", "text", "files"]},
-            "view_id": {"type": ["string", "null"], "maxLength": 64},
+            "view_id": {
+                "type": ["string", "null"],
+                "maxLength": 64,
+                "description": "Text/files only: omit or JSON null initially; then copy the returned ID. Never use 'null'.",
+            },
             "kinds": {
                 "type": "array",
                 "items": {"type": "string", "enum": list(SEARCHABLE_KINDS)},
                 "maxItems": 5,
                 "uniqueItems": True,
+                "description": "Symbols only; omit or [] for text/files, including literal macro-source searches.",
             },
             "match_mode": {
                 "type": "string",
                 "enum": ["exact", "prefix", "substring", "regex"],
+                "description": "Text/files require substring. Other modes apply only to symbols.",
             },
             "path_prefix": {"type": ["string", "null"], "maxLength": 1024},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
@@ -83,77 +90,6 @@ SEARCH_CONTRACT = ToolContract(
 )
 
 
-def _unsafe_regex_reason(pattern: str) -> str:
-    if re.search(r"\\[1-9]", pattern):
-        return "backreferences are not allowed"
-    if re.search(r"\(\?(?:[=!<]|P[=<])", pattern):
-        return "lookaround and named backreferences are not allowed"
-    stack: list[dict[str, bool]] = []
-    closed_group: Optional[dict[str, bool]] = None
-    in_class = False
-    escaped = False
-    index = 0
-    while index < len(pattern):
-        char = pattern[index]
-        if escaped:
-            escaped = False
-            closed_group = None
-            index += 1
-            continue
-        if char == "\\":
-            escaped = True
-            closed_group = None
-            index += 1
-            continue
-        if in_class:
-            if char == "]":
-                in_class = False
-            index += 1
-            continue
-        if char == "[":
-            in_class = True
-            closed_group = None
-            index += 1
-            continue
-        if char == "(":
-            stack.append({"repeat": False, "alternate": False})
-            closed_group = None
-            index += 1
-            continue
-        if char == ")":
-            closed_group = stack.pop() if stack else {"repeat": False, "alternate": False}
-            index += 1
-            continue
-        if char == "|":
-            for group in stack:
-                group["alternate"] = True
-            closed_group = None
-            index += 1
-            continue
-        quantifier = char in {"*", "+", "?"} and not (
-            char == "?" and index > 0 and pattern[index - 1] == "("
-        )
-        if char == "{":
-            end = pattern.find("}", index + 1)
-            quantifier = end > index and bool(
-                re.fullmatch(r"\d+(?:,\d*)?", pattern[index + 1 : end])
-            )
-            if quantifier:
-                index = end
-        if quantifier:
-            if closed_group and (closed_group["repeat"] or closed_group["alternate"]):
-                return "nested or ambiguous group repetition is not allowed"
-            for group in stack:
-                group["repeat"] = True
-            closed_group = None
-        elif not char.isspace():
-            closed_group = None
-        index += 1
-    if re.search(r"(?:\.\*|\.\+){2,}", pattern):
-        return "repeated wildcard repetition is not allowed"
-    return ""
-
-
 class SearchCodeTool(ContractTool):
     def __init__(
         self, catalog: SymbolCatalog, source_access: ProjectSourceAccess | None = None
@@ -166,17 +102,19 @@ class SearchCodeTool(ContractTool):
         scope = arguments.get("scope", "symbols")
         if scope != "symbols":
             for key in ("kinds", "match_mode"):
-                if key in arguments and (key == "kinds" or arguments[key] != "substring"):
+                if (key == "kinds" and arguments.get(key)) or (
+                    key == "match_mode" and key in arguments and arguments[key] != "substring"
+                ):
                     return invalid_request(
                         code="unsupported_search_option",
                         path=key,
-                        message="text/files support only literal substring matching, without kinds.",
+                        message="For scope=text/files, use match_mode='substring' and omit kinds (or use []). Keep the query literal; exact/prefix/regex and nonempty kinds are only supported for scope=symbols.",
                     )
         elif arguments.get("view_id"):
             return invalid_request(
                 code="unexpected_search_view",
                 path="view_id",
-                message="view_id is only valid for text/files.",
+                message="For scope=symbols omit view_id or use JSON null. Only text/files pagination accepts a returned view_id; never send the string 'null'.",
             )
         if arguments.get("path_prefix"):
             path_error = project_relative_path_error(arguments["path_prefix"])
@@ -189,14 +127,9 @@ class SearchCodeTool(ContractTool):
         if arguments.get("match_mode", "substring") != "regex":
             return None
         query = str(arguments.get("query") or "")
-        reason = _unsafe_regex_reason(query)
-        if reason:
-            return invalid_request(
-                code="unsafe_regex", path="query", message=reason, retryable=True
-            )
         try:
-            re.compile(query)
-        except re.error as exc:
+            regex.compile(query, regex.VERSION0)
+        except (regex.error, OverflowError) as exc:
             return invalid_request(
                 code="invalid_regex", path="query", message=str(exc), retryable=True
             )
@@ -207,17 +140,32 @@ class SearchCodeTool(ContractTool):
             if self.source_access is None:
                 return tool_result(status="unavailable", data=None, missing=["project_source_root"])
             return self.source_access.search(arguments)
+        if getattr(self.catalog.code_index, "pinned_build_context_id", ""):
+            # The navigation catalog reads project-wide stores, which the
+            # instance facade deliberately blocks. Do not call those stores
+            # or mistake their absence for an empty current-build symbol set.
+            return tool_result(
+                status="unavailable",
+                data=None,
+                missing=["build_scoped_symbol_catalog"],
+                next_actions=[
+                    "Use scope=text with a literal query, or read_code with a known file/line. "
+                    "Text hits are navigation only, not current-build call edges."
+                ],
+            )
         query = str(arguments["query"])
         kinds = arguments.get("kinds") or list(SEARCHABLE_KINDS)
         match_mode = str(arguments.get("match_mode") or "substring")
         limit = int(arguments.get("limit", 20))
         offset = int(arguments.get("offset", 0))
-        matches = self.catalog.search(
-            query,
-            kinds,
-            match_mode,
-            arguments.get("path_prefix"),
-        )
+        try:
+            matches = self.catalog.search(query, kinds, match_mode, arguments.get("path_prefix"))
+        except TimeoutError:
+            return invalid_request(
+                code="regex_query_timeout",
+                path="query",
+                message="Symbol regex search exceeded its time budget; simplify the pattern or narrow path_prefix.",
+            )
         selected = matches[offset : offset + limit]
         status = "ok" if matches else "not_found"
         actions = [] if matches else ["Broaden query or use substring matching."]

@@ -128,21 +128,10 @@ def _iter_keys(value: object):
 # --- v2 passthrough ---------------------------------------------------------------
 
 
-def test_v2_documents_keep_the_existing_preparation_envelope(tmp_path: Path) -> None:
-    project = _materialize_project(tmp_path / "proj")
-    document = _v2_document()
-    # v2 keeps its CWD-relative root semantics; pin an absolute root plus an
-    # explicit database so the comparison covers the available-build path.
-    document["project"]["compile_commands_path"] = "build/compile_commands.json"
-    path = _write(project, document)
-
-    result = prepare_saved_config(str(path))
-    expected = prepare_project(ConfigLoader.load(str(path), read_only=True), path)
-
-    assert result == expected
-    assert result["schema"] == "zscope.project-preparation.v1"
-    assert result["build"]["status"] == "available"
-    assert "version3" not in result
+def test_prepare_rejects_v2(tmp_path: Path) -> None:
+    path = _write(tmp_path, _v2_document())
+    with pytest.raises(ValueError, match="must be 3.*migrate"):
+        prepare_saved_config(str(path))
 
 
 def test_invalid_versions_raise_the_existing_loader_error(tmp_path: Path) -> None:
@@ -150,7 +139,7 @@ def test_invalid_versions_raise_the_existing_loader_error(tmp_path: Path) -> Non
     document["config_version"] = 4
     path = _write(tmp_path, document)
 
-    with pytest.raises(ValueError, match="config.config_version must be 2 or 3"):
+    with pytest.raises(ValueError, match="config.config_version must be 3"):
         prepare_saved_config(str(path))
 
 

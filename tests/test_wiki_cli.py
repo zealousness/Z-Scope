@@ -16,7 +16,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "wiki_project"
 
 def _config(root: Path, *, state_dir: str = "var/wiki") -> dict:
     return {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://localhost/v1"],
@@ -25,6 +25,7 @@ def _config(root: Path, *, state_dir: str = "var/wiki") -> dict:
             }
         },
         "project": {
+            "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
             "id": "configured-project",
             "language": "c_cpp",
             "entry_discovery": {
@@ -79,7 +80,20 @@ def test_wiki_cli_discover_build_status_and_query(tmp_path: Path) -> None:
     status_payload = json.loads(status.output)
     assert status_payload["available"] is True
     assert status_payload["active"]["revision_id"].startswith("wikirev_")
-    query = runner.invoke(main, ["--root", str(root), "query", "--subject", "parse_byte", "--fact-kind", "value_range", "--file", "src/parser.c"])
+    query = runner.invoke(
+        main,
+        [
+            "--root",
+            str(root),
+            "query",
+            "--subject",
+            "parse_byte",
+            "--fact-kind",
+            "value_range",
+            "--file",
+            "src/parser.c",
+        ],
+    )
     assert query.exit_code == 0, query.output
     assert json.loads(query.output)["resolution_mode"] == "source_fallback"
     rebuilt = runner.invoke(main, ["--root", str(root), "rebuild-index"])

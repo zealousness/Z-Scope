@@ -32,7 +32,10 @@ class FindFunctionPointersTool(BaseTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "func_name": {"type": "string", "description": "Function name to search for pointer usage"},
+                        "func_name": {
+                            "type": "string",
+                            "description": "Function name to search for pointer usage",
+                        },
                     },
                     "required": ["func_name"],
                 },

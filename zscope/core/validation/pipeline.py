@@ -323,7 +323,8 @@ class ValidationPipeline:
         # Validator JSON is untrusted and cannot self-attest a contradiction.
         self.deterministic_proof_verifier = deterministic_proof_verifier
         self.enable_deterministic_proof_routing = bool(enable_deterministic_proof_routing)
-        # Escalation rung R3 pilot knob (balanced_confirmed_tp_plan.md Phase 2).
+        # Escalation rung R3 pilot knob; historical plan Phase 2:
+        # docs/archive/design-plans/balanced_confirmed_tp_plan.md
         # None keeps the shipped behavior: uncertain verdicts never confirm.
         # When set, an uncertain verdict at or above the threshold confirms
         # only when the security obligation has no missing facts and no

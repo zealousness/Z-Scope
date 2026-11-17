@@ -125,10 +125,21 @@ def file_identity(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def source_lines(text: str) -> list[str]:
+    """Split physical CR/LF source lines, retaining their original terminators."""
+    # The final empty EOF match is not a physical source line.
+    return re.findall(r"[^\r\n]*(?:\r\n|\r|\n|$)", text)[:-1]
+
+
 class ProjectSourceAccess:
     def __init__(self, root: Path, *, excluded: Any = (), limits: SearchLimits | None = None):
         self.root = Path(root).resolve()
-        self.excluded = tuple(Path(p).resolve() for p in (excluded or ()))
+        self.excluded = tuple((self.root / p).resolve() for p in (excluded or ()))
+        try:
+            root_stat = self.root.stat()
+            self._root_identity: tuple[int, int] | None = (root_stat.st_dev, root_stat.st_ino)
+        except OSError:
+            self._root_identity = None
         self.limits = limits or SearchLimits()
         self._views: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._lock = RLock()
@@ -181,6 +192,9 @@ class ProjectSourceAccess:
         flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
         fd = os.open(self.root, flags | os.O_DIRECTORY)
         try:
+            root_stat = os.fstat(fd)
+            if (root_stat.st_dev, root_stat.st_ino) != self._root_identity:
+                raise SourceAccessError("project_root_changed")
             parts = PurePosixPath(relative.replace("\\", "/")).parts if relative else ()
             for i, part in enumerate(parts):
                 child = os.open(
@@ -255,7 +269,7 @@ class ProjectSourceAccess:
 
     def snippet(self, relative: str, start: int, end: int, max_lines: int) -> dict[str, Any] | None:
         text, revision, _ = self.read(relative)
-        lines = text.splitlines(keepends=True)
+        lines = source_lines(text)
         if start > len(lines):
             return None
         stop = min(len(lines), end, start + max_lines - 1)
@@ -278,7 +292,10 @@ class ProjectSourceAccess:
     def _search(self, arguments: dict[str, Any]) -> dict[str, Any]:
         scope = str(arguments["scope"])
         query = str(arguments["query"])
-        prefix = str(arguments.get("path_prefix") or "").replace("\\", "/").rstrip("/")
+        prefix = PurePosixPath(
+            str(arguments.get("path_prefix") or "").replace("\\", "/")
+        ).as_posix()
+        prefix = "" if prefix == "." else prefix
         identity = (scope, query, prefix, tuple(map(str, self.excluded)))
         offset, limit = int(arguments.get("offset", 0)), int(arguments.get("limit", 20))
         view_id = arguments.get("view_id")
@@ -403,7 +420,9 @@ class ProjectSourceAccess:
                     view["excluded"] += 1
                     continue
                 if prefix and not (
-                    relative.startswith(prefix) or (is_dir and prefix.startswith(relative + "/"))
+                    relative == prefix
+                    or relative.startswith(prefix + "/")
+                    or (is_dir and prefix.startswith(relative + "/"))
                 ):
                     continue
                 if is_link:
@@ -453,7 +472,8 @@ class ProjectSourceAccess:
                     [(None, None, relative)] if scope == "files" and query in relative else []
                 )
                 if scope == "text":
-                    for line, value in enumerate(text.splitlines(), 1):
+                    for line, value in enumerate(source_lines(text), 1):
+                        value = value.rstrip("\r\n")
                         column = value.find(query)
                         if column >= 0:
                             begin = max(0, column - 100)

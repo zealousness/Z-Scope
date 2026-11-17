@@ -3,12 +3,11 @@
 Implements the ``config_version: 3`` proposal from the agent implementation
 plan (``12_SCHEMAS_AND_EXAMPLES.md``).  The public call shape stays
 ``ConfigLoader.load(path, scan_depth?, read_only?) -> EffectiveConfig``;
-``v2.load_user_config_v2`` dispatches here when the document declares
-version 3.
+This is the only public configuration parser.
 
-Semantics that intentionally differ from public v2:
+Public configuration semantics:
 
-* Both v2/v3 use the loaded YAML directory as the only project root;
+* Configurations use the loaded YAML directory as the only project root;
   public root/source_root keys are rejected even when they equal '.'.
 * ``project.targets`` keeps an explicit identity for every declared build
   target.  Composing the current single-target execution chain refuses a
@@ -31,6 +30,7 @@ source; no second parser is derived from documentation.
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,15 +39,24 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import (
     ConcurrencyConfig,
+    IndexingConfig,
     EffectiveConfig,
     LLMConfig,
     ProjectConfig,
     RulesConfig,
     ScanConfig,
 )
-from .v2 import (
+from .support import (
     LLM_PROFILE_KEYS,
-    PUBLIC_CONFIG_VERSION_V3,
+    PROJECT_OPTION_KEYS,
+    CONCURRENCY_KEYS,
+    RULES_KEYS,
+    INDEXING_KEYS,
+    _parse_project_options,
+    _parse_scan_options,
+    _parse_concurrency,
+    _parse_rules,
+    PUBLIC_CONFIG_VERSION,
     SCAN_DEPTHS_BY_LANGUAGE,
     _agents_from_runtime,
     _anchor_runtime_paths,
@@ -71,13 +80,23 @@ from .v2 import (
 # public_json_schema().  Any new field must be added here once; the schema
 # section guard raises if a field table drifts away from its key tuple.
 
-V3_TOP_LEVEL_KEYS = ("config_version", "llms", "project", "scan", "execution")
-PROJECT_KEYS = ("language", "platform", "targets", "semantics_file")
+V3_TOP_LEVEL_KEYS = (
+    "config_version",
+    "llms",
+    "project",
+    "scan",
+    "execution",
+    "indexing",
+    "concurrency",
+    "rules",
+)
+PROJECT_KEYS = ("language", "platform", "targets", "semantics_file", *PROJECT_OPTION_KEYS)
 TARGET_KEYS = ("id", "compile_commands")
-SCAN_KEYS = ("preset", "focus", "reproduction")
+SCAN_KEYS = ("preset", "focus", "reproduction", "task", "llm_profiles")
 EXECUTION_KEYS = ("timezone", "stop_at", "max_workers")
 
-SCAN_PRESETS = ("deep", "balanced", "fast")
+SCAN_PRESETS = ("fast", "balanced", "deep")
+DEFAULT_SCAN_PRESET = "fast"
 FOCUS_AREAS = ("memory", "resources", "async_lifecycle")
 REPRODUCTION_MODES = ("auto",)
 PROJECT_PLATFORMS = ("linux_user",)
@@ -87,15 +106,14 @@ LANGUAGE_DISPLAY_NAMES = {"c_cpp": "C/C++", "java": "Java"}
 # parser branch and the language-conditional schema branches below.
 TARGET_DATABASE_RULE = {"c_cpp": "required", "java": "forbidden"}
 
-# Temporary internal mapping until U01/S08 replace the legacy depth tiers.
+# Public presets use the existing execution depth vocabulary directly.
 PRESET_DEPTH_MAPPING: Dict[str, str] = {"fast": "fast", "balanced": "balanced", "deep": "deep"}
 
-# Public v3 deliberately has no tool-tuning surface.  Its internal SVF cap
-# therefore has to be a broadly admissible per-process default rather than the
-# legacy v2 expert default of 32 GiB: admission reserves the full cap for each
+# The default SVF cap must admit ordinary machines. Admission reserves the
+# full cap for each
 # worker, and a 32 GiB cap cannot start even one worker on a 32 GiB host after
-# the runtime safety margin.  Explicit v2 configurations retain their chosen
-# value; v3 uses this conservative cap and still fails closed if the bitcode
+# the runtime safety margin. The public configuration uses this cap and
+# still fails closed if the bitcode
 # size estimate cannot fit it.
 V3_SVF_HEAP_LIMIT_MB = 8192
 
@@ -116,6 +134,7 @@ LOADER_ENFORCED_CONSTRAINTS = (
     "string values are whitespace-normalized (stripped) before validation",
     "${VAR} environment expansion applies before validation",
     "YAML documents with duplicate mapping keys are rejected by the loader",
+    "advanced project/indexing settings, language-specific fields, rule paths and LLM profile references are validated by the loader",
     "multi-target documents parse, but composition refuses until target " "selection is wired",
 )
 
@@ -147,6 +166,7 @@ class ProjectModel:
     # actionable migration error from prepare/discovery/scan.  New C/C++
     # documents always declare it; Java documents reject it.
     semantics_file: Optional[Path] = None
+    options: Optional[ProjectConfig] = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -165,6 +185,7 @@ class ScanIntent:
     # treatment while defaulted traffic stays gateable.
     mapped_depth_source: str
     mapping_note: str
+    options: ScanConfig = field(default_factory=ScanConfig, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -205,6 +226,9 @@ class UserConfigV3:
     scan: ScanIntent
     execution: ExecutionProfile
     wiring: Tuple[WiringNote, ...] = field(default=())
+    indexing: Optional[IndexingConfig] = field(default=None, repr=False, compare=False)
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
+    rules: RulesConfig = field(default_factory=RulesConfig)
 
 
 # --- Parsing --------------------------------------------------------------------
@@ -234,25 +258,35 @@ def parse_user_config_v3_document(
     return _parse_v3_model(Path(path), raw, now=now)
 
 
-def load_user_config_v3(path: Path, raw: Mapping[str, Any]) -> EffectiveConfig:
-    """Parse and compose a v3 document that v2.load_user_config_v2 dispatched."""
-
-    model = _parse_v3_model(path, raw)
-    return compose_effective_config(model)
-
-
 def _parse_v3_model(
     path: Path, raw: Mapping[str, Any], *, now: Optional[datetime] = None
 ) -> UserConfigV3:
+    if type(raw.get("config_version")) is not int or raw["config_version"] != PUBLIC_CONFIG_VERSION:
+        raise ValueError(
+            "config.config_version must be 3; run "
+            "'zscope-config migrate --input OLD --output PROJECT/zscope.yaml' "
+            "to explicitly upgrade an old configuration"
+        )
     _check_keys(raw, V3_TOP_LEVEL_KEYS, "config")
-    if raw.get("config_version") != PUBLIC_CONFIG_VERSION_V3:
-        raise ValueError(f"config.config_version must be {PUBLIC_CONFIG_VERSION_V3}")
 
     llms = _parse_llms(raw.get("llms"))
     project = _parse_project_v3(path, raw.get("project"))
-    scan = _parse_scan_v3(raw.get("scan"), language=project.language)
+    scan = _parse_scan_v3(raw.get("scan"), language=project.language, llms=llms)
     execution = _parse_execution_v3(raw.get("execution"), now=now)
     wiring = _wiring_notes(project, scan, execution)
+    indexing_data = _mapping(raw.get("indexing"), "indexing")
+    indexing_data.setdefault(
+        "backend", "unified" if project.language == "c_cpp" else "java_unified"
+    )
+    indexing = _parse_indexing(
+        indexing_data, language=project.language, runtime=load_runtime_spec()
+    )
+    if project.language == "c_cpp" and "heap_limit_mb" not in _mapping(
+        indexing_data.get("svf"), "indexing.svf"
+    ):
+        indexing.svf_heap_limit_mb = V3_SVF_HEAP_LIMIT_MB
+    concurrency = _parse_concurrency(raw.get("concurrency"), language=project.language)
+    rules = _parse_rules(raw.get("rules"))
     return UserConfigV3(
         config_path=path,
         llms=llms,
@@ -260,6 +294,9 @@ def _parse_v3_model(
         scan=scan,
         execution=execution,
         wiring=wiring,
+        indexing=indexing,
+        concurrency=concurrency,
+        rules=rules,
     )
 
 
@@ -332,13 +369,21 @@ def _parse_project_v3(config_path: Path, raw: Any) -> ProjectModel:
         platform=platform,
         targets=tuple(targets),
         semantics_file=semantics_file,
+        options=_parse_project_options(
+            {
+                "language": language,
+                **{key: data[key] for key in PROJECT_OPTION_KEYS if key in data},
+            },
+            language=language,
+            config_path=config_path,
+        ),
     )
 
 
-def _parse_scan_v3(raw: Any, *, language: str) -> ScanIntent:
+def _parse_scan_v3(raw: Any, *, language: str, llms: Mapping[str, LLMConfig]) -> ScanIntent:
     data = _mapping(raw, "scan")
     _check_keys(data, SCAN_KEYS, "scan")
-    preset = _string(data.get("preset", SCAN_PRESETS[0]), "scan.preset")
+    preset = _string(data.get("preset", DEFAULT_SCAN_PRESET), "scan.preset")
     if preset in {"quick", "overnight"}:
         raise ValueError(
             "scan.preset quick/overnight removed; run zscope-config migrate (quick -> fast, overnight -> deep)"
@@ -379,6 +424,11 @@ def _parse_scan_v3(raw: Any, *, language: str) -> ScanIntent:
         mapped_depth=depth,
         mapped_depth_source="config" if "preset" in data else "default",
         mapping_note=note,
+        options=_parse_scan_options(
+            {key: data[key] for key in ("preset", "task", "llm_profiles") if key in data},
+            llms,
+            language=language,
+        ),
     )
 
 
@@ -506,7 +556,7 @@ def compose_effective_config(model: UserConfigV3) -> EffectiveConfig:
             "the current scan execution chain supports exactly one "
             f"project.targets entry; {len(targets)} declared ({ids}). "
             "Multi-target selection is not wired yet: declare a single "
-            "target or stay on public config v2 until it lands."
+            "target for execution."
         )
     target = targets[0]
 
@@ -517,36 +567,31 @@ def compose_effective_config(model: UserConfigV3) -> EffectiveConfig:
     # allowing individual analyzers to fall back to the legacy XLSX workbook.
     if model.project.language == "c_cpp" and model.project.semantics_file is not None:
         runtime.analysis.user_config_db = str(model.project.semantics_file)
-    project = ProjectConfig(
-        project_root=model.project.root,
-        project_id="",
-        target_id=target.id,
-        language=model.project.language,
-        compile_commands_path=target.compile_commands,
-        semantics_file=model.project.semantics_file,
+    project = (
+        deepcopy(model.project.options)
+        if model.project.options is not None
+        else ProjectConfig(
+            project_root=model.project.root,
+            language=model.project.language,
+        )
     )
-    # Public v3 intentionally removed the legacy entry_function and
-    # entry_functions_list knobs. A generated v3 document must nevertheless
-    # be directly scannable: entry discovery supplies reachability attribution
-    # while the C/C++ fast planner still analyzes every current function
-    # instance exactly once. Without this composition default, zscope-init
-    # produced a document that prepare called startable but an ordinary scan
-    # rejected with "No entry function".
-    project.entry_discovery.enabled = True
-    scan = ScanConfig(
-        task="",
-        depth=model.scan.mapped_depth,
-        depth_source=model.scan.mapped_depth_source,
-    )
-    backend = "unified" if model.project.language == "c_cpp" else "java_unified"
-    indexing = _parse_indexing(
-        {"backend": backend}, language=model.project.language, runtime=runtime
-    )
-    if model.project.language == "c_cpp":
-        indexing.svf_heap_limit_mb = V3_SVF_HEAP_LIMIT_MB
-    concurrency = ConcurrencyConfig()
+    project.target_id = target.id
+    project.compile_commands_path = target.compile_commands
+    project.semantics_file = model.project.semantics_file
+    scan = deepcopy(model.scan.options)
+    scan.depth = model.scan.mapped_depth
+    scan.depth_source = model.scan.mapped_depth_source
+    indexing = deepcopy(model.indexing)
+    if indexing is None:
+        backend = "unified" if model.project.language == "c_cpp" else "java_unified"
+        indexing = _parse_indexing(
+            {"backend": backend}, language=model.project.language, runtime=runtime
+        )
+        if model.project.language == "c_cpp":
+            indexing.svf_heap_limit_mb = V3_SVF_HEAP_LIMIT_MB
+    concurrency = deepcopy(model.concurrency)
     indexing.max_clangd_threads = concurrency.index_workers
-    rules = RulesConfig()
+    rules = deepcopy(model.rules)
     _anchor_runtime_paths(runtime, project, indexing)
     project.agents = _agents_from_runtime(runtime, scan)
 
@@ -562,7 +607,7 @@ def compose_effective_config(model: UserConfigV3) -> EffectiveConfig:
         reporting=runtime.reporting,
         rules=rules,
         runtime_provenance=runtime.provenance,
-        user_config_version=PUBLIC_CONFIG_VERSION_V3,
+        user_config_version=PUBLIC_CONFIG_VERSION,
         user_config_v3=model,
     )
 
@@ -640,11 +685,21 @@ def _wiring_notes(
         ),
         target_note,
         WiringNote("scan.preset", WIRED, scan.mapping_note),
+        WiringNote("scan.task", WIRED, "controls vulnerability skill selection"),
+        WiringNote("scan.llm_profiles", WIRED, "binds runtime roles to named profiles"),
+        WiringNote(
+            "project.options",
+            WIRED,
+            "project scope, entry selection, Wiki and Review Memory settings",
+        ),
+        WiringNote("indexing", WIRED, "language-specific backend and tool settings"),
+        WiringNote("concurrency", WIRED, "worker and LLM in-flight limits"),
+        WiringNote("rules", WIRED, "deterministic rule selection and extensions"),
         WiringNote(
             "scan.focus",
             DECLARED_ONLY,
             "validated and retained; focus-driven skill-domain selection is "
-            "not wired and the legacy task stays empty (all skills)",
+            "not wired; scan.task independently controls skill selection",
         ),
         WiringNote(
             "scan.reproduction",
@@ -657,7 +712,7 @@ def _wiring_notes(
         WiringNote(
             "execution.max_workers",
             DECLARED_ONLY,
-            "scheduler wiring is pending; the effective concurrency uses the " "existing defaults",
+            "scheduler wiring is pending; effective concurrency uses concurrency settings",
         ),
     )
 
@@ -848,7 +903,7 @@ def public_json_schema() -> Dict[str, Any]:
     scan_fields: Dict[str, Dict[str, Any]] = {
         "preset": _enum_schema(
             SCAN_PRESETS,
-            "Quality tier replacing the legacy fast/balanced/deep depth",
+            "Execution depth: fast/balanced/deep; both languages default to fast",
         ),
         "focus": {
             "type": "array",
@@ -962,6 +1017,27 @@ def public_json_schema() -> Dict[str, Any]:
             "description": "Use response_format for JSON output",
         },
     }
+    option_objects = {"entry_discovery", "wiki", "review_memory"}
+    for key in PROJECT_OPTION_KEYS:
+        if key in {"include_paths", "exclude_paths"}:
+            project_fields[key] = {"type": "array", "items": {"type": "string"}}
+        elif key in option_objects:
+            project_fields[key] = {
+                "type": "object",
+                "description": "Optional settings validated by the loader",
+            }
+        else:
+            project_fields[key] = {"type": ["string", "null"]}
+    scan_fields["task"] = {"type": "string", "default": ""}
+    scan_fields["llm_profiles"] = _section_schema(
+        ("modeling", "analysis", "validation"),
+        {
+            key: {"type": "string", "default": "default"}
+            for key in ("modeling", "analysis", "validation")
+        },
+        required=(),
+        description="Role to named profile bindings; profiles must exist",
+    )
     root_all_of = _preset_availability_conditionals()
     schema: Dict[str, Any] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -978,7 +1054,7 @@ def public_json_schema() -> Dict[str, Any]:
         "required": ["config_version", "llms", "project"],
         "properties": {
             "config_version": {
-                "const": PUBLIC_CONFIG_VERSION_V3,
+                "const": PUBLIC_CONFIG_VERSION,
                 "description": "Document version; must be 3",
             },
             "llms": {
@@ -1017,6 +1093,31 @@ def public_json_schema() -> Dict[str, Any]:
         },
         "x-loader-enforced-constraints": list(LOADER_ENFORCED_CONSTRAINTS),
     }
+    schema["properties"].update(
+        {
+            "indexing": _section_schema(
+                INDEXING_KEYS,
+                {
+                    key: {"type": "string" if key == "backend" else "object"}
+                    for key in INDEXING_KEYS
+                },
+                required=(),
+                description="Optional language-specific backend/tool settings; validated by loader",
+            ),
+            "concurrency": _section_schema(
+                CONCURRENCY_KEYS,
+                {key: {"type": "integer", "minimum": 1} for key in CONCURRENCY_KEYS},
+                required=(),
+                description="Optional worker and LLM concurrency limits",
+            ),
+            "rules": _section_schema(
+                RULES_KEYS,
+                {key: {"type": "array", "items": {"type": "string"}} for key in RULES_KEYS},
+                required=(),
+                description="Optional deterministic rule selection and extensions",
+            ),
+        }
+    )
     if root_all_of:
         schema["allOf"] = root_all_of
     return schema

@@ -9,7 +9,7 @@ covers:
 sources:
   - zscope/config/config.py
   - zscope/config/preparation.py
-  - zscope/config/v2.py
+  - zscope/config/support.py
   - zscope/config/v3.py
   - zscope/config/v3_preparation.py
   - zscope/config/editor.py
@@ -51,7 +51,7 @@ sources:
 tests:
   - tests/test_semantics_workflow.py
   - tests/test_portable_runtime.py
-  - tests/test_config_v2.py
+  - tests/test_config_options.py
   - tests/test_config_v3.py
   - tests/test_config_v3_entrypoints.py
   - tests/test_config_v3_preparation.py
@@ -108,15 +108,15 @@ tests:
 
 # 配置、语义与状态
 
-LLM profile 的 `context_window`（默认 192000）与 `model_context_windows`（按精确请求模型名覆盖）在 v2/v3 共用正式 parser，并进入客户端与模型配置身份。默认 `max_tokens` 为 8192。窗口声明 endpoint 的单次输入加输出容量，不是扫描预算；不自动根据模型名称猜测，应按实际 endpoint 配置。运行时使用实际请求输出上限与 schema 预留空间，具体证据保留和窗口不足行为见 [Agent 运行时](agent-runtime.md)。
+LLM profile 的 `context_window`（默认 192000）与 `model_context_windows`（按精确请求模型名覆盖）在 唯一 v3 正式 parser，并进入客户端与模型配置身份。默认 `max_tokens` 为 8192。窗口声明 endpoint 的单次输入加输出容量，不是扫描预算；不自动根据模型名称猜测，应按实际 endpoint 配置。运行时使用实际请求输出上限与 schema 预留空间，具体证据保留和窗口不足行为见 [Agent 运行时](agent-runtime.md)。
 
 deep 的人工边界和进程常驻声明放在现有 `zscope.semantics.yaml` 的可选 `lifecycle` 中，公共扫描 YAML 不新增字段。`boundaries` 每项为 `id/level(feature|module)/members/confirmed`，members 使用本轮 `hierarchical_contracts.json` 导出的精确 `FN_...` ID；多 TU 成员仍须属于真实链接组。`lifetimes` 每项为 `id/build_context_id/object/lifetime(process)/reason/confirmed`。未经确认的声明仅作假设；常驻声明不豁免覆盖丢失、重复分配、无界增长或锁责任。保存、撤销及重新绑定保留该段，整个文档继续进入冻结输入与缓存身份。
 
 `hierarchical_contracts/` 存放逐单元内容寻址缓存；键包含当前函数事实、成员/调用/链接依赖、子摘要、生命周期声明、模型及推理契约版本。`hierarchical_contracts.json` 导出可评审摘要和边界，`rule_proposals.json` 导出带裁决状态的规则提案，均不自动启用规则。取消后的已完成单元可在相同输入下复用；源码、构建、链接、声明或模型改变会使对应依赖失效。功能组合和责任传播消融通过离线 `HierarchicalDiscovery.run(compose=False|propagate=False)` 执行，缓存身份和结果记录消融参数，不混用生产结果。
 
-实施计划 U01 的 v3 核心模型经同一 ConfigLoader 分派：v2/v3 均以实际加载的 YAML 文件所在目录为唯一工程根，公共文档禁止 project.root/source_root；内部 ProjectConfig 只保留 project_root；target 身份全部保留，当前执行组合只允许一个 target，不能偷偷选择首项。scan.preset 统一 fast/balanced/deep，与执行深度同名；Java 当前仅 fast，不启用实验规则。旧 quick/overnight 不再作为别名接受，只能通过显式迁移转换为 fast/deep。IANA 时区和 stop_at 解析为本轮绝对边界，DST 不存在或重复时刻明确拒绝；CLI 和新建持久作业已消费该边界，创建时若解析出的配置窗口已过则以 `stop_window_closed`（400）拒绝，不再接受开局即停的作业；resume 不重新套用配置窗口。focus/reproduction/max_workers/platform 目前保留声明并附 wiring 状态，不等于实际执行。C/C++ v3 没有工具调参字段，内部 SVF 单进程上限固定为 8192 MiB，使默认配置能在保留运行时内存安全余量的 32 GiB 主机上至少准入一个 worker；需要专家级不同上限的旧 v2 只用于迁移/诊断，不再是正式 C/C++ 扫描入口。CLI prepare/validate、初始化器与语言模板已使用 v3；MCP 的创建路径已随同一作业服务消费该检查，其余执行消费端仍有剩余。
+ConfigLoader 只解析 v3，YAML 支持同一模型中的可选范围、Wiki、规则、后端和并发设置；v2 仅经显式 migrate 转换文件。所有配置以实际加载的 YAML 文件所在目录为唯一工程根，公共文档禁止 project.root/source_root；内部 ProjectConfig 只保留 project_root；target 身份全部保留，当前执行组合只允许一个 target，不能偷偷选择首项。scan.preset 统一 fast/balanced/deep，与执行深度同名；Java 当前仅 fast，不启用实验规则。旧 quick/overnight 不再作为别名接受，只能通过显式迁移转换为 fast/deep。IANA 时区和 stop_at 解析为本轮绝对边界，DST 不存在或重复时刻明确拒绝；CLI 和新建持久作业已消费该边界，创建时若解析出的配置窗口已过则以 `stop_window_closed`（400）拒绝，不再接受开局即停的作业；resume 不重新套用配置窗口。focus/reproduction/max_workers/platform 目前保留声明并附 wiring 状态，不等于实际执行。新 v3 默认 SVF 单进程上限为 8192 MiB，可通过 indexing.svf.heap_limit_mb 显式调整。迁移 v2 时保留旧默认 32768 MiB。两语言 parser、初始化器和 Web 的默认 preset 统一为 fast；迁移历史 v3 会显式保留旧省略值 deep。CLI prepare/validate、初始化器与语言模板已使用 v3；MCP 的创建路径已随同一作业服务消费该检查，其余执行消费端仍有剩余。
 
-C/C++ public v3 声明工程内相对路径 `project.semantics_file`；Java 禁止该字段。旧 C/C++ 配置仍可被 parse/迁移工具识别，v2 加载器亦可识别工程内语义路径，但 discovery 和 scan 缺少此文件时明确失败。CLI 与 Web 创建工程都同时创建主配置与空语义文件，任一目标已存在时拒绝覆盖，失败回滚本次创建的文件；`zscope-config migrate-semantics` 及 Web 的同源迁移入口提供 XLSX 单向迁移，保留工作簿。
+C/C++ public v3 声明工程内相对路径 `project.semantics_file`；Java 禁止该字段。旧配置仅由显式迁移器处理； discovery 和 scan 缺少此文件时明确失败。CLI 与 Web 创建工程都同时创建主配置与空语义文件，任一目标已存在时拒绝覆盖，失败回滚本次创建的文件；`zscope-config migrate-semantics` 及 Web 的同源迁移入口提供 XLSX 单向迁移，保留工作簿。
 
 `config/semantics_workflow.py` 是首次就绪和输入当前性的共享边界。未声明、待发现、发现中、待审阅、需重新发现、可扫描由 YAML、内容寻址机器证据及当前 native 依赖计算。空文件不能就绪，零候选也必须显式完成审阅。发现收据的 workflow 摘要覆盖源码集合、编译配置、依赖、工具和原语规格；human_review 绑定决定摘要及 evidence_ref。候选确认/拒绝不要求重跑发现，但要重新完成审阅；根原语撤回或规格变化使依赖契约重新核对。旧收据无充分输入时明确要求重跑，不能仅凭时间或 confirmed 数量升级。
 
@@ -144,13 +144,13 @@ recv_source、send_sink、command_sink 和 I/O 获取/释放提案还必须有�
 
 public v3 不暴露 legacy `entry_function` / `entry_functions_list`，组合到执行配置时默认启用确定性入口发现，使 `zscope-init` 生成的单 target 文档可直接扫描。入口只提供可达性和暴露面归因；C/C++ fast 的项目级静态候选发现仍覆盖全部当前函数实例。`--discover-entries` 可显式请求同一行为，`--plan-entries` 只预览并退出。
 
-`config/editor.py` 为结构化编辑提供原始文档投影与同目录候选校验，保留所有 profiles、环境变量引用和相对值。默认校验仍严格展开环境变量；Web 创建/编辑可显式使用 `expand_environment=False`，仅在校验副本展开当前可用变量，保留尚未设置的模型连接字符串占位符，保存内容不含展开后的凭据。该模式仍调用正式 v3 parser；未设置的数值、时区等无法满足结构约束时明确拒绝，不伪造值。执行与 prepare 始终要求完整环境，文档可保存不代表当前可执行。v3 调用正式 parse-only 模型，不能为了保存多目标而强迫执行组合；v2 继续走现有 loader。候选按进程/线程隔离，验证失败不替换原文，成功后原子替换；当前接口没有配置 revision/CAS。初始化器正确序列化用户路径及目标标识，避免 YAML 注释或冒号改变工程身份。
+`config/editor.py` 为结构化编辑提供原始文档投影与同目录候选校验，保留所有 profiles、环境变量引用和相对值。默认校验仍严格展开环境变量；Web 创建/编辑可显式使用 `expand_environment=False`，仅在校验副本展开当前可用变量，保留尚未设置的模型连接字符串占位符，保存内容不含展开后的凭据。该模式仍调用正式 v3 parser；未设置的数值、时区等无法满足结构约束时明确拒绝，不伪造值。执行与 prepare 始终要求完整环境，文档可保存不代表当前可执行。v3 调用正式 parse-only 模型，不能为了保存多目标而强迫执行组合；v2 在所有入口统一拒绝并指向显式迁移。候选按进程/线程隔离，验证失败不替换原文，成功后原子替换；当前接口没有配置 revision/CAS。初始化器正确序列化用户路径及目标标识，避免 YAML 注释或冒号改变工程身份。
 
 v3 schema 由模型字段表和条件表生成，包含时窗依赖、语言与 target 数据库条件及解析正规化的边界；IANA/DST、跨项 target id 唯一性、有效配置单 target 组合等运行时约束单独披露，不声称 JSON Schema 能表达全部语义。
 
 人工 baseline 的精确键匹配和源码窗口/稳定指纹回退均要求相同构建身份；缺少身份不是通配符。Web 对已知构建的误报反馈只写入该构建的 baseline，不再额外生成按位置匹配的宽泛 suppression。旧位置 suppression 仅适用于未知构建的候选，不能覆盖已绑定编译实例的发现。不同构建的事实、缓存、去重和人工反馈隔离由 `tests/test_candidate_build_identity.py` 共同验证。
 
-只读 MCP 使用 ConfigLoader 的内部 read_only 加载路径，保留严格 Config v2 校验并跳过 rollout 持久态、扩展 provider 预检及 usage 注册。只读快照打开不创建目录或迁移表；checkpoint 后 SQLite 用 immutable/query_only 读取，活动 WAL 明确不可用。旧快照缺完整输入身份时返回 unverifiable，源码摘要匹配不代表头文件、构建或契约仍有效。正常扫描加载与默认刷新不变，详见 [只读 MCP](../mcp-read-only.md)。
+只读 MCP 使用 ConfigLoader 的内部 read_only 加载路径，保留严格 Config v3 校验并跳过 rollout 持久态、扩展 provider 预检及 usage 注册。只读快照打开不创建目录或迁移表；checkpoint 后 SQLite 用 immutable/query_only 读取，活动 WAL 明确不可用。旧快照缺完整输入身份时返回 unverifiable，源码摘要匹配不代表头文件、构建或契约仍有效。正常扫描加载与默认刷新不变，详见 [只读 MCP](../mcp-read-only.md)。
 
 ## 职责与非职责
 
@@ -162,11 +162,11 @@ v3 schema 由模型字段表和条件表生成，包含时窗依赖、语言与 
 
 ## 主入口和数据流
 
-- `ConfigLoader` 按版本读取严格的 `UserConfigV2`/`UserConfigV3`，再与打包的 `RuntimeSpec` 组合为 `EffectiveConfig`；`ProjectConfig` 负责项目路径解析。
+- `ConfigLoader` 只读取严格的 `UserConfigV3`，再与打包的 `RuntimeSpec` 组合为 `EffectiveConfig`；`ProjectConfig` 负责项目路径解析。旧配置须通过独立迁移命令转换后才能加载。
 - `preparation.prepare_project` 供 CLI `zscope-config prepare` 与 Web `GET /api/scan/prepare` 共用；调用方以 `read_only=True` 加载严格配置，跳过 provider、rollout 和 usage 持久态。准备视图列出实际路径、编译命令去重与变体、工具存在性及配置中的扫描模式，不启动子进程/模型、不生成索引或改写工程；未知链接归属保留为未核验，模型凭据与 endpoint 不进入结果。
-- `v3_preparation.prepare_saved_config` 为 CLI、默认 Web saved-config 准备和 MCP `zscope.config.prepare` / `zscope://config/preparation` 提供同一 v2/v3 只读合同。MCP 只绑定启动时已保存配置的路径（先 `expanduser()` 再 `resolve()`），请求时重新读取，default profile 自动创建的作业 adapter 复用同一保存路径并保持懒绑定；default/read_only 还需通过各自 profile 与 ToolPolicy，candidate_blind 保持不可见且不可调用。准备保留全部 targets、未消费字段与 start capability，不授予执行权限；fresh MCP 启动仍先走单 target 组合，多目标禁启及 focus/reproduction/max_workers/platform 未消费边界保持不变。接口细节见[接口与报告](interfaces-reporting.md)。
+- `v3_preparation.prepare_saved_config` 为 CLI、默认 Web saved-config 准备和 MCP `zscope.config.prepare` / `zscope://config/preparation` 提供同一 v3 只读合同。MCP 只绑定启动时已保存配置的路径（先 `expanduser()` 再 `resolve()`），请求时重新读取，default profile 自动创建的作业 adapter 复用同一保存路径并保持懒绑定；default/read_only 还需通过各自 profile 与 ToolPolicy，candidate_blind 保持不可见且不可调用。准备保留全部 targets、未消费字段与 start capability，不授予执行权限；fresh MCP 启动仍先走单 target 组合，多目标禁启及 focus/reproduction/max_workers/platform 未消费边界保持不变。接口细节见[接口与报告](interfaces-reporting.md)。
 - public YAML 顶层只允许 `config_version`、`llms`、`project`、`scan`、`indexing`、`concurrency` 和可选 `rules`。`project.language` 只能显式为 `c_cpp` 或 `java`。
-- `scan.depth` 公开为 `fast|balanced|deep`；CLI 的 `--scan-depth` 高于 YAML，YAML 高于打包默认。省略 depth 目前解析为 `fast`。public config 不提供 scan-wide token 预算字段。
+- `scan.preset` 公开为 `fast|balanced|deep`；CLI 的 `--scan-depth` 高于 YAML，YAML 高于打包默认。省略 preset 解析为 `fast`。public config 不提供 scan-wide token 预算字段。
 - 三档不带产品侧 token 上限；Range Benchmark policy 分别维护完成后成本预期，并按 agent/stage 的真实 usage 验收。
 - `runtime_defaults.yaml` 管理 Agent 启用状态/LLM 角色、分析预算、缓存、报告策略和稳定算法默认值；`AGENT.md`、`SKILL.md`、workflow YAML 不在此重复。
 - Review 实验开关仅属于 RuntimeSpec：`validation_review_checkpoint`、`validation_review_protocol`、`validation_checked_proofs`、`validation_positive_case`、`validation_related_findings` 默认均为 false。checkpoint 单独启用时只保留完整事实和前序结果，不向模型新增事实工具；protocol 组只改变封套与验收；checked_proofs 组才启用共享编译器事实和检查工具。正面举证不修改现有置信度门槛。实验期间禁用候选结果缓存，避免复用缺少封套、事实增量或有效签名的结果。
@@ -180,8 +180,8 @@ v3 schema 由模型字段表和条件表生成，包含时窗依赖、语言与 
 - `security_map.db` 是独立于历史函数 snapshot 的只读安全语义 sidecar：零 LLM 骨架记录入口、调用、危险事件和 backend coverage；有证据引用的选择性 LLM delta 才能成为 claim，无可解析引用的内容仅是 observation。
 - Security Map 的项目接口事件使用实例级 Registry 和共享调用解析器，记录实际对象、资源域、条件、BuildContext、证据来源及 catalog/YAML 版本；名称摘要不决定接口角色。native 证明、用户 external assumption 与 LLM advisory 必须可区分，调用可达性仍需另证。
 - snapshot policy 决定完整、轻量或语法快照，store 负责持久化与复用。
-- 条件观察与按需建模的两个内部开关分别为 `analysis.semantic_snapshot_candidate_mode`、`analysis.semantic_model_demand_mode`，仅允许 `off|shadow`，默认 `off`，不进入 public Config v2。前者开启时将条件观察 schema 纳入建模规格指纹，关闭保持原 schema；后者只记录需求计划，不改变快照输入身份或实际建模调度。当前会话的观察绑定不能从持久 JSON 恢复为权限。
-- 受控动态复现的内部开关为 `analysis.dynamic_reproduction_mode`，仅允许 `off|shadow|on`，默认 `off`，不进入 public Config v2；配套字段限定复现次数（1..16，max ≥ required）、单次超时（1..3600 秒）、整轮验证墙钟上限 `dynamic_reproduction_deadline_seconds`（默认 900，可经 RuntimeSpec 调整）、内存上限、输出捕获上限（字节）、artifact 发布目录、授权 TTL 与隔离模式（`process|user_net_namespace`）。`off` 完全惰性：runner 边界拒绝执行、`availability()` 不探测工具链、扫描接缝不改动 issue，不编译、不执行、不注册授权；`shadow` 执行并记录 provider 元数据但不授予确认权限；`on` 才允许合格 witness 进入现有确认通道。非法的输出上限、TTL、deadline 与复现次数组合在策略校验期直接报错；策略不可用只让该能力保持惰性，不使候选扫描失败。approved-plan provider 只存在于当前进程（单槽，可从磁盘恢复不了）。复现次数按“一个 plan 的执行总次数”计量：一次 `execute()` 只跑一轮（含计划授权的 build），调度器把 `max_replays` 先分 1 次给主执行、其余留给策略要求的独立重放，不足时记录 `dynamic_reproduction_budget` 而不提前拒绝；执行预算与墙钟 deadline 都绑定到 runner，计量真实进程启动，重放不能放大授权。
+- 条件观察与按需建模的两个内部开关分别为 `analysis.semantic_snapshot_candidate_mode`、`analysis.semantic_model_demand_mode`，仅允许 `off|shadow`，默认 `off`，不进入 public Config v3。前者开启时将条件观察 schema 纳入建模规格指纹，关闭保持原 schema；后者只记录需求计划，不改变快照输入身份或实际建模调度。当前会话的观察绑定不能从持久 JSON 恢复为权限。
+- 受控动态复现的内部开关为 `analysis.dynamic_reproduction_mode`，仅允许 `off|shadow|on`，默认 `off`，不进入 public Config v3；配套字段限定复现次数（1..16，max ≥ required）、单次超时（1..3600 秒）、整轮验证墙钟上限 `dynamic_reproduction_deadline_seconds`（默认 900，可经 RuntimeSpec 调整）、内存上限、输出捕获上限（字节）、artifact 发布目录、授权 TTL 与隔离模式（`process|user_net_namespace`）。`off` 完全惰性：runner 边界拒绝执行、`availability()` 不探测工具链、扫描接缝不改动 issue，不编译、不执行、不注册授权；`shadow` 执行并记录 provider 元数据但不授予确认权限；`on` 才允许合格 witness 进入现有确认通道。非法的输出上限、TTL、deadline 与复现次数组合在策略校验期直接报错；策略不可用只让该能力保持惰性，不使候选扫描失败。approved-plan provider 只存在于当前进程（单槽，可从磁盘恢复不了）。复现次数按“一个 plan 的执行总次数”计量：一次 `execute()` 只跑一轮（含计划授权的 build），调度器把 `max_replays` 先分 1 次给主执行、其余留给策略要求的独立重放，不足时记录 `dynamic_reproduction_budget` 而不提前拒绝；执行预算与墙钟 deadline 都绑定到 runner，计量真实进程启动，重放不能放大授权。
 - 当前启用任一语义实验，或历史报告含实验统计时，resume/maintain 不复用历史报告，以免把旧统计或观察资格当成本轮结果；函数建模缓存仍按各自输入身份判定。K01 首版仅在可核验的自包含项目、当前实际建模与发布输入一致时授予观察登记资格；存在或配置编译数据库、外部依赖、无法重核的自定义 schema 或超出库存预算时均不授予资格，不推断 TU 证明。热缓存继续供背景读取，不重新授予独立观察权限。
 - Discovery 原始 native/LLM 证据和 schema 错误写入 `.zscope_snapshots/semantics/`；YAML 只保留可读摘要、引用、摘要哈希和人工状态。无法证明的提议保持 pending/unknown，不进入执行 Registry。契约编译器、catalog、native 工具与证据摘要都参与失效。
 - 接口提案的原生上下文显式区分参数对象的指针槽赋值、调用结果写槽和格式串操作数；这些观察帮助模型复核旧对象与新对象、目的缓冲区与格式输入，不构成路径证明。NULL 清槽不能满足必定注册可调用回调的声明；只有回调调用而没有函数指针存储或注册根的完整事实不能支持注册。锁初始化/销毁不能替代对应 lock/unlock 根，丢弃 close 结果不能授权必定释放，字面量格式操作数不能使目的缓冲区或插入数据成为 format_sink。普通字段记账、只读字符串处理和转发不需要独立契约，真实缓冲区/输出参数及系统操作仍需保留。完整 native 事实中标量成员不能当作缓冲区，只有字段状态更新且没有缓冲区操作或间接/下标写入的成员 copy 另记 `filtered_contracts`；它不授权安全结论，也不伪装成调查失败。初稿仅被过滤时仍复核其他独立效果，调用图及证据复杂度同样决定是否启用推理。重绑定 out 指针的对象代次缺口保留诊断；旧代次写入、重绑定前别名、身份歧义或不完整 CFG 不得据此过滤；透明转发只沿实际 USR 和实参映射检查。相同对象、角色、条件、协议与配对的 must 提案包含 may；不同条件不合并。首轮与复核均保留完整范围约束；每轮携带完整源码和最新完整声明集，不累积旧草稿及重复理由。长证据 ID 仅在请求传输中映射为局部短引用，响应先恢复原 ID 再做既有精确身份与引用检查；源码、表达式和对象名不重写，完整映射与原始响应留在审计中。反证响应截断时，下一轮保留其输入草案和具体错误，不拼接截断文本，也不丢掉待修正内容。`may_under_guard` 只规范为同义的 `may`，不得升级为 must。三轮边界、完整调查范围及人工确认要求不变。
@@ -248,8 +248,8 @@ v3 schema 由模型字段表和条件表生成，包含时窗依赖、语言与 
 
 ## 常见变更应落到哪里
 
-- public YAML 字段和严格校验：`zscope/config/v2.py`；组合类型在 `config.py`，内部默认在 `runtime_defaults.yaml`。三者变更要同步 README、迁移器和配置测试。
-- v1 到 v2 的一次性字段映射：`zscope/cli/config_cli.py`；禁止把别名兼容加回产品 loader。
+- public YAML 字段和严格校验：`zscope/config/support.py`；组合类型在 `config.py`，内部默认在 `runtime_defaults.yaml`。三者变更要同步 README、迁移器和配置测试。
+- 旧 v2 到唯一 v3 的一次性字段映射：`zscope/cli/config_cli.py`；禁止把别名兼容加回产品 loader。
 - 项目语义 schema/存储/迁移：`project_semantics.py`、`semantics_migration.py`；旧 `user_config_workbook.py` 仅服务一次性迁移和历史反馈兼容。
 - 内置 API 语义或 overlay：`zscope/semantics/`；新增用户自定义角色时需同步 `models.py` 角色桶、`defaults.yaml`、`inference.py` kind 映射、候选生成器（regex/clang_ast_cfg/cpp_domains）、`evidence.py` overlay 路由与受影响 `builtin_catalog.yaml` revision。
 - 快照策略和存储：`zscope/snapshots/`。
@@ -262,7 +262,7 @@ v3 schema 由模型字段表和条件表生成，包含时窗依赖、语言与 
 python -m pytest -q tests/test_project_semantics.py tests/test_semantics_defaults.py
 python -m pytest -q tests/test_security_semantic_map.py
 python -m pytest -q tests/test_contract_usr_scope.py tests/test_contract_build_scope.py
-python -m pytest -q tests/test_config_v2.py tests/test_config_migration.py tests/test_concurrency_config.py
+python -m pytest -q tests/test_config_options.py tests/test_config_migration.py tests/test_concurrency_config.py
 python -m pytest -q tests/test_snapshot_store.py tests/test_snapshot_refresh_decision_prompt.py
 python -m pytest -q tests/test_review_memory.py tests/test_issue_dedup.py
 ```
@@ -275,7 +275,7 @@ python -m pytest -q tests/test_review_memory.py tests/test_issue_dedup.py
 
 ## Portable 工具定位
 
-`zscope.common.portable` 读取启动器提供的 bundle 根目录及资源清单，只为未显式填写的工具字段提供默认值。显式 public config v2 覆盖仍可用于实验，无需模式开关；解析不回写用户文件，错误覆盖不得改用其他工具。语言模板和 `zscope-init` 隐藏工具定位配置。源码安装不设置 bundle 根目录，保留原有 PATH 行为。
+`zscope.common.portable` 读取启动器提供的 bundle 根目录及资源清单，只为未显式填写的工具字段提供默认值。显式 public config v3 覆盖仍可用于实验，无需模式开关；解析不回写用户文件，错误覆盖不得改用其他工具。语言模板和 `zscope-init` 隐藏工具定位配置。源码安装不设置 bundle 根目录，保留原有 PATH 行为。
 
 ## 快照版本提交
 
@@ -283,7 +283,7 @@ python -m pytest -q tests/test_review_memory.py tests/test_issue_dedup.py
 
 旧固定文件名继续可读。保存、重协调和删除回收无引用旧版本，普通失败路径清理本次临时文件；读者遇到并发回收时重新查询指针。`get_fingerprints` 附带 `snapshot_generation`，快照与指纹版本不一致时要求刷新。
 
-内置资源家族定义位于 `semantics/defaults.yaml` 的 `resource_families`，不把 FILE/DIR 句柄混入整数 fd 集合。该内部语义表不增加 public config v2 必填项。
+内置资源家族定义位于 `semantics/defaults.yaml` 的 `resource_families`，不把 FILE/DIR 句柄混入整数 fd 集合。该内部语义表不增加 public config v3 必填项。
 
 ## 系统契约与根协议审核
 
@@ -351,6 +351,6 @@ coverage 对 cond_wait 单独标识 `caller_matched_wait_predicate_recheck` 和�
 
 标准来源核验面由版本化 Linux/glibc LP64 catalog 驱动；每个 active 项都必须有精确 ABI、规范来源与至少一个规则消费者。调用仍须绑定当前系统声明、external linkage、无项目同名定义、精确 USR/签名、BuildContext、头文件和工具摘要；任一项缺失或变化都撤回效果。neutral 是已审计无现有安全域效果，unsupported 明确记录能力缺口；项目实际调用但未分类的系统接口会阻止 formal readiness。
 
-`v3_preparation.prepare_saved_config` 返回与既有准备字段兼容的机器数据；默认 Web saved-config 准备通过同一后端读取 v2/v3。v3 扩展完整列出目标、平台、preset 到现有 depth 的映射、一次窗口的解析值及未消费声明。多个 target 保留全部身份并禁止启动，不把首目标投影为全部；显式服务端 depth override 暂走旧 effective-config 组合路径，多目标仍拒绝。独立 v3 编辑器保留原始 document 的全部 targets/profiles、相对路径和环境变量引用；空密码不覆盖已有值，失败或迟到响应不丢失草稿，保存后重新准备。旧 v2 builder 不用于回写 v3。配置保存尚无 revision/CAS；浏览器 409 情景仅验证合同响应下的草稿保护。准备只检查配置/路径/工具存在，不执行扫描、模型、构建或索引。
+`v3_preparation.prepare_saved_config` 返回与既有准备字段兼容的机器数据；默认 Web saved-config 准备通过同一后端读取 v3。v3 扩展完整列出目标、平台、preset 到现有 depth 的映射、一次窗口的解析值及未消费声明。多个 target 保留全部身份并禁止启动，不把首目标投影为全部；显式服务端 depth override 暂走旧 effective-config 组合路径，多目标仍拒绝。独立 v3 编辑器保留原始 document 的全部 targets/profiles、相对路径和环境变量引用；空密码不覆盖已有值，失败或迟到响应不丢失草稿，保存后重新准备。旧 v2 builder 已移除。配置保存尚无 revision/CAS；浏览器 409 情景仅验证合同响应下的草稿保护。准备只检查配置/路径/工具存在，不执行扫描、模型、构建或索引。
 
 focus/reproduction/max_workers/platform 暂未接实际消费者。配置 execution.stop_at 已接 CLI 共享令牌预算与新建持久作业窗口；显式作业 stop_at 优先，同 request_id 重放保留原窗口，resume 不重新套用配置窗口。Web `/api/jobs` 与 MCP `zscope.scan.run` 创建作业时解析配置窗口，已过期的窗口以 `stop_window_closed`（400）拒绝，不写作业行、不启动 owner。owner 启动的 CLI 核对当前 job/run/owner/input 与运行目录绑定后，以持久 SQL 窗口为唯一预算来源，包括合法空窗口；部分环境或失效绑定不回退配置。独立 CLI 继续使用配置窗口。prepare 仍仅核对配置、路径和工具存在，不表示扫描已完成或模型已连接。单 target 配置可使用保存的 preset 启动作业；初始化器、模板与 CLI 配置命令已迁移，其余执行消费端仍待逐项确认。

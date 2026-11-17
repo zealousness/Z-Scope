@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ..snapshots.modeling_input import SemanticModelInputError, build_semantic_model_input
 from ..snapshots.readonly import ReadonlySnapshotStore
 from ..common.readonly import ReadonlyStateError, readonly_database
+from ..semantics.build_scope import current_build_id
 from .source_access import ProjectSourceAccess
 from .contracts import (
     ContractTool,
@@ -431,17 +432,29 @@ class SemanticContextTool(ContractTool):
                 row = conn.execute(
                     "SELECT CASE WHEN length(payload_json) <= 16777216 THEN payload_json ELSE NULL END FROM security_maps ORDER BY updated_at DESC LIMIT 1"
                 ).fetchone()
-                payload = json.loads(row[0]) if row else None
+                if row is None:
+                    return tool_result(
+                        status="unavailable",
+                        data={"kind": kind, "records": []},
+                        missing=["security_semantic_map"],
+                    )
+                payload = json.loads(row[0])
             if not isinstance(payload, dict) or any(
                 not isinstance(payload.get(k, []), list)
                 for k in ("claims", "audit_units", "functions")
             ):
                 raise ValueError("no map")
-        except (OSError, sqlite3.Error, ReadonlyStateError, ValueError, TypeError):
+        except (OSError, sqlite3.Error, ReadonlyStateError, ValueError, TypeError, RecursionError):
             return tool_result(
                 status="unavailable",
                 data={"kind": kind, "records": []},
-                missing=["security_semantic_map"],
+                missing=[
+                    (
+                        "security_semantic_map_unreadable"
+                        if self.semantic_map.db_path.exists()
+                        else "security_semantic_map"
+                    )
+                ],
             )
         key = "claims" if kind == "claim" else "audit_units"
         records = (
@@ -567,9 +580,9 @@ class SemanticContextTool(ContractTool):
                 warnings.append(str(exc))
                 missing.append(str(exc.reason))
 
-        map_records, map_meta = self._load_map_records(record, index_name)
+        map_records, map_meta, map_gap = self._load_map_records(record, index_name)
         if not map_meta:
-            missing.append("security_semantic_map")
+            missing.append(map_gap)
         snapshot_hash = (
             hashlib.sha256(
                 json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -610,13 +623,13 @@ class SemanticContextTool(ContractTool):
 
     def _map_context(self, kind: str, query: str, limit: int, offset: int) -> Dict[str, Any]:
         map_kind = "unit" if kind == "audit_unit" else kind
-        semantic_map = self.semantic_map._load_latest_map(project_id="", revision="")
+        semantic_map, map_gap = self._load_semantic_map()
         if semantic_map is None:
             return tool_result(
                 status="unavailable",
                 data={"kind": kind, "records": []},
                 providers=[],
-                missing=["security_semantic_map"],
+                missing=[map_gap],
             )
         if map_kind == "claim":
             records = [item.to_dict() for item in semantic_map.claims]
@@ -653,36 +666,88 @@ class SemanticContextTool(ContractTool):
                 "audit_units": len(semantic_map.audit_units),
             }
         return tool_result(
+            status="partial",
             data=data,
             providers=["security_map"],
+            missing=["map_freshness_unverified"],
             page=page_result(offset, limit, len(selected), total),
         )
 
+    def _load_semantic_map(self) -> tuple[Any, str]:
+        if not self.semantic_map.db_path.is_file():
+            return None, "security_semantic_map"
+        try:
+            value = self.semantic_map._load_latest_map(project_id="", revision="")
+        except (OSError, sqlite3.Error, ValueError, TypeError, RecursionError):
+            return None, "security_semantic_map_unreadable"
+        return value, "" if value is not None else "security_semantic_map"
+
     def _load_map_records(
         self, record: Dict[str, Any], index_name: str
-    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        semantic_map = self.semantic_map._load_latest_map(project_id="", revision="")
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any], str]:
+        semantic_map, map_gap = self._load_semantic_map()
         if semantic_map is None:
-            return [], {}
+            return [], {}, map_gap
         file_path = str(record.get("file") or "")
         start_line = int(record.get("start_line") or 0)
         signature = str(record.get("signature") or "")
+        matched = [
+            item
+            for item in semantic_map.functions
+            if (
+                item.index_name == index_name
+                or item.function_name
+                in {str(record.get("qualified_name") or ""), str(record.get("name") or "")}
+            )
+            and self.catalog._file(item.file_path) == file_path
+            and item.start_line == start_line
+            and (not signature or item.signature == signature)
+        ]
+        if not matched:
+            return [], {}, "function_semantic_record"
+        getter = getattr(self.code_index, "get_function_impl", None)
+        if not callable(getter):
+            return [], {}, "security_map_source_unavailable"
+        try:
+            impl = getter(
+                index_name,
+                max_lines=None,
+                warn_missing=False,
+                include_context=False,
+                file_path=file_path,
+            )
+        except (OSError, ValueError, TypeError):
+            return [], {}, "security_map_source_unavailable"
+        if (
+            not impl
+            or not impl.get("code")
+            or impl.get("truncated")
+            or self.catalog._file(impl.get("file") or impl.get("file_path")) != file_path
+            or impl.get("start_line") != start_line
+        ):
+            return [], {}, "security_map_source_unavailable"
+        code_hash = hashlib.sha256(str(impl["code"]).encode("utf-8")).hexdigest()
+        pinned = str(getattr(self.code_index, "pinned_build_context_id", "") or "")
+        active = current_build_id()
+        if pinned and active and pinned != active:
+            return [], {}, "conflicting_build_context"
+        build = pinned or active
         records = [
             item.to_dict()
-            for item in semantic_map.functions
-            if item.index_name == index_name
-            or (
-                item.function_name
-                in {str(record.get("qualified_name") or ""), str(record.get("name") or "")}
-                and (not file_path or item.file_path == file_path)
-                and (not start_line or item.start_line == start_line)
-                and (not signature or not item.signature or item.signature == signature)
-            )
+            for item in matched
+            if item.code_hash == code_hash
+            and str(item.backend_coverage.get("build_context_id") or "") == build
         ]
-        return records, {
-            "revision": semantic_map.revision,
-            "map_fingerprint": semantic_map.map_fingerprint,
-        }
+        if not records:
+            return [], {}, "security_map_source_changed"
+        return (
+            records,
+            {
+                "revision": semantic_map.revision,
+                "map_fingerprint": semantic_map.map_fingerprint,
+            },
+            "",
+        )
 
     @staticmethod
     def _contract(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:

@@ -1,0 +1,34 @@
+# 文档维护与规划边界
+
+[返回根入口](../../../AGENTS.md) · Markdown/交接文档、模块职责或 Agent 与专业扫描规划的变更时读取。
+
+## 中文与编码
+
+- 仓库 Markdown 使用 UTF-8 无 BOM、LF 换行并保留文件末尾换行。
+- Windows PowerShell 读取中文时显式使用 `Get-Content -Encoding utf8`；不要用默认编码读取后再覆盖原文件。
+- 不使用默认编码的 `Set-Content`、`Out-File` 或 shell 重定向改写中文文档。优先使用能保持 UTF-8 的补丁或编辑工具。
+- 终端显示乱码不代表文件已损坏。先以严格 UTF-8 解码或检查原始字节，再决定是否修复；禁止凭显示结果盲目转码。
+- 修改交接文档后运行 `python -m pytest -q tests/test_agent_docs.py`。
+- 纯文档任务在计划和执行中核对内容、相对链接、编码及上述交接文档测试；不因此加入未受影响功能的全量回归、compileall/mypy 或 native/portable 构建验收。只有明确跨模块影响、真实故障证据或用户明确要求时才扩大测试范围。检查通过后，不例行重复未受新改动影响的检查。
+
+## 文档维护边界
+
+- Agent 与专业扫描后续开发以 [`docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md`](../../../docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md) 为规划入口。该包区分本地现状与待开发能力；其中新配置、命令和状态不是当前产品接口。
+- 此路线优先级为低误报、高召回、扫描性能、项目理解、使用体验；专业扫描优先，通用 Coding 后置。默认面向非工作时间运行，交互集中于启动和验收；自动复现使用独立目录，默认不改业务源码。Linux 先闭环，再扩展嵌入式/RTOS。
+- 此路线不承担旧接口兼容负担，可替换冗余实现；采用相关正反例和实际验证，不新增代码冻结、多级审批或权限/沙箱平台。产品不增加网页搜索、抓取、浏览器或任意 URL 读取能力，本地 WebUI 与已有模型连接继续保留。
+- 实施时同步用户指南、配置模板/初始化器、对应模块与必要的规则/Skill 契约；不把计划文字直接当已实现行为，不改写历史 benchmark 或发行验证结果。
+- 此计划的实际落地状态见 [实施记录](../../../docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/21_IMPLEMENTATION_STATUS.md)。构建实例事实与旧函数导航投影必须区分；不能把新增实例存储当作全部扫描消费者已完成多变体隔离。
+
+- 模块文档记录稳定职责、入口、不变量和测试，不记录容易过期的文件数量、漏洞数量或历史 benchmark 成绩。
+- `docs/architecture.md` 负责端到端架构，`README.md` 负责用户使用，`docs/range-benchmark.md` 负责 Range 协议；模块文档不要重复维护这些全文。
+- 新增 `zscope/` 顶层包时，必须在 `docs/modules/README.md` 和某一份模块文档的 `covers` 元数据中登记，且只能登记一次。
+
+## 计划与历史记录
+
+已被替代的设计与实施方案集中放在 `docs/archive/design-plans/`，归档索引记录原位置和当前替代入口，每篇开头明确标注“历史文档”。历史交接包保留在 `docs/handoffs/<日期>/`，由目录说明标明历史用途；移动文档时同步修复引用，不保留重复正文。仍有效的后续设计与当前实施状态不随旧方案整包归档。
+
+实施计划、旧 handoff、coordination 记录中的提交号、哈希、快照、dry-run、签发记录和测试矩阵用于解释当时的工作，不自动成为新任务的前置条件。按当前用户目标和[开发者路线](../development/AGENTS.md)调整计划；不因偏离旧哈希或旧文件清单拒绝实现，不照抄历史多轮测试。保留原历史事实，不把旧测试改写成本轮通过，也不为普通文档调整制作冻结包或额外验收材料。
+
+## 渐进式披露维护
+
+根入口只保留通用约定与任务路由；专题细节在对应文件维护，新增主题时在根索引写清触发条件。专题文件沿用 `AGENTS.md` 文件名，保持现有 Wiki 对协作指令的强制排除；其全项目适用性来自根入口的明确引用，不依赖子目录自动加载。混合任务读取命中的主题，不一次预读全部文件。

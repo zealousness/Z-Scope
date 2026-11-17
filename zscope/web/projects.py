@@ -16,7 +16,7 @@ import yaml
 
 from ..config.config import ConfigLoader, ProjectConfig
 from ..config.editor import validate_document_file
-from ..config.v2 import load_yaml_unique
+from ..config.support import load_yaml_unique
 from . import services
 from .acceptance_service import AcceptanceReviewService
 from .scan_jobs_service import ScanJobsHttpService

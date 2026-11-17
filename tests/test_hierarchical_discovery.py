@@ -337,3 +337,345 @@ def test_incremental_leaf_reuse_and_composition_ablation(monkeypatch, tmp_path):
     )
     assert set(calls) == {a["id"], b["id"]}
     assert ablated["ablation"]["compose"] is False
+
+
+def reusable_function(name="a", build="receipt-old", command="command-main", calls=()):
+    """A current native unit: stable command, content-bound build receipt."""
+    unit = function(name, build, calls)
+    unit["command_id"] = command
+    unit["facts"].update(
+        complete=True,
+        build_context_id=build,
+        function_identity={"build_context_id": build, "usr": unit["usr"], "key": build},
+        build_context={
+            "build_context_id": build,
+            "command_id": command,
+            "dependencies_complete": True,
+            "dependencies": {"/main.c": "bytes-" + build},
+            "status": "indexed",
+            "target": {"pointer_bits": 64},
+        },
+    )
+    from zscope.orchestration.hierarchical_discovery import digest
+
+    unit["manifest"].update(
+        build_context_id=build, fact_digest="facts-" + build, source_digest=digest(unit["source"])
+    )
+    return unit
+
+
+def install_view_agent(monkeypatch, calls, *, hypothesis=True):
+    def run(agent, data):
+        calls.append(deepcopy(data))
+        agent.visible.update(agent.members)
+        leaf = agent.inventory[sorted(agent.members)[0]]
+        value = summary(leaf, hypothesis=hypothesis)
+        value["obligations"] = [
+            {
+                "kind": "release",
+                "object": "resource",
+                "generation": "allocation@2",
+                "owner": leaf["id"],
+                "condition": "on failure",
+                "boundary": "return",
+                "status": "open",
+                "transfer_to": "",
+                "refs": [leaf["id"] + ":2"],
+                "assumptions": [],
+            }
+        ]
+        return AgentResponse(success=True, data=value, metadata={"cumulative_total_tokens": 7})
+
+    monkeypatch.setattr(ContractDiscoveryAgent, "run", run)
+
+
+def test_cross_build_reuses_identical_actual_view_and_rebinds_candidates(monkeypatch, tmp_path):
+    calls = []
+    install_view_agent(monkeypatch, calls)
+    discovery = HierarchicalDiscovery(
+        client=SimpleNamespace(), cache_dir=tmp_path, require_current=lambda: None
+    )
+    old = reusable_function()
+    cold = discovery.run(build_hierarchy([old], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    new = reusable_function(build="receipt-new")
+    hot = discovery.run(build_hierarchy([new], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    assert hot["model_calls"] == 0
+    assert hot["reuse"]["cross_build_hits"] == cold["model_calls"]
+    assert hot["reuse"]["hits"] == hot["cache_hits"]
+    assert set(hot["summaries"]) == {
+        new["id"],
+        *[u["id"] for u in build_hierarchy([new], [], EMPTY_LIFECYCLE)["units"]],
+    }
+    debt = hot["summaries"][new["id"]]["obligations"][0]
+    assert debt["owner"] == new["id"] and debt["refs"] == [new["id"] + ":2"]
+    assert hot["candidates"] and all(
+        c["build_context_id"] == "receipt-new" for c in hot["candidates"]
+    )
+    assert all(
+        c["evidence_pack"]["program_facts"]["build_context_id"] == "receipt-new"
+        for c in hot["candidates"]
+    )
+    assert "receipt-old" not in str(hot["summaries"])
+    exact = discovery.run(build_hierarchy([new], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    assert exact["reuse"]["exact_hits"] + exact["reuse"]["cross_build_hits"] == exact["cache_hits"]
+
+
+@pytest.mark.parametrize(
+    "change", ["source", "position", "deep_fact", "target", "lookup", "gap", "contract"]
+)
+def test_cross_build_observable_changes_miss(monkeypatch, tmp_path, change):
+    calls = []
+    install_view_agent(monkeypatch, calls)
+    discovery = HierarchicalDiscovery(
+        client=SimpleNamespace(), cache_dir=tmp_path, require_current=lambda: None
+    )
+    old = reusable_function()
+    discovery.run(build_hierarchy([old], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False)
+    new = reusable_function(build="receipt-new")
+    hierarchy = build_hierarchy([new], [], EMPTY_LIFECYCLE)
+    current = hierarchy["functions"][new["id"]]
+    if change == "source":
+        current["source"] += " /* meaningful to the model */"
+    elif change == "position":
+        current["start_line"], current["end_line"] = 2, 6
+    elif change == "deep_fact":
+        current["facts"]["large_unread_fact"] = {"text": "x" * 30000}
+    elif change == "target":
+        current["facts"]["build_context"]["target"]["pointer_bits"] = 32
+    elif change == "lookup":
+        current["facts"]["build_context"]["include_lookups"] = [{"exists": True}]
+    elif change == "gap":
+        hierarchy["gaps"].append(
+            {
+                "caller": new["id"],
+                "build_context_id": "receipt-new",
+                "reason": "new unresolved callee",
+            }
+        )
+    else:
+        discovery.model_identity = {"model": "changed"}
+    changed = discovery.run(hierarchy, EMPTY_LIFECYCLE, compose=False)
+    assert changed["model_calls"] == 1 and changed["cache_hits"] == 0
+    assert changed["reuse"]["recomputed_units"] == 1
+    if change == "gap":
+        assert changed["gaps"][0]["build_context_id"] == "receipt-new"
+
+
+def test_cross_build_local_change_keeps_other_leaf_and_invalidates_parent(monkeypatch, tmp_path):
+    calls = []
+    install_view_agent(monkeypatch, calls, hypothesis=False)
+    discovery = HierarchicalDiscovery(
+        client=SimpleNamespace(), cache_dir=tmp_path, require_current=lambda: None
+    )
+    a, b = reusable_function(calls=["b"]), reusable_function("b")
+    discovery.run(build_hierarchy([a, b], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    new_a, new_b = reusable_function(build="receipt-new", calls=["b"]), reusable_function(
+        "b", "receipt-new"
+    )
+    new_b["source"] += " changed"
+    result = discovery.run(build_hierarchy([new_a, new_b], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    assert result["reuse"]["cross_build_hits"] == 1
+    assert result["model_calls"] >= 2
+
+
+def test_cross_build_internal_switch_uses_same_view_but_recomputes_new_binding(
+    monkeypatch, tmp_path
+):
+    calls = []
+    install_view_agent(monkeypatch, calls)
+    discovery = HierarchicalDiscovery(
+        client=SimpleNamespace(),
+        cache_dir=tmp_path,
+        require_current=lambda: None,
+        enable_cross_build_reuse=False,
+    )
+    old = reusable_function()
+    discovery.run(build_hierarchy([old], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False)
+    new = reusable_function(build="receipt-new")
+    result = discovery.run(
+        build_hierarchy([new], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False
+    )
+    assert result["model_calls"] == 1 and result["reuse"]["cross_build_hits"] == 0
+    assert calls[0] == calls[1]
+
+
+def test_cross_build_parent_membership_and_ambiguous_locator_cannot_reuse(monkeypatch, tmp_path):
+    calls = []
+    install_view_agent(monkeypatch, calls, hypothesis=False)
+    discovery = HierarchicalDiscovery(
+        client=SimpleNamespace(), cache_dir=tmp_path, require_current=lambda: None
+    )
+    a = reusable_function()
+    discovery.run(build_hierarchy([a], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    new, b = reusable_function(build="receipt-new"), reusable_function("b", "receipt-new")
+    changed = discovery.run(build_hierarchy([new, b], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    assert changed["reuse"]["cross_build_hits"] == 1 and changed["model_calls"] == 2
+    duplicate = reusable_function(build="duplicate-receipt")
+    ambiguous = discovery.run(
+        build_hierarchy([new, duplicate], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False
+    )
+    assert ambiguous["reuse"]["eligible_units"] == 0
+    assert ambiguous["reuse"]["miss_reasons"]["ambiguous_command_symbol"] == 2
+
+
+def test_cross_build_reuses_logical_prose_refs_with_current_binding_catalog(monkeypatch, tmp_path):
+    from zscope.orchestration.hierarchical_discovery import digest
+    from zscope.orchestration.hierarchical_reuse import SummaryReuseView
+
+    calls = []
+
+    def run(agent, data):
+        calls.append(deepcopy(data))
+        agent.visible.update(agent.members)
+        unit = agent.inventory[next(iter(agent.members))]
+        value = summary(unit, hypothesis=True)
+        alias = unit["id"]
+        value["hypotheses"][0].update(
+            description=f"read {alias}:2",
+            required_facts=[f"allocation at {alias}:2", "cleanup_coverage"],
+            positive_example=f'const char *message = "{alias}:2"; // read {alias}:2',
+            applicability=f"当前 {alias} 分配成功且失败路径可达",
+        )
+        value["unknowns"] = ["当前逻辑边界 " + data["unit"]["id"]]
+        value["obligations"] = [
+            {
+                "kind": "release",
+                "object": "resource",
+                "generation": "allocation@2",
+                "owner": alias,
+                "condition": "on failure",
+                "boundary": "return",
+                "status": "open",
+                "transfer_to": "",
+                "refs": [alias + ":2"],
+                "assumptions": [],
+            }
+        ]
+        return AgentResponse(success=True, data=value)
+
+    monkeypatch.setattr(ContractDiscoveryAgent, "run", run)
+    discovery = HierarchicalDiscovery(
+        client=SimpleNamespace(), cache_dir=tmp_path, require_current=lambda: None
+    )
+    old = reusable_function()
+    alias = SummaryReuseView(build_hierarchy([old], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE).ids[
+        old["id"]
+    ]
+    old["source"] += f'\n4: const char *message = "{alias}:2";'
+    old["manifest"]["source_digest"] = digest(old["source"])
+    old["facts"]["literal_identity"] = alias
+    original = deepcopy(old)
+    cold = discovery.run(build_hierarchy([old], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE)
+    cold_calls = deepcopy(calls)
+    assert cold["model_calls"] >= 2  # Function and parent compositions all ran.
+    assert old == original
+    assert cold_calls[0]["unit"]["source"] == original["source"]
+    assert cold_calls[0]["unit"]["facts"]["literal_identity"] == alias
+
+    new = reusable_function(build="receipt-new")
+    new["source"] = old["source"]
+    new["manifest"]["source_digest"] = digest(new["source"])
+    new["facts"]["literal_identity"] = alias
+    hierarchy = build_hierarchy([new], [], EMPTY_LIFECYCLE)
+    hot = discovery.run(hierarchy, EMPTY_LIFECYCLE)
+    assert len(calls) == len(cold_calls)
+    assert hot["model_calls"] == 0
+    assert hot["reuse"]["cross_build_hits"] == cold["model_calls"]
+    assert {binding["unit_id"] for binding in hot["reference_bindings"].values()} == set(
+        hot["summaries"]
+    )
+    binding = hot["reference_bindings"][alias]
+    assert binding["unit_id"] == new["id"]
+    assert binding["level"] == "function"
+    assert binding["build_context_id"] == "receipt-new"
+    assert binding["file"] == new["file"]
+    assert binding["usr"] == new["usr"]
+    assert (binding["start_line"], binding["end_line"]) == (1, 5)
+    for value in hot["summaries"].values():
+        h = value["hypotheses"][0]
+        assert h["description"] == f"read {alias}:2"
+        assert h["positive_example"] == f'const char *message = "{alias}:2"; // read {alias}:2'
+        assert h["source_ref"] == h["sink_ref"] == new["id"] + ":2"
+        assert value["obligations"][0]["owner"] == new["id"]
+        assert value["obligations"][0]["refs"] == [new["id"] + ":2"]
+        assert "reference_bindings" not in value
+    for candidate in hot["candidates"]:
+        contract = candidate["evidence_pack"]["hierarchical_contract"]
+        assert contract["reference_bindings"] == {alias: binding}
+        assert candidate["build_context_id"] == "receipt-new"
+
+    fresh = HierarchicalDiscovery(
+        client=SimpleNamespace(),
+        cache_dir=tmp_path / "fresh",
+        require_current=lambda: None,
+        enable_cross_build_reuse=False,
+    ).run(hierarchy, EMPTY_LIFECYCLE)
+    assert calls[len(cold_calls) :] == cold_calls
+    assert hot["candidates"] == fresh["candidates"]
+    assert hot["summaries"] == fresh["summaries"]
+    assert hot["reference_bindings"] == fresh["reference_bindings"]
+    for request in cold_calls:
+        for debt in request["inherited_obligations"]:
+            assert debt["owner"] == alias
+            assert debt["obligation_uid"].startswith("DEBT_")
+        assert all("reference_bindings" not in child for child in request["children"].values())
+
+
+def test_cross_build_unknown_full_alias_is_not_cached_but_identifier_substrings_are_data(
+    monkeypatch, tmp_path
+):
+    unknown = "FN_" + "f" * 32
+    mentions = {"value": f"read {unknown}:2"}
+
+    def run(agent, data):
+        agent.visible.update(agent.members)
+        unit = agent.inventory[next(iter(agent.members))]
+        value = summary(unit, hypothesis=True)
+        value["hypotheses"][0]["description"] = mentions["value"]
+        return AgentResponse(success=True, data=value)
+
+    monkeypatch.setattr(ContractDiscoveryAgent, "run", run)
+    discovery = HierarchicalDiscovery(
+        client=SimpleNamespace(), cache_dir=tmp_path / "unknown", require_current=lambda: None
+    )
+    for build in ("receipt-old", "receipt-new"):
+        unit = reusable_function(build=build)
+        result = discovery.run(
+            build_hierarchy([unit], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False
+        )
+        assert result["model_calls"] == 1 and result["cache_hits"] == 0
+        assert result["reuse"]["miss_reasons"]["unsupported_summary_reference"] == 1
+    assert not list((tmp_path / "unknown").rglob("*.json"))
+
+    mentions["value"] = f"symbol prefix_{unknown}_suffix and {unknown}0 are program data"
+    boundary = HierarchicalDiscovery(
+        client=SimpleNamespace(), cache_dir=tmp_path / "boundary", require_current=lambda: None
+    )
+    old = reusable_function()
+    boundary.run(build_hierarchy([old], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False)
+    new = reusable_function(build="receipt-new")
+    hot = boundary.run(build_hierarchy([new], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False)
+    assert hot["model_calls"] == 0 and hot["reuse"]["cross_build_hits"] == 1
+    contract = hot["candidates"][0]["evidence_pack"]["hierarchical_contract"]
+    assert contract["hypothesis"]["description"] == mentions["value"]
+    assert contract["reference_bindings"] == {}
+
+
+def test_cross_build_reuse_preserves_currentness_before_rebinding(monkeypatch, tmp_path):
+    calls = []
+    install_view_agent(monkeypatch, calls)
+    current = lambda: None
+    discovery = HierarchicalDiscovery(
+        client=SimpleNamespace(), cache_dir=tmp_path, require_current=lambda: current()
+    )
+    old = reusable_function()
+    discovery.run(build_hierarchy([old], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False)
+    new = reusable_function(build="receipt-new")
+
+    def invalidated():
+        raise ValueError("current dependency changed")
+
+    current = invalidated
+    with pytest.raises(ValueError, match="current dependency changed"):
+        discovery.run(build_hierarchy([new], [], EMPTY_LIFECYCLE), EMPTY_LIFECYCLE, compose=False)
+    assert len(calls) == 1

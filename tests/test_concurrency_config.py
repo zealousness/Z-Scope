@@ -7,7 +7,7 @@ from zscope.config.config import ConfigLoader, ConcurrencyConfig
 
 def _base_config(tmp_path):
     return {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://localhost/v1"],
@@ -16,6 +16,7 @@ def _base_config(tmp_path):
             }
         },
         "project": {
+            "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
             "language": "c_cpp",
         },
         "scan": {"task": ""},

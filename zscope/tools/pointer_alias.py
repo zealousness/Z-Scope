@@ -27,7 +27,11 @@ class QueryPointerAliasTool(BaseTool):
         if backend and hasattr(backend, "get_indirect_callees"):
             fetched = backend.get_indirect_callees(func_name, limit=parsed_limit + 1)
         else:
-            fetched = []
+            return {
+                "success": False,
+                "status": "unavailable",
+                "error": "The current backend cannot query indirect call targets.",
+            }
         truncated = len(fetched) > parsed_limit
         targets = fetched[:parsed_limit]
         data = {

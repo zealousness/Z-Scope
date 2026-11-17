@@ -27,9 +27,7 @@ def _spec(tmp_path):
                     "language": "c_cpp",
                     "platform": "linux_user",
                     "semantics_file": "zscope.semantics.yaml",
-                    "targets": [
-                        {"id": "main", "compile_commands": "build/compile_commands.json"}
-                    ],
+                    "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
                 },
                 "scan": {"preset": "fast"},
             }
@@ -75,4 +73,27 @@ def test_execution_config_refuses_a_different_project_directory(tmp_path):
     output = tmp_path / "outside.yaml"
     with pytest.raises(BenchmarkError, match="target project directory"):
         _write_execution_config(spec, project, output)
+    assert not output.exists()
+
+
+def test_java_execution_uses_the_same_public_format(tmp_path):
+    spec = _spec(tmp_path)
+    raw = yaml.safe_load(spec.config_path.read_text())
+    raw["project"] = {"language": "java", "targets": [{"id": "app"}]}
+    spec.config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    spec.language = "java"
+    output = tmp_path / "execution.yaml"
+    result = _write_execution_config(spec, tmp_path, output)
+    assert result["project"]["entry_functions_list"] == "entries.json"
+    assert ConfigLoader.load(str(output), read_only=True).scan.depth == "fast"
+
+
+def test_execution_generator_rejects_v2_without_writing(tmp_path):
+    spec = _spec(tmp_path)
+    raw = yaml.safe_load(spec.config_path.read_text())
+    raw["config_version"] = 2
+    spec.config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    output = tmp_path / "execution.yaml"
+    with pytest.raises(BenchmarkError, match="must use public config v3"):
+        _write_execution_config(spec, tmp_path, output)
     assert not output.exists()

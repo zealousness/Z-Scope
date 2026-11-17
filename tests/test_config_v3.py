@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from zscope.config.config import ConfigLoader
-from zscope.config.v2 import LLM_PROFILE_KEYS, load_runtime_spec
+from zscope.config.support import LLM_PROFILE_KEYS, load_runtime_spec
 from zscope.config.v3 import (
     BLOCKED,
     DECLARED_ONLY,
@@ -105,6 +105,35 @@ def _v2_document() -> dict:
 # --- Formal model ---------------------------------------------------------------
 
 
+@pytest.mark.parametrize("language", ["c_cpp", "java"])
+@pytest.mark.parametrize("scan", [None, {}])
+def test_every_language_defaults_to_fast_and_allows_cli_override(tmp_path, language, scan):
+    document = _document()
+    document["project"]["language"] = language
+    if language == "java":
+        document["project"]["targets"] = [{"id": "main"}]
+    if scan is None:
+        document.pop("scan")
+    else:
+        document["scan"] = scan
+    path = _write(tmp_path, document)
+    config = ConfigLoader.load(str(path), read_only=True)
+    assert config.scan.depth == "fast"
+    assert config.scan.depth_source == "default"
+    depth = "deep" if language == "c_cpp" else "fast"
+    overridden = ConfigLoader.load(str(path), read_only=True, scan_depth=depth)
+    assert overridden.scan.depth == depth
+    assert overridden.scan.depth_source == "cli"
+
+
+def test_cli_override_cannot_bypass_invalid_java_yaml(tmp_path):
+    document = _document()
+    document["project"].update(language="java", targets=[{"id": "main"}])
+    path = _write(tmp_path, document)
+    with pytest.raises(ValueError, match="scan.preset 'deep'"):
+        ConfigLoader.load(str(path), scan_depth="fast", read_only=True)
+
+
 def test_full_document_parses_into_the_formal_model(tmp_path: Path) -> None:
     path = _write(tmp_path, _document())
     model = parse_user_config_v3(str(path), now=datetime(2026, 10, 14, 7, 0, tzinfo=timezone.utc))
@@ -144,12 +173,12 @@ def test_minimal_document_uses_declared_defaults(tmp_path: Path) -> None:
 
     model = parse_user_config_v3(str(path), now=datetime(2026, 10, 14, 7, 0, tzinfo=timezone.utc))
 
-    assert model.scan.preset == "deep"
+    assert model.scan.preset == "fast"
     assert model.scan.focus == FOCUS_AREAS
     assert model.scan.reproduction == "auto"
     # A defaulted preset is not an explicit user choice and stays rollout-gateable.
     assert model.scan.mapped_depth_source == "default"
-    assert model.scan.mapped_depth == "deep"
+    assert model.scan.mapped_depth == "fast"
     assert model.execution.timezone is None
     assert model.execution.stop_at is None
     assert model.execution.max_workers is None
@@ -221,21 +250,10 @@ def test_compile_databases_anchor_to_config_directory_or_explicit_absolute_path(
     assert by_id["hosted"] == absolute_database.resolve()
 
 
-def test_v2_also_anchors_the_project_to_the_config_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config_dir = tmp_path / "conf"
-    config_dir.mkdir()
-    other_cwd = tmp_path / "elsewhere"
-    other_cwd.mkdir()
-    path = _write(config_dir, _v2_document())
-
-    monkeypatch.chdir(other_cwd)
-    config = ConfigLoader.load(str(path), read_only=True)
-
-    assert config.user_config_version == 2
-    assert config.user_config_v3 is None
-    assert config.project.project_root == config_dir.resolve()
+def test_v2_is_rejected_before_other_fields(tmp_path: Path) -> None:
+    path = _write(tmp_path, _v2_document())
+    with pytest.raises(ValueError, match="config.config_version must be 3.*migrate"):
+        ConfigLoader.load(str(path), read_only=True)
 
 
 # --- Composition into the current execution chain -------------------------------
@@ -443,15 +461,9 @@ def test_duplicate_yaml_keys_are_rejected(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("section", "key"),
     [
-        (None, "indexing"),
-        (None, "concurrency"),
-        (None, "rules"),
         ("project", "source_root"),
         ("project", "compile_commands_path"),
-        ("project", "entry_function"),
         ("scan", "depth"),
-        ("scan", "task"),
-        ("scan", "llm_profiles"),
         ("execution", "deadline"),
         ("execution", "stop_after"),
     ],
@@ -493,7 +505,7 @@ def test_wrong_config_version_is_rejected(tmp_path: Path, version: object) -> No
         document["config_version"] = version
     path = _write(tmp_path, document)
 
-    with pytest.raises(ValueError, match="config.config_version must be 2 or 3"):
+    with pytest.raises(ValueError, match="config.config_version must be 3"):
         ConfigLoader.load(str(path), read_only=True)
 
 
@@ -503,7 +515,7 @@ def test_v3_document_mislabeled_as_v2_reports_the_offending_section(
     document = _document(config_version=2)
     path = _write(tmp_path, document)
 
-    with pytest.raises(ValueError, match="unknown configuration key config.execution"):
+    with pytest.raises(ValueError, match="config.config_version must be 3"):
         ConfigLoader.load(str(path), read_only=True)
 
 
@@ -862,21 +874,18 @@ def test_preset_availability_is_language_gated_in_schema_and_parser(
     assert len(branches) == 1
     branch = branches[0]
     assert branch["if"]["properties"]["project"]["properties"]["language"]["const"] == "java"
-    # The default preset (overnight) is unavailable for java, so an explicit
-    # allowed preset is required.
-    assert branch["then"]["required"] == ["scan"]
-    assert branch["then"]["properties"]["scan"]["required"] == ["preset"]
+    # The shared fast default is valid for Java, including an omitted scan.
+    assert "required" not in branch["then"]
+    assert "required" not in branch["then"]["properties"]["scan"]
     assert branch["then"]["properties"]["scan"]["properties"]["preset"]["enum"] == ["fast"]
 
-    # Parser parity: a java document without an explicit preset defaults to
-    # overnight, which the language gate rejects.
+    # Parser parity: Java also defaults to fast.
     document = _document()
     document["project"]["language"] = "java"
     document["project"]["targets"] = [{"id": "app"}]
     del document["scan"]
     path = _write(tmp_path, document)
-    with pytest.raises(ValueError, match="scan.preset 'deep'.*use 'fast'"):
-        parse_user_config_v3(str(path))
+    assert parse_user_config_v3(str(path)).scan.preset == "fast"
 
     # And the schema-allowed explicit choice loads.
     document["scan"] = {"preset": "fast"}

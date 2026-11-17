@@ -908,7 +908,7 @@ def test_config_loader_parses_multiple_llm_base_urls(tmp_path) -> None:
     config_path.write_text(
         json.dumps(
             {
-                "config_version": 2,
+                "config_version": 3,
                 "llms": {
                     "default": {
                         "api_key": "test",
@@ -923,6 +923,7 @@ def test_config_loader_parses_multiple_llm_base_urls(tmp_path) -> None:
                     }
                 },
                 "project": {
+                    "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
                     "language": "c_cpp",
                 },
                 "scan": {"task": ""},
@@ -974,14 +975,25 @@ def test_streamed_function_name_fragments_preserve_numeric_tool_order():
     for index in range(12):
         for name, arguments, call_id in (("read_", '{"q":', "call_"), ("code", '"x"}', str(index))):
             chunks.append(
-                "data: " + json.dumps({
-                    "choices": [{"delta": {"tool_calls": [{
-                        "index": index,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": name, "arguments": arguments},
-                    }]}}]
-                })
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": index,
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {"name": name, "arguments": arguments},
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                )
             )
     chunks.append('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}')
     try:
@@ -1042,7 +1054,9 @@ def test_assembly_raises_on_usage_only_stream_without_finish_reason() -> None:
 
 @pytest.mark.parametrize("done", [False, True])
 def test_assembly_rejects_partial_content_without_finish_reason(done):
-    client = LLMClient(api_key="test", base_url="http://no-finish.invalid/v1", models=["unit-model"])
+    client = LLMClient(
+        api_key="test", base_url="http://no-finish.invalid/v1", models=["unit-model"]
+    )
     lines = [b'data: {"choices":[{"delta":{"content":"partial"}}]}']
     if done:
         lines.append(b"data: [DONE]")

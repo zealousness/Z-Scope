@@ -1,0 +1,197 @@
+{
+  "git_head": "2b483628008e8c270ff36746903192d47ddfd4f3",
+  "files": [
+    {
+      "path": "zscope/benchmarking/protocol.py",
+      "sha256": "d21192e9641e1448c9c7651efe1824ffbb430d8799e274f553e583778037e353",
+      "lines": 5229,
+      "cited_locations": "1736-1781: raw/effective FP; 2484: category compatibility",
+      "tracked_HEAD_sha256": "d21192e9641e1448c9c7651efe1824ffbb430d8799e274f553e583778037e353",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/benchmarking/runner.py",
+      "sha256": "6973813bcc7c7295a6bbeda42870546d9d2af5afa29122a231787cf7ad98df99",
+      "lines": 2723,
+      "cited_locations": "857-875: accounting/protocol gate",
+      "tracked_HEAD_sha256": "851408dc929f4be7c15acb6f15fa9f741e43cee2e5f796a47535a6b3c3c13bcc",
+      "matches_HEAD": false
+    },
+    {
+      "path": "zscope/framework/llm_usage.py",
+      "sha256": "bdc6aba3f374c9ab69a175813212b07135239eabf4aa09f2c654bfc19ff73d62",
+      "lines": 687,
+      "cited_locations": "558-578: conservative unknown-usage settlement",
+      "tracked_HEAD_sha256": "bdc6aba3f374c9ab69a175813212b07135239eabf4aa09f2c654bfc19ff73d62",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/framework/llm_client.py",
+      "sha256": "85931203aab36d85c1ee178dc3e80ca94434670ccdc3e8d229348feea1f2c8cd",
+      "lines": 3878,
+      "cited_locations": "492-516: retry/repair flags; 1328-1349: provider failure classification",
+      "tracked_HEAD_sha256": "85931203aab36d85c1ee178dc3e80ca94434670ccdc3e8d229348feea1f2c8cd",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/agents/validator_agent/agent.py",
+      "sha256": "39918403006821f88cf2fd15a421227ad6318b7c0c0a6d6382962c5487eb5e2f",
+      "lines": 1978,
+      "cited_locations": "332-415: compact retry; 863: iteration limit; 1245-1298: investigation and fact registration",
+      "tracked_HEAD_sha256": "39918403006821f88cf2fd15a421227ad6318b7c0c0a6d6382962c5487eb5e2f",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/core/validation/runner.py",
+      "sha256": "f6381efc0cec9f575915f3021dda0f6877d89d9906120c0e2eac50981792a5f5",
+      "lines": 4074,
+      "cited_locations": "880-920: V3 eligibility",
+      "tracked_HEAD_sha256": "f6381efc0cec9f575915f3021dda0f6877d89d9906120c0e2eac50981792a5f5",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/core/validation/claims.py",
+      "sha256": "31d2be1a599c2e7eaca4d58430d6722b169cb41b3b9d865c3cd0e44ceb2659ee",
+      "lines": 431,
+      "cited_locations": "211,276,303,314,418: evidence references, assumptions, roles and counterfacts",
+      "tracked_HEAD_sha256": "31d2be1a599c2e7eaca4d58430d6722b169cb41b3b9d865c3cd0e44ceb2659ee",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/orchestration/hierarchical_discovery.py",
+      "sha256": "57e81b2ab480c83d08973de13474bd1977f5e8ef2bcc542ae3385df9ac8b3c0e",
+      "lines": 1009,
+      "cited_locations": "764-800: unit timeout and local accounting",
+      "tracked_HEAD_sha256": "57e81b2ab480c83d08973de13474bd1977f5e8ef2bcc542ae3385df9ac8b3c0e",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/shared_access.py",
+      "sha256": "dfcd26ee31d26764db5a9250dad486983c13c1a8fe62a4040d1100d384a32e00",
+      "lines": 156,
+      "cited_locations": "24-160: native shared-access and lock-prefix filtering",
+      "tracked_HEAD_sha256": "dfcd26ee31d26764db5a9250dad486983c13c1a8fe62a4040d1100d384a32e00",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/concurrency_shared_state.py",
+      "sha256": "4add7af8c2408c9126710a42e7f813224f0ec7c7474b476bbd64122f6c4c7d09",
+      "lines": 3240,
+      "cited_locations": "202-237,414-431,2806-2837: shared state and condition wait candidates",
+      "tracked_HEAD_sha256": "4add7af8c2408c9126710a42e7f813224f0ec7c7474b476bbd64122f6c4c7d09",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/protocol_ownership_logic.py",
+      "sha256": "8beb6b64fdf1c9aeaec4013187ed2e437a0ff3f27f09ce0cd015219174bda40e",
+      "lines": 3607,
+      "cited_locations": "686-723: write SIGPIPE pattern; 973-1075: line-based ignored-return detector; 1509-1538: descriptor contract pattern",
+      "tracked_HEAD_sha256": "8beb6b64fdf1c9aeaec4013187ed2e437a0ff3f27f09ce0cd015219174bda40e",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/resource_lifecycle.py",
+      "sha256": "ff4bafe187ae9cd4a3c5ab15dd33f32fee621d24646fb91daed27d640038b58a",
+      "lines": 3863,
+      "cited_locations": "301-325: unmap without pointer clear",
+      "tracked_HEAD_sha256": "ff4bafe187ae9cd4a3c5ab15dd33f32fee621d24646fb91daed27d640038b58a",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/memory_bounds_integer.py",
+      "sha256": "63f27758f28caa9e7fc10155f8ea15f1dc6542f74bb75d3b4436e23a92407be8",
+      "lines": 3499,
+      "cited_locations": "1142-1201: waitpid out-status rule",
+      "tracked_HEAD_sha256": "63f27758f28caa9e7fc10155f8ea15f1dc6542f74bb75d3b4436e23a92407be8",
+      "matches_HEAD": true
+    },
+    {
+      "path": "zscope/reporting/json_io.py",
+      "sha256": "7d83e51a8685a80986ef7f0291f2cf56dd5af7d19199f46270bf58e35aba2875",
+      "lines": 172,
+      "cited_locations": "64-110: strict shared-object report decoding",
+      "tracked_HEAD_sha256": "7d83e51a8685a80986ef7f0291f2cf56dd5af7d19199f46270bf58e35aba2875",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/src/lifecycle.c",
+      "sha256": "daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31",
+      "lines": 3424,
+      "cited_locations": "case and FP source lines cited in README and false-positive-review",
+      "tracked_HEAD_sha256": "daef027f01ada97518381e5bfa689862b1b6a6437e25f50575e6fc8436acba31",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/src/main.c",
+      "sha256": "9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b",
+      "lines": 826,
+      "cited_locations": "case and FP source lines cited in README and false-positive-review",
+      "tracked_HEAD_sha256": "9b5453bdd6e4e6db5f613e4e3b709d27ff39ea01a5c191dc03421d49ef71813b",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/src/parser.c",
+      "sha256": "ac18a0b881fe02504794b8326ce25aae7389624b837c4ec2390d0ecf1836d62b",
+      "lines": 368,
+      "cited_locations": "28-53,155-172,223-240: parser bounds/quota and serializer",
+      "tracked_HEAD_sha256": "ac18a0b881fe02504794b8326ce25aae7389624b837c4ec2390d0ecf1836d62b",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/src/executor.c",
+      "sha256": "0123d5f02f17d0a0905cc20fdc721bf5b4c21dda2814a475fa3b2a4723944f6e",
+      "lines": 261,
+      "cited_locations": "70-91,171-195,242-261: format and waitpid cases",
+      "tracked_HEAD_sha256": "0123d5f02f17d0a0905cc20fdc721bf5b4c21dda2814a475fa3b2a4723944f6e",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/src/network.c",
+      "sha256": "86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4",
+      "lines": 207,
+      "cited_locations": "94-113,142-153: send and fd close cases",
+      "tracked_HEAD_sha256": "86629f2d2004eaf7b25508be53cb23297650655a4d61d935dc1a0a1a511c79a4",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/src/utils.c",
+      "sha256": "35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544",
+      "lines": 171,
+      "cited_locations": "13-60,63-97: allocators, copy, log and mutex wrappers",
+      "tracked_HEAD_sha256": "35c510d5699b1c30ac7ff23458dd6b16d9d563d9128530f6a2f94dc777b17544",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/include/common.h",
+      "sha256": "08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0",
+      "lines": 82,
+      "cited_locations": "8,24,33-47: quota and macros",
+      "tracked_HEAD_sha256": "08c1ffb594186df978937372f79ed5c003819e9ed175acf7a02222668d8c95a0",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/include/task_dispatcher.h",
+      "sha256": "996b48257269b03b42b859574cc25d00da044f72b8209a13d0b031b8d92f2364",
+      "lines": 203,
+      "cited_locations": "112,118,128-162: public API boundaries",
+      "tracked_HEAD_sha256": "996b48257269b03b42b859574cc25d00da044f72b8209a13d0b031b8d92f2364",
+      "matches_HEAD": true
+    },
+    {
+      "path": "test/range/internal/parser.ph",
+      "sha256": "d5b62709ad0961638de84c6a325763669fbaa78474295dc667e981c42809aa46",
+      "lines": 16,
+      "cited_locations": "10: serialization API",
+      "tracked_HEAD_sha256": "d5b62709ad0961638de84c6a325763669fbaa78474295dc667e981c42809aa46",
+      "matches_HEAD": true
+    },
+    {
+      "path": "docs/range-semantics-baseline-2026-11-04.md",
+      "sha256": "75beb7a0b7bb470bef18b3893e65f127d531bc294b5d677a2221afb0d22f3004",
+      "lines": 62,
+      "cited_locations": "initial 60-effect/55-interface semantic baseline and boundaries",
+      "tracked_HEAD_sha256": null,
+      "matches_HEAD": false
+    }
+  ]
+}

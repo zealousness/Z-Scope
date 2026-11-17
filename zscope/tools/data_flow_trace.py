@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import re
+import regex
 from typing import Any, Dict, Optional
 
 from .contracts import (
@@ -14,8 +14,7 @@ from .contracts import (
     page_result,
     tool_result,
 )
-from .flow_query import FlowQueryService
-from .search_code import _unsafe_regex_reason
+from .flow_query import FlowQueryService, FlowQueryTimeout
 from .symbols import (
     SYMBOL_SCHEMA,
     SymbolCatalog,
@@ -24,10 +23,9 @@ from .symbols import (
     valid_symbol_id,
 )
 
-DESCRIPTION = """Trace source-to-sink propagation from an exact function/method symbol_id and
-structured selectors. When IDs and endpoint names are known, call this directly:
-put a sink call name in sink.query without searching or reading first. Returns
-bounded def-use, call/return, alias, and dispatch paths with may/must evidence."""
+DESCRIPTION = """Trace propagation by function/method symbol_id and source/sink selectors.
+Known ID/endpoints: call directly; sink call names go in sink.query.
+Returns bounded def-use/call/return/alias/dispatch paths with may/must evidence."""
 
 
 SOURCE_SCHEMA = object_schema(
@@ -229,12 +227,9 @@ class TraceDataFlowTool(ContractTool):
                 )
             if sink.get("match_mode", "exact") == "regex":
                 query = str(sink["query"])
-                reason = _unsafe_regex_reason(query)
-                if reason:
-                    return invalid_request(code="unsafe_regex", path="sink.query", message=reason)
                 try:
-                    re.compile(query)
-                except re.error as exc:
+                    regex.compile(query, regex.VERSION0)
+                except (regex.error, OverflowError) as exc:
                     return invalid_request(
                         code="invalid_regex", path="sink.query", message=str(exc)
                     )
@@ -263,31 +258,38 @@ class TraceDataFlowTool(ContractTool):
         query_limit = offset + limit + 1
         backend_name = str(getattr(self.code_index, "backend_name", "") or "").lower()
         backend_type = type(getattr(self.code_index, "_backend", None)).__name__.lower()
-        if backend_name == "joern" or "joern" in backend_type:
-            result = self.service.trace_joern(
-                str(record.get("qualified_name") or record["name"]),
-                source,
-                sink,
-                max_paths=query_limit,
-            )
-        elif str(getattr(self.code_index, "language", "c_cpp")) == "java":
-            result = {
-                "status": "unsupported",
-                "reason": "unsupported_selector",
-                "paths": [],
-                "providers": [backend_name] if backend_name else [],
-                "missing": ["java_def_use_backend"],
-                "details": {},
-            }
-        else:
-            result = self.service.trace_clang(
-                str(record.get("index_name") or record["qualified_name"]),
-                str(record.get("file") or ""),
-                source,
-                sink,
-                include_may_alias=bool(arguments.get("include_may_alias", True)),
-                max_call_depth=int(arguments.get("max_call_depth", 3)),
-                max_paths=query_limit,
+        try:
+            if backend_name == "joern" or "joern" in backend_type:
+                result = self.service.trace_joern(
+                    str(record.get("qualified_name") or record["name"]),
+                    source,
+                    sink,
+                    max_paths=query_limit,
+                )
+            elif str(getattr(self.code_index, "language", "c_cpp")) == "java":
+                result = {
+                    "status": "unsupported",
+                    "reason": "unsupported_selector",
+                    "paths": [],
+                    "providers": [backend_name] if backend_name else [],
+                    "missing": ["java_def_use_backend"],
+                    "details": {},
+                }
+            else:
+                result = self.service.trace_clang(
+                    str(record.get("index_name") or record["qualified_name"]),
+                    str(record.get("file") or ""),
+                    source,
+                    sink,
+                    include_may_alias=bool(arguments.get("include_may_alias", True)),
+                    max_call_depth=int(arguments.get("max_call_depth", 3)),
+                    max_paths=query_limit,
+                )
+        except FlowQueryTimeout:
+            return invalid_request(
+                code="regex_query_timeout",
+                path="sink.query",
+                message="Sink regex exceeded the shared flow-query time budget.",
             )
         all_paths = result["paths"]
         selected = all_paths[offset : offset + limit]

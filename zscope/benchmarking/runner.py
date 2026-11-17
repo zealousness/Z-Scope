@@ -358,26 +358,19 @@ def _write_execution_config(
     scan = raw.setdefault("scan", {})
     if not isinstance(scan, dict):
         raise BenchmarkError("benchmark config scan must be an object")
-    config_version = raw.get("config_version")
-    if config_version == 3:
-        scan.pop("depth", None)
-        scan["preset"] = scan_depth
-        if spec.language == "java":
-            raise BenchmarkError("Java benchmark execution has not migrated to public config v3")
+    if raw.get("config_version") != 3:
+        raise BenchmarkError("benchmark config must use public config v3; run zscope-config migrate")
+    if "depth" in scan:
+        raise BenchmarkError("scan.depth was removed; use scan.preset")
+    scan["preset"] = scan_depth
+    targets = project.get("targets")
+    if not isinstance(targets, list) or len(targets) != 1 or not isinstance(targets[0], dict):
+        raise BenchmarkError("benchmark config requires exactly one target")
+    if spec.language == "c_cpp":
         if not project.get("semantics_file"):
             raise BenchmarkError("C/C++ v3 benchmark config requires project.semantics_file")
-        targets = project.get("targets")
-        if not isinstance(targets, list) or len(targets) != 1 or not isinstance(targets[0], dict):
-            raise BenchmarkError("C/C++ v3 benchmark config requires exactly one target")
         targets[0]["compile_commands"] = "build/compile_commands.json"
     else:
-        if spec.language != "java":
-            raise BenchmarkError(
-                "C/C++ benchmark config must use public config v3 and project.semantics_file"
-            )
-        project.pop("root", None)
-        project.pop("source_root", None)
-        scan["depth"] = scan_depth
         project["entry_functions_list"] = "entries.json"
     # Each run owns a fresh name; never replace an existing user/config file.
     with path.open("x", encoding="utf-8") as handle:
@@ -1364,8 +1357,9 @@ def _read_usage_events_jsonl(path: Path) -> List[Dict[str, Any]]:
         if not isinstance(raw, dict):
             raise BenchmarkError(f"LLM usage event line {line_number} is not an object")
         # Compatibility shim: archives written before escalation-rung
-        # observability (balanced_confirmed_tp_plan.md Phase 5) lack the
-        # field.  Backfill it from call_kind so historical artifacts stay
+        # observability lack the field (historical plan Phase 5:
+        # docs/archive/design-plans/balanced_confirmed_tp_plan.md).
+        # Backfill it from call_kind so historical artifacts stay
         # readable for replay and marginal attribution; fresh producers must
         # still emit the field explicitly.
         if "escalation_rung" not in raw:

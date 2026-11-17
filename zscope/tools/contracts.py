@@ -34,7 +34,7 @@ class ToolContract:
         function: Dict[str, Any] = {
             "name": self.name,
             "description": self.description,
-            "parameters": self.input_schema,
+            "parameters": deepcopy(self.input_schema),
         }
         if strict:
             function["strict"] = True
@@ -44,11 +44,11 @@ class ToolContract:
         result: Dict[str, Any] = {
             "name": name,
             "description": self.description,
-            "inputSchema": self.input_schema,
+            "inputSchema": deepcopy(self.input_schema),
             "annotations": dict(self.annotations),
         }
         if include_output:
-            result["outputSchema"] = self.output_schema
+            result["outputSchema"] = deepcopy(self.output_schema)
         return result
 
 
@@ -219,13 +219,15 @@ class ContractTool(BaseTool):
         return self.contract.openai_schema()
 
     def get_output_schema(self) -> Dict[str, Any]:
-        return self.contract.output_schema
+        return deepcopy(self.contract.output_schema)
 
     def get_annotations(self) -> Dict[str, bool]:
         return dict(self.contract.annotations)
 
     def validate_arguments(self, arguments: Any) -> Optional[Dict[str, Any]]:
-        error = validate_function_arguments(self.get_schema(), arguments, reject_unknown=True)
+        error = validate_function_arguments(
+            self.contract.input_schema, arguments, reject_unknown=True
+        )
         if not error:
             return self.validate_cross_fields(arguments)
         path, _, message = error.partition(": ")

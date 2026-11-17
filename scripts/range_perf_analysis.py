@@ -440,20 +440,20 @@ def _preflight_config() -> Dict[str, Any]:
     discovery = project.get("entry_discovery") or {}
     checks = {
         "config_version": cfg.get("config_version"),
-        "backend": indexing.get("backend"),
-        "entry_discovery_enabled": bool(discovery.get("enabled")),
+        "backend": indexing.get("backend", "unified"),
+        "entry_discovery_enabled": bool(discovery.get("enabled", True)),
         "interface_files": discovery.get("interface_files") or [],
     }
     failures = []
-    if checks["config_version"] != 2:
-        failures.append(f"expected config_version=2, got {checks['config_version']!r}")
+    if checks["config_version"] != 3:
+        failures.append(f"expected config_version=3, got {checks['config_version']!r}")
     if checks["backend"] != "unified":
         failures.append(f"expected indexing.backend=unified, got {checks['backend']!r}")
     if checks["entry_discovery_enabled"] is not True:
         failures.append("expected project.entry_discovery.enabled=true")
-    if checks["interface_files"] != ["**/*.h"]:
+    if checks["interface_files"] not in ([], ["**/*.h"]):
         failures.append(
-            "expected interface_files=['**/*.h'], " f"got {checks['interface_files']!r}"
+            "expected default header discovery or interface_files=['**/*.h'], " f"got {checks['interface_files']!r}"
         )
     if failures:
         raise SystemExit("; ".join(failures))

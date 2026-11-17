@@ -348,6 +348,8 @@ class ReportGenerator:
 
     def save_markdown_report(self, report: FinalReport) -> Path:
         """保存中文分析结论报告。"""
+        from .artifact_reuse import artifact_reuse_markdown
+
         review_issues = self._needs_review_issues(report)
         md_content = f"""# Z-SCOPE 分析报告
 
@@ -363,6 +365,7 @@ class ReportGenerator:
             f"**Completeness**: `{report.completeness}`"
             f"{' (incomplete)' if report.completeness != 'complete' else ''}\n\n"
         )
+        md_content += artifact_reuse_markdown(report.metadata)
         if not report.issues:
             if review_issues:
                 md_content += "未发现已确认缺陷；存在待复核项。\n"

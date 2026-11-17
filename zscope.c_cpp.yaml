@@ -24,7 +24,7 @@ project:
       compile_commands: build/compile_commands.json # 相对本 YAML 所在目录；C/C++ 必填
 
 scan:
-  preset: deep # fast=快速；balanced=均衡；deep=深度，不启用实验。
+  preset: fast # 默认 fast； fast=快速；balanced=均衡；deep=深度，不启用实验。
   # focus: [memory, resources, async_lifecycle] # 已校验保留；尚未驱动 Skill 领域选择
   # reproduction: auto # 声明复现意图；不启用内部动态复现实验
 

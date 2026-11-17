@@ -280,8 +280,10 @@ class Analyzer:
         instance_semantics_snapshot: Optional["InstanceSemanticsSnapshot"] = None,
         instance_semantics_current: Optional[Callable[["InstanceSemanticsSnapshot"], bool]] = None,
         skip_candidate_discovery: bool = False,
+        artifact_reuse_enabled: bool = True,
     ):
         self.config = config
+        self._artifact_reuse_enabled = artifact_reuse_enabled
         self.semantic_result = semantic_result
         self._instance_semantics_snapshot = instance_semantics_snapshot
         self._instance_semantics_current = instance_semantics_current
@@ -3675,6 +3677,12 @@ class Analyzer:
         scope_reachable_funcs = reachable_funcs
         if db is not None:
             try:
+                backend = getattr(self.code_index, "backend", None)
+                current_signals = getattr(backend, "svf_signals_current", None)
+                if callable(current_signals) and not current_signals():
+                    raise RuntimeError(
+                        "SVF signals are unavailable or their materialization is stale"
+                    )
                 bugs, legacy_query = self._collect_enriched_taint_bugs(
                     db,
                     reachable_funcs=reachable_funcs,
@@ -5583,6 +5591,7 @@ class Analyzer:
             reproduction_service=getattr(self, "reproduction_service", None),
             instance_scope=getattr(self, "instance_scope", None),
             input_current_guard=self._require_instance_semantics_current,
+            initial_reuse_enabled=getattr(self, "_artifact_reuse_enabled", True),
             instance_semantics_digest=str(
                 getattr(getattr(self, "_instance_semantics_snapshot", None), "digest", "")
             ),
@@ -6156,6 +6165,7 @@ class Analyzer:
 
     def _build_workflow_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
         from ...retrieval.build_context import scan_build_coverage
+        from ...reporting.artifact_reuse import artifact_reuse_summary
 
         if getattr(self, "semantic_result", None) is not None:
             state["semantic_contract_version"] = self.semantic_result.contract_version
@@ -6299,6 +6309,13 @@ class Analyzer:
             "candidate_ledger_summary": dict(ledger_summary),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
             "active_discovery": dict(state.get("active_discovery", {}) or {}),
+            "validator_initial_reuse": deepcopy(state.get("validator_initial_reuse", {})),
+            "validator_query_reuse": deepcopy(state.get("validator_query_reuse", {})),
+            "artifact_reuse": artifact_reuse_summary(
+                state.get("active_discovery", {}) or {},
+                state.get("validator_initial_reuse", {}) or {},
+                state.get("validator_query_reuse", {}) or {},
+            ),
             "deferred_deterministic_work_count": len(state.get("deferred_deterministic_work", [])),
             "deferred_deterministic_work": list(state.get("deferred_deterministic_work", [])),
             "va_candidate_coverage_summary": dict(state.get("va_candidate_coverage_summary", {})),

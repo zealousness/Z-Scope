@@ -20,7 +20,7 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 import yaml
 
-from .v2 import load_yaml_unique
+from .support import load_yaml_unique
 from ..semantics.contract_conditions import predicate_errors
 from ..semantics.contracts import CONTRACT_COMPILER_VERSION
 

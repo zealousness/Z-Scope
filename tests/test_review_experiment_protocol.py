@@ -152,9 +152,11 @@ def test_agent_terminal_wrapper_is_enforced_and_raw_results_are_preserved():
         captured.update(kwargs)
         schemas = kwargs["additional_tools_schema"]
         final = next(s for s in schemas if s["function"]["name"] == "emit_validator_result_v3")
-        assert final["function"]["parameters"]["properties"]["schema_version"]["enum"] == [
-            REVIEW_VERSION
-        ]
+        assert "schema_version" not in final["function"]["parameters"]["properties"]
+        assert (
+            "candidate_uid"
+            not in final["function"]["parameters"]["properties"]["decision"]["properties"]
+        )
         result = kwargs["tool_executor"]("read", {"func_name": "f"})
         ref = result["evidence_ref"]
         accepted = kwargs["terminal_tool_handler"](envelope(refs=[ref]))

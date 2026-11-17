@@ -26,3 +26,7 @@ scan:
 
 execution:
   max_workers: 8
+
+# Each parallel baseline trial owns one SVF worker.
+concurrency:
+  svf_workers: 1

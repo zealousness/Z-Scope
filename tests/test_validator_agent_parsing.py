@@ -1,6 +1,12 @@
 import json
+import logging
 
-from zscope.agents.validator_agent.agent import ValidatorAgent, _tool_result_evidence_atoms
+import pytest
+
+from zscope.agents.validator_agent.agent import ValidatorAgent
+from zscope.agents.validator_agent.legacy import LegacyResult
+from zscope.agents.validator_agent.investigation import _tool_result_evidence_atoms
+from zscope.common.validator_protocol import parse_validator_result_v3
 
 
 def _agent() -> ValidatorAgent:
@@ -83,6 +89,32 @@ def test_validator_agent_normalizes_legacy_boolean_result() -> None:
     assert parsed["is_valid"] is False
 
 
+@pytest.mark.parametrize(
+    "canonical,spellings",
+    [
+        ("verified", ("verified", "valid", "true", "confirmed", "true_positive", "tp")),
+        ("rejected", ("rejected", "invalid", "false", "reject", "false_positive", "fp")),
+        ("uncertain", ("uncertain", "needs_review", "need_review", "unknown", "inconclusive")),
+    ],
+)
+def test_legacy_spellings_preserve_verdict_precedence_and_input(canonical, spellings):
+    for spelling in spellings:
+        original = {
+            "verdict": f" {spelling.upper()} ",
+            "is_valid": canonical != "verified",
+            "reasoning": "historical evidence",
+        }
+        parsed = LegacyResult.parse({"result": original})
+        assert parsed == {
+            **original,
+            "type": "validation_result",
+            "verdict": canonical,
+            "is_valid": canonical == "verified",
+        }
+        assert original["verdict"] == f" {spelling.upper()} "
+        assert original["is_valid"] is (canonical != "verified")
+
+
 def test_validator_agent_does_not_accept_embedded_finding_verdict() -> None:
     content = (
         '{"finding": {"id": "ISSUE_3", "verdict": "verified"}, "notes": "not a validator result"}'
@@ -100,6 +132,120 @@ def test_validator_agent_accepts_validation_result_list_wrapper() -> None:
     assert parsed["issue_id"] == "ISSUE_4"
     assert parsed["verdict"] == "verified"
     assert parsed["is_valid"] is True
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "answer",
+        "data",
+        "decision",
+        "decisions",
+        "output",
+        "outputs",
+        "payload",
+        "response",
+        "responses",
+        "result",
+        "results",
+        "validation",
+        "validation_result",
+        "validation_results",
+        "Validation-Result",
+    ],
+)
+def test_legacy_wrapper_allowlist_preserves_replay_without_weakening_v3(wrapper):
+    result = {"issue_id": "OLD_1", "verdict": "needs_review"}
+    wrapped = {wrapper: [result]}
+    parsed = LegacyResult.parse(wrapped)
+    assert parsed["issue_id"] == "OLD_1"
+    assert parsed["verdict"] == "uncertain"
+    from test_validator_v3_protocol import _result
+
+    assert parse_validator_result_v3({wrapper: _result()}) is None
+
+
+@pytest.mark.parametrize("wrapper", ["finding", "context", "notes", "arbitrary"])
+def test_legacy_parser_does_not_search_arbitrary_nested_objects(wrapper):
+    assert (
+        LegacyResult.parse(
+            {
+                wrapper: {"issue_id": "UNRELATED", "verdict": "verified"},
+            }
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "confidence_score",
+        "blocking_negative_evidence",
+        "control_of_source",
+        "exploit_scenario",
+        "finding_kind",
+        "guard_analysis",
+        "issue_id",
+        "missing_context",
+        "negative_evidence",
+        "positive_evidence",
+        "reasoning",
+        "sink",
+        "source",
+    ],
+)
+def test_legacy_result_details_keep_their_existing_shape_recognition(detail):
+    assert LegacyResult.recognizes({"verdict": "verified", detail: "legacy value"})
+    assert not LegacyResult.recognizes({"verdict": "verified", "unrelated": "value"})
+
+
+@pytest.mark.parametrize("route", ["legacy", "fast_path", "v2"])
+def test_legacy_exceptions_do_not_escape_into_logs_prompts_or_results(caplog, route):
+    marker = "SYNTHETIC_PRIVATE_ERROR_BODY"
+    calls = []
+
+    class FailingLLM:
+        def run_conversation_with_tools(self, **kwargs):
+            calls.append(kwargs["messages"])
+            raise RuntimeError(marker)
+
+    request = {"finding": "demo", "context_code": ""}
+    if route == "fast_path":
+        request["evidence_pack"] = {"source": "demo.c"}
+    elif route == "v2":
+        request["evidence_slice"] = {"schema_version": "zscope.validator-evidence-slice.v2"}
+    with caplog.at_level(logging.DEBUG):
+        response = ValidatorAgent(FailingLLM(), []).run(request)
+    assert not response.success
+    assert "RuntimeError" in response.error
+    assert marker not in caplog.text + response.error + json.dumps(response.metadata)
+    assert marker not in json.dumps(calls)
+    assert len(calls) == {"legacy": 2, "fast_path": 3, "v2": 1}[route]
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_failed_legacy_format_repair_logs_only_error_categories(caplog, structured):
+    marker = "SYNTHETIC_REPAIR_ERROR_BODY"
+    calls = []
+
+    class RepairFailure:
+        supports_structured_output = structured
+
+        def run_conversation_with_tools(self, **kwargs):
+            calls.append(kwargs["messages"])
+            return {"content": "not-json", "iterations": 1}
+
+        def chat_completion(self, messages, **kwargs):
+            calls.append(messages)
+            raise RuntimeError(marker)
+
+    with caplog.at_level(logging.DEBUG):
+        response = ValidatorAgent(RepairFailure(), []).run({"finding": "demo"})
+    assert not response.success
+    assert "RuntimeError" in caplog.text
+    assert marker not in caplog.text + response.error + json.dumps(response.metadata)
+    assert marker not in json.dumps(calls)
 
 
 def test_validator_agent_run_does_not_retry_for_recoverable_wrapper() -> None:
@@ -243,7 +389,7 @@ def test_validator_agent_run_accepts_uncertain_fast_path_as_terminal_review() ->
 
 def test_validator_agent_uncertain_fast_path_requires_reasoning() -> None:
     assert (
-        ValidatorAgent._accept_fast_path_result(
+        LegacyResult.accept_fast_path(
             {
                 "type": "validation_result",
                 "verdict": "uncertain",
@@ -258,7 +404,7 @@ def test_validator_agent_uncertain_fast_path_requires_reasoning() -> None:
 def test_validator_agent_fast_path_defers_confidence_policy_to_pipeline() -> None:
     for verdict in ("verified", "rejected"):
         assert (
-            ValidatorAgent._accept_fast_path_result(
+            LegacyResult.accept_fast_path(
                 {
                     "type": "validation_result",
                     "verdict": verdict,
@@ -312,7 +458,7 @@ def test_validator_agent_repairs_prose_without_json() -> None:
                                     "issue_id": "ISSUE_7",
                                     "verdict": "uncertain",
                                     "reasoning": "Evidence is incomplete.",
-                                        "blocking_negative_evidence": False,
+                                    "blocking_negative_evidence": False,
                                     "missing_context": ["callee lifetime contract"],
                                 }
                             ),

@@ -43,8 +43,9 @@ def build_tool_registry(
         raise ValueError("Unknown tool access profile")
     catalog = SymbolCatalog(code_index, user_config)
     source_access = ProjectSourceAccess.for_index(code_index)
-    if access_profile != "default" and source_access is not None:
+    if source_access is not None:
         catalog.permitted_source = source_access.allowed
+        catalog.allow_external = access_profile == "default"
     tools = [
         SearchCodeTool(catalog, source_access),
         ReadCodeTool(code_index, catalog, source_access),

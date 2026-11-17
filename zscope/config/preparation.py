@@ -94,7 +94,7 @@ def prepare_project(config: Any, config_path: Path) -> dict[str, Any]:
             messages.append(
                 {
                     "code": "compile_commands_missing",
-                    "message": "尚无编译数据库；CMake 工程可配置 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON，并核对 compile_commands_path。",
+                    "message": "尚无编译数据库；CMake 工程可配置 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON，并核对 project.targets[].compile_commands。",
                 }
             )
     backend = str(config.indexing.backend)

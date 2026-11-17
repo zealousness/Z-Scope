@@ -6,17 +6,17 @@ from pathlib import Path
 import pytest
 
 from zscope.config.config import AnalysisConfig, ConfigLoader
-from zscope.config.v2 import load_runtime_spec
+from zscope.config.support import load_runtime_spec
 from zscope.core.validation.dynamic_reproduction import make_dynamic_reproduction_policy
 
 
 def _public_config(tmp_path: Path) -> dict:
     return {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {"base_urls": ["http://localhost/v1"], "models": ["fake"], "api_key": "fake"}
         },
-        "project": {"language": "c_cpp"},
+        "project": {"targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}], "language": "c_cpp"},
         "scan": {},
         "indexing": {"backend": "regex"},
         "concurrency": {

@@ -1,24 +1,7 @@
-"""Read-only preparation projection for saved v2/v3 configurations.
+"""Read-only preparation of the single public configuration model.
 
-This module is an internal, machine-readable backend data contract only.
-It implements no user-facing presentation: every experience surface belongs
-to Astra, and the shared Web/CLI service wiring belongs to the coordinator.
-
-``prepare_saved_config`` reuses the accepted core without building a second
-parser or schema: the version gate mirrors ``v2.load_user_config_v2``, v3
-parsing goes through ``v3.parse_user_config_v3``, composition through
-``v3.compose_effective_config``, and every diagnostic section comes from the
-shared ``preparation.prepare_project``.  v2 documents keep the existing
-preparation envelope unchanged; v3 documents return that same base envelope
-plus a ``version3`` block with resolved paths, per-target read-only
-diagnostics, the explicit preset mapping, declared-field wiring, one
-resolved stop boundary, and machine-readable start capability.
-
-The projection is strictly read-only: no directory or database creation, no
-rollout/provider/usage state, no model, indexer, native tool, or compile
-database command execution.  Tool presence is presence-only.  It never
-returns credentials, LLM profile details, raw YAML, environment values, or
-compile command contents.
+No model, indexer, native tool, provider or usage state is started here.
+Every target is checked and the projection contains no credentials.
 """
 
 from __future__ import annotations
@@ -28,9 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from .config import ConfigLoader
 from .preparation import prepare_project
-from .v2 import PUBLIC_CONFIG_VERSION_V3, _expand_env, _resolve_config_path, load_yaml_unique
+from .support import _resolve_config_path
 from .v3 import DECLARED_ONLY, WIRED, compose_effective_config, parse_user_config_v3
 from .project_semantics import load_project_semantics, semantics_readiness
 
@@ -70,13 +52,7 @@ def prepare_saved_config(
     """
 
     path = _resolve_config_path(config_path)
-    raw = _expand_env(load_yaml_unique(path))
-    if raw.get("config_version") == PUBLIC_CONFIG_VERSION_V3:
-        return _prepare_v3(path, now=now)
-    # v2 documents (and any invalid version) flow through the existing
-    # loader gate unchanged and keep the existing preparation envelope.
-    config = ConfigLoader.load(str(path), read_only=True)
-    return prepare_project(config, path)
+    return _prepare_v3(path, now=now)
 
 
 def _prepare_v3(path: Path, *, now: Optional[datetime]) -> Dict[str, Any]:

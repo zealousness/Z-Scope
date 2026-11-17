@@ -8,9 +8,10 @@ from ..snapshots.modeling_input import (
 from ..snapshots.store import SnapshotStore
 from .function_info import GetFunctionInfoTool
 
+
 class GetFunctionSnapshotTool(BaseTool):
     """Tool to retrieve function semantic snapshot."""
-    
+
     def __init__(
         self,
         snapshot_store: SnapshotStore,
@@ -25,21 +26,18 @@ class GetFunctionSnapshotTool(BaseTool):
                 "Retrieve a current semantic snapshot of a function. When on-demand building "
                 "is disabled and the snapshot is missing or stale, data is null and the result "
                 "includes current function_info. "
-            )
+            ),
         )
         self.snapshot_store = snapshot_store
         self.code_index = code_index
         self.resolver = resolver or on_missing
         self.function_info_tool = (
-            GetFunctionInfoTool(code_index, user_config)
-            if code_index is not None
-            else None
+            GetFunctionInfoTool(code_index, user_config) if code_index is not None else None
         )
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        from ..common.utils import sanitize_func_name
-        raw_func_name = arguments.get("func_name", "")
-        func_name = sanitize_func_name(raw_func_name)
+        # Exact signatures and index names disambiguate overloads before lookup.
+        func_name = str(arguments.get("func_name") or "").strip()
         if not func_name:
             return {"success": False, "error": "Function name is empty"}
 
@@ -77,9 +75,7 @@ class GetFunctionSnapshotTool(BaseTool):
                 "success": True,
                 "data": None,
                 "snapshot_status": "missing",
-                "message": (
-                    "No snapshot exists; canonical function info is provided as fallback."
-                ),
+                "message": ("No snapshot exists; canonical function info is provided as fallback."),
                 "function_info": function_info,
             }
         needs_refresh, reason = self.snapshot_store.needs_refresh(
@@ -124,7 +120,7 @@ class GetFunctionSnapshotTool(BaseTool):
                     "type": "object",
                     "properties": {
                         "func_name": {"type": "string"},
-                        "file_path": {"type": "string"}
+                        "file_path": {"type": "string"},
                     },
                     "required": ["func_name"],
                 },

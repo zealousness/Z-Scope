@@ -22,7 +22,7 @@ def project(root, *, indexed=False, language="c_cpp"):
     root.mkdir(parents=True, exist_ok=True)
     (root / "demo.c").write_text("int run(void) { return 1; } // needle\n", encoding="utf-8")
     config = {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://localhost/v1"],
@@ -30,7 +30,7 @@ def project(root, *, indexed=False, language="c_cpp"):
                 "api_key": "unused",
             }
         },
-        "project": {"language": language},
+        "project": {"targets": [{"id": "main", **({"compile_commands": "build/compile_commands.json"} if language == "c_cpp" else {})}], "language": language},
         "scan": {"task": ""},
         "indexing": {"backend": "unified" if language == "c_cpp" else "java_unified"},
         "concurrency": {

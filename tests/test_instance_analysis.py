@@ -627,6 +627,25 @@ def test_real_symbol_catalog_cannot_read_unscoped_function_index() -> None:
     assert "_function_index" in scoped.scope_report()["blocked_consumers"]
 
 
+def test_scoped_symbol_search_reports_unavailable_without_reading_foreign_stores() -> None:
+    from types import SimpleNamespace
+
+    from zscope.tools.search_code import SearchCodeTool
+    from zscope.tools.symbols import SymbolCatalog
+
+    def foreign_macros():
+        pytest.fail("Scoped search must not read the unscoped catalog")
+
+    base = SimpleNamespace(_get_macro_definition_index=foreign_macros)
+    scoped = ScopedCodeIndex(base, _scope("current", "usr-current", "unit.c"))
+    tool = SearchCodeTool(SymbolCatalog(scoped))
+    result = tool.execute({"scope": "symbols", "query": "f"})
+    assert result["status"] == "unavailable"
+    assert result["data"] is None
+    assert result["coverage"]["missing"] == ["build_scoped_symbol_catalog"]
+    assert "scope=text" in result["next_actions"][0]
+
+
 def test_explicit_foreign_file_metadata_is_refused(tmp_path: Path) -> None:
     source = _write(tmp_path, "unit.c", "int f(void){return 0;}\n")
     context = _context("ctx-a", str(source), dependencies={str(source): file_digest(source)})
@@ -1701,3 +1720,217 @@ def test_scoped_context_enumeration_stays_single_instance(tmp_path: Path) -> Non
     # The scan-level view of the same index still sees the same two instances.
     assert scan_build_coverage(index)["instances"] == 2
     assert scan_build_coverage(index)["view"] == "scan"
+
+
+class _ArtifactReuseTransport:
+    """Fixed model responses; the real client still records each physical attempt."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, _url, payload):
+        prompt = payload["messages"][-1]["content"]
+        tools = {tool["function"]["name"] for tool in payload.get("tools", [])}
+        if "emit_contract_summary" in tools:
+            request = json.loads(prompt)
+            unit = request["unit"]
+            value = {
+                key: []
+                for key in (
+                    "preconditions", "postconditions", "actual_effects",
+                    "state_transitions", "obligations", "hypotheses", "unknowns",
+                )
+            }
+            if unit["level"] == "function":
+                ref = f"{unit['id']}:{unit['start_line']}"
+                value["actual_effects"] = [{
+                    "text": f"已读取当前函数 {unit['function']}",
+                    "basis": "observed", "refs": [ref], "assumptions": [],
+                }]
+                if unit["function"] == "model_gap" and "free(p);" not in unit["source"]:
+                    value["hypotheses"] = [{
+                        "defect_class": "resource_leak",
+                        "description": "当前函数分配后退出但未释放资源",
+                        "violated_condition": "本次分配在退出前需要释放或转移",
+                        "source_ref": f"{unit['id']}:{unit['start_line'] + 1}",
+                        "sink_ref": f"{unit['id']}:{unit['end_line'] - 1}",
+                        "counter_explanation": "调用方可能承接资源所有权",
+                        "assumptions": [], "required_facts": [],
+                        "positive_example": "allocate; return",
+                        "negative_example": "allocate; release; return",
+                        "object": "p", "generation": "allocation",
+                        "applicability": "分配成功路径", "exclusions": "所有权已转移",
+                        "proposal_kind": "fact_gap",
+                    }]
+            self.calls.append({"kind": "summary", "unit": unit})
+            message = {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "emit_summary", "type": "function", "function": {
+                    "name": "emit_contract_summary", "arguments": json.dumps(value),
+                },
+            }]}
+            finish = "tool_calls"
+        else:
+            from zscope.core.validation.evidence import VALIDATOR_EVIDENCE_SLICE_V3
+
+            evidence = json.loads(prompt.split("\n\nEvidence:\n", 1)[1])
+            assert evidence["schema_version"] == VALIDATOR_EVIDENCE_SLICE_V3
+            obligation = evidence["obligation"]
+            refs = list(evidence["evidence_ref_catalog"])[:32]
+            assert refs, evidence
+            value = {
+                "schema_version": "zscope.validator-result.v3",
+                "candidate_uid": obligation["candidate_uid"],
+                "validation_cluster_uid": obligation["validation_cluster_uid"],
+                "pass": evidence["validation_pass"], "verdict": "verified",
+                "reasoning": "当前证据支持该资源触发路径",
+                "positive_evidence": ["当前函数存在资源获取及未释放退出路径"],
+                "negative_evidence": [], "evidence_refs": refs,
+                "blocking_negative_evidence": False,
+                "missing_fact_request": None, "stop_reason": "decision_complete",
+            }
+            self.calls.append({"kind": evidence["validation_pass"], "evidence": evidence})
+            message = {"role": "assistant", "content": json.dumps(value)}
+            finish = "stop"
+        # These are fixture units for verifying accounting, not measured API costs.
+        return message, finish, {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+
+
+def _native_artifact_config(root, cdb, snapshot_dir, user_config_db):
+    from zscope.config.config import AgentConfig
+
+    config = _native_config(root, cdb)
+    config.scan.depth = "deep"
+    config.project.agents.append(AgentConfig(name="validator_agent", task="validate"))
+    config.analysis.validation_v3_reattempt = False
+    config.analysis.snapshot_dir = str(snapshot_dir)
+    config.analysis.user_config_db = str(user_config_db)
+    return config
+
+
+def _run_native_artifact_scan(backend, root, cdb, config, client, *, reuse, require_candidates=True):
+    """Real instance pipeline shared by the fixed-response and small provider controls."""
+    from copy import deepcopy
+
+    from zscope.framework.llm_usage import ensure_scan_token_usage_ledger
+    from zscope.orchestration.entry_instances import plan_entry_instances
+    from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
+
+    index = _native_index(backend, root, cdb)
+    plan = plan_entry_instances(index, [FunctionEntry("f", file_path="unit.c")])
+    assert plan.status == "planned" and len(plan.instances) == 2
+    parallel = ParallelAnalyzer(
+        config, code_index=index, semantic_result=_semantic_stub(),
+        llm_clients={"default": client}, artifact_reuse_enabled=reuse,
+    )
+    try:
+        report = parallel.analyze_entry_instances(plan)
+        assert report.status == "analyzed" and report.instance_scope_complete
+        combined = parallel.generate_combined_report(parallel.last_instance_results())
+        ledger = parallel._candidate_ledger.freeze()
+        discovery = deepcopy(parallel._hierarchical_discovery_result)
+        rows = [row["issue"] for row in ledger["outcomes"]]
+        if require_candidates:
+            assert rows
+        keys = (
+            "candidate_uid", "validation_cluster_uid", "build_context_id", "function",
+            "defect_class", "candidate_disposition", "validation_status", "validator_verdict",
+            "missing_fact_kinds", "evidence_gate",
+        )
+
+        def project(row):
+            facts = row.get("decision_fact_slice") or {}
+            refs = {
+                ref
+                for event in row.get("validator_audit_trail") or []
+                for ref in (event.get("raw_response") or {}).get("evidence_refs") or []
+            }
+            return json.dumps({
+                **{key: row.get(key) for key in keys},
+                "evidence_refs": sorted(refs),
+                "fact_uids": sorted(facts.get("fact_uids") or []),
+                "edge_uids": sorted(facts.get("edge_uids") or []),
+            }, sort_keys=True)
+        usage = ensure_scan_token_usage_ledger(config).snapshot(include_events=True)
+        return {
+            "candidates": sorted(project(row) for row in rows),
+            "findings": sorted(project(row) for row in combined.get("issues", [])),
+            "summaries": discovery["summaries"], "discovery": discovery,
+            "usage": usage, "tokens": usage["consumed_tokens"],
+            "metadata": combined["metadata"], "report": combined,
+        }
+    finally:
+        parallel.close()
+
+
+def test_native_summary_and_initial_reuse_matches_fresh_after_edit_and_repair(
+    native_variants, tmp_path_factory, monkeypatch,
+) -> None:
+    from zscope.framework.llm_client import LLMClient
+    from zscope.framework.llm_usage import ensure_scan_token_usage_ledger
+
+    backend, root, cdb = native_variants
+    cache_home = tmp_path_factory.mktemp("artifact-reuse")
+    source = root / "unit.c"
+    original = source.read_text(encoding="utf-8")
+    gap = (
+        "void model_gap(size_t n) {\n"
+        "  char *p = malloc(n);\n"
+        "  if (!p) return;\n"
+        "  p[0] = VALUE;\n"
+        "  CLEANUP\n"
+        "}\n"
+    )
+
+    def run(label, *, reuse):
+        config = _native_artifact_config(
+            root, cdb, cache_home / ("incremental" if reuse else label), cache_home / "user-config",
+        )
+        usage = ensure_scan_token_usage_ledger(config)
+        client = LLMClient(
+            api_key="fixture", base_url="https://fixture.invalid/v1", models=["fixture-model"],
+            max_retries=0, supports_structured_output=True, token_usage_ledger=usage,
+        )
+        client._transport = "curl"
+        transport = _ArtifactReuseTransport()
+        monkeypatch.setattr(client, "_curl_chat_completion", transport)
+        try:
+            result = _run_native_artifact_scan(backend, root, cdb, config, client, reuse=reuse)
+            snapshot = usage.snapshot(include_events=True)
+            assert snapshot["event_count"] == len(transport.calls)
+            assert snapshot["consumed_tokens"] == 18 * len(transport.calls)
+            assert sum(event["total_tokens"] for event in snapshot["events"]) == snapshot["consumed_tokens"]
+            assert result["report"]["summary"]["total_cumulative_total_tokens"] == snapshot["consumed_tokens"]
+            result["calls"] = transport.calls
+            return result
+        finally:
+            client.close()
+
+    for stage, value, cleanup in (
+        ("cold", "0", ""), ("hot", "0", ""),
+        ("changed", "1", ""), ("repaired", "1", "free(p);"),
+    ):
+        source.write_text(original + gap.replace("VALUE", value).replace("CLEANUP", cleanup), encoding="utf-8")
+        assert backend.initialize(str(root), compile_commands_path=str(cdb))
+        current = run(stage, reuse=True)
+        if stage == "cold":
+            assert any(call["kind"] == "summary" for call in current["calls"])
+            assert any(call["kind"] == "initial" for call in current["calls"])
+            baseline = current
+        elif stage == "hot":
+            assert current["calls"] == []
+            assert current["tokens"] == 0
+            for key in ("candidates", "findings", "summaries"):
+                assert current[key] == baseline[key], (stage, key)
+        else:
+            fresh = run("fresh-" + stage, reuse=False)
+            for key in ("candidates", "findings", "summaries"):
+                assert current[key] == fresh[key], (stage, key)
+            assert current["tokens"] < fresh["tokens"], stage
+            if stage == "changed":
+                assert any(call["kind"] == "initial" for call in fresh["calls"])
+                assert any(
+                    call["kind"] == "summary" and call["unit"].get("function") == "model_gap"
+                    for call in current["calls"]
+                )
+        if stage == "repaired":
+            assert not any("model_gap" in row for row in current["candidates"])

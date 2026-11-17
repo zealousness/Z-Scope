@@ -31,7 +31,7 @@ class UncertainAgent:
                 evidence_refs=(),
                 blocking_negative_evidence=False,
                 missing_fact_request=None,
-                stop_reason="decision_complete",
+                stop_reason="unsupported_fact",
             ).to_dict(),
         )
 

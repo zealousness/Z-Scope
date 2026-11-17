@@ -51,7 +51,7 @@ class _Snapshots:
         raise AssertionError("preparation must not query snapshots")
 
 
-def _document(root: Path, version: int = 3) -> dict:
+def _document(root: Path, variant: str = "minimal") -> dict:
     llms = {
         "default": {
             "base_urls": ["http://prepare-only.invalid/v1"],
@@ -59,11 +59,14 @@ def _document(root: Path, version: int = 3) -> dict:
             "api_key": "private-key-marker",
         }
     }
-    if version == 2:
+    if variant == "advanced":
         return {
-            "config_version": 2,
+            "config_version": 3,
             "llms": llms,
-            "project": {"language": "c_cpp"},
+            "project": {
+                "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
+                "language": "c_cpp",
+            },
             "scan": {"task": ""},
             "indexing": {"backend": "regex"},
             "concurrency": {
@@ -93,7 +96,7 @@ def _write(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def _project(root: Path, version: int = 3) -> Path:
+def _project(root: Path, variant: str = "minimal") -> Path:
     root.mkdir()
     (root / "unit.c").write_text("int run(void) { return 0; }\n", encoding="utf-8")
     rows = [
@@ -106,7 +109,7 @@ def _project(root: Path, version: int = 3) -> Path:
     _write(root / "first.json", rows)
     _write(root / "second.json", rows)
     path = root / "zscope.yaml"
-    _write(path, _document(root, version))
+    _write(path, _document(root, variant))
     return path
 
 
@@ -169,12 +172,12 @@ def _forbid_execution(monkeypatch):
         monkeypatch.setattr(name, forbidden)
 
 
-@pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize("variant", ["advanced", "minimal"])
 @pytest.mark.parametrize("profile", ["default", "read_only"])
 def test_prepare_matches_real_shared_CLI_Web_projection_without_execution(
-    tmp_path, monkeypatch, version, profile
+    tmp_path, monkeypatch, variant, profile
 ):
-    path = _project(tmp_path / "project", version)
+    path = _project(tmp_path / "project", variant)
     provider = _provider(path, profile)
     calls = _shared(monkeypatch)
     _forbid_execution(monkeypatch)
@@ -200,11 +203,14 @@ def test_prepare_matches_real_shared_CLI_Web_projection_without_execution(
         "private-compiler-marker",
     ):
         assert marker not in serialized
-    if version == 3:
+    if variant == "minimal":
         v3 = tool["data"]["version3"]
         assert v3["schema"] == "zscope.config-v3-preparation.v1"
         assert v3["targets"][0]["id"] == "first"
-        assert v3["start_capability"]["startable"] is True
+        assert v3["start_capability"]["startable"] is False
+        assert "project_semantics_not_configured" in {
+            reason["code"] for reason in v3["start_capability"]["reasons"]
+        }
         assert set(v3["declared_not_consumed"]) == {
             "project.platform",
             "scan.focus",
@@ -217,7 +223,7 @@ def test_prepare_matches_real_shared_CLI_Web_projection_without_execution(
         assert v3["machine_flags"]["platform_wired"] is False
         assert v3["execution"]["resolved_stop_time"] == "2026-10-14T08:00:00+00:00"
     else:
-        assert "version3" not in tool["data"]
+        assert tool["data"]["version3"]["targets"][0]["id"] == "main"
 
 
 @pytest.mark.parametrize("profile", ["default", "read_only"])
@@ -496,14 +502,14 @@ def test_exact_tools_and_resources_for_all_profiles(tmp_path, monkeypatch, profi
         )
 
 
-@pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize("variant", ["advanced", "minimal"])
 @pytest.mark.parametrize("profile", ["default", "read_only"])
 def test_literal_home_path_matches_formal_loader_from_other_CWD(
-    tmp_path, monkeypatch, version, profile
+    tmp_path, monkeypatch, variant, profile
 ):
     home = tmp_path / "home"
     home.mkdir()
-    path = _project(home / "project", version)
+    path = _project(home / "project", variant)
     other = tmp_path / "elsewhere"
     other.mkdir()
     monkeypatch.setenv("HOME", str(home))

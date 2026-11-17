@@ -17,7 +17,7 @@ window.ZScopeProjects = {
   projectFailure: '', recentProjects: [], currentProject: null,
   projectDirectory: '', projectBrowse: null, projectBusy: false,
   projectWizard: false, projectWizardStep: 1, showSetupGuide: true,
-  newProject: {filename:'zscope.yaml',language:'c_cpp',target_id:'main',compile_commands:'build/compile_commands.json',preset:'balanced',base_url:'',model:'',api_key:''},
+  newProject: {filename:'zscope.yaml',language:'c_cpp',target_id:'main',compile_commands:'build/compile_commands.json',preset:'fast',base_url:'',model:'',api_key:''},
   async projectFetch(url, options = {}) {
     const response = await fetch(url, options); let data;
     try { data = await response.json(); } catch { throw new Error('项目服务返回了无法读取的响应。'); }

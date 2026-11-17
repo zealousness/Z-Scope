@@ -23,9 +23,9 @@ from .symbols import (
     valid_symbol_id,
 )
 
-DESCRIPTION = """Query call, reference, callback, or indirect-call relationships for one
-symbol_id, with direction, depth, sites, provenance, coverage, and pagination.
-Use trace_data_flow for values; partial coverage cannot prove absence."""
+DESCRIPTION = """Query call/reference/callback/indirect-call edges by symbol_id, with sites,
+provenance, coverage and pagination. Use trace_data_flow for values;
+partial coverage cannot prove absence."""
 
 
 GRAPH_CONTRACT = ToolContract(
@@ -232,12 +232,13 @@ class QueryCodeGraphTool(ContractTool):
         providers: set[str] = set()
         edges: List[Dict[str, Any]] = []
         seen_edges: set[str] = set()
+        expanded: set[Tuple[str, str]] = set()
+        truncated = False
         frontier = [root]
         distance = 0
         while frontier and distance < max_depth and len(edges) < edge_budget:
             level_edges: List[Dict[str, Any]] = []
             next_frontier: Dict[str, Dict[str, Any]] = {}
-            expanded: set[Tuple[str, str]] = set()
             for current in sorted(
                 frontier,
                 key=lambda item: str(item.get("symbol_id") or item.get("qualified_name") or ""),
@@ -253,6 +254,7 @@ class QueryCodeGraphTool(ContractTool):
                         current_direction,
                         limit=edge_budget,
                     )
+                    truncated |= len(rows) >= edge_budget
                     rows.sort(
                         key=lambda row: (
                             normalize_project_path(
@@ -276,6 +278,11 @@ class QueryCodeGraphTool(ContractTool):
                         )
                     )
                     for row in rows:
+                        if relation == "call" and (
+                            "callback" in str(row.get("source") or "").lower()
+                            or row.get("registration_kind")
+                        ):
+                            continue
                         provider = str(
                             row.get("source")
                             or row.get("provider")
@@ -291,14 +298,21 @@ class QueryCodeGraphTool(ContractTool):
                         )
                         other_file = normalize_project_path(
                             row.get("filename")
-                            or row.get("call_file")
-                            or row.get("caller_file")
-                            or row.get("callee_file")
+                            or row.get(
+                                "callee_file" if current_direction == "outgoing" else "caller_file"
+                            )
                         )
                         other = self._resolve_name(
                             other_name,
                             other_file,
-                            signature=str(row.get("callee_signature") or ""),
+                            signature=str(
+                                row.get(
+                                    "callee_signature"
+                                    if current_direction == "outgoing"
+                                    else "caller_signature"
+                                )
+                                or ""
+                            ),
                         )
                         current_ref = self._symbol_ref(current)
                         other_ref = self._symbol_ref(other)
@@ -307,7 +321,12 @@ class QueryCodeGraphTool(ContractTool):
                         else:
                             source, target = other_ref, current_ref
                         site_file = normalize_project_path(
-                            row.get("call_file") or row.get("filename") or current.get("file")
+                            row.get("call_file")
+                            or (
+                                current.get("file")
+                                if current_direction == "outgoing"
+                                else row.get("filename") or row.get("caller_file")
+                            )
                         )
                         site_line = int(
                             row.get("call_line") or row.get("lineNumber") or row.get("line") or 0
@@ -329,7 +348,9 @@ class QueryCodeGraphTool(ContractTool):
                             guard=str(row.get("guard") or ""),
                             provider=provider,
                             confidence=float(
-                                row.get("confidence") or (1.0 if dispatch == "direct" else 0.5)
+                                row["confidence"]
+                                if row.get("confidence") is not None
+                                else (1.0 if dispatch == "direct" else 0.5)
                             ),
                             completeness="partial" if dispatch != "direct" else "complete",
                             extra={
@@ -352,6 +373,7 @@ class QueryCodeGraphTool(ContractTool):
             remaining = edge_budget - len(edges)
             edges.extend(level_edges[:remaining])
             if len(level_edges) > remaining:
+                truncated = True
                 break
             frontier = list(next_frontier.values())
             distance += 1
@@ -361,7 +383,7 @@ class QueryCodeGraphTool(ContractTool):
         complete = backend is not None and self._capability_complete("index")
         if relation == "indirect_call":
             complete = bool(self._database()) and self._capability_complete("svf")
-        return edges, providers, complete
+        return edges, providers, complete and not truncated
 
     def _call_rows(
         self,
@@ -391,15 +413,12 @@ class QueryCodeGraphTool(ContractTool):
             return (
                 list(getter(name.split("@", 1)[0], limit=limit) or []) if callable(getter) else []
             )
-        if direction == "outgoing":
-            rows = list(self.code_index.get_callees(name, limit=limit) or [])
-            return [
-                row
-                for row in rows
-                if "callback" not in str(row.get("source") or "").lower()
-                and not row.get("registration_kind")
-            ]
-        return list(self.code_index.get_callers(name, limit=limit, callee_file=file_path) or [])
+        rows = (
+            self.code_index.get_callees(name, limit=limit)
+            if direction == "outgoing"
+            else self.code_index.get_callers(name, limit=limit, callee_file=file_path)
+        )
+        return list(rows or [])
 
     def _reference_edges(
         self, root: Dict[str, Any], direction: str
@@ -494,7 +513,9 @@ class QueryCodeGraphTool(ContractTool):
                     dispatch="callback_registration",
                     guard=str(row.get("guard") or ""),
                     provider=str(row.get("source") or "callback_registry"),
-                    confidence=float(row.get("confidence") or 1.0),
+                    confidence=float(
+                        row["confidence"] if row.get("confidence") is not None else 1.0
+                    ),
                     completeness="partial",
                 )
             )
@@ -519,21 +540,17 @@ class QueryCodeGraphTool(ContractTool):
         if not kinds:
             kinds = ["function", "method", "macro", "type", "global"]
         candidates = self.catalog.search(name, kinds, "exact", None)
-        normalized_file = normalize_project_path(file_path)
+        normalized_file = self.catalog._file(file_path)
         if normalized_file:
-            matching = [
+            candidates = [
                 item
                 for item in candidates
                 if normalize_project_path(item.get("file")) == normalized_file
             ]
-            if matching:
-                candidates = matching
         if signature:
-            matching = [
+            candidates = [
                 item for item in candidates if str(item.get("signature") or "") == signature
             ]
-            if matching:
-                candidates = matching
         if len(candidates) == 1:
             # Keep the catalog record internally so deeper BFS levels retain
             # the exact index lookup name and defining file.  Edge payloads
@@ -630,6 +647,7 @@ class QueryCodeGraphTool(ContractTool):
                 str(target.get("symbol_id") or target.get("name") or ""),
                 normalize_project_path(file_path),
                 str(line),
+                str(column),
                 dispatch,
             )
         )

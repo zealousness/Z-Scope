@@ -1,0 +1,200 @@
+{
+  "fast": {
+    "candidate_rows": 458,
+    "unique_candidate_uid": 443,
+    "repeated_uid_count": 15,
+    "terminal_states": {
+      "confirmed": 101,
+      "needs_review": 354,
+      "rejected_with_proof": 3
+    },
+    "candidate_sources": {
+      "clang_ast_cfg": 164,
+      "graph_rule": 62,
+      "None": 226,
+      "clang_native_fact": 6
+    },
+    "audit_rows": 426,
+    "audit_unparsed": 2,
+    "audit_protocol_errors": {
+      "validator_result_v3_schema_or_scope_mismatch": 2
+    },
+    "v3_eligible": 0,
+    "investigation_histories": 0,
+    "investigation_stops": {},
+    "investigation_zero_iteration_exhausted": 0,
+    "investigation_max_recorded_iterations": 0,
+    "qualified_missed_groups": {
+      "needs_review": 60
+    },
+    "coverage_gaps": [
+      "RANGE-009",
+      "RANGE-016",
+      "RANGE-027",
+      "RANGE-035",
+      "RANGE-036",
+      "RANGE-038",
+      "RANGE-039",
+      "RANGE-048",
+      "RANGE-050",
+      "RANGE-052",
+      "REAL-031",
+      "ISSUE41-004",
+      "ISSUE44-003",
+      "ISSUE44-005",
+      "ISSUE44-008",
+      "ISSUE44-009"
+    ],
+    "active_discovery": {
+      "status": "skipped",
+      "model_calls": null,
+      "tokens": null,
+      "tokens_complete": null,
+      "elapsed_seconds": null,
+      "candidate_count": null,
+      "summary_count": null,
+      "cache_hits": null
+    },
+    "discovery_gap_reasons": {},
+    "discovery_incomplete_usage_units": 0
+  },
+  "balanced": {
+    "candidate_rows": 458,
+    "unique_candidate_uid": 443,
+    "repeated_uid_count": 15,
+    "terminal_states": {
+      "confirmed": 138,
+      "needs_review": 157,
+      "rejected_with_evidence": 156,
+      "rejected_with_proof": 7
+    },
+    "candidate_sources": {
+      "clang_ast_cfg": 164,
+      "graph_rule": 62,
+      "None": 226,
+      "clang_native_fact": 6
+    },
+    "audit_rows": 765,
+    "audit_unparsed": 60,
+    "audit_protocol_errors": {
+      "validator_result_v3_schema_or_scope_mismatch": 60
+    },
+    "v3_eligible": 422,
+    "investigation_histories": 343,
+    "investigation_stops": {
+      "decision_complete": 260,
+      "investigation_exhausted": 54,
+      "no_evidence_gain": 2,
+      "missing_fact": 27
+    },
+    "investigation_zero_iteration_exhausted": 0,
+    "investigation_max_recorded_iterations": 24,
+    "qualified_missed_groups": {
+      "needs_review": 35,
+      "needs_review,rejected_with_evidence": 4,
+      "rejected_with_evidence": 7
+    },
+    "coverage_gaps": [
+      "RANGE-009",
+      "RANGE-016",
+      "RANGE-027",
+      "RANGE-035",
+      "RANGE-036",
+      "RANGE-038",
+      "RANGE-039",
+      "RANGE-048",
+      "RANGE-050",
+      "RANGE-052",
+      "REAL-031",
+      "ISSUE41-004",
+      "ISSUE44-003",
+      "ISSUE44-005",
+      "ISSUE44-008",
+      "ISSUE44-009"
+    ],
+    "active_discovery": {
+      "status": "skipped",
+      "model_calls": null,
+      "tokens": null,
+      "tokens_complete": null,
+      "elapsed_seconds": null,
+      "candidate_count": null,
+      "summary_count": null,
+      "cache_hits": null
+    },
+    "discovery_gap_reasons": {},
+    "discovery_incomplete_usage_units": 0
+  },
+  "deep": {
+    "candidate_rows": 638,
+    "unique_candidate_uid": 623,
+    "repeated_uid_count": 15,
+    "terminal_states": {
+      "confirmed": 144,
+      "engine_failed": 4,
+      "needs_review": 328,
+      "rejected_with_evidence": 159,
+      "rejected_with_proof": 3
+    },
+    "candidate_sources": {
+      "clang_ast_cfg": 164,
+      "None": 226,
+      "graph_rule": 62,
+      "hierarchical_discovery": 180,
+      "clang_native_fact": 6
+    },
+    "audit_rows": 1131,
+    "audit_unparsed": 118,
+    "audit_protocol_errors": {
+      "validator_result_v3_schema_or_scope_mismatch": 118
+    },
+    "v3_eligible": 606,
+    "investigation_histories": 529,
+    "investigation_stops": {
+      "decision_complete": 379,
+      "investigation_exhausted": 112,
+      "missing_fact": 32,
+      "no_evidence_gain": 4,
+      "duplicate_fact_request": 2
+    },
+    "investigation_zero_iteration_exhausted": 18,
+    "investigation_max_recorded_iterations": 25,
+    "qualified_missed_groups": {
+      "needs_review": 35,
+      "rejected_with_evidence": 5,
+      "needs_review,rejected_with_evidence": 5,
+      "engine_failed": 1,
+      "engine_failed,needs_review": 1
+    },
+    "coverage_gaps": [
+      "RANGE-009",
+      "RANGE-027",
+      "RANGE-036",
+      "RANGE-038",
+      "RANGE-039",
+      "RANGE-050",
+      "RANGE-052",
+      "ISSUE41-004",
+      "ISSUE44-003",
+      "ISSUE44-005",
+      "ISSUE44-008",
+      "ISSUE44-009"
+    ],
+    "active_discovery": {
+      "status": "complete_with_gaps",
+      "model_calls": 383,
+      "tokens": 9091822,
+      "tokens_complete": false,
+      "elapsed_seconds": 42811.5616,
+      "candidate_count": 180,
+      "summary_count": 184,
+      "cache_hits": 0
+    },
+    "discovery_gap_reasons": {
+      "ambiguous_or_unlinked_callee": 19,
+      "model_incomplete": 35,
+      "unit_deadline_exceeded": 164
+    },
+    "discovery_incomplete_usage_units": 164
+  }
+}

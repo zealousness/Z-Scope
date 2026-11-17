@@ -619,7 +619,7 @@ git diff --check
   - 覆盖多页面中文 Markdown、互链要求、越权 wikilink 拒绝和 prompt/model provenance。
 - `tests/test_wiki_revision_store.py`、`tests/test_wiki_lint.py`
   - 覆盖两个中文页面经 Compiler 发布、index schema、event replay、log 重建和投影篡改检测。
-- `docs/modules/wiki.md`、`new_docs/llm_wiki_implementation_plan.md`
+- `docs/modules/wiki.md`、[历史 Wiki 接入计划](../../docs/archive/design-plans/llm_wiki_implementation_plan.md)
   - 登记页面/index/event 契约；将多页面 Wiki 和五模式结构 replay 标记完成，真实 A/B/benchmark 继续未完成。
 
 ### 固定行为和安全边界

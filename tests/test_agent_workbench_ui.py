@@ -125,7 +125,7 @@ def test_workbench_browser_real_http_and_contract_fixture(tmp_path, monkeypatch)
     """Real U02 backend over synthetic evidence, then labelled S08 job fixtures."""
     if not os.environ.get("ZSCOPE_UI_PLAYWRIGHT_MODULE"):
         pytest.skip("Set ZSCOPE_UI_PLAYWRIGHT_MODULE and ZSCOPE_UI_CHROMIUM for visual QA")
-    from test_config_v2 import _config, _write
+    from test_config_options import _config, _write
     from test_acceptance_projection import (
         _assessment_for,
         _base_issue,

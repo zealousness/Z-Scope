@@ -852,9 +852,29 @@ class JoernClient:
         self, source_func: str, source_param: str, sink_pattern: str
     ) -> List[Dict[str, Any]]:
         """Trace data flow from source parameter to sink calls."""
+        import regex
+
+        # Java's regex engine has no per-match deadline. Match the finite CPG
+        # name set locally, then send only literal membership tests to Joern.
+        pattern = regex.compile(sink_pattern, regex.VERSION0)
+        names = self._require_list_result(
+            self.query("cpg.call.name.distinct.l.toJson"), "get_data_flow_sink_names"
+        )
+        deadline = time.monotonic() + 1.0
+        matched = []
+        for name in names:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Sink regex exceeded the shared flow-query time budget")
+            if pattern.fullmatch(str(name), timeout=remaining):
+                matched.append(_scala_string(str(name)))
+        if not matched:
+            return []
+        sink_names = "Set(" + ", ".join(matched) + ")"
         result = self.query(
-            f'def src = cpg.method.name({_scala_string(source_func)}).parameter.name({_scala_string(source_param)})\n'
-            f'def snk = cpg.call.name({_scala_string(sink_pattern)}).argument\n'
+            f"val selectedSinkNames = {sink_names}\n"
+            f"def src = cpg.method.name({_scala_string(source_func)}).parameter.name({_scala_string(source_param)})\n"
+            f"def snk = cpg.call.filter(c => selectedSinkNames.contains(c.name)).argument\n"
             f"sink(snk).reachableByFlows(source(src))"
             f'.map(f => Map("path" -> f.elements.map(e => '
             f'Map("code" -> e.code, "lineNumber" -> e.lineNumber.getOrElse(-1), '

@@ -1,5 +1,5 @@
 # Source-document fallback run for the llm_wiki_demo trial.
-config_version: 2
+config_version: 3
 
 llms:
   default:
@@ -11,10 +11,12 @@ llms:
     timeout: 180
 
 project:
-  root: test/llm_wiki_demo
-  source_root: .
   language: c_cpp
-  compile_commands_path: build/compile_commands.json
+  # Complete primitive discovery and review before scanning (see README).
+  semantics_file: zscope.semantics.yaml
+  targets:
+    - id: main
+      compile_commands: build/compile_commands.json
   include_paths: [include, src]
   exclude_paths: [build]
   wiki:
@@ -37,11 +39,13 @@ project:
     max_functions: 100
 
 scan:
+  preset: fast
   task: ""
 
 indexing:
   backend: unified
   svf:
+    heap_limit_mb: 32768 # Preserve the previous explicit v2 workload default.
     scope: auto
     entry_depth: 3
     fallback: full

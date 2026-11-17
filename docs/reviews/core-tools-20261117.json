@@ -1,0 +1,308 @@
+{
+  "review_date": "2026-11-17",
+  "scope": "All 29 zscope/tools Python files, the shared argument validator, and directly affected Agent/Joern execution boundaries. This is not a whole-repository audit.",
+  "reviewed_files": [
+    {
+      "file": "zscope/tools/call_graph.py",
+      "lines": 111,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/callers.py",
+      "lines": 114,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/code_graph_query.py",
+      "lines": 678,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/code_retrieval.py",
+      "lines": 90,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/contracts.py",
+      "lines": 247,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/data_flow.py",
+      "lines": 47,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/data_flow_trace.py",
+      "lines": 313,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/deep_call_context.py",
+      "lines": 106,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/file_snippet.py",
+      "lines": 156,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/flow_query.py",
+      "lines": 1082,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/function_info.py",
+      "lines": 156,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/function_pointers.py",
+      "lines": 43,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/list_functions.py",
+      "lines": 82,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/pointer_alias.py",
+      "lines": 69,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/policy.py",
+      "lines": 523,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/read_code.py",
+      "lines": 453,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/registry.py",
+      "lines": 69,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/runtime.py",
+      "lines": 476,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/search_code.py",
+      "lines": 178,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/security_semantics.py",
+      "lines": 181,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/semantic_context.py",
+      "lines": 763,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/snapshot_tool.py",
+      "lines": 128,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/source_access.py",
+      "lines": 505,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/static_findings.py",
+      "lines": 557,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/symbols.py",
+      "lines": 646,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/taint_reachability.py",
+      "lines": 63,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/taint_tool.py",
+      "lines": 68,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/type_info.py",
+      "lines": 102,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/tools/utils.py",
+      "lines": 27,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/framework/base.py",
+      "lines": 295,
+      "review": "entire_file_line_by_line"
+    },
+    {
+      "file": "zscope/agents/base.py",
+      "function": "_tool_executor",
+      "start_line": 64,
+      "end_line": 126,
+      "review": "function_and_direct_callers"
+    },
+    {
+      "file": "zscope/common/joern_client.py",
+      "function": "get_data_flow_to_sink",
+      "start_line": 851,
+      "end_line": 884,
+      "review": "function_and_direct_callers"
+    }
+  ],
+  "quality_review": {
+    "security_reliability": [
+      "Pinned project-root identity; consistent exclusion rules and restricted symbol visibility; no arbitrary legacy file reads.",
+      "Bounded local regex matching; remote Joern receives literal sink names.",
+      "Structured audit errors, hook reasons and provider failures avoid credential disclosure.",
+      "Missing, corrupt, stale, truncated and unavailable results stay distinct."
+    ],
+    "simplicity": [
+      "Removed incomplete regex-pattern blacklist.",
+      "Shared output validation and trimming between runtime and Agent; shared physical-line splitting.",
+      "Removed duplicate legacy list query and validation-time full file read.",
+      "Condensed repeated tool descriptions while preserving parameter and evidence constraints."
+    ],
+    "maintainability": [
+      "One public ToolContract source; returned schemas cannot mutate live validation rules.",
+      "Precise file/signature/USR constraints and recursive coverage propagation.",
+      "Kept still-imported legacy public tool classes and explicit unsupported behavior.",
+      "Added focused regression cases and stable module documentation."
+    ],
+    "performance": [
+      "Binary-search result trimming instead of removing and serializing one record at a time.",
+      "Reverse reachability pruning and lazy DFS instead of exponential breadth-first path-prefix queues.",
+      "A shared 100000-expansion budget for recursive flow queries; 200 nodes per emitted path.",
+      "Static finding symbol lookup grouped once per file per query; SQLite handles explicitly closed."
+    ],
+    "design": [
+      "60,000-character output boundary includes diagnostics; complete records/physical source lines and usable continuation metadata.",
+      "Regex matching budgets are distinct from remote backend execution deadlines.",
+      "Current function semantics require matching source hash and build scope; advisory/global results are not falsely current.",
+      "Query status, coverage, source identity and recovery information remain explicit."
+    ]
+  },
+  "protocol_decisions": {
+    "success_and_status": "Retained: legacy boolean consumers coexist with detailed ok/partial/unavailable/error statuses.",
+    "coverage": "Retained: a successful request or an empty result does not establish complete analysis.",
+    "provenance_and_identity": "Retained: callers need the actual function, file and build/source version to assess evidence.",
+    "pagination_and_source_continuation": "Retained: bounded responses must remain retrievable without skipped records or false complete definitions.",
+    "warnings_and_errors": "Retained for actionable causes and recovery; secrets are not diagnostic content."
+  },
+  "verification": [
+    {
+      "command": "pytest -q tests/test_core_tool_runtime_review.py tests/test_core_tool_source_review.py tests/test_core_tool_evidence_review.py tests/test_core_tool_legacy_review.py tests/test_joern_client.py tests/test_java_joern_backend.py tests/test_joern_query_literals.py tests/test_agent_docs.py",
+      "result": "139 passed in 18.79s"
+    },
+    {
+      "command": "pytest -q tests/test_tool_use_eval.py tests/test_tool_schema_strict.py tests/test_core_tool_runtime_review.py tests/test_release_contract.py",
+      "result": "46 passed in 11.68s"
+    },
+    {
+      "command": "pytest -q tests/test_core_tool_source_review.py tests/test_source_search.py tests/test_evidence_tools.py tests/test_mcp_read_only.py",
+      "result": "98 passed in 17.18s; includes actual stdio subprocesses"
+    },
+    {
+      "command": "pytest -q tests/test_core_tool_runtime_review.py tests/test_tool_registry.py tests/test_tool_policy.py tests/test_mcp_policy.py tests/test_mcp_read_only.py tests/test_mcp_http_server.py tests/test_mcp_security.py tests/test_tool_use_eval.py tests/test_agent_docs.py",
+      "result": "95 passed; 2 tool-schema budget failures then fixed and rechecked in the 46-test group above"
+    },
+    {
+      "command": "pytest -q tests/test_compilation_symbols.py",
+      "environment": "Linux; Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-main-sync-20261102/native/bin/zscope-clang-indexer; LLVM 18 PATH",
+      "result": "4 passed in 24.33s; earlier missing-binary skips resolved"
+    },
+    {
+      "command": "mypy --follow-imports=silent zscope/tools zscope/framework/base.py zscope/agents/base.py zscope/common/joern_client.py",
+      "result": "32 source files passed"
+    },
+    {
+      "command": "black --check zscope/tools zscope/framework/base.py zscope/agents/base.py tests/test_core_tool_runtime_review.py tests/test_core_tool_source_review.py tests/test_core_tool_evidence_review.py tests/test_core_tool_legacy_review.py tests/test_joern_query_literals.py tests/test_release_contract.py",
+      "result": "37 files passed; the changed Joern method separately formatted with line-ranges"
+    },
+    {
+      "check": "regex dependency metadata and distribution hashes",
+      "result": "Declarations, four runtime locks, release license-policy package set and installed regex license/version verified; dev-only types-regex declared and locked."
+    }
+  ],
+  "performance_fixtures": {
+    "result_trimming_500_records": {
+      "before_full_serializations": 500,
+      "after_full_serializations": "<25",
+      "measurement": "targeted instrumented test, not an end-to-end benchmark"
+    },
+    "reachable_diamond_14_levels": {
+      "before_expansions": 32768,
+      "after_expansions": 16
+    },
+    "reachable_diamond_32_levels": {
+      "after_expansions": 34
+    },
+    "overdeep_diamond_210_levels": {
+      "stops_at_expansions": 100000,
+      "result": "partial with path_node_bound/path_search_bound"
+    }
+  },
+  "schema_token_estimate": {
+    "before": 1666,
+    "estimator": "LLMClient.estimate_tokens",
+    "legacy_tokens": 2168,
+    "current_tokens": 1516,
+    "ratio": 0.6992619926199262,
+    "limit": 0.7,
+    "passed": true,
+    "note": "Repository deterministic estimator; no new live-model effect comparison."
+  },
+  "validator_submission": {
+    "files": 6,
+    "physical_lines_including_prompt_comments_and_blanks": 2999,
+    "modified_by_this_review": false
+  },
+  "remaining_validation": {
+    "status": "not_run",
+    "reason": "download_too_slow",
+    "joern_version": "4.0.620",
+    "download_url": "https://github.com/joernio/joern/releases/download/v4.0.620/joern-cli-linux-x86_64.zip",
+    "expected_size_bytes": 1828208502,
+    "expected_sha256": "095212e556335d4b59c1a2474d5525cf64f88baedfb5ee280f253950a95a745b",
+    "preflight": {
+      "free_disk_bytes": 179580547072,
+      "java": "/usr/bin/java",
+      "probe_requested_bytes": 16777216,
+      "probe_downloaded_bytes": 3002944,
+      "probe_seconds": 20.126077,
+      "probe_average_bytes_per_second": 149206,
+      "estimated_full_download_minutes": 204.2,
+      "curl_exit_code": 28,
+      "stopped_after_probe": true
+    },
+    "actual_joern_execution": false,
+    "cases": {
+      "regex": "not_run",
+      "exact": "not_run",
+      "no_match": "not_run"
+    },
+    "prior_validation": "Python regex timeout and fake-query contract tests only; remote query syntax remains unverified."
+  },
+  "limits": [
+    "No claim of zero vulnerabilities or full-repository review.",
+    "No full portable build, whole-project regression or live-model rerun was performed for this tool-layer review.",
+    "Actual Joern server execution remains unverified because the required local installation was unavailable and its download was too slow."
+  ]
+}

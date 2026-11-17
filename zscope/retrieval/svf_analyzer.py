@@ -91,7 +91,7 @@ class SvfAnalyzer:
     ) -> bool:
         if not compile_commands_path:
             logger.warning("No compile_commands_path, skipping SVF")
-            return True
+            return False
 
         self._project_root = Path(project_root)
         self._group_identities = {}

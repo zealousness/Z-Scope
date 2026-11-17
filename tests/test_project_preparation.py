@@ -3,7 +3,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from test_config_v2 import _config, _write
+from test_config_options import _config, _write
 from zscope.cli.config_cli import main
 from zscope.config.config import ConfigLoader
 from zscope.config.preparation import prepare_project
@@ -29,7 +29,7 @@ def test_cli_and_web_share_the_same_profile_without_exposing_model_credentials(
         json.dumps([*rows, *rows, {**rows[0], "arguments": [*rows[0]["arguments"], "-DALT"]}])
     )
     document = _config(project)
-    document["project"]["compile_commands_path"] = "compile_commands.json"
+    document["project"]["targets"][0]["compile_commands"] = "compile_commands.json"
     document["llms"]["default"]["api_key"] = "preparation-secret"
     path = _write(project, document)
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
@@ -49,7 +49,7 @@ def test_cli_and_web_share_the_same_profile_without_exposing_model_credentials(
 
 def test_invalid_and_missing_database_have_actionable_messages(tmp_path):
     document = _config(tmp_path)
-    document["project"]["compile_commands_path"] = "compile_commands.json"
+    document["project"]["targets"][0]["compile_commands"] = "compile_commands.json"
     path = _write(tmp_path, document)
     config = ConfigLoader.load(str(path))
     report = prepare_project(config, path)

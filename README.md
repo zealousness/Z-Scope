@@ -11,7 +11,7 @@ v1.3.2 在 v1.3.1 稳定线之上引入 LLM Wiki 项目知识层、自适应语�
 - **LLM Wiki 项目知识层**：扫描 workflow 在入口分析前执行一次 session 级 `wiki_compile`，把项目内说明性 Markdown 确定性分类、按 heading 切分为稳定 source section，并以不可变 revision 发布 Wiki 知识。批量入口、Validator、Web 与 MCP 共享同一个只读 `ProjectKnowledgeService`；Compiler 不可用或 Wiki 损坏时回退带路径、标题、行号与 digest 的原文摘录查询。`project.wiki.mode` 默认 `off`，`zscope-wiki` CLI 提供独立的状态、查询与维护入口。详见 [LLM Wiki](docs/modules/wiki.md)。
 - **证据优先的候选流水线**：`CandidatePipeline` 汇总本地规则、Clang AST/CFG、SVF/Saber、跨函数图候选与 KnowledgeDB/Joern 后端信号，覆盖 fd 表示契约、raw/encoded fd 混用、EAGAIN/EINTR 无预算重试、协议元素数与字节数错配、宏锁编译为空、部分资源初始化失败回滚等模式。后端按语言隔离：C/C++ 默认 `unified`，Java 默认 `java_unified`；弱后端必须显式选择，深度后端失败不会自动降级。
 - **跨语言规则治理**：Java 与 C/C++ 内置确定性检测器、YAML pack 和 Python provider 共用严格规则目录、canonical ID、Skill 校验与 `EffectiveRuleSet`；SVF/Saber、Joern 等仍保持 backend signal 身份，禁用规则不影响后端信号与 LLM 独立发现。
-- **验证组终态与有界 Validator 协议**：`CandidateEnvelope v3.3`、`SecurityObligation` 和 scan-level validation group 按安全义务统一验证，并闭合为 `confirmed`、`rejected_with_proof`、`rejected_with_evidence`、`needs_review`、`engine_failed` 或 `interrupted`；确定性反证与有证据的模型反驳分别记录，引擎故障不会伪装成漏洞。每个 cluster 只传 bounded `ValidatorEvidenceSlice v3`：V1 是无工具、严格 schema 的单次判定，V2 按义务一次补齐事实后单次复判，V3 是最长 50 次模型迭代、仅白名单只读工具的有界调查；身份、引用、覆盖与业务前提未闭合时保持待复核。
+- **验证组终态与有界 Validator 协议**：`CandidateEnvelope v3.5`、`SecurityObligation` 和 scan-level validation group 按安全义务统一验证，并闭合为 `confirmed`、`rejected_with_proof`、`rejected_with_evidence`、`needs_review`、`engine_failed` 或 `interrupted`；确定性反证与有证据的模型反驳分别记录，引擎故障不会伪装成漏洞。每个 cluster 只传 bounded `ValidatorEvidenceSlice v3`：V1 是无工具、严格 schema 的单次判定，V2 按义务一次补齐事实后单次复判，V3 是最长 50 次模型迭代、仅白名单只读工具的有界调查；身份、引用、覆盖与业务前提未闭合时保持待复核。
 - **稳定缺陷身份与 Canonical 报告**：`canonical_issue_key`、`stable_issue_fingerprint` 等统一身份服务去重、baseline、SARIF partial fingerprints 与 benchmark 匹配。`ReportAssembler` 只从冻结的 canonical outcome 集合生成默认视图和含复核视图；`FindingRoot v1` 仅合并 defect family、结构化 subject、decision region、代码与 proof 上下文完全等价的义务。CLI 支持 `--export-sarif` 输出 SARIF v2.1.0，Web 端可导出包含离线阅读器与逐 issue Markdown 的 ZIP 报告包。
 - **运行模式与增量分析**：支持全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）与告警验证（`--mode alert-verify`）；diff impact 扫描（`--diff-base/--diff-head`）按变更意图选择最小必要扫描 root，并区分增量/存量发现。`--discover-entries` 自动识别头文件暴露的公共 API、网络收发、线程入口与用户输入点作为批量入口。
 - **项目原语与反馈记忆**：C/C++ 以唯一的 `zscope.semantics.yaml` 维护用户声明的原语、经 native 事实推导的 wrapper、宏、函数指针槽与 dispatcher。`--discover-primitives` 只写入待人工确认的候选，正常扫描严格只读且只消费 `confirmed` 的精确 BuildContext/USR 契约；`pending`、`stale`、身份冲突或 YAML 中未闭合的间接绑定会阻止扫描。没有闭合目标集的 native 间接调用只进入机器 coverage gap，不生成无法确认的人工配置行；它不冒充已覆盖能力，并继续阻止 formal qualification。Web 复核状态仍独立持久化为误报抑制与 finding baseline，经 `ReviewMemory` 在后续扫描复用；机器证据位于 `.zscope_snapshots/semantics/`，不构成第二份人工配置。
@@ -268,7 +268,7 @@ indexing:
 | [`zscope.c_cpp.yaml`](zscope.c_cpp.yaml) | `c_cpp` | `unified` |
 | [`zscope.java.yaml`](zscope.java.yaml) | `java` | `java_unified` |
 
-首次接入推荐让初始化器识别语言、构建系统和候选模块。TTY 中会确认模块、接口文件 glob、后端和并发；CI 中使用非交互模式：
+首次接入推荐使用初始化器识别语言并查找编译数据库。TTY 中确认语言、目标 ID、编译数据库和扫描档位；CI 中使用非交互模式：
 
 ```bash
 cd /path/to/target-project
@@ -305,7 +305,7 @@ zscope -c zscope.yaml
 
 #### public config v3
 
-`zscope-init` 和两语言模板生成严格的 `config_version: 3`。C/C++ 最小结构如下：
+所有入口仅接受 `config_version: 3`，初始化器、模板和 Web 新建工程都默认 fast。C/C++ 最小结构如下：
 
 ```yaml
 config_version: 3
@@ -326,7 +326,7 @@ scan:
 ```
 
 YAML 文件所在目录就是唯一工程根目录，目标的编译数据库使用相对此目录的路径。Java 使用
-[`zscope.java.yaml`](zscope.java.yaml)，不填写编译数据库，预设为 `fast`。
+[`zscope.java.yaml`](zscope.java.yaml)，不填写编译数据库，默认预设为 `fast`，省略 scan 或 preset 也有效。
 `zscope-init --preset fast|balanced|deep --target-id main` 可选择生成的预设和目标；
 Java 只接受 `fast`。路径和目标标识按 YAML 字符串序列化，包含空格、`#` 或冒号的目录也可往返读取。
 
@@ -336,7 +336,7 @@ C/C++ 首次扫描固定使用以下流程；正常扫描不会现场发现接�
 2. 运行 `zscope -c zscope.yaml --discover-primitives`。命令遍历所有精确函数实例、宏、间接调用槽与 dispatcher，但人工 YAML 只接收效果跨函数边界可观察、ObjectPath 可精确映射且存在静态规则消费者的高信号接口。普通 `strlen`/`strcmp` 等 standard-operation 薄封装和只映射一个操作数的 copy helper 保留在 native 函数事实中，不制造人工门禁记录；当前仅实际被路径协议规则消费的 `access/stat/lstat/faccessat/fstatat` wrapper 进入 standard-operation 审核。dispatcher 只有在精确 handler 实例已经进入当前高信号接口闭包时才形成审核行，普通业务 switch 不会制造无关审核项。只有目标集已由当前 native/SVF 证据闭合的 pointer binding 才进入人工 YAML，未闭合调用记录为 coverage gap。确定性推导后只对首次出现、证据变化或仍有歧义的接口候选做一次 LLM 初审和最多一次事实补全；模型永远不能自动发布 `confirmed`。
 3. 人工检查同一 YAML，将每条候选改为 `confirmed` 或 `rejected`。确认不仅是改 status：必须把 `cases` 收敛为结构化、可执行的谓词，并至少保留一个 `applies` 分支；全为 `unknown` 的候选不能发布。YAML 的 `op: true` 若要表达恒真必须写成字符串（建议 `op: 'true'`），布尔值会被拒绝，避免看似确认但运行时从未生效。源码、BuildContext、catalog、工具或证据变化后，旧决定会变为 `stale`。
 4. 查看发现摘要和独立列出的覆盖缺口，运行 `zscope-config review-semantics --config zscope.yaml --complete`（Web 为“完成本轮审阅”）。零候选也需要此步。随后运行 `zscope-config prepare --config zscope.yaml`。CLI、Web、MCP、计划创建及实际启动共同核对发现收据、当前输入、人工完成摘要、pending/stale 与身份阻塞；审阅完成不代表机器覆盖完整。省略 `--complete` 的 `review-semantics` 只查看状态。
-5. 正常运行 `zscope -c zscope.yaml`。public v3 不再暴露旧的单入口/入口清单字段，执行时会自动发现入口用于可达性归因；C/C++ fast 的项目级静态阶段仍对每个当前函数实例只分析一次，不把入口发现当成候选扫描边界。所有 preset 共用已确认的实例级 `ContractRegistry`；已复核 wrapper 的 `derived_from` 来源会随精确 BuildContext 编译为 delegate，供规则识别真实原语效果，不按 wrapper 名称授权。
+5. 正常运行 `zscope -c zscope.yaml`。默认自动发现入口用于可达性归因；需要固定入口时可使用项目高级设置；C/C++ fast 的项目级静态阶段仍对每个当前函数实例只分析一次，不把入口发现当成候选扫描边界。所有 preset 共用已确认的实例级 `ContractRegistry`；已复核 wrapper 的 `derived_from` 来源会随精确 BuildContext 编译为 delegate，供规则识别真实原语效果，不按 wrapper 名称授权。
 
 旧 XLSX 只允许一次性迁移：`zscope-config migrate-semantics --config zscope.yaml --from-xlsx legacy.xlsx --output zscope.semantics.yaml`。命令保留原 XLSX，输出迁移报告；dispatcher 和 pointer target 必须重新绑定 native 身份，`module_lifecycle` 与 `function_intents` 只列入删除报告，其中函数意图改由 LLM Wiki 承载。
 
@@ -345,99 +345,15 @@ C/C++ 首次扫描固定使用以下流程；正常扫描不会现场发现接�
 仍是未消费的声明。配置 execution.stop_at 已由 CLI 和新建持久作业消费；显式作业窗口优先，
 同 request_id 重放保留原窗口，resume 不重新套用配置窗口。作业启动的 CLI 采用该 attempt 保存的窗口；恢复后保存的空窗口表示本轮没有停止窗口。身份或输入已失效时拒绝启动。独立 CLI 仍使用配置窗口。这不表示完整 U01/S08 已完成。
 
-#### 现有 public config v2
+CLI 的 `--scan-depth fast|balanced|deep` 覆盖本次 `scan.preset`，优先级为 CLI > YAML > 默认 fast。CLI 先验证 YAML，再覆盖档位；无效版本、字段或 Java 的 balanced/deep 不能靠 CLI 参数修复。两种语言省略 scan/preset 都使用 fast。档位不设置 scan-wide token 硬上限。
 
-已有 v2 配置仍由同一加载器严格校验。C/C++ v2 不再形成正式扫描输入，必须迁移到带 `project.semantics_file` 的 v3；Java v2 保留原兼容边界。v2 顶层允许
-`config_version`、`llms`、`project`、`scan`、`indexing`、
-`concurrency` 和可选 `rules`；未知键、重复 YAML 键、错误类型、跨语言字段和未展开的必需环境变量都会报出完整字段路径。
-
-下方保留 v2 最小结构；v2 的全部字段、默认值与约束见“配置字段参考”一节，
-不要把 v2 的 indexing/concurrency 等字段直接混入严格 v3 文档：
-
-```yaml
-config_version: 2
-
-llms:
-  default:
-    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
-    models: ["${Z_SCOPE_LLM_MODEL}"]
-    api_key: "${Z_SCOPE_API_KEY}"
-    base_url_max_concurrent_requests: 4
-
-project:
-  language: c_cpp                 # 只能是 c_cpp 或 java
-  compile_commands_path: build/compile_commands.json
-  include_paths: []
-  exclude_paths: [build, third_party]
-  entry_discovery:
-    enabled: true
-    search_root: .                # 相对 YAML 所在工程目录的待扫模块
-    interface_files: ["include/**/*.h"] # 相对 search_root 的 POSIX glob
-    max_entries: 200
-    max_functions: 10000
-
-scan:
-  # fast | balanced | deep；当前省略时为 fast。Java 暂只允许 fast。
-  depth: fast
-  # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。
-  task: ""
-  # 可选；未配置的角色使用 llms.default。
-  llm_profiles:
-    modeling: default
-    analysis: default
-    validation: default
-
-indexing:
-  backend: unified
-
-concurrency:
-  entry_workers: 4
-  validator_workers: 2
-  investigator_workers: 1
-  evidence_completion_workers: 2
-  index_workers: 4
-  wiki_compiler_workers: 4        # 仅 project.wiki 启用时使用
-  svf_workers: 2                  # 仅 C/C++
-  llm_max_inflight: 4
-```
-
-并发字段必须是正整数。`llm_max_inflight` 是进程级上限，仍会与 LLM profile 的 endpoint 并发/速率上限共同生效。请按 CPU、内存、SVF 峰值和 LLM 配额主动校准。
-
-CLI 的 `--scan-depth fast|balanced|deep` 可覆盖本次运行，优先级固定为 CLI > YAML > 打包默认。档位决定启用哪些分析阶段及其结构化工作量边界，但不会设置 scan-wide token 硬上限。C/C++ 在质量门禁完成前省略 depth 仍是 fast；Java 显式请求 balanced/deep 会直接报错，不会降级。2M/12M/30M 等 token 数只存在于 Range Benchmark policy 中，作为扫描完成后的成本验收线。
-
-C/C++ 的 SVF 项目规划继续由用户决定：
-
-```yaml
-indexing:
-  backend: unified
-  svf:
-    scope: auto                    # full | auto | entry
-    entry_depth: 4
-    max_selected_tus: 200
-    fallback: full                 # full | skip
-    groups_file: ""
-    always_include: []
-    exclusive_pools: []
-    shared_pools: []
-    heap_limit_mb: 32768
-    timeout_seconds: 1800
-  tools:                           # 可选；省略时从 PATH 查找
-    clangd: clangd
-    gclang: gclang
-    get_bc: get-bc
-    llvm_link: llvm-link
-    svf_bin_dir: /path/to/svf/bin
-```
-
-pool 名称在 exclusive/shared 两类之间也必须唯一；每个 pool 的 `paths` 非空，
-`shared_pools[].conflicts_with` 必须引用已声明的 exclusive pool。Java 配置不接受
-SVF、clangd 或 compile database 字段，使用 `indexing.java` 声明结构前端、signals 和外部 provider 命令。
+常用配置只需填写模型、语言和一个 target。需要精确控制时，可在同一 v3 文档添加 `indexing`、`concurrency`、`rules`、项目范围、Wiki 和 Review Memory 设置；不再维护第二套配置格式。
 
 #### 配置字段参考
 
 v3 的 CLI prepare/validate、初始化器和语言模板使用当前正式模型；结构化配置接口按正式 parser 校验文档，允许保存全部 targets，执行组合仍明确拒绝多目标。工程根目录固定为 YAML 所在目录；时窗解析为一次绝对边界。focus、reproduction、max_workers 和平台意图尚未消费，配置时窗已由 CLI 和新建持久作业消费，resume 不重新套用配置窗口；MCP 与其他消费端迁移仍有剩余，不能把其他已解析意图当作已执行能力。模型与接线边界见[配置模块](docs/modules/configuration-state.md)。
 
-public config v2 的全部字段如下；此表描述已有 v2 文档，不是 v3 的字段扩展。
+唯一公共格式为 `config_version: 3`。顶层允许 `config_version`、`llms`、`project`、`scan`、`execution`、`indexing`、`concurrency`、`rules`。除版本、模型和 project 的必填字段外，其余均可省略；未知键、重复 YAML 键、错误类型和跨语言字段严格报错。
 所有字符串值支持 `${VAR}` / `$VAR` 环境变量展开，缺失变量在加载时即报错；
 工程根目录固定为所加载 YAML 文件的父目录，项目内相对路径从该目录解析；
 不再接受独立的根目录配置字段。Agent 启停、分析预算、deadline、缓存与报告策略不在
@@ -477,15 +393,16 @@ Wiki 编译器固定读取名为 `wiki_compiler` 的 profile（未定义时用 `
 | `entry_functions_list` | — | 批量入口 JSON 路径（相对 YAML 所在工程目录），优先级最高 |
 | `include_paths` | `[]` | 源码扫描目录列表（相对 YAML 所在工程目录）；留空扫描整个工程，非空则替换扫描目录。不是编译器 `-I` 参数 |
 | `exclude_paths` | `[]` | 排除的路径，命中的文件不参与扫描 |
-| `compile_commands_path` | 自动发现 | 仅 C/C++；clang 批量索引与 SVF bitcode 构建依赖。未配置时在 YAML 所在工程目录查找 `compile_commands.json` |
-| `semantics_file` | `zscope.semantics.yaml` | C/C++ 项目语义 YAML；相对 YAML 所在工程目录解析，扫描前须完成独立发现与审阅 |
-| `user_config_file` | 历史字段 | 仅供旧 v2 文档识别和 XLSX 迁移定位；C/C++ 规则运行时不再从 XLSX 取得执行语义 |
+| `platform` | `linux_user` | 当前只接受 Linux 用户态；保留平台意图，尚未改变执行策略 |
+| `targets` | 必填 | 非空目标列表，每项 `id` 必填且唯一。C/C++ 还须填写 `compile_commands`（相对 YAML 所在目录或绝对路径）；Java 不填写。当前扫描只支持一个目标 |
+| `semantics_file` | 初始化器写入 `zscope.semantics.yaml` | C/C++ 项目语义 YAML；相对 YAML 所在工程目录解析，扫描前须完成独立发现与审阅 |
+| `user_config_file` | 历史字段 | 仅供旧工作簿定位与 XLSX 迁移；C/C++ 规则运行时不再从 XLSX 取得执行语义 |
 
 `entry_discovery`（入口自动发现）：
 
 | 字段 | 默认 | 作用 |
 |---|---|---|
-| `enabled` | false | 启用入口自动发现；显式 `entry_functions_list` 优先于发现结果 |
+| `enabled` | true | 启用入口自动发现；显式 `entry_functions_list` 优先于发现结果 |
 | `search_root` | `.` | 待扫模块目录（相对 YAML 所在工程目录），必须位于工程之内 |
 | `interface_files` | `[]` | 相对 search_root 的 POSIX glob，限定视为公共接口的文件 |
 | `max_entries` | 200 | 最多选出的入口数，其余候选标记 deferred 留待后续 |
@@ -541,9 +458,19 @@ advisory projection，不会启动 benchmark 扫描，也不会改变 finding ve
 
 | 字段 | 默认 | 作用 |
 |---|---|---|
-| `depth` | fast | `fast`/`balanced`/`deep` 三档分析深度（Java 仅 fast）；CLI `--scan-depth` 优先 |
+| `preset` | fast | `fast`/`balanced`/`deep` 三档分析深度（Java 仅 fast）；CLI `--scan-depth` 优先 |
 | `task` | `""` | 空串启用当前语言全部适用 Skill；非空文本只指定审计重点 |
 | `llm_profiles` | 三角色均 default | modeling/analysis/validation 到 `llms` profile 的映射 |
+
+`scan.focus` 默认 `[memory, resources, async_lifecycle]`，`scan.reproduction` 只接受 `auto`；两者目前仅保存意图，不改变执行行为。
+
+**`execution`**（可选）
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `timezone` | 无 | IANA 时区，如 `Asia/Shanghai`；填写 stop_at 时必填 |
+| `stop_at` | 无 | 本地 `HH:MM`，解析为下一个实际停止时间；DST 不存在或重复时间报错，不代表每日计划 |
+| `max_workers` | 无 | 正整数，目前仅保存声明；实际并发请使用 concurrency |
 
 **`indexing`**
 
@@ -562,7 +489,7 @@ advisory projection，不会启动 benchmark 扫描，也不会改变 finding ve
 | | `always_include` | 路径/子串模式，匹配的源文件无条件纳入 SVF 选择集 |
 | | `exclusive_pools` | 互斥变体池 `{name, paths}`；同名符号多实现时按池拆分链接变体 |
 | | `shared_pools` | 共享池 `{name, paths, conflicts_with}`，可出现在多个链接变体中 |
-| | `heap_limit_mb` | 每个 WPA/Saber 子进程的堆上限；并发 worker 按此逐进程预留；默认 32768 |
+| | `heap_limit_mb` | 每个 WPA/Saber 子进程的堆上限；并发 worker 按此逐进程预留；默认 8192 |
 | | `timeout_seconds` | 单个 bitcode/SVF 子进程超时秒数；`null` 不限；默认 1800 |
 | `java`（仅 Java） | `structure_frontend` | `auto`/`spoon`/`javaparser`/`builtin` 源码结构前端；auto 按可用性依次尝试 |
 | | `signals` | 图/数据流信号 provider：`joern`/`sootup`/`wala`/`codeql`；`java_unified` 要求全部配置项可用；默认 `[joern]` |
@@ -571,18 +498,18 @@ advisory projection，不会启动 benchmark 扫描，也不会改变 finding ve
 | `tools`（可选） | C/C++ | `clangd`、`clang_indexer`、`gclang`、`get_bc`、`llvm_link`、`svf_bin_dir`（wpa/saber 所在目录）；省略时按 PATH 或包内默认定位，显式配置无效时报错、不回退 |
 | | Java | `joern.command`、`joern.host`、`joern.port`（默认 127.0.0.1:8080）、`joern.heap`（默认 `8g`） |
 
-**`concurrency`**（除注明外必填，全部正整数）
+**`concurrency`**（可选，可只填需要调整的字段，全部正整数）
 
 | 字段 | 默认 | 作用 |
 |---|---|---|
-| `entry_workers` | — | 并行分析的入口数，每个入口一套建模+分析会话 |
-| `validator_workers` | — | Validator 并发验证线程数 |
-| `investigator_workers` | — | deep_worker 子代理调查并发（默认由 RuntimeSpec 关闭） |
-| `evidence_completion_workers` | — | 确定性事实补全 worker 数（不调用 LLM） |
-| `index_workers` | — | 索引阶段并行度；C/C++ 同时决定 clangd 线程数 |
+| `entry_workers` | 4 | 并行分析的入口数，每个入口一套建模+分析会话 |
+| `validator_workers` | 2 | Validator 并发验证线程数 |
+| `investigator_workers` | 1 | deep_worker 子代理调查并发（默认由 RuntimeSpec 关闭） |
+| `evidence_completion_workers` | 2 | 确定性事实补全 worker 数（不调用 LLM） |
+| `index_workers` | 4 | 索引阶段并行度；C/C++ 同时决定 clangd 线程数 |
 | `wiki_compiler_workers` | 4（可省略） | Wiki 编译并行度，仅 `project.wiki` 启用时使用 |
-| `svf_workers` | — | 仅 C/C++；SVF 分析组并发数，实际按内存预算收缩 |
-| `llm_max_inflight` | — | 进程级 LLM 并发上限，与 profile 的 endpoint 限流共同生效 |
+| `svf_workers` | 自动 | 仅 C/C++；SVF 分析组并发数，实际按内存预算收缩 |
+| `llm_max_inflight` | 4 | 进程级 LLM 并发上限，与 profile 的 endpoint 限流共同生效 |
 
 **`rules`**（可选，默认全空；治理语义见“规则目录与禁用”一节）
 
@@ -595,17 +522,21 @@ advisory projection，不会启动 benchmark 扫描，也不会改变 finding ve
 
 #### 配置迁移
 
-产品运行时不读取 v1，也不再接受旧 `project.root` / `source_root` 字段或 `quick` / `overnight` 预设。先显式迁移再校验；迁移将 `quick` 精确转换为 `fast`、`overnight` 转换为 `deep`，不会凭名称改变原分析深度。迁移器会列出需人工复核项，未知旧字段报错，不会静默丢弃：
+运行、校验、Web 编辑、MCP 和 benchmark 只接受 v3；不能只把旧文件的版本数字改成 3。一次性迁移命令将 v2 的 `scan.depth` 改为 `scan.preset`，`project.compile_commands_path` 改为 `project.targets[0].compile_commands`，保留模型、范围、规则、Wiki、并发等设置，并显式保留旧的入口发现开关和 SVF 内存默认值。
 
 ```bash
-zscope-config migrate --input /path/to/old-zscope.yaml \
-  --output /path/to/original-project/zscope.yaml \
-  --legacy-working-directory /path/to/original-working-directory
-zscope-config validate --config /path/to/original-project/zscope.yaml
+zscope-config migrate --input /path/to/project/old-zscope.yaml \
+  --output /path/to/project/zscope.yaml
+zscope-config validate --config /path/to/project/zscope.yaml
+zscope-config prepare --config /path/to/project/zscope.yaml
 ```
 
-输出 YAML 必须直接放在原工程目录，迁移不覆盖源文件；默认也不覆盖已有输出，确认替换输出时显式传 `--force`。旧 v2/legacy 使用相对工程根时，必须提供原执行目录 `--legacy-working-directory`；旧 v3 的相对根依据原 YAML 定位。原工程根与源码根分离的旧配置不能自动迁移，先显式调整扫描目录与入口发现路径，避免改变扫描范围。
-旧 `parallel_workers` 会迁移到入口/SVF 并发，`max_clangd_threads` 会迁移到索引并发，之后仍应按实际环境重新校准。
+- v2 未填写 depth 时输出显式 `preset: fast`；已填写的 fast/balanced/deep 保持原值。Java 的 balanced/deep 会报错，须改为 fast。
+- 历史 v3 未填写 preset 时原 C/C++ 默认是 deep；如需保持强度，升级前补写 `preset: deep`，或运行同一迁移命令生成显式值。新配置省略时一律 fast。quick/overnight 仅在迁移中转换为 fast/deep，运行时无别名。
+- v2 未填写编译数据库时生成 `compile_commands.json`（原自动查找位置）并提示核对；C/C++ 扫描仍须完成 `project.semantics_file` 的原语准备和审阅。配置迁移不替代此流程。
+- 输出必须直接放在原工程目录，源文件始终保留；已有输出需显式 `--force`。候选配置先通过正式 parser，失败不会覆盖输出。环境变量引用保留原样，数值变量若无法结构校验会明确报错。
+- 旧 v2 使用相对 `project.root` 时需提供 `--legacy-working-directory ORIGINAL_CWD`；历史 v3 相对根按原 YAML 定位。分离的 root/source_root 无法安全自动合并时停止迁移，先核对扫描范围。未知字段、混合新旧字段也报错，不静默丢弃。
+- 无版本或 v1 配置不再自动转换；用 `zscope-init --output new.yaml` 生成新格式后按本节字段参考人工核对。迁移器仅负责一次性文件转换，正常加载不包含旧版本兼容逻辑。
 
 #### 内置 RuntimeSpec
 

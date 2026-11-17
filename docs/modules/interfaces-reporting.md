@@ -7,6 +7,7 @@ covers:
 sources:
   - zscope/web/semantics_service.py
   - zscope/reporting/assembler.py
+  - zscope/reporting/artifact_reuse.py
   - zscope/reporting/schema.py
   - zscope/reporting/json_io.py
   - zscope/reporting/shared_objects.py
@@ -62,6 +63,8 @@ active digest; audit events use a forward hash chain. LLM output cannot add
 evidence references or source identity.
 
 # 接口与报告
+
+报告的 `metadata.artifact_reuse` 分开汇总分层摘要和初始结构化裁决的查询、命中、重算原因、本轮模型任务与 Token；分层摘要另列跨构建命中数。单入口和批量 Markdown 显示同一复用摘要。零查询的命中率为 null，历史产物用量不计入本轮，模型任务数不能当作包含重试的物理请求次数。真实扫描用量继续由 `llm_usage` 记录，复用统计不改 Finding 与报告视图的语义。
 
 ## 项目原语 Web 接口
 
@@ -216,7 +219,7 @@ Dashboard 默认进入项目概览，以扫描任务、问题工作台、覆盖�
 
 选择工程后，业务请求通过 `X-ZScope-Project` 绑定 registry 中的明确工程，响应与写入仍属该工程的配置、反馈与作业服务；不依赖服务器全局“当前工程”切换其他标签页。缺失、未知、失效或符号链接重定向的身份拒绝请求，不能自动借用另一工程。配置密钥不写 registry 或导航链接；配置保存仍使用既有 parser、草稿与空密码保留语义。
 
-公共 v2/v3 都以 YAML 父目录为唯一工程根，配置不再接受独立 `project.root` / `source_root`。v3 preset 与扫描深度统一为 `fast|balanced|deep`，Java 仅 fast；旧预设必须显式迁移。配置中的工程内相对路径可随工程迁移，但绝对编译数据库、链接记录及 native 收据要在目标执行机重建；历史报告可读不代表缓存获得新机器上的当前证据权限。
+公共 v3 都以 YAML 父目录为唯一工程根，配置不再接受独立 `project.root` / `source_root`。v3 preset 与扫描深度统一为 `fast|balanced|deep`，Java 仅 fast；旧预设必须显式迁移。配置中的工程内相对路径可随工程迁移，但绝对编译数据库、链接记录及 native 收据要在目标执行机重建；历史报告可读不代表缓存获得新机器上的当前证据权限。
 
 `GET/POST /api/schedules` 和 `POST /api/schedules/cancel` 增加当前已选 YAML 作用域内的持久时间计划，不接受请求另传配置或执行命令。开始可立即或带时区绝对时间，结束可直到完成或绝对总截止；每日可附 `{timezone,start,end}` 窗口，支持跨午夜。计划状态与 `job_status` 分开；每日计划默认循环，只有后台真实作业完成才终止后续窗口，窗口结束、零问题或未知覆盖不能触发前端“完成”。总截止先到用 expired；关闭网页继续，关闭 WSL／主机或休眠时不能计算，重开原工程可唤起持久计划。
 

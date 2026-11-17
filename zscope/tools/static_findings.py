@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from ..semantics.build_scope import current_build_id
 from .contracts import (
     ContractTool,
     ToolContract,
@@ -18,10 +20,11 @@ from .contracts import (
 )
 from .symbols import SymbolCatalog, normalize_project_path, valid_symbol_id
 
-DESCRIPTION = """Query existing frozen candidates and persisted rule, graph, SVF/Saber,
-Java-provider, or discovery signals; does not scan. Returns compact evidence
-references, authority, provenance, and validation state. Unvalidated records are
-hypotheses."""
+_BACKEND_SIGNAL_LIMIT = 1_000_000
+
+DESCRIPTION = """Read frozen candidates and persisted rule/graph/SVF/Saber/Java/discovery signals.
+Does not scan; returns evidence references, authority, provenance and validation.
+Unvalidated records are hypotheses."""
 
 
 FINDINGS_CONTRACT = ToolContract(
@@ -188,6 +191,13 @@ class QueryStaticFindingsTool(ContractTool):
         return None
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        pinned = str(getattr(self.code_index, "pinned_build_context_id", "") or "")
+        active = current_build_id()
+        if pinned and active and pinned != active:
+            return tool_result(
+                status="unavailable", data={"findings": []}, missing=["conflicting_build_context"]
+            )
+        build_context_id = pinned or active
         requested_symbol = str(arguments.get("symbol_id") or "")
         if requested_symbol and self.catalog.resolve(requested_symbol) is None:
             return tool_result(
@@ -198,6 +208,11 @@ class QueryStaticFindingsTool(ContractTool):
                 warnings=["The symbol ID may belong to an older index revision."],
             )
         records: List[Dict[str, Any]] = []
+        symbols_by_file: Dict[str, List[Dict[str, Any]]] = {}
+        for symbol in self.catalog.snapshot().records:
+            symbols_by_file.setdefault(normalize_project_path(symbol.get("file")), []).append(
+                symbol
+            )
         providers: set[str] = set()
         missing: List[str] = []
         warnings: List[str] = []
@@ -210,16 +225,41 @@ class QueryStaticFindingsTool(ContractTool):
         else:
             providers.add("candidate_ledger")
             for item in ledger.frozen_records():
-                records.append(self._candidate_record(item))
+                if build_context_id and item.get("build_context_id") != build_context_id:
+                    if not item.get("build_context_id"):
+                        missing.append("candidate_build_identity")
+                    continue
+                records.append(self._candidate_record(item, symbols_by_file))
 
-        database = self._database()
-        getter = getattr(database, "get_enriched_taint_bugs", None) if database else None
-        if callable(getter):
-            providers.add("knowledge_db")
-            for item in getter(limit=1_000_000):
-                records.append(self._backend_record(item))
+        if build_context_id:
+            getter = getattr(self.code_index, "get_instance_backend_signals", None)
+            signals = (
+                getter(build_context_id=build_context_id, limit=_BACKEND_SIGNAL_LIMIT)
+                if callable(getter)
+                else {}
+            )
+            if (
+                signals.get("status") == "complete"
+                and signals.get("build_context_id") == build_context_id
+            ):
+                providers.add("knowledge_db")
+                rows = signals["rows"]
+                if len(rows) >= _BACKEND_SIGNAL_LIMIT:
+                    missing.append("backend_signal_limit")
+                records.extend(self._backend_record(item, symbols_by_file) for item in rows)
+            else:
+                missing.append(str(signals.get("reason") or "instance_backend_signals"))
         else:
-            missing.append("persisted_backend_signals")
+            database = self._database()
+            getter = getattr(database, "get_enriched_taint_bugs", None) if database else None
+            if callable(getter):
+                providers.add("knowledge_db")
+                rows = getter(limit=_BACKEND_SIGNAL_LIMIT)
+                if len(rows) >= _BACKEND_SIGNAL_LIMIT:
+                    missing.append("backend_signal_limit")
+                records.extend(self._backend_record(item, symbols_by_file) for item in rows)
+            else:
+                missing.append("persisted_backend_signals")
 
         filtered = self._filter(records, arguments)
         filtered.sort(
@@ -240,17 +280,20 @@ class QueryStaticFindingsTool(ContractTool):
             providers=sorted(providers),
             missing=list(dict.fromkeys(missing)),
             coverage_details={
+                **({"build_context_id": build_context_id} if build_context_id else {}),
                 "ledger": (
                     "frozen"
                     if ledger is not None and bool(getattr(ledger, "is_frozen", False))
                     else "unavailable" if ledger is None else "not_frozen"
-                )
+                ),
             },
             page=page_result(offset, limit, len(selected), len(filtered)),
             warnings=warnings,
         )
 
-    def _candidate_record(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _candidate_record(
+        self, item: Dict[str, Any], symbols_by_file: Dict[str, List[Dict[str, Any]]]
+    ) -> Dict[str, Any]:
         ticket = item.get("ticket") or {}
         evidence = ticket.get("evidence") or {}
         payload = evidence.get("candidate_payload") or {}
@@ -258,7 +301,7 @@ class QueryStaticFindingsTool(ContractTool):
         combined = {**payload, **terminal}
         producer = self._producer(item, combined)
         location = self._location(combined, ticket)
-        symbol_refs = self._symbols_at(location)
+        symbol_refs = self._symbols_at(location, symbols_by_file)
         rule_id = str(
             combined.get("rule_id") or combined.get("rule") or ticket.get("trigger") or ""
         )
@@ -331,7 +374,9 @@ class QueryStaticFindingsTool(ContractTool):
             },
         }
 
-    def _backend_record(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _backend_record(
+        self, item: Dict[str, Any], symbols_by_file: Dict[str, List[Dict[str, Any]]]
+    ) -> Dict[str, Any]:
         location = {
             "file": normalize_project_path(item.get("file_path")) or None,
             "line": self._positive_coordinate(item.get("line")),
@@ -359,7 +404,7 @@ class QueryStaticFindingsTool(ContractTool):
             "summary": self._one_line(
                 f"{source_func} -> {sink_func}: {item.get('bug_type') or 'backend signal'}"
             ),
-            "symbol_refs": self._symbols_at(location),
+            "symbol_refs": self._symbols_at(location, symbols_by_file),
             "evidence_refs": (
                 [{"kind": "source", **location}] if location["file"] and location["line"] else []
             ),
@@ -389,15 +434,15 @@ class QueryStaticFindingsTool(ContractTool):
             and (not category or (item.get("rule") or {}).get("category") == category)
         ]
 
-    def _symbols_at(self, location: Dict[str, Any]) -> List[str]:
+    def _symbols_at(
+        self, location: Dict[str, Any], symbols_by_file: Dict[str, List[Dict[str, Any]]]
+    ) -> List[str]:
         file_path = normalize_project_path(location.get("file"))
         line = int(location.get("line") or 0)
         if not file_path or not line:
             return []
         refs = []
-        for record in self.catalog.snapshot().records:
-            if normalize_project_path(record.get("file")) != file_path:
-                continue
+        for record in symbols_by_file.get(file_path, []):
             start = int(record.get("start_line") or 0)
             end = int(record.get("end_line") or start)
             if start <= line <= end:
@@ -491,15 +536,16 @@ class QueryStaticFindingsTool(ContractTool):
     @staticmethod
     def _confidence(value: Any) -> Optional[float]:
         try:
-            return max(0.0, min(1.0, float(value))) if value is not None else None
+            number = float(value)
         except (TypeError, ValueError):
             return None
+        return max(0.0, min(1.0, number)) if math.isfinite(number) else None
 
     @staticmethod
     def _positive_coordinate(value: Any) -> Optional[int]:
         try:
             result = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         return result if result > 0 else None
 

@@ -599,12 +599,12 @@ def build_discovery_ablation_plan(
         label="fixed Validator config",
     )
     _model_value, model_sha, _ = _read_structured(model_spec, label="model spec")
-    if config_value.get("config_version") != 2:
-        raise DiscoveryAblationError("ablation scan config must use config_version: 2")
+    if config_value.get("config_version") != 3:
+        raise DiscoveryAblationError("ablation scan config must use config_version: 3")
     scan = config_value.get("scan")
     if not isinstance(scan, Mapping):
         raise DiscoveryAblationError("ablation scan config must contain an explicit scan object")
-    if scan.get("depth") != "balanced":
+    if scan.get("preset") != "balanced":
         raise DiscoveryAblationError("all ablation arms require explicit balanced depth")
     if runtime_value.get("runtime_spec_version") != 1:
         raise DiscoveryAblationError("ablation RuntimeSpec must use runtime_spec_version: 1")

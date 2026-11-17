@@ -60,6 +60,8 @@ tests:
 
 # Benchmark
 
+配置输入统一为 `config_version: 3`，扫描档位写入 `scan.preset`；C/C++ 与 Java 共用同一格式。旧输入先用 `zscope-config migrate` 显式迁移，历史评分/报告 schema 版本不受此变更影响。
+
 ## 最小语义配置诊断
 
 `scripts/audit_semantic_configuration.py --config <工程配置> --output <新文件.json>` 在 Linux 上对相同精确 native 函数清单执行三组本地候选与调用效果比较：内置语义、内置加自动推导、再加已确认项目配置。配置只读，模型调用为零，不读取答案文件。记录原配置 SHA-256、BuildContext、逐函数候选、推导缺口、配置命题差异及耗时。自动闭包每构建计算一次，实际调用者只接收经真实链接核验的导出效果。

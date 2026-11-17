@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
+import regex
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .symbols import SymbolCatalog, normalize_project_path
 
@@ -25,6 +28,16 @@ def _value_key(value: Dict[str, Any]) -> str:
 
 def _value_name(value: Dict[str, Any]) -> str:
     return str(value.get("name") or value.get("qualified_name") or value.get("expression") or "")
+
+
+class FlowQueryTimeout(TimeoutError):
+    """The shared local sink-regex budget was exhausted, not a negative result."""
+
+
+@dataclass
+class _PathBudget:
+    remaining: int = 100_000
+    exhausted: bool = False
 
 
 class FlowQueryService:
@@ -47,7 +60,11 @@ class FlowQueryService:
         max_call_depth: int,
         max_paths: int,
         _visited: Optional[Set[Tuple[str, str, str]]] = None,
+        _deadline: Optional[float] = None,
+        _path_budget: Optional[_PathBudget] = None,
     ) -> Dict[str, Any]:
+        deadline = time.monotonic() + 1.0 if _deadline is None else _deadline
+        path_budget = _path_budget if _path_budget is not None else _PathBudget()
         facts = self.code_index.get_function_program_facts(function_name, file_path)
         functions = facts.get("functions") or []
         version = facts.get("fact_version") or (
@@ -74,23 +91,27 @@ class FlowQueryService:
         function = functions[0]
         graph = self._build_graph(function)
         source_nodes = self._select_source(graph, source)
-        sink_nodes = self._select_sink(graph, sink)
+        sink_nodes = self._select_sink(graph, sink, deadline=deadline)
         raw_paths, node_limited = self._paths_bounded(
-            graph["adjacency"], source_nodes, sink_nodes, max_paths
+            graph["adjacency"], source_nodes, sink_nodes, max_paths, budget=path_budget
         )
         paths = [self._format_path(graph, path, include_may_alias) for path in raw_paths]
         visited = set(_visited or set())
         unresolved_calls = 0
         depth_limited = False
-        if len(paths) < max_paths:
+        callee_missing: Set[str] = set()
+        if len(paths) < max_paths and not path_budget.exhausted:
             if max_call_depth > 0:
-                cross_paths, unresolved_calls, depth_limited = self._trace_callees(
+                cross_paths, unresolved_calls, depth_limited, callee_missing = self._trace_callees(
                     function_name,
                     file_path,
                     function,
                     graph,
                     source_nodes,
                     sink,
+                    source_selector=source,
+                    deadline=deadline,
+                    path_budget=path_budget,
                     caller_sink_nodes=sink_nodes,
                     include_may_alias=include_may_alias,
                     max_call_depth=max_call_depth,
@@ -100,9 +121,15 @@ class FlowQueryService:
                 paths.extend(cross_paths)
             elif self._reachable_call_nodes(graph, source_nodes) - sink_nodes:
                 depth_limited = True
+        node_limited |= any(path.get("truncated") for path in paths)
         alias_status = "unavailable" if include_may_alias else "not_requested"
         coverage_partial = bool(
-            include_may_alias or unresolved_calls or depth_limited or node_limited
+            include_may_alias
+            or unresolved_calls
+            or depth_limited
+            or node_limited
+            or callee_missing
+            or path_budget.exhausted
         )
         reason = (
             "paths_observed"
@@ -118,11 +145,15 @@ class FlowQueryService:
             "reason": reason,
             "paths": paths,
             "providers": ["clang_cfg"],
-            "missing": (
-                (["alias_evidence"] if include_may_alias else [])
-                + (["unresolved_dispatch"] if unresolved_calls else [])
-                + (["call_depth_bound"] if depth_limited else [])
-                + (["path_node_bound"] if node_limited else [])
+            "missing": list(
+                dict.fromkeys(
+                    (["alias_evidence"] if include_may_alias else [])
+                    + (["unresolved_dispatch"] if unresolved_calls else [])
+                    + (["call_depth_bound"] if depth_limited else [])
+                    + (["path_node_bound"] if node_limited else [])
+                    + (["path_search_bound"] if path_budget.exhausted else [])
+                    + sorted(callee_missing)
+                )
             ),
             "details": {
                 "fact_version": version,
@@ -132,6 +163,7 @@ class FlowQueryService:
                 "unresolved_calls": unresolved_calls,
                 "call_depth_limited": depth_limited,
                 "path_node_limited": node_limited,
+                "path_search_limited": path_budget.exhausted,
             },
         }
 
@@ -163,9 +195,15 @@ class FlowQueryService:
                 "missing": ["joern"],
                 "details": {},
             }
-        rows = list(getter(function_name, str(source["name"]), str(sink["query"])) or [])[
-            :max_paths
-        ]
+        sink_pattern = str(sink["query"])
+        if sink.get("match_mode", "exact") == "exact":
+            sink_pattern = re.escape(sink_pattern)
+        try:
+            rows = list(
+                getter(re.escape(function_name), re.escape(str(source["name"])), sink_pattern) or []
+            )[:max_paths]
+        except TimeoutError as exc:
+            raise FlowQueryTimeout(str(exc)) from exc
         paths = []
         for row in rows:
             nodes = []
@@ -342,19 +380,33 @@ class FlowQueryService:
                 result.add(node_id)
         return result
 
-    def _select_sink(self, graph: Dict[str, Any], selector: Dict[str, Any]) -> Set[str]:
+    def _select_sink(
+        self, graph: Dict[str, Any], selector: Dict[str, Any], *, deadline: Optional[float] = None
+    ) -> Set[str]:
         kind = str(selector.get("kind") or "")
         result: Set[str] = set()
         pattern = None
         if kind == "call" and selector.get("match_mode", "exact") == "regex":
-            pattern = re.compile(str(selector.get("query") or ""))
+            pattern = regex.compile(str(selector.get("query") or ""), regex.VERSION0)
+            if deadline is None:
+                deadline = time.monotonic() + 1.0
         for node_id, node in graph["nodes"].items():
             values = graph["values"].get(node_id, {})
             identities = list(values.get("defs") or []) + list(values.get("uses") or [])
             if kind == "call" and node.get("event_kind") == "call":
                 callee = str(node.get("callee") or "")
                 query = str(selector.get("query") or "")
-                if (pattern and pattern.search(callee)) or (
+                matched = False
+                if pattern is not None:
+                    assert deadline is not None
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise FlowQueryTimeout()
+                    try:
+                        matched = pattern.search(callee, timeout=remaining) is not None
+                    except TimeoutError:
+                        raise FlowQueryTimeout() from None
+                if matched or (
                     pattern is None and (callee == query or callee.rsplit("::", 1)[-1] == query)
                 ):
                     result.add(node_id)
@@ -397,33 +449,45 @@ class FlowQueryService:
         source_nodes: Set[str],
         sink: Dict[str, Any],
         *,
+        source_selector: Dict[str, Any],
+        deadline: float,
+        path_budget: _PathBudget,
         caller_sink_nodes: Set[str],
         include_may_alias: bool,
         max_call_depth: int,
         max_paths: int,
         visited: Set[Tuple[str, str, str]],
-    ) -> Tuple[List[Dict[str, Any]], int, bool]:
+    ) -> Tuple[List[Dict[str, Any]], int, bool, Set[str]]:
         paths: List[Dict[str, Any]] = []
         unresolved = 0
         depth_limited = False
+        missing: Set[str] = set()
         events = {self._event_node_id(event): event for event in graph["events"]}
         for call_node in sorted(
             self._reachable_call_nodes(graph, source_nodes) - caller_sink_nodes
         ):
-            if len(paths) >= max_paths:
+            if len(paths) >= max_paths or path_budget.exhausted:
                 break
             event = events.get(call_node)
             if not event:
                 continue
-            prefixes = self._paths(
-                graph["adjacency"], source_nodes, {call_node}, max_paths - len(paths)
+            prefixes, prefix_limited = self._paths_bounded(
+                graph["adjacency"],
+                source_nodes,
+                {call_node},
+                max_paths - len(paths),
+                budget=path_budget,
             )
+            if prefix_limited:
+                missing.add("path_node_bound")
             targets = self._call_targets(function_name, file_path, event)
             if not targets:
                 unresolved += 1
                 continue
             for prefix in prefixes:
-                argument_indexes = self._tainted_argument_indexes(event, prefix)
+                if path_budget.exhausted:
+                    break
+                argument_indexes = self._tainted_argument_indexes(event, prefix, source_selector)
                 if not argument_indexes:
                     unresolved += 1
                     continue
@@ -463,11 +527,14 @@ class FlowQueryService:
                                 max_call_depth=max_call_depth - 1,
                                 max_paths=max_paths - len(paths),
                                 _visited=nested_visited,
+                                _deadline=deadline,
+                                _path_budget=path_budget,
                             )
                             if nested.get("details", {}).get("call_depth_limited"):
                                 depth_limited = True
                             if nested.get("reason") == "backend_unavailable":
                                 unresolved += 1
+                            missing.update(nested.get("missing") or [])
                             for nested_path in nested.get("paths") or []:
                                 paths.append(
                                     self._combine_paths(
@@ -487,12 +554,15 @@ class FlowQueryService:
                         result_node = self._definition_node_id(event)
                         if result_node == call_node or result_node not in graph["nodes"]:
                             continue
-                        suffixes = self._paths(
+                        suffixes, suffix_limited = self._paths_bounded(
                             graph["adjacency"],
                             {result_node},
                             caller_sink_nodes,
                             max_paths - len(paths),
+                            budget=path_budget,
                         )
+                        if suffix_limited:
+                            missing.add("path_node_bound")
                         if not suffixes:
                             continue
                         returns = self.trace_clang(
@@ -504,11 +574,14 @@ class FlowQueryService:
                             max_call_depth=max_call_depth - 1,
                             max_paths=max_paths - len(paths),
                             _visited=nested_visited,
+                            _deadline=deadline,
+                            _path_budget=path_budget,
                         )
                         if returns.get("details", {}).get("call_depth_limited"):
                             depth_limited = True
                         if returns.get("reason") == "backend_unavailable":
                             unresolved += 1
+                        missing.update(returns.get("missing") or [])
                         for return_path in returns.get("paths") or []:
                             for suffix in suffixes:
                                 paths.append(
@@ -526,25 +599,35 @@ class FlowQueryService:
                                     break
                             if len(paths) >= max_paths:
                                 break
-        return paths, unresolved, depth_limited
+        return paths, unresolved, depth_limited, missing
 
     def _tainted_argument_indexes(
         self,
         event: Dict[str, Any],
         prefix: Tuple[List[str], List[Dict[str, Any]]],
+        source_selector: Optional[Dict[str, Any]] = None,
     ) -> List[int]:
         _nodes, edges = prefix
         value_key = str(edges[-1].get("value_key") or "") if edges else ""
         argument_uses = event.get("argument_uses") or []
         if not argument_uses:
             argument_uses = [[item] for item in event.get("argument_objects") or []]
+
+        def tainted(value: Any) -> bool:
+            if not isinstance(value, dict):
+                return False
+            if value_key:
+                return _value_key(value) == value_key
+            if not source_selector or source_selector.get("kind") == "location":
+                return True
+            return _value_name(value) == source_selector.get("name") and (
+                source_selector.get("kind") != "global" or value.get("value_kind") == "global"
+            )
+
         matched = []
         for index, values in enumerate(argument_uses):
             candidates = values if isinstance(values, list) else [values]
-            if any(
-                isinstance(value, dict) and (not value_key or _value_key(value) == value_key)
-                for value in candidates
-            ):
+            if any(tainted(value) for value in candidates):
                 matched.append(index)
         return matched
 
@@ -568,21 +651,17 @@ class FlowQueryService:
                 )
             callee_usr = str(callee.get("usr") or "")
             if callee_usr:
-                exact_usr = [
+                records = [
                     item
                     for item in records
                     if str((item.get("raw") or {}).get("usr") or "") == callee_usr
                 ]
-                if exact_usr:
-                    records = exact_usr
-            if callee_file:
-                exact_file = [
+            elif callee_file:
+                records = [
                     item
                     for item in records
-                    if normalize_project_path(item.get("file")) == callee_file
+                    if normalize_project_path(item.get("file")) == self.catalog._file(callee_file)
                 ]
-                if exact_file:
-                    records = exact_file
             if len(records) == 1:
                 candidates.append((records[0], "direct", "clang_cfg", 1.0))
                 return candidates
@@ -801,26 +880,61 @@ class FlowQueryService:
         sources: Set[str],
         sinks: Set[str],
         limit: int,
+        *,
+        budget: Optional[_PathBudget] = None,
     ) -> Tuple[List[Tuple[List[str], List[Dict[str, Any]]]], bool]:
+        budget = budget if budget is not None else _PathBudget()
         found: List[Tuple[List[str], List[Dict[str, Any]]]] = []
-        queue: Deque[Tuple[str, List[str], List[Dict[str, Any]]]] = deque(
-            (source, [source], []) for source in sorted(sources)
-        )
+        # Prune branches which cannot reach any selected sink before enumerating
+        # paths; otherwise an irrelevant diamond graph expands exponentially.
+        predecessors: Dict[str, Set[str]] = defaultdict(set)
+        for node, edges in adjacency.items():
+            for edge in edges:
+                predecessors[str(edge["to"])].add(node)
+        reaches_sink = set(sinks)
+        pending = list(sinks)
+        while pending:
+            for predecessor in predecessors.get(pending.pop(), set()):
+                if predecessor not in reaches_sink:
+                    reaches_sink.add(predecessor)
+                    pending.append(predecessor)
         truncated = False
-        while queue and len(found) < limit:
-            current, nodes, edges = queue.popleft()
-            if current in sinks:
-                found.append((nodes, edges))
-                continue
-            if len(nodes) >= 200:
-                if adjacency.get(current):
-                    truncated = True
-                continue
-            for edge in adjacency.get(current, []):
-                target = str(edge["to"])
-                if target in nodes:
+        for source in sorted(sources & reaches_sink):
+            nodes, edges, active = [source], [], {source}
+            stack = [iter(adjacency.get(source, []))]
+            # Lazy DFS retains one path and its iterators, never a breadth of
+            # copied path prefixes (a reachable diamond can have 2**N of them).
+            while stack and len(found) < limit:
+                if budget.remaining <= 0:
+                    budget.exhausted = True
+                    return found, truncated
+                budget.remaining -= 1
+                current = nodes[-1]
+                next_edge: Optional[Dict[str, Any]] = None
+                if current in sinks:
+                    found.append((list(nodes), list(edges)))
+                elif len(nodes) >= 200:
+                    truncated |= any(
+                        str(item["to"]) not in active and str(item["to"]) in reaches_sink
+                        for item in adjacency.get(current, [])
+                    )
+                else:
+                    next_edge = next(stack[-1], None)
+                if next_edge is None:
+                    stack.pop()
+                    active.remove(nodes.pop())
+                    if edges:
+                        edges.pop()
                     continue
-                queue.append((target, nodes + [target], edges + [edge]))
+                target = str(next_edge["to"])
+                if target in active or target not in reaches_sink:
+                    continue
+                nodes.append(target)
+                edges.append(next_edge)
+                active.add(target)
+                stack.append(iter(adjacency.get(target, [])))
+            if len(found) >= limit:
+                break
         return found, truncated
 
     def _format_path(
@@ -958,10 +1072,11 @@ class FlowQueryService:
         expected_file = normalize_project_path(selector.get("file_path"))
         actual_file = normalize_project_path(location.get("file"))
         return (
-            selector.get("column") is None
-            or location.get("column") == selector["column"]
-        ) and int(location.get("line") or 0) == int(selector.get("line") or 0) and (
-            not expected_file
-            or actual_file == expected_file
-            or actual_file.endswith("/" + expected_file)
+            (selector.get("column") is None or location.get("column") == selector["column"])
+            and int(location.get("line") or 0) == int(selector.get("line") or 0)
+            and (
+                not expected_file
+                or actual_file == expected_file
+                or actual_file.endswith("/" + expected_file)
+            )
         )

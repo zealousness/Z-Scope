@@ -38,7 +38,8 @@ _VALIDATOR_V3_CALL_KINDS = frozenset(
     }
 )
 
-# Escalation-rung observability (new_docs/balanced_confirmed_tp_plan.md Phase 5).
+# Escalation-rung observability; historical plan Phase 5:
+# docs/archive/design-plans/balanced_confirmed_tp_plan.md
 # Derives the ladder rung that produced one LLM call from its validator
 # ``call_kind``.  Empty string means "not an escalation-tagged call"; consumers
 # treat first-pass validator traffic as the R1 baseline bucket.

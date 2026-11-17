@@ -2,16 +2,17 @@
 
 import json
 import logging
-from ..common.cancellation import CancellationError
 import time
 from copy import deepcopy
-from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Iterable, List, Optional, TYPE_CHECKING
 
+from ..common.cancellation import CancellationError
 from ..framework.base import BaseTool
 from ..snapshots.store import SnapshotStore
 from .policy import ToolPolicy
 from .registry import build_tool_registry
 from .contracts import ContractTool, invalid_request, tool_result
+from .source_access import source_lines
 
 if TYPE_CHECKING:
     from ..config.user_config_store import UserConfigStore
@@ -95,7 +96,7 @@ class ToolsRuntime:
         enforce_policy: bool = True,
     ) -> Dict[str, Any]:
         """Execute a registered tool by name."""
-        logger.debug("Executing tool %r with args: %s", tool_name, arguments)
+        logger.debug("Executing tool %r", tool_name)
         try:
             effective_args = arguments
             tool = self._tools_by_name.get(tool_name)
@@ -197,6 +198,7 @@ class ToolsRuntime:
                     self._read_code_identity = identity
                 cached_read = self._cached_read_code(effective_args)
                 if cached_read is not None:
+                    cached_read = self.finalize_result(tool, cached_read)
                     self._run_post_hooks(
                         tool_name,
                         effective_args,
@@ -221,26 +223,7 @@ class ToolsRuntime:
                 result["warnings"].append(
                     "Cached symbols are navigation hints; the index input identity is unverified."
                 )
-            if isinstance(tool, ContractTool):
-                result = self._enforce_result_limit(result)
-                result_error = tool.validate_result(result)
-                if result_error:
-                    logger.error(
-                        "Tool %s returned a result outside its contract: %s",
-                        tool_name,
-                        result_error,
-                    )
-                    result = tool_result(
-                        status="internal_error",
-                        data=None,
-                        coverage_level="unavailable",
-                        error={
-                            "code": "invalid_tool_result",
-                            "path": result_error.partition(": ")[0] or "$",
-                            "message": result_error,
-                            "retryable": False,
-                        },
-                    )
+            result = self.finalize_result(tool, result)
             if tool_name == "read_code" and result.get("success") is True:
                 self._read_code_cache.append((dict(effective_args), deepcopy(result)))
                 self._read_code_cache = self._read_code_cache[-64:]
@@ -256,22 +239,45 @@ class ToolsRuntime:
         except CancellationError:
             raise
         except Exception as exc:
-            logger.error("Tool execution error: %s", exc, exc_info=True)
-            return tool_result(
-                status="internal_error",
-                data=None,
-                coverage_level="unavailable",
-                error={
-                    "code": "tool_execution_failed",
-                    "path": None,
-                    "message": (
-                        str(exc)
-                        if self.access_profile == "default"
-                        else "Read-only tool execution failed."
-                    ),
-                    "retryable": False,
-                },
-            )
+            return self.execution_failure(tool_name, exc)
+
+    @staticmethod
+    def execution_failure(tool_name: str, exc: Exception) -> Dict[str, Any]:
+        """Expose a stable failure category; provider messages may contain credentials."""
+        logger.error("Tool %s failed: %s", tool_name, type(exc).__name__)
+        return tool_result(
+            status="internal_error",
+            data=None,
+            coverage_level="unavailable",
+            error={
+                "code": "tool_execution_failed",
+                "path": None,
+                "message": f"Tool execution failed ({type(exc).__name__}).",
+                "retryable": False,
+            },
+        )
+
+    @staticmethod
+    def finalize_result(tool: BaseTool, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply the same output boundary to Agent calls, runtime calls and cache hits."""
+        if not isinstance(tool, ContractTool):
+            return result
+        result = ToolsRuntime._enforce_result_limit(result)
+        error = tool.validate_result(result)
+        if not error:
+            return result
+        logger.error("Tool %s returned a result outside its contract: %s", tool.name, error)
+        return tool_result(
+            status="internal_error",
+            data=None,
+            coverage_level="unavailable",
+            error={
+                "code": "invalid_tool_result",
+                "path": error.partition(": ")[0] or "$",
+                "message": error,
+                "retryable": False,
+            },
+        )
 
     def _cached_read_code(self, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         for previous_args, previous_result in reversed(self._read_code_cache):
@@ -303,7 +309,7 @@ class ToolsRuntime:
                 or int(source.get("end_line") or 0) < int(requested_end)
             ):
                 continue
-            lines = str(source.get("code") or "").splitlines(True)
+            lines = source_lines(str(source.get("code") or ""))
             start_offset = int(requested_start) - int(source["start_line"])
             end_offset = int(requested_end) - int(source["start_line"]) + 1
             if start_offset < 0 or end_offset > len(lines):
@@ -326,6 +332,11 @@ class ToolsRuntime:
                 cached["status"] = "partial"
                 cached["coverage"]["level"] = "partial"
                 cached["data"]["definition"]["complete"] = False
+            symbol = cached["data"].get("symbol")
+            if isinstance(symbol, dict):
+                definition_start = symbol["location"]["start_line"]
+                if int(requested_start) != definition_start:
+                    cached["data"]["definition"]["complete"] = False
             cached["warnings"] = [
                 *cached.get("warnings", []),
                 "Reused a covered line range from a previous read_code result.",
@@ -335,97 +346,113 @@ class ToolsRuntime:
 
     @staticmethod
     def _enforce_result_limit(result: Dict[str, Any], limit: int = 60_000) -> Dict[str, Any]:
-        """Keep output valid JSON while trimming complete list items or source lines."""
-        if len(json.dumps(result, ensure_ascii=False, default=str)) <= limit:
+        """Fit whole records/lines, including pagination and truncation metadata."""
+
+        def fits() -> bool:
+            return len(json.dumps(result, ensure_ascii=False, default=str)) <= limit
+
+        if fits():
             return result
-        data = result.get("data")
-        if isinstance(data, dict):
-            for key in ("matches", "symbols", "edges", "paths", "findings", "records"):
-                values = data.get(key)
-                if not isinstance(values, list):
-                    continue
-                while values and len(json.dumps(result, ensure_ascii=False, default=str)) > limit:
-                    values.pop()
-                if not values:
-                    # The first item itself cannot fit. An unchanged offset
-                    # would make every continuation repeat this empty page.
-                    return tool_result(
-                        status="partial",
-                        data=None,
-                        providers=list(result.get("coverage", {}).get("providers") or []),
-                        missing=[*list(result.get("coverage", {}).get("missing") or []), "result_size_limit"],
-                        coverage_details={"truncated": True, "max_result_chars": limit},
-                        warnings=["The first result item exceeds the tool result size limit."],
-                        next_actions=["Narrow the query; this item cannot be retrieved by pagination."],
-                    )
-                page = result.get("page")
-                if isinstance(page, dict):
-                    page["returned"] = len(values)
-                    page["has_more"] = True
-                    page["next_offset"] = int(page.get("offset") or 0) + len(values)
-                break
-            source = data.get("source")
-            if isinstance(source, dict) and isinstance(source.get("code"), str):
-                lines = source["code"].splitlines(True)
-                while lines and len(json.dumps(result, ensure_ascii=False, default=str)) > limit:
-                    lines.pop()
-                    source["code"] = "".join(lines)
-                source["code"] = "".join(lines)
-                source_start = int(source.get("start_line") or 1)
-                source["end_line"] = source_start + max(0, len(lines) - 1)
-                source["truncated"] = True
-                source["next_start_line"] = int(source["end_line"]) + 1 if lines else source_start
-                definition = data.get("definition")
-                if isinstance(definition, dict):
-                    definition["complete"] = False
-                if not lines:
-                    return tool_result(
-                        status="partial",
-                        data=None,
-                        providers=list(result.get("coverage", {}).get("providers") or []),
-                        missing=[*list(result.get("coverage", {}).get("missing") or []), "result_size_limit"],
-                        coverage_details={"truncated": True, "max_result_chars": limit},
-                        warnings=["The first requested source line exceeds the tool result size limit."],
-                        next_actions=["Read a different source range; this line cannot fit in a tool result."],
-                    )
-            snapshot = data.get("snapshot")
-            if isinstance(snapshot, dict) and snapshot.get("data") is not None:
-                snapshot["data"] = None
-                result.setdefault("warnings", []).append(
-                    "Snapshot payload was omitted at the tool result size limit."
-                )
-            semantics = data.get("security_semantics")
-            if isinstance(semantics, dict) and isinstance(semantics.get("records"), list):
-                while (
-                    semantics["records"]
-                    and len(json.dumps(result, ensure_ascii=False, default=str)) > limit
-                ):
-                    semantics["records"].pop()
-            if (
-                isinstance(data.get("contract"), dict)
-                and len(json.dumps(result, ensure_ascii=False, default=str)) > limit
-            ):
-                data["contract"] = {}
+        # Providers may return shared cached data; trimming owns its mutations.
+        result = deepcopy(result)
         result["status"] = "partial"
         result["coverage"]["level"] = "partial"
         result.setdefault("warnings", []).append(
             f"Result was truncated at the {limit}-character tool limit."
         )
-        if len(json.dumps(result, ensure_ascii=False, default=str)) > limit:
-            coverage_value = result.get("coverage")
-            coverage: Dict[str, Any] = (
-                coverage_value if isinstance(coverage_value, dict) else {}
-            )
-            result = tool_result(
+
+        def omitted(message: str, action: str) -> Dict[str, Any]:
+            coverage = result.get("coverage") or {}
+            return tool_result(
                 status="partial",
                 data=None,
                 providers=list(coverage.get("providers") or []),
                 missing=[*list(coverage.get("missing") or []), "result_size_limit"],
                 coverage_details={"truncated": True, "max_result_chars": limit},
-                warnings=[f"Result payload was omitted at the {limit}-character tool limit."],
-                next_actions=["Retry with a smaller page or a narrower query."],
+                warnings=[message],
+                next_actions=[action],
             )
-        return result
+
+        def fit_prefix(values: list[Any], apply: Callable[[list[Any]], None]) -> int:
+            # Binary search avoids serializing the whole payload once per removed item.
+            low, high = 0, len(values)
+            while low < high:
+                count = (low + high + 1) // 2
+                apply(values[:count])
+                if fits():
+                    low = count
+                else:
+                    high = count - 1
+            apply(values[:low])
+            return low
+
+        data = result.get("data")
+        if isinstance(data, dict):
+            for key in ("matches", "symbols", "edges", "paths", "findings", "records"):
+                values = data.get(key)
+                if not isinstance(values, list) or not values:
+                    continue
+
+                def apply_items(items: list[Any]) -> None:
+                    data[key] = items
+                    page = result.get("page")
+                    if isinstance(page, dict):
+                        page.update(
+                            returned=len(items),
+                            has_more=True,
+                            next_offset=int(page.get("offset") or 0) + len(items),
+                        )
+
+                if not fit_prefix(values, apply_items):
+                    return omitted(
+                        "The first result item exceeds the tool result size limit.",
+                        "Narrow the query; this item cannot be retrieved by pagination.",
+                    )
+                break
+            source = data.get("source")
+            if not fits() and isinstance(source, dict) and isinstance(source.get("code"), str):
+                lines = source_lines(source["code"])
+                source_start = int(source.get("start_line") or 1)
+                definition = data.get("definition")
+                if isinstance(definition, dict):
+                    definition["complete"] = False
+
+                def apply_lines(kept: list[str]) -> None:
+                    source.update(
+                        code="".join(kept),
+                        end_line=source_start + max(0, len(kept) - 1),
+                        truncated=True,
+                        next_start_line=source_start + len(kept),
+                    )
+
+                if not fit_prefix(lines, apply_lines):
+                    return omitted(
+                        "The first requested source line exceeds the tool result size limit.",
+                        "Read a different source range; this line cannot fit in a tool result.",
+                    )
+            snapshot = data.get("snapshot")
+            if not fits() and isinstance(snapshot, dict) and snapshot.get("data") is not None:
+                snapshot["data"] = None
+                result["warnings"].append(
+                    "Snapshot payload was omitted at the tool result size limit."
+                )
+            semantics = data.get("security_semantics")
+            if (
+                not fits()
+                and isinstance(semantics, dict)
+                and isinstance(semantics.get("records"), list)
+            ):
+                fit_prefix(semantics["records"], lambda items: semantics.update(records=items))
+            if not fits() and isinstance(data.get("contract"), dict):
+                data["contract"] = {}
+        return (
+            result
+            if fits()
+            else omitted(
+                f"Result payload was omitted at the {limit}-character tool limit.",
+                "Retry with a smaller page or a narrower query.",
+            )
+        )
 
     def _run_post_hooks(
         self,

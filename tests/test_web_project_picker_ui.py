@@ -66,7 +66,7 @@ def test_real_http_project_picker_setup_schedule_and_switching(tmp_path, monkeyp
     monkeypatch.setattr(ScanJobService, "start", forbid_scan)
     monkeypatch.setattr(ScanJobService, "resume", forbid_scan)
     root = Path(__file__).resolve().parents[1]
-    output = root / "docs/webui-redesign/assets/followup"
+    output = root / os.environ.get("ZSCOPE_PICKER_EVIDENCE", "docs/webui-redesign/assets/followup")
     output.mkdir(parents=True, exist_ok=True)
     sources = (
         sorted((root / "zscope/web/static").glob("*.js"))
@@ -79,7 +79,7 @@ def test_real_http_project_picker_setup_schedule_and_switching(tmp_path, monkeyp
                 "zscope/web/server.py",
                 "zscope/web/services.py",
                 "zscope/config/editor.py",
-                "zscope/config/v2.py",
+                "zscope/config/support.py",
                 "zscope/config/v3.py",
                 "zscope/orchestration/jobs/schedules.py",
                 "tests/test_web_project_picker_ui.py",

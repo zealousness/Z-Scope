@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from zscope.config.config import IndexingConfig
-from zscope.config.v2 import _parse_indexing
+from zscope.config.support import _parse_indexing
 
 
 @pytest.mark.parametrize("frontend", ["auto", "batch", "lsp"])

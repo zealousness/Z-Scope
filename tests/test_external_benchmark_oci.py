@@ -221,7 +221,7 @@ def _suite(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (project / "zscope.benchmark.yaml").write_text(
-        "config_version: 2\n"
+        "config_version: 3\n"
         "llms:\n"
         "  default:\n"
         '    base_urls: ["https://host.invalid/v1"]\n'
@@ -229,8 +229,8 @@ def _suite(tmp_path: Path) -> Path:
         "    api_key: host-key\n"
         "project:\n"
         "  language: c_cpp\n"
+        "  targets: [{id: main, compile_commands: compile_commands.json}]\n"
         '  entry_functions_list: "../benchmark/entries.json"\n'
-        "  compile_commands_path: compile_commands.json\n"
         "scan:\n"
         '  task: ""\n'
         "indexing:\n"

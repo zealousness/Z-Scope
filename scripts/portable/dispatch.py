@@ -84,7 +84,20 @@ if name in {"wpa", "saber"} and not any(arg.startswith("-extapi") for arg in arg
 if name in {"mvn", "mvnDebug"}:
     # Share the default repository with zscope-maven-cache install. A project can
     # select a different repository using Maven's normal -Dmaven.repo.local.
-    cache = Path(os.environ.get("Z_SCOPE_MAVEN_REPO", str(Path.home() / ".cache/zscope/maven")))
+    explicit_cache = None
+    for index, arg in enumerate(args):
+        property_arg = args[index + 1] if arg == "-D" and index + 1 < len(args) else arg
+        if property_arg.startswith("-Dmaven.repo.local="):
+            explicit_cache = property_arg.split("=", 1)[1]
+        elif arg == "-D" and property_arg.startswith("maven.repo.local="):
+            explicit_cache = property_arg.split("=", 1)[1]
+    if explicit_cache == "":
+        raise SystemExit("maven.repo.local must name a repository directory")
+    cache = Path(
+        explicit_cache
+        if explicit_cache is not None
+        else os.environ.get("Z_SCOPE_MAVEN_REPO", str(Path.home() / ".cache/zscope/maven"))
+    )
     cache.mkdir(parents=True, exist_ok=True)
     inventory = json.loads((root / "share/maven-repository.sha256.json").read_text())
     for relative, expected in inventory.items():
@@ -103,7 +116,7 @@ if name in {"mvn", "mvnDebug"}:
             os.replace(temporary, target)
         finally:
             Path(temporary).unlink(missing_ok=True)
-    if not any(arg.startswith("-Dmaven.repo.local=") for arg in args):
+    if explicit_cache is None:
         command.insert(1, f"-Dmaven.repo.local={cache}")
 executable = command[0]
 if name == "make":

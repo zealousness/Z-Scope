@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from zscope.config.v2 import _runtime_analysis, load_runtime_spec
+from zscope.config.support import _runtime_analysis, load_runtime_spec
 from zscope.core.validation.explanation import (
     apply_decision_explanations,
     collect_unexplained_decisions,

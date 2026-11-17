@@ -265,13 +265,11 @@ def test_cli_validate_v3_single_target_reports_execution_and_unconsumed_fields(
         assert field in declared[0]
 
 
-def test_cli_validate_v2_keeps_the_existing_label(tmp_path: Path) -> None:
+def test_cli_validate_rejects_v2(tmp_path: Path) -> None:
     path = _write(tmp_path, _v2_document())
-
     result = CliRunner().invoke(config_main, ["validate", "--config", str(path)])
-
-    assert result.exit_code == 0, result.output
-    assert "Valid config v2" in result.output
+    assert result.exit_code != 0
+    assert "must be 3" in result.output
 
 
 def test_cli_validate_rejects_unknown_versions(tmp_path: Path) -> None:
@@ -282,7 +280,7 @@ def test_cli_validate_rejects_unknown_versions(tmp_path: Path) -> None:
     result = CliRunner().invoke(config_main, ["validate", "--config", str(path)])
 
     assert result.exit_code != 0
-    assert "must be 2 or 3" in result.output
+    assert "must be 3" in result.output
 
 
 # --- Initializer: strict v3 documents that round-trip from any working directory --
@@ -306,9 +304,7 @@ def test_init_round_trips_from_a_different_working_directory(
     assert raw["config_version"] == 3
     assert "root" not in raw["project"] and "source_root" not in raw["project"]
     assert raw["project"]["semantics_file"] == "zscope.semantics.yaml"
-    semantics = yaml.safe_load(
-        (project / "zscope.semantics.yaml").read_text(encoding="utf-8")
-    )
+    semantics = yaml.safe_load((project / "zscope.semantics.yaml").read_text(encoding="utf-8"))
     assert semantics["schema_version"] == "zscope.project-semantics.v1"
     assert semantics["interfaces"] == []
 
@@ -383,9 +379,7 @@ def test_migrate_semantics_preserves_xlsx_and_reports_removed_context(
         },
     ]
     rows["module_lifecycle"] = [{"symbol_name": "module_init", "kind": "init"}]
-    rows["function_intents"] = [
-        {"symbol_name": "parse_input", "intents": "untrusted request"}
-    ]
+    rows["function_intents"] = [{"symbol_name": "parse_input", "intents": "untrusted request"}]
     UserConfigWorkbook(workbook_path).write_rows(rows)
     original = workbook_path.read_bytes()
 
@@ -404,21 +398,18 @@ def test_migrate_semantics_preserves_xlsx_and_reports_removed_context(
 
     assert result.exit_code == 0, result.output
     assert workbook_path.read_bytes() == original
-    migrated = yaml.safe_load(
-        (project / "zscope.semantics.yaml").read_text(encoding="utf-8")
-    )
+    migrated = yaml.safe_load((project / "zscope.semantics.yaml").read_text(encoding="utf-8"))
     assert {row["selector"]["name"] for row in migrated["interfaces"]} == {
         "project_alloc",
         "project_free",
     }
     assert all(row["status"] == "pending" for row in migrated["interfaces"])
-    assert yaml.safe_load(config.read_text(encoding="utf-8"))["project"][
-        "semantics_file"
-    ] == "zscope.semantics.yaml"
+    assert (
+        yaml.safe_load(config.read_text(encoding="utf-8"))["project"]["semantics_file"]
+        == "zscope.semantics.yaml"
+    )
     report = json.loads(
-        (project / "zscope.semantics.migration-report.json").read_text(
-            encoding="utf-8"
-        )
+        (project / "zscope.semantics.migration-report.json").read_text(encoding="utf-8")
     )
     assert report["source_preserved"] is True
     assert report["removed"]["module_lifecycle"][0]["symbol_name"] == "module_init"
@@ -650,8 +641,8 @@ def test_v2_and_v3_share_the_same_config_directory_root(
     monkeypatch.chdir(elsewhere)
 
     # Both versions preserve the loaded file directory regardless of CWD.
-    v2 = ConfigLoader.load(str(v2_path), read_only=True)
-    assert v2.project.project_root == project.resolve()
+    with pytest.raises(ValueError, match="must be 3"):
+        ConfigLoader.load(str(v2_path), read_only=True)
     # The v3 formal model exposes the same computed root.
     assert parse_user_config_v3(str(v3_path)).project.root == project.resolve()
 
@@ -717,7 +708,7 @@ def test_editor_invalid_save_never_overwrites_the_saved_file(tmp_path: Path) -> 
     path = _write(tmp_path, _v3_document())
     before = path.read_bytes()
     invalid = _v3_document()
-    invalid["indexing"] = {"backend": "unified"}  # unknown key in the v3 model
+    invalid["indexing"] = {"unknown_backend_option": True}
 
     with pytest.raises(ValueError, match="unknown configuration key"):
         save_document_text(path, yaml.safe_dump(invalid, sort_keys=False))
@@ -749,19 +740,11 @@ def test_editor_validates_v3_candidates_in_the_configuration_directory(tmp_path:
     assert not list(elsewhere.glob(".zscope-config-editor*"))
 
 
-def test_editor_v2_save_keeps_the_current_loader_gate(tmp_path: Path) -> None:
-    path = _write(tmp_path, _v2_document())
-    updated = _v2_document()
-    updated["scan"] = {"task": "ownership"}
-
-    save_document_text(path, yaml.safe_dump(updated, sort_keys=False))
-
-    assert ConfigLoader.load(str(path)).scan.task == "ownership"
-    broken = _v2_document()
-    broken["concurrency"]["entry_workers"] = 0
+def test_editor_rejects_v2_without_overwriting_saved_file(tmp_path: Path) -> None:
+    path = _write(tmp_path, _v3_document())
     before = path.read_bytes()
-    with pytest.raises(ValueError):
-        save_document_text(path, yaml.safe_dump(broken, sort_keys=False))
+    with pytest.raises(ValueError, match="must be 3"):
+        save_document_text(path, yaml.safe_dump(_v2_document(), sort_keys=False))
     assert path.read_bytes() == before
 
 

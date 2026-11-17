@@ -98,12 +98,16 @@ class _BaseIndex:
             if not file_path or str(manifest.get("source") or "") == file_path
         ]
 
+    def svf_signals_current(self) -> bool:
+        # Attribution-only fixtures explicitly model a successful live producer.
+        return True
+
 
 class _ProductionShapedBaseIndex:
     """Production CodeIndex keeps the database behind its backend."""
 
     def __init__(self, db: KnowledgeDB, manifests: list[dict]) -> None:
-        self._backend = type("Backend", (), {"db": db})()
+        self._backend = type("Backend", (), {"db": db, "svf_signals_current": lambda self: True})()
         self._manifests = manifests
 
     def get_build_contexts(self, file_path: str = "") -> list[dict]:
@@ -427,6 +431,87 @@ def test_candidate_identity_differs_between_variants(tmp_path: Path) -> None:
     assert alt["evidence_pack"]["build_context_id"] == "ctx-b"
     assert alt["evidence_pack"]["value_flow"]["build_context_id"] == "ctx-b"
     assert base["dedup_key"] != alt["dedup_key"]
+
+
+def test_failed_svf_refresh_cannot_republish_stored_signal_as_current_candidate(
+    tmp_path, monkeypatch
+):
+    from zscope.core.analysis.analyzer import Analyzer
+    from zscope.retrieval.unified_backend import UnifiedBackend
+
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        manifest = _current_instance(tmp_path, db, context_id="ctx-a", command_id="command-base")
+        _saber_row(db, command_id="command-base", attribution="exact")
+        db.commit()
+        backend = UnifiedBackend()
+        backend._clang._db = db
+        monkeypatch.setattr(backend, "_check_svf_tools", lambda: ["saber"])
+        assert backend._run_svf_exclusive(["main"]) is False
+        base = _ProductionShapedBaseIndex(db, [manifest])
+        base._backend = backend
+        scope = InstanceScope(
+            build_context_id="ctx-a",
+            usr="c:@F@main",
+            identity="ctx-a|c:@F@main",
+            source="src/unit.c",
+            function_names=("main",),
+        )
+        scoped = ScopedCodeIndex(base, scope)
+        analyzer = Analyzer.__new__(Analyzer)
+        analyzer.code_index = scoped
+        analyzer.instance_scope = scope
+        capabilities = {}
+        monkeypatch.setattr(
+            analyzer,
+            "_record_engine_capability",
+            lambda name, **kw: capabilities.update({name: kw}),
+        )
+        monkeypatch.setattr(analyzer, "_reconstruct_svf_source_path", lambda path: path)
+        issues = analyzer._detect_instance_backend_signals(
+            {}, entry_func="main", reachable_funcs=set()
+        )
+        assert issues == []
+        assert capabilities["svf_taint_query"]["status"] != "complete"
+        assert db.count_taint_signal_attribution("command-base")["exact_for_command"] == 1
+    finally:
+        db.close()
+
+
+def test_failed_svf_refresh_cannot_feed_legacy_candidate_collection(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from zscope.core.analysis.analyzer import Analyzer
+    from zscope.retrieval.unified_backend import UnifiedBackend
+
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _saber_row(db, command_id="command-base", attribution="exact")
+        db.commit()
+        backend = UnifiedBackend()
+        backend._clang._db = db
+        monkeypatch.setattr(backend, "_check_svf_tools", lambda: ["saber"])
+        assert backend._run_svf_exclusive(["main"]) is False
+        analyzer = Analyzer.__new__(Analyzer)
+        analyzer.code_index = SimpleNamespace(backend=backend)
+        capabilities = {}
+        monkeypatch.setattr(analyzer, "_get_knowledge_db", lambda: db)
+        monkeypatch.setattr(analyzer, "_candidate_backend_profile", lambda: "unified")
+        monkeypatch.setattr(analyzer, "_reachable_function_names_from_entry", lambda *a, **k: set())
+        monkeypatch.setattr(
+            analyzer,
+            "_record_engine_capability",
+            lambda name, **kw: capabilities.update({name: kw}),
+        )
+        monkeypatch.setattr(analyzer, "_record_engine_failed_work", lambda *a, **k: None)
+        monkeypatch.setattr(analyzer, "_reconstruct_svf_source_path", lambda path: path)
+        monkeypatch.setattr(analyzer, "_detect_clang_knowledgedb_candidates", lambda *a, **k: [])
+        monkeypatch.setattr(analyzer, "_detect_joern_cpg_candidates", lambda *a, **k: [])
+        monkeypatch.setattr(analyzer, "_annotate_candidate_issues", lambda issues, **k: issues)
+        monkeypatch.setattr(analyzer, "_backend_signal_checker", lambda: "svf_value_flow_checker")
+        assert analyzer._detect_backend_signal_candidates({"entry_func": "main"}) == []
+        assert capabilities["svf_taint_query"]["status"] != "complete"
+    finally:
+        db.close()
 
 
 def test_variant_group_publishes_ambiguous_sources(tmp_path: Path) -> None:

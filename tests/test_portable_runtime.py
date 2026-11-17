@@ -41,11 +41,11 @@ def bundle(tmp_path, monkeypatch, profile="cpp"):
 def config_file(tmp_path, tools=None):
     path = tmp_path / "config.yaml"
     data = {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {"base_urls": ["http://localhost/v1"], "models": ["unit"], "api_key": "unit"}
         },
-        "project": {"language": "c_cpp"},
+        "project": {"targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}], "language": "c_cpp"},
         "indexing": {"backend": "unified"},
     }
     if tools is not None:
@@ -141,6 +141,57 @@ def test_source_install_keeps_path_discovery(monkeypatch):
     monkeypatch.delenv("Z_SCOPE_BUNDLE_ROOT", raising=False)
     assert default_tool("clangd") == "clangd"
     assert java_jar("structure-spoon") is None
+
+
+@pytest.mark.parametrize("override", ["argument", "environment", "split", "last_argument"])
+def test_maven_seeds_selected_repository_without_touching_default(tmp_path, monkeypatch, override):
+    import hashlib
+    import runpy
+    import sys
+
+    root, manifest = bundle(tmp_path, monkeypatch, profile="java")
+    manifest["executables"] = {"mvn": "tools/maven/bin/mvn"}
+    (root / "bundle.json").write_text(json.dumps(manifest))
+    seed = root / "share/maven-repository/org/example/seed.jar"
+    seed.parent.mkdir(parents=True)
+    seed.write_bytes(b"seed")
+    (root / "share/maven-repository.sha256.json").write_text(
+        json.dumps(
+            {
+                "org/example/seed.jar": hashlib.sha256(b"seed").hexdigest(),
+            }
+        )
+    )
+    blocked_home = tmp_path / "not-a-directory"
+    blocked_home.write_text("default HOME must never be used")
+    monkeypatch.setenv("HOME", str(blocked_home))
+    selected = tmp_path / "selected repository"
+    arguments = ["--version"]
+    if override in {"argument", "split", "last_argument"}:
+        monkeypatch.setenv("Z_SCOPE_MAVEN_REPO", str(blocked_home / "unused"))
+        arguments.insert(0, f"-Dmaven.repo.local={selected}")
+        if override == "split":
+            arguments[:1] = ["-D", f"maven.repo.local={selected}"]
+        elif override == "last_argument":
+            arguments.insert(0, f"-Dmaven.repo.local={blocked_home / 'unused'}")
+    else:
+        monkeypatch.setenv("Z_SCOPE_MAVEN_REPO", str(selected))
+    captured = []
+
+    class Executed(Exception):
+        pass
+
+    def execute(path, argv):
+        captured.append(argv)
+        raise Executed
+
+    monkeypatch.setattr(os, "execv", execute)
+    monkeypatch.setattr(sys, "argv", ["dispatch.py", "mvn", *arguments])
+    with pytest.raises(Executed):
+        runpy.run_path(str(Path(__file__).parents[1] / "scripts/portable/dispatch.py"))
+    assert (selected / "org/example/seed.jar").read_bytes() == b"seed"
+    property_arg = f"{'-D' if override != 'split' else ''}maven.repo.local={selected}"
+    assert captured[0].count(property_arg) == 1
 
 
 @pytest.mark.skipif(os.name != "posix", reason="ELF loader paths are Linux-only")

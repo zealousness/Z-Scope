@@ -15,6 +15,9 @@ from zscope.common.cancellation import (
 from zscope.core.validation.pipeline import ValidationPipeline
 from zscope.core.validation.runner import ValidationResultCache, ValidationRunner
 from zscope.framework.base import AgentResponse
+from zscope.agents.validator_agent.agent import ValidatorAgent
+from zscope.core.validation.runner import _PreparedValidation
+from zscope.snapshots.store import SnapshotStore
 from zscope.orchestration.scheduler import ScanScheduler
 
 
@@ -139,6 +142,35 @@ def _issue(**overrides):
     return issue
 
 
+def test_validator_input_preserves_nested_summary_context_and_current_bindings():
+    from copy import deepcopy
+
+    alias = "FN_" + "a" * 32
+    binding = {alias: {"unit_id": "FN_current", "build_context_id": "current-build"}}
+    contexts = {
+        "hierarchical_contract": {
+            "hypothesis": {"description": f"read {alias}:10"},
+            "reference_bindings": binding,
+            "authority": "unverified_context",
+        },
+        "hierarchical_supplement": {
+            "summary": {"unknowns": [f'const char *name = "{alias}";']},
+            "reference_bindings": binding,
+            "authority": "unverified_context",
+        },
+    }
+    original = deepcopy(contexts)
+    issue = _issue(evidence_pack=contexts, validator_pre_llm_fact_resolution_done=True)
+    runner = _runner(None)
+    pack = runner._build_evidence_pack(issue, _state(issue), "void sink_func(void) {}")
+    assert pack["candidate_evidence"] == contexts
+    request = runner._validator_input(issue, "void sink_func(void) {}", pack)
+    for key, value in contexts.items():
+        assert request["evidence_slice"][key] == value
+    assert alias not in request["evidence_slice"].get("evidence_ref_catalog", {})
+    assert contexts == original
+
+
 def _validator_v3_result(
     *,
     verdict="uncertain",
@@ -160,6 +192,277 @@ def _validator_v3_result(
         "missing_fact_request": missing_fact_request,
         "stop_reason": stop_reason,
     }
+
+
+class InitialDirectClient:
+    models = ["initial-model"]
+    supports_structured_output = True
+    max_tokens = 8192
+    context_window = 192000
+
+    def __init__(self, *, verdict="verified", provider_model="initial-model", compact=False):
+        self.calls = []
+        self.verdict = verdict
+        self.provider_model = provider_model
+        self.compact = compact
+
+    def chat_completion(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        evidence = json.loads(messages[-1]["content"].split("\n\nEvidence:\n", 1)[1])
+        result = _validator_v3_result(verdict=self.verdict)
+        result.update(
+            candidate_uid=evidence["obligation"]["candidate_uid"],
+            validation_cluster_uid=evidence["obligation"]["validation_cluster_uid"],
+            evidence_refs=["FACT_CURRENT"],
+        )
+        if self.verdict == "uncertain":
+            result["stop_reason"] = "no_evidence_gain"
+        if self.compact:
+            for key in (
+                "schema_version",
+                "candidate_uid",
+                "validation_cluster_uid",
+                "pass",
+                "stop_reason",
+            ):
+                del result[key]
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": json.dumps(result)},
+                }
+            ],
+            "model": self.provider_model,
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+        }
+
+
+def _initial_request(revision="one"):
+    candidate, cluster = f"CAND_{revision}", f"VAL_{revision}"
+    return {
+        "finding_uid": candidate,
+        "validation_cluster_uid": cluster,
+        "validation_pass": "initial",
+        "agent_contract": "current validator and skill contract",
+        "evidence_slice": {
+            "protocol_version": "zscope.validator-protocol.v3",
+            "validation_pass": "initial",
+            "obligation": {
+                "candidate_uid": candidate,
+                "validation_cluster_uid": cluster,
+                "obligation_uid": f"OBL_{revision}",
+                "subject_uid": "native-object",
+                "obligation_binding_uid": "VOB_current",
+            },
+            "canonical_occurrence": {
+                "occurrence_uid": f"OCC_{revision}",
+                "representative_call_path": ["entry", "sink"],
+            },
+            "alias_summary": {"occurrence_count": 1, "alias_uid_set_hash": f"set-{revision}"},
+            "decision_facts": {
+                "coverage": "complete",
+                "dependency_code_hashes": ["current-input"],
+                "facts": [{"fact_uid": "FACT_CURRENT", "polarity": "positive"}],
+            },
+            "evidence_ref_catalog": {
+                "FACT_CURRENT": {"kind": "decision_fact", "summary": "current path reaches sink"}
+            },
+            "allowed_missing_fact_kinds": [],
+        },
+    }
+
+
+def _initial_runner(tmp_path, client, *, revision="one", enabled=True, cache_entries=16):
+    runner = _runner(
+        None,
+        analysis=SimpleNamespace(validation_cache_entries=cache_entries),
+        llm_clients={"default": client},
+        scan=SimpleNamespace(depth="balanced"),
+    )
+    runner.config.project.project_root = tmp_path
+    runner.snapshot_store = SnapshotStore(tmp_path / "initial-cache")
+    runner._initial_reuse_enabled = enabled
+    runner._validation_environment_fingerprint = revision
+    return runner
+
+
+def _initial_item(revision="one", *, build="native-build", **overrides):
+    issue = _issue(
+        candidate_uid=f"CAND_{revision}",
+        validation_cluster_uid=f"VAL_{revision}",
+        build_context_id=build,
+        revision=revision,
+        **overrides,
+    )
+    return _PreparedValidation(
+        index=0,
+        raw_issue=issue,
+        issue_func="sink_func",
+        issue_code="current code",
+        evidence_pack={},
+    )
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_initial_response_reuses_across_revisions_with_current_binding_and_zero_tokens(
+    tmp_path, compact
+):
+    client = InitialDirectClient(compact=compact)
+    first = _initial_runner(tmp_path, client)
+    old_item = _initial_item(review_checked_proof={"old_authority": "must never restore"})
+    old_input = _initial_request()
+    cold = first._run_initial_validator(ValidatorAgent(client, []), old_input, old_item)
+    assert cold.success and cold.metadata["validator_initial_reuse"]["writes"] == 1
+    assert old_input["finding_uid"] == "CAND_one"  # Request normalization is a copy.
+
+    second = _initial_runner(tmp_path, client, revision="two")
+    new_item = _initial_item("two", review_checked_proof={"current_authority": "fresh"})
+    hot = second._run_initial_validator(
+        ValidatorAgent(client, []), _initial_request("two"), new_item
+    )
+    assert len(client.calls) == 1
+    assert hot.data["candidate_uid"] == "CAND_two"
+    assert hot.data["validation_cluster_uid"] == "VAL_two"
+    assert hot.metadata["validator_initial_reuse"]["hits"] == 1
+    assert hot.metadata["validator_initial_reuse"]["tokens"] == 0
+    assert hot.metadata["cumulative_total_tokens"] == 0
+    assert new_item.raw_issue["review_checked_proof"] == {"current_authority": "fresh"}
+    assert hot.metadata["validator_protocol_audit"]["raw_response"].get("candidate_uid") == (
+        None if compact else "CAND_two"
+    )
+    state = {}
+    ValidationRunner._accumulate_token_metadata(state, hot.metadata)
+    assert state["validator_initial_reuse"]["hits"] == 1
+    assert state["validator_initial_reuse"]["model_tasks"] == 0
+
+
+@pytest.mark.parametrize(
+    "change", ["fact", "negative_dependency", "prompt", "build", "rules", "model", "schema"]
+)
+def test_initial_reuse_invalidates_exact_inputs_and_contracts(tmp_path, change, monkeypatch):
+    client = InitialDirectClient()
+    first = _initial_runner(tmp_path, client)
+    first._run_initial_validator(ValidatorAgent(client, []), _initial_request(), _initial_item())
+    second = _initial_runner(tmp_path, client, revision="two")
+    request, item = _initial_request("two"), _initial_item("two")
+    agent = ValidatorAgent(client, [])
+    if change == "fact":
+        request["evidence_slice"]["decision_facts"]["facts"][0]["polarity"] = "negative"
+    elif change == "negative_dependency":
+        request["evidence_slice"]["include_lookups"] = [{"file": "optional.h", "exists": True}]
+    elif change == "prompt":
+        request["agent_contract"] += " revised skill"
+    elif change == "build":
+        item = _initial_item("two", build="other-build")
+    elif change == "rules":
+        second.config.rule_catalog_provenance = {"effective_sha256": "changed-rules"}
+    elif change == "model":
+        client.models = ["new-model"]
+        client.provider_model = "new-model"
+    elif change == "schema":
+        original = agent._direct_v3_request_options
+        monkeypatch.setattr(
+            agent,
+            "_direct_v3_request_options",
+            lambda **kwargs: {**original(**kwargs), "temperature": 0.2},
+        )
+    result = second._run_initial_validator(agent, request, item)
+    assert result.success
+    assert len(client.calls) == 2
+    assert result.metadata["validator_initial_reuse"]["misses"] == 1
+
+
+@pytest.mark.parametrize(
+    "verdict,provider", [("uncertain", "initial-model"), ("verified", "fallback-model")]
+)
+def test_initial_reuse_does_not_store_uncertain_or_fallback(tmp_path, verdict, provider):
+    client = InitialDirectClient(verdict=verdict, provider_model=provider)
+    for revision in ("one", "two"):
+        runner = _initial_runner(tmp_path, client, revision=revision)
+        result = runner._run_initial_validator(
+            ValidatorAgent(client, []), _initial_request(revision), _initial_item(revision)
+        )
+        assert result.metadata["validator_initial_reuse"]["writes"] == 0
+    assert len(client.calls) == 2
+
+
+@pytest.mark.parametrize("enabled,entries", [(False, 16), (True, 0)])
+def test_initial_reuse_disabled_keeps_same_model_request_without_reading_store(
+    tmp_path, enabled, entries
+):
+    client = InitialDirectClient()
+    first = _initial_runner(tmp_path, client)
+    first._run_initial_validator(ValidatorAgent(client, []), _initial_request(), _initial_item())
+    second = _initial_runner(tmp_path, client, enabled=enabled, cache_entries=entries)
+    second.snapshot_store = SimpleNamespace(
+        load_validation_result=lambda *a, **kw: pytest.fail("disabled initial cache read"),
+        save_validation_result=lambda *a, **kw: pytest.fail("disabled initial cache write"),
+    )
+    response = second._run_initial_validator(
+        ValidatorAgent(client, []), _initial_request("two"), _initial_item("two")
+    )
+    assert len(client.calls) == 2
+    assert client.calls[0][0] == client.calls[1][0]
+    assert {k: v for k, v in client.calls[0][1].items() if not k.startswith("trace_")} == {
+        k: v for k, v in client.calls[1][1].items() if not k.startswith("trace_")
+    }
+    assert response.data["candidate_uid"] == "CAND_two"
+    assert response.metadata["validator_initial_reuse"]["bypassed"] == 1
+
+
+def test_initial_cache_reparses_current_evidence_refs_before_reuse(tmp_path):
+    client = InitialDirectClient()
+    runner = _initial_runner(tmp_path, client)
+    agent = ValidatorAgent(client, [])
+    runner._run_initial_validator(agent, _initial_request(), _initial_item())
+    key = next(
+        key for key in runner._validator_result_cache._values if key.startswith("V1_INITIAL_")
+    )
+    corrupted = runner._validator_result_cache.get(key)
+    corrupted["result"]["evidence_refs"] = ["FACT_NOT_CURRENT"]
+    runner._validator_result_cache.put(key, corrupted)
+    response = runner._run_initial_validator(agent, _initial_request("two"), _initial_item("two"))
+    assert len(client.calls) == 2
+    assert response.metadata["validator_initial_reuse"]["miss_reasons"] == {
+        "cached_response_invalid": 1
+    }
+    assert response.data["evidence_refs"] == ["FACT_CURRENT"]
+
+
+def test_initial_hit_continues_current_fact_recheck_investigation_and_policy(tmp_path):
+    client = InitialDirectClient()
+    first = _initial_runner(tmp_path, client)
+    first._run_initial_validator(ValidatorAgent(client, []), _initial_request(), _initial_item())
+    runner = _initial_runner(tmp_path, client, revision="two")
+    runner._review_enabled = lambda: True
+    runner._review_checkpoint = lambda *a, **kw: None
+    runner._validator_input = lambda *a, **kw: _initial_request("two")
+    stages = []
+    for name in (
+        "_run_v3_evidence_recheck",
+        "_run_v3_targeted_investigation",
+        "_run_v2b_adjudication",
+    ):
+
+        def stage(item, agent, value, metadata, name=name):
+            stages.append(name)
+            assert value["candidate_uid"] == "CAND_two"
+            return value
+
+        setattr(runner, name, stage)
+    item = _initial_item("two")
+    result = runner._validate_prepared_issue(item, validator_agent=ValidatorAgent(client, []))
+    assert result.success and len(client.calls) == 1
+    assert stages == [
+        "_run_v3_evidence_recheck",
+        "_run_v3_targeted_investigation",
+        "_run_v2b_adjudication",
+    ]
+    state = _state(item.raw_issue)
+    runner._apply_validation_worker_result(state, result)
+    assert item.raw_issue["validator_validated"] is True
+    assert "validator_policy_outcome" in item.raw_issue
 
 
 def test_validation_runner_cache_key_uses_stable_evidence_fingerprint_without_candidate_id() -> (
@@ -1084,8 +1387,9 @@ def test_balanced_runs_v3_for_medium_risk_candidate_with_unclosed_obligation() -
         def investigate(self, input_data, **kwargs):
             self.called = True
             assert input_data["autonomous_validation"] is True
-            return AgentResponse(success=True, data=_validator_v3_result(
-                validation_pass="investigation_synthesis"))
+            return AgentResponse(
+                success=True, data=_validator_v3_result(validation_pass="investigation_synthesis")
+            )
 
     agent = InvestigatingValidator()
     state = _state(

@@ -115,7 +115,7 @@ class JoernJavaSignalProvider(JavaSignalProvider):
     def status(self) -> JavaProviderStatus:
         return JavaProviderStatus(
             provider=self.name,
-            available=self._ready,
+            available=self._ready and not self._degraded_reason,
             initialized=self._ready,
             degraded_reason=self._degraded_reason,
             signals_collected=len(self._matches_cache or []),
@@ -124,7 +124,7 @@ class JoernJavaSignalProvider(JavaSignalProvider):
 
     def collect_rule_matches(self, entry_func: str = "") -> List[RuleMatch]:
         if not self._ready:
-            return []
+            raise RuntimeError(self._degraded_reason or "Joern provider is not initialized")
         if self._matches_cache is not None:
             return list(self._matches_cache)
         try:
@@ -137,7 +137,8 @@ class JoernJavaSignalProvider(JavaSignalProvider):
         except Exception as exc:
             logger.debug("Unable to collect Joern Java signal matches: %s", exc)
             self._degraded_reason = str(exc)
-            matches = []
+            raise RuntimeError(f"Joern signal collection failed: {exc}") from exc
+        self._degraded_reason = ""
         self._matches_cache = list(matches)
         return list(matches)
 
@@ -198,7 +199,7 @@ class ExternalJavaSignalProvider(JavaSignalProvider):
     def status(self) -> JavaProviderStatus:
         return JavaProviderStatus(
             provider=self.name,
-            available=self._ready,
+            available=self._ready and not self._degraded_reason,
             initialized=self._ready,
             degraded_reason=self._degraded_reason,
             signals_collected=sum(len(items) for items in self._flow_cache.values()),
@@ -207,7 +208,7 @@ class ExternalJavaSignalProvider(JavaSignalProvider):
 
     def collect_call_edges(self, entry_func: str = "") -> List[JavaCallEdge]:
         if not self._ready or not self.command:
-            return []
+            raise RuntimeError(self._degraded_reason or f"{self.name} provider is not initialized")
         cache_key = str(entry_func or "")
         if cache_key in self._call_edge_cache:
             return list(self._call_edge_cache[cache_key])
@@ -238,7 +239,7 @@ class ExternalJavaSignalProvider(JavaSignalProvider):
 
     def collect_flow_signals(self, entry_func: str = "") -> List[JavaFlowSignal]:
         if not self._ready or not self.command:
-            return []
+            raise RuntimeError(self._degraded_reason or f"{self.name} provider is not initialized")
         cache_key = str(entry_func or "")
         if cache_key in self._flow_cache:
             return list(self._flow_cache[cache_key])
@@ -275,7 +276,7 @@ class ExternalJavaSignalProvider(JavaSignalProvider):
 
     def _run_json_command(self, entry_func: str) -> Dict[str, Any]:
         if not self.command:
-            return {"signals": [], "call_edges": []}
+            raise self._command_error("runner command is not configured")
         cmd = [
             part.replace("{entry}", entry_func)
             .replace("{source_root}", str(self._source_root or ""))
@@ -292,35 +293,41 @@ class ExternalJavaSignalProvider(JavaSignalProvider):
                 check=False,
             )
         except Exception as exc:
-            self._degraded_reason = str(exc)
-            return {"signals": [], "call_edges": []}
+            raise self._command_error(str(exc)) from exc
         if proc.returncode != 0:
-            self._degraded_reason = proc.stderr[-1000:] or f"runner exited with {proc.returncode}"
-            return {"signals": [], "call_edges": []}
+            raise self._command_error(
+                proc.stderr[-1000:] or f"runner exited with {proc.returncode}"
+            )
         try:
-            data = json.loads(proc.stdout or "[]")
+            data = json.loads(proc.stdout)
         except json.JSONDecodeError as exc:
-            self._degraded_reason = f"runner returned non-JSON output: {exc}"
-            return {"signals": [], "call_edges": []}
+            raise self._command_error(f"runner returned non-JSON output: {exc}") from exc
         if isinstance(data, list):
-            return {"signals": data, "call_edges": [], "metadata": {"legacy_array": True}}
-        if isinstance(data, dict):
-            metadata = dict(data.get("metadata") or {})
+            payload = {"signals": data, "call_edges": [], "metadata": {"legacy_array": True}}
+        elif isinstance(data, dict):
+            metadata = data.get("metadata", {})
+            if not isinstance(metadata, dict):
+                raise self._command_error("runner metadata must be a JSON object")
             degraded = str(metadata.get("degraded_reason") or "")
             if degraded:
-                self._degraded_reason = degraded
-            return {
-                "signals": (
-                    list(data.get("signals", [])) if isinstance(data.get("signals"), list) else []
-                ),
-                "call_edges": (
-                    list(data.get("call_edges", []))
-                    if isinstance(data.get("call_edges"), list)
-                    else []
-                ),
+                raise self._command_error(degraded)
+            payload = {
+                "signals": data.get("signals", []),
+                "call_edges": data.get("call_edges", []),
                 "metadata": metadata,
             }
-        return {"signals": [], "call_edges": []}
+        else:
+            raise self._command_error("runner output must be a JSON object or array")
+        for key in ("signals", "call_edges"):
+            rows = payload[key]
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise self._command_error(f"runner {key} must be an array of JSON objects")
+        self._degraded_reason = ""
+        return payload
+
+    def _command_error(self, reason: str) -> RuntimeError:
+        self._degraded_reason = reason
+        return RuntimeError(f"Java provider {self.name} failed: {reason}")
 
     def _default_command(self) -> List[str]:
         from ..common.portable import default_tool, java_jar

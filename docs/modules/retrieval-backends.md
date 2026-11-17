@@ -117,6 +117,7 @@ bitcode 编译以源码编译前后的文件身份、修改/变更时间及摘�
 - Unified backend 组合 Clang 与 SVF；bitcode scope、LLVM 构建和 SVF runner 负责入口裁剪、链接与分析。
 - SVF 执行受三项性能机制约束：按组堆预算预检（超预算组跳过并保留降级语义）、saber 分组并行的堆上界 worker 池，以及可选的 scope-first 惰性位码构建（先按 KnowledgeDB 规划所需 TU，再只编译这些 TU）。
 - Clang 基础抽取可通过 Z_SCOPE_CLANGD_SHARDS 选择多实例 clangd 分片池；派生索引部分重建按 include 闭包把重建范围缩小到受影响的函数文件。
+- LSP 基础抽取也在替换旧事实前检查已有非系统 include 闭包：已扫描头文件修改或删除时，将传递依赖的当前 TU 标为 pending，重新抽取函数和调用边等基础事实；无关 TU 保留热缓存。此机制依赖已记录的 include 边，不等同于 native 的完整依赖与否定查找收据。
 - 上层候选和 Tool runtime 只消费统一查询结果，不应依赖某个后端的私有输出文本。
 
 ## 必须保持的不变量
@@ -214,6 +215,10 @@ C/C++ Portable 包内的 `zscope-clang-indexer` 使用锁定的 LLVM 18 SDK 构�
 
 Portable 的 clangd 22.1.7 索引环境与 LLVM 18.1.0 / SVF 3.2 bitcode 环境分开，启动器为 gllvm 明确指定 LLVM 18 工具。Java 结构与信号后端优先加载包内预编译 JAR；portable 中外部结构提取失败不回退 builtin，显式自定义命令失败也不回退。Spoon 仍遵守 Maven 项目前提。Java Maven 缓存位于用户可写目录，工程依赖导入与离线分析共用该缓存。
 
+Maven 启动器先按命令行 `-Dmaven.repo.local`（含分开的 `-D` 写法）、`Z_SCOPE_MAVEN_REPO`、默认用户目录的顺序选择仓库，再仅向该仓库补充包内种子；同一属性重复时最后一个值生效，不覆盖已有文件。显式仓库不要求默认用户缓存可写。
+
+Java 信号 provider 的执行异常、非零退出、无效 JSON/容器形状和显式 degraded 响应必须传递为收集失败，不缓存为成功的空结果；后续调用可以重试。合法空结果仍允许缓存，Joern 收集异常同样不写入结果缓存。统一后端不吞掉这些异常，候选消费者据此记录失败状态。
+
 工具调用保留启动器的命令名（包括 `clang++`）；ELF 依赖、工具摘要和缓存身份检查通过 bundle manifest 定位其实际二进制，同时记录启动器摘要。不能把共享启动器解析后的文件名用作编译命令，也不能对 shell 启动器执行 `ldd` 来推断 SVF 的 LLVM 版本。
 
 ## 程序事件与共享分析缓存
@@ -257,6 +262,8 @@ KnowledgeDB 的 `compilation_instances`、`compilation_facts` 按构建实例和
 ### SVF/Saber 信号的构建身份
 
 SVF 仍是**每个项目一次**的整程序运行，产物按链接组（一个组合并多个 TU）落地，所以“这个污点信号属于哪个编译变体”必须由生产者显式给出，不能靠文件名猜。现在这条链路是：
+
+信号消费还要求当前进程的 SVF 运行成功，并重新核对已导入结果的 generation、逐组工具状态和产物摘要。缺少编译数据库、构建失败、工具不可用或结果失效时，旧行可保留供诊断，但逐实例查询、非实例候选收集和 unified 污点工具不能将其当作本轮有效信号。仅 `command_id` 相等不证明结果仍然有效。
 
 - `BitcodeBuilder.group_tu_identities(group)` 按组发布每个 TU 的 `command_id`（= `digest_json(command_identity(...))`，与 `BuildContext.command_id` 同一键），并把同一源码出现多条命令的记入 `variant_sources`；`bitcode_manifest.json` 的 `analysis_tasks[].input_command_ids`/`variant_sources` 与 `linked[group].command_ids` 携带它。缺失字段一律读作“无归属”，不回退猜测，也不提升 manifest 版本（避免强制重建全部 bitcode）。
 - `SvfOutputMapper.attribution(path)` 只给判定，不给猜测：仅当该位置是本组某个 TU 源文件、且该源在本组只有一条命令时为 `exact`；头文件/内联位置（被多个 TU 包含）、同源多变体、组外路径分别为 `ambiguous`/`unattributed`。`taint_signatures`、`indirect_calls` 新增 `command_id`/`attribution` 并进入 UNIQUE 键（否则 `INSERT OR IGNORE` 会把第二个变体的信号静默丢弃），schema 升到 v18；旧行保持空 `command_id` + `unattributed`，并清空 SVF 哈希/工具状态，使缓存必须重新导入。

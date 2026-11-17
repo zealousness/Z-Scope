@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 SOURCE_EXTENSIONS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl"}
 HEADER_EXTENSIONS = {".h", ".hpp", ".ph", ".inc", ".inl"}
-HUNK_RE = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+(?P<start>\d+)(?:,(?P<count>\d+))?\s+@@")
+HUNK_RE = re.compile(
+    r"^@@\s+-(?P<old_start>\d+)(?:,(?P<old_count>\d+))?"
+    r"\s+\+(?P<start>\d+)(?:,(?P<count>\d+))?\s+@@"
+)
 CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
 INPUT_RE = re.compile(
     r"\b(?:recv|recvfrom|recvmsg|read|readv|fread|fgets|getline|getenv|"
@@ -78,15 +81,20 @@ BIDIRECTIONAL_INTENTS = {
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class ChangedLineRange:
-    """New-version line range changed by a git diff hunk."""
+    """Current lines, a deletion boundary, or an explicitly removed/renamed file."""
 
     file_path: str
     start_line: int
     end_line: int
+    change_kind: str = "implementation"
 
     def overlaps(self, start_line: int, end_line: int) -> bool:
+        if self.change_kind == "deleted_file":
+            return False
+        if self.change_kind == "rename":
+            return True
         return self.start_line <= end_line and self.end_line >= start_line
 
 
@@ -265,12 +273,47 @@ class DiffImpactPlanner:
         changed_headers = sorted(
             file_path for file_path in changed_files if Path(file_path).suffix in HEADER_EXTENSIONS
         )
-        changed_functions = self._map_changed_functions(changed_ranges)
+        mapped_ranges: set[ChangedLineRange] = set()
+        changed_functions = self._map_changed_functions(changed_ranges, mapped_ranges=mapped_ranges)
         selection = self._build_semantic_selection(changed_functions)
+        unmapped_ranges = [
+            item
+            for item in changed_ranges
+            if Path(item.file_path).suffix in SOURCE_EXTENSIONS and item not in mapped_ranges
+        ]
+        selection["coverage_summary"]["unmapped_change_count"] = len(unmapped_ranges)
+        for item in unmapped_ranges:
+            selection["analysis_obligations"].append(
+                {
+                    "id": f"DIFF_OBLIGATION_{len(selection['analysis_obligations']) + 1}",
+                    "direction": "local",
+                    "intent": "unmapped_source_change",
+                    "changed_functions": [],
+                    "changed_range": {
+                        "file_path": item.file_path,
+                        "start_line": item.start_line,
+                        "end_line": item.end_line,
+                        "change_kind": item.change_kind,
+                    },
+                    "root_function": "",
+                    "root_kind": "",
+                    "context_functions": [],
+                    "covered_paths": [],
+                    "covered_path_refs": [],
+                    "coverage_status": "unresolved",
+                    "stop_reason": "no_current_function_mapping",
+                    "selection_reason": "Source change cannot be attributed to a current indexed function.",
+                    "llm_triage": {"mode": self.llm_triage, "status": "not_invoked"},
+                }
+            )
         entries = selection["entries"]
         notes: List[str] = []
         if not changed_ranges:
-            notes.append("No new-version source line changes were found in the requested diff.")
+            notes.append("No source changes were found in the requested diff.")
+        if unmapped_ranges:
+            notes.append(
+                f"{len(unmapped_ranges)} source change(s) remain unmapped; see analysis_obligations."
+            )
         if changed_ranges and not changed_functions:
             notes.append("Diff contained source changes, but no changed functions were mapped.")
             notes.extend(self._changed_function_mapping_diagnostics(changed_files))
@@ -399,12 +442,26 @@ class DiffImpactPlanner:
     def _parse_git_diff(diff_text: str) -> List[ChangedLineRange]:
         ranges: List[ChangedLineRange] = []
         current_file = ""
+        old_file = ""
+        deleted = False
         for raw_line in diff_text.splitlines():
             line = raw_line.rstrip("\n")
+            if line.startswith("diff --git "):
+                current_file = old_file = ""
+                deleted = False
+            if line.startswith("rename to "):
+                current_file = line[len("rename to ") :]
+                ranges.append(ChangedLineRange(current_file, 1, 1, "rename"))
+                continue
+            if line.startswith("--- "):
+                marker = line[4:].strip()
+                old_file = marker[2:] if marker.startswith("a/") else marker
+                continue
             if line.startswith("+++ "):
                 marker = line[4:].strip()
+                deleted = marker == "/dev/null"
                 if marker == "/dev/null":
-                    current_file = ""
+                    current_file = old_file
                 elif marker.startswith("b/"):
                     current_file = marker[2:]
                 else:
@@ -414,9 +471,21 @@ class DiffImpactPlanner:
             if not match or not current_file:
                 continue
             count = int(match.group("count") or "1")
-            if count <= 0:
+            if deleted:
+                start = int(match.group("old_start"))
+                old_count = int(match.group("old_count") or "1")
+                ranges.append(
+                    ChangedLineRange(current_file, start, start + old_count - 1, "deleted_file")
+                )
                 continue
             start = int(match.group("start"))
+            if count == 0:
+                # The new-side position is the line BEFORE the removed text.
+                # Include both surviving neighbours, including a deletion at EOF.
+                ranges.append(
+                    ChangedLineRange(current_file, max(1, start), max(1, start + 1), "deletion")
+                )
+                continue
             ranges.append(
                 ChangedLineRange(
                     file_path=current_file,
@@ -429,6 +498,8 @@ class DiffImpactPlanner:
     def _map_changed_functions(
         self,
         changed_ranges: Sequence[ChangedLineRange],
+        *,
+        mapped_ranges: Optional[set[ChangedLineRange]] = None,
     ) -> List[ChangedFunction]:
         ranges_by_file: Dict[str, List[ChangedLineRange]] = {}
         for item in changed_ranges:
@@ -452,10 +523,14 @@ class DiffImpactPlanner:
             changed_lines: List[int] = []
             for item in file_ranges:
                 if item.overlaps(start_line, end_line):
+                    if mapped_ranges is not None:
+                        mapped_ranges.add(item)
                     changed_lines.extend(
-                        line_no
-                        for line_no in range(item.start_line, item.end_line + 1)
-                        if start_line <= line_no <= end_line
+                        range(start_line, end_line + 1)
+                        if item.change_kind == "rename"
+                        else range(
+                            max(start_line, item.start_line), min(end_line, item.end_line) + 1
+                        )
                     )
             if not changed_lines:
                 continue
@@ -468,7 +543,9 @@ class DiffImpactPlanner:
                 changed_lines=sorted(set(changed_lines)),
             )
 
-        for header_change in self._map_changed_header_declarations(changed_ranges):
+        for header_change in self._map_changed_header_declarations(
+            changed_ranges, mapped_ranges=mapped_ranges
+        ):
             header_key = (header_change.function_name, header_change.file_path)
             by_key.setdefault(header_key, header_change)
 
@@ -479,6 +556,8 @@ class DiffImpactPlanner:
     def _map_changed_header_declarations(
         self,
         changed_ranges: Sequence[ChangedLineRange],
+        *,
+        mapped_ranges: Optional[set[ChangedLineRange]] = None,
     ) -> Iterable[ChangedFunction]:
         ranges_by_file: Dict[str, List[ChangedLineRange]] = {}
         for item in changed_ranges:
@@ -505,6 +584,10 @@ class DiffImpactPlanner:
                 impl = self._get_impl(name)
                 if not impl:
                     continue
+                if mapped_ranges is not None:
+                    mapped_ranges.update(
+                        item for item in file_ranges if item.overlaps(decl_line, decl_line)
+                    )
                 changed.append(
                     ChangedFunction(
                         function_name=name,

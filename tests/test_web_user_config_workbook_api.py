@@ -87,7 +87,7 @@ def test_workbook_rows_payload_rejects_unknown_shape() -> None:
 
 def _v2_config(root: Path) -> dict:
     return {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://localhost/v1"],
@@ -96,6 +96,7 @@ def _v2_config(root: Path) -> dict:
             }
         },
         "project": {
+            "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
             "language": "c_cpp",
             "entry_function": "main",
             "include_paths": ["include"],
@@ -220,14 +221,8 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
     assert payload["db_persisted"] is True
     assert saved["issues"][0]["validation_status"] == "rejected"
     # Validator 原始说明必须保留，用户反驳说明独立持久化。
-    assert (
-        saved["issues"][0]["validation_reasoning"]
-        == "validator: free after ownership transfer"
-    )
-    assert (
-        saved["issues"][0]["user_rebuttal"]
-        == "manual review: guard releases before second free"
-    )
+    assert saved["issues"][0]["validation_reasoning"] == "validator: free after ownership transfer"
+    assert saved["issues"][0]["user_rebuttal"] == "manual review: guard releases before second free"
     assert store.is_false_positive("entry", "src/demo.c:42", "double_free")
     baseline = store.get_finding_baseline("double_free|entry|src/demo.c:42")
     assert baseline["status"] == "false_positive"
@@ -289,10 +284,7 @@ def test_report_feedback_service_rejected_persists_rebuttal_to_snapshots(
         snapshot_saved["issues"][0]["validation_reasoning"]
         == "validator: free after ownership transfer"
     )
-    assert (
-        snapshot_saved["issues"][0]["user_rebuttal"]
-        == "user: guard prevents the second free"
-    )
+    assert snapshot_saved["issues"][0]["user_rebuttal"] == "user: guard prevents the second free"
     assert snapshot_saved["issues"][0]["rejection_source"] == "user"
 
     with sqlite3.connect(store.db_path) as conn:
@@ -342,14 +334,8 @@ def test_report_feedback_service_rebuttal_only_update_preserves_status_and_reaso
     saved = service.load_report()
 
     assert saved["issues"][0]["validation_status"] == "needs_review"
-    assert (
-        saved["issues"][0]["validation_reasoning"]
-        == "validator: conflicting guard evidence"
-    )
-    assert (
-        saved["issues"][0]["user_rebuttal"]
-        == "reviewer: guard is unreachable on this path"
-    )
+    assert saved["issues"][0]["validation_reasoning"] == "validator: conflicting guard evidence"
+    assert saved["issues"][0]["user_rebuttal"] == "reviewer: guard is unreachable on this path"
 
 
 def test_report_feedback_service_partial_updates_preserve_other_issue_statuses(

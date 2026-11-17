@@ -1,23 +1,23 @@
-"""Strict contracts for the bounded Validator v3 state machine.
+"""Strict Validator V3 contracts and reserved V4 transport shapes.
 
-The model contract intentionally contains only decision data.  Runtime and
-policy fields (for example the final report bucket) are added by the validation
-pipeline and are never accepted from a model response.
+Models own decisions; the runtime binds identity and stop metadata.
+Reporting policy remains in the validation pipeline.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import json
+import math
 import re
+from types import MappingProxyType
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 VALIDATOR_RESULT_VERSION = "zscope.validator-result.v3"
 VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v3"
 # Runtime decision policy, separate from the model's response schema.
 VALIDATION_POLICY_VERSION = "zscope.validation-policy.v3"
-# "v2b_adjudication" is the plan M5 R3 rung: an independent audit of a
-# rejection that would otherwise park as model_rejected_unproven.
+# v2b_adjudication independently audits a rejection without deterministic proof.
 VALIDATOR_PASSES = frozenset(
     {"initial", "evidence_recheck", "investigation_synthesis", "v2b_adjudication"}
 )
@@ -39,20 +39,6 @@ VALIDATOR_MISSING_FACT_KINDS = frozenset(
         "type_layout",
     }
 )
-VALIDATOR_STOP_REASONS = frozenset(
-    {
-        "decision_complete",
-        "missing_fact",
-        "no_evidence_gain",
-        "unsupported_fact",
-        "fact_timeout",
-        "duplicate_fact_request",
-        "output_truncated",
-        "malformed_output",
-        "investigation_complete",
-        "investigation_exhausted",
-    }
-)
 VALIDATOR_UNCERTAIN_TERMINAL_REASONS = frozenset(
     {
         "unsupported_fact",
@@ -60,131 +46,137 @@ VALIDATOR_UNCERTAIN_TERMINAL_REASONS = frozenset(
         "no_evidence_gain",
         "duplicate_fact_request",
         "output_truncated",
+        "malformed_output",
+        "investigation_exhausted",
     }
 )
+# One decision table drives schema generation and runtime validation. A completed
+# investigation keeps its existing spelling; exhaustion never completes a verdict.
+_DECISION_STATES = (
+    ({"verified", "rejected"}, False, {"decision_complete", "investigation_complete"}),
+    ({"uncertain"}, True, {"missing_fact"}),
+    ({"uncertain"}, False, VALIDATOR_UNCERTAIN_TERMINAL_REASONS),
+)
+VALIDATOR_STOP_REASONS = frozenset().union(*(reasons for _, _, reasons in _DECISION_STATES))
 DYNAMIC_REPRODUCTION_REQUEST_VERSION = "zscope.dynamic-reproduction-request.v1"
 DYNAMIC_REPRODUCTION_RESULT_VERSION = "zscope.dynamic-reproduction-result.v1"
+_EVIDENCE_LIMITS = {
+    "positive_evidence": (12, 1000),
+    "negative_evidence": (12, 1000),
+    "evidence_refs": (32, 512),
+}
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> Dict[str, Any]:
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("Duplicate JSON keys")
+    return result
+
+
+def _finite_number(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"Non-finite JSON number: {value}")
+    return number
+
+
+def decode_validator_json(value: str) -> Any:
+    """Decode public JSON and provider fragments with the same unambiguous syntax."""
+    return json.loads(
+        value,
+        object_pairs_hook=_unique_object,
+        parse_float=_finite_number,
+        parse_constant=_finite_number,
+    )
+
+
+def _string_schema(*, max_length: Optional[int] = None) -> Dict[str, Any]:
+    schema: Dict[str, Any] = {"type": "string", "minLength": 1, "pattern": r"\S"}
+    if max_length is not None:
+        schema["maxLength"] = max_length
+    return schema
 
 
 def validator_result_schema_v3() -> Dict[str, Any]:
     """Return the complete conditional ValidatorResult v3 contract."""
 
+    properties = {
+        "schema_version": {
+            "type": "string",
+            "enum": [VALIDATOR_RESULT_VERSION],
+        },
+        "candidate_uid": _string_schema(),
+        "validation_cluster_uid": _string_schema(),
+        "pass": {"type": "string", "enum": sorted(VALIDATOR_PASSES)},
+        "verdict": {"type": "string", "enum": sorted(VALIDATOR_VERDICTS)},
+        "reasoning": {
+            **_string_schema(max_length=4000),
+            "description": (
+                "Explain how the cited facts support the verdict, without restating the "
+                "evidence lists. Use Simplified Chinese; preserve paths, symbols and ref UIDs."
+            ),
+        },
+        **{
+            name: {
+                "type": "array",
+                "items": _string_schema(max_length=max_length),
+                "maxItems": limit,
+            }
+            for name, (limit, max_length) in _EVIDENCE_LIMITS.items()
+        },
+        "blocking_negative_evidence": {
+            "type": "boolean",
+            "description": (
+                "True only for a concrete fact blocking this candidate's defect confirmation. "
+                "Use false for verified; refuting a prior rejection is not blocking evidence."
+            ),
+        },
+        "missing_fact_request": {
+            "type": ["object", "null"],
+            "properties": {
+                "fact_kind": {
+                    "type": "string",
+                    "enum": sorted(VALIDATOR_MISSING_FACT_KINDS),
+                },
+                "subject_uid": {"type": "string", "maxLength": 512},
+                "function_uid": {"type": "string", "maxLength": 512},
+                "reason": {
+                    **_string_schema(max_length=1000),
+                    "description": "The unresolved premise and why this fact would decide it, in Simplified Chinese.",
+                },
+            },
+            "required": ["fact_kind", "reason"],
+            "additionalProperties": False,
+        },
+        "stop_reason": {
+            "type": "string",
+            "enum": sorted(VALIDATOR_STOP_REASONS),
+        },
+    }
+    properties["positive_evidence"][
+        "description"
+    ] = "Concrete supporting facts in Simplified Chinese."
+    properties["negative_evidence"][
+        "description"
+    ] = "Concrete counter-facts in Simplified Chinese; missing context is not counter-evidence."
     return {
         "type": "object",
-        "properties": {
-            "schema_version": {
-                "type": "string",
-                "enum": [VALIDATOR_RESULT_VERSION],
-            },
-            "candidate_uid": {"type": "string", "minLength": 1},
-            "validation_cluster_uid": {"type": "string", "minLength": 1},
-            "pass": {"type": "string", "enum": sorted(VALIDATOR_PASSES)},
-            "verdict": {"type": "string", "enum": sorted(VALIDATOR_VERDICTS)},
-            "reasoning": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 4000,
-                "description": (
-                    "Concise decision rationale written in Simplified Chinese; keep "
-                    "file paths, symbols, and evidence ref UIDs unchanged."
-                ),
-            },
-            "positive_evidence": {
-                "type": "array",
-                "description": "Supporting evidence items written in Simplified Chinese.",
-                "items": {"type": "string", "minLength": 1, "maxLength": 1000},
-                "maxItems": 12,
-            },
-            "negative_evidence": {
-                "type": "array",
-                "description": "Counter-evidence items written in Simplified Chinese.",
-                "items": {"type": "string", "minLength": 1, "maxLength": 1000},
-                "maxItems": 12,
-            },
-            "evidence_refs": {
-                "type": "array",
-                "items": {"type": "string", "minLength": 1, "maxLength": 512},
-                "maxItems": 32,
-            },
-            "blocking_negative_evidence": {"type": "boolean"},
-            "missing_fact_request": {
-                "type": ["object", "null"],
-                "properties": {
-                    "fact_kind": {
-                        "type": "string",
-                        "enum": sorted(VALIDATOR_MISSING_FACT_KINDS),
-                    },
-                    "subject_uid": {"type": "string", "maxLength": 512},
-                    "function_uid": {"type": "string", "maxLength": 512},
-                    "reason": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 1000,
-                        "description": "Why this fact is missing, in Simplified Chinese.",
-                    },
-                },
-                "required": ["fact_kind", "reason"],
-                "additionalProperties": False,
-            },
-            "stop_reason": {
-                "type": "string",
-                "enum": sorted(VALIDATOR_STOP_REASONS),
-            },
-        },
-        "required": [
-            "schema_version",
-            "candidate_uid",
-            "validation_cluster_uid",
-            "pass",
-            "verdict",
-            "reasoning",
-            "positive_evidence",
-            "negative_evidence",
-            "evidence_refs",
-            "blocking_negative_evidence",
-            "missing_fact_request",
-            "stop_reason",
-        ],
-        # Keep the provider contract aligned with the parser.  Previously a
-        # model could satisfy the field-level schema with a terminal verdict
-        # and a simultaneous missing-fact request; eight Range rejections
-        # were consequently discarded as malformed after generation.
+        "properties": properties,
+        "required": list(properties),
+        # Field-level schemas alone cannot exclude a completed verdict that
+        # simultaneously requests missing evidence.
         "oneOf": [
             {
                 "type": "object",
                 "properties": {
-                    "verdict": {"enum": ["verified", "rejected"]},
-                    "missing_fact_request": {"const": None},
-                    "stop_reason": {"const": "decision_complete"},
+                    "verdict": {"enum": sorted(verdicts)},
+                    "missing_fact_request": {"type": "object"} if needs_fact else {"const": None},
+                    "stop_reason": {"enum": sorted(reasons)},
                 },
                 "required": ["verdict", "missing_fact_request", "stop_reason"],
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "verdict": {"const": "uncertain"},
-                    "missing_fact_request": {"type": "object"},
-                    "stop_reason": {"const": "missing_fact"},
-                },
-                "required": ["verdict", "missing_fact_request", "stop_reason"],
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "verdict": {"const": "uncertain"},
-                    "missing_fact_request": {"const": None},
-                    "stop_reason": {
-                        "enum": [
-                            "unsupported_fact",
-                            "fact_timeout",
-                            "no_evidence_gain",
-                            "duplicate_fact_request",
-                            "output_truncated",
-                        ]
-                    },
-                },
-                "required": ["verdict", "missing_fact_request", "stop_reason"],
-            },
+            }
+            for verdicts, needs_fact, reasons in _DECISION_STATES
         ],
         "additionalProperties": False,
     }
@@ -195,16 +187,9 @@ def validator_result_provider_schema_v3(
     allowed_missing_fact_kinds: Optional[Iterable[str]] = None,
     allowed_evidence_refs: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
-    """Return the wire schema used with OpenAI-compatible providers.
+    """Flatten the historical result for gateways that truncate required via oneOf.
 
-    A few compatible gateways incorrectly replace the enclosing object's
-    ``required`` list with the short lists from a top-level ``oneOf`` branch.
-    The resulting tool call contains only ``verdict``, ``stop_reason`` and
-    ``missing_fact_request`` even though the full object is required.  Keep the
-    conditional contract in :func:`validator_result_schema_v3` and in the
-    strict parser, but send providers the equivalent flat field schema.  The
-    cross-field conditions are still enforced after generation and are stated
-    explicitly in the Validator prompt.
+    Keep conditional validation local; generation gets the complete field set.
     """
 
     schema = validator_result_schema_v3()
@@ -212,23 +197,23 @@ def validator_result_provider_schema_v3(
     if allowed_evidence_refs is not None:
         refs = sorted(
             {
-                str(value).strip()
+                value
                 for value in allowed_evidence_refs
-                if 0 < len(str(value).strip()) <= 512
+                if _strict_string(value, required=True, max_length=512) is not None
             }
         )
-        evidence_refs = dict(schema["properties"]["evidence_refs"])
+        evidence_refs = schema["properties"]["evidence_refs"]
         if refs:
             evidence_refs["items"] = {"type": "string", "enum": refs}
         else:
             evidence_refs["maxItems"] = 0
-        schema["properties"]["evidence_refs"] = evidence_refs
+    request = schema["properties"]["missing_fact_request"]
     if allowed_missing_fact_kinds is not None:
         allowed = sorted(
             {
-                str(value).strip().lower()
+                value
                 for value in allowed_missing_fact_kinds
-                if str(value).strip().lower() in VALIDATOR_MISSING_FACT_KINDS
+                if isinstance(value, str) and value in VALIDATOR_MISSING_FACT_KINDS
             }
         )
         if not allowed:
@@ -239,26 +224,60 @@ def validator_result_provider_schema_v3(
                     "this field must be null for every verdict."
                 ),
             }
-            schema["properties"]["stop_reason"]["enum"] = sorted(
-                VALIDATOR_STOP_REASONS - {"missing_fact"}
-            )
-        else:
-            request = dict(schema["properties"]["missing_fact_request"])
-            request_properties = dict(request["properties"])
-            request_properties["fact_kind"] = {
-                "type": "string",
-                "enum": allowed,
-            }
-            request["properties"] = request_properties
-            schema["properties"]["missing_fact_request"] = request
+            schema["properties"]["stop_reason"]["enum"].remove("missing_fact")
+            return schema
+        request["properties"]["fact_kind"]["enum"] = allowed
+    # An explicit null branch avoids object-shaped placeholder requests at
+    # compatible providers. The parser still enforces verdict/stop pairing.
+    schema["properties"]["missing_fact_request"] = {
+        "description": (
+            "Use JSON null for verified/rejected or when no fact is requested. "
+            "An object is only for verdict=uncertain with stop_reason=missing_fact "
+            "and a real unresolved fact; never fill a placeholder request."
+        ),
+        "anyOf": [{"type": "null"}, {**request, "type": "object"}],
+    }
     return schema
 
 
 _REQUIRED_FIELDS = frozenset(validator_result_schema_v3()["required"])
+_DECISION_FIELDS = _REQUIRED_FIELDS - {
+    "schema_version",
+    "candidate_uid",
+    "validation_cluster_uid",
+    "pass",
+    "stop_reason",
+}
+
+
+def validator_decision_schema_v3(
+    *,
+    allowed_missing_fact_kinds: Optional[Iterable[str]] = None,
+    allowed_evidence_refs: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """Expose model decisions while keeping invocation metadata program-owned."""
+    schema = validator_result_provider_schema_v3(
+        allowed_missing_fact_kinds=allowed_missing_fact_kinds,
+        allowed_evidence_refs=allowed_evidence_refs,
+    )
+    properties = schema["properties"]
+    schema["properties"] = {
+        key: value for key, value in properties.items() if key in _DECISION_FIELDS
+    }
+    schema["required"] = list(schema["properties"])
+    request = properties["missing_fact_request"]
+    if "anyOf" in request:
+        request["description"] = (
+            "Request one decisive fact only for verdict=uncertain; otherwise use JSON null."
+        )
+        for branch in request["anyOf"]:
+            if branch.get("type") == "object":
+                del branch["properties"]["subject_uid"], branch["properties"]["function_uid"]
+    return schema
 
 
 _DSML_PARAMETER = re.compile(
-    r'<｜DSML｜\s*parameter\s+name="(?P<name>[^"]+)"\s+'
+    r'\s*<｜DSML｜\s*parameter\s+name="(?P<name>[^"]+)"\s+'
     r'string="(?P<string>true|false)">(?P<value>.*?)</parameter>',
     re.DOTALL,
 )
@@ -266,12 +285,10 @@ _DSML_TERMINAL = re.compile(r"<｜DSML｜\s*invoke>\s*$", re.DOTALL)
 
 
 def normalize_validator_provider_payload_v3(value: Any) -> Optional[Dict[str, Any]]:
-    """Normalize one known terminal-tool framing defect from a provider.
+    """Recover the known one-key DSML terminal envelope, never general markup.
 
-    Some OpenAI-compatible gateways placed the complete terminal-tool DSML in
-    the ``schema_version`` argument.  This function accepts only that exact
-    one-key shape, the current schema version, the terminal invoke marker, and
-    the exact v3 field set.  It is not a general markup or loose JSON parser.
+    A gateway defect places all terminal arguments under schema_version.
+    Require its exact version, terminal marker and complete V3 field set.
     """
 
     if not isinstance(value, Mapping) or set(value) != {"schema_version"}:
@@ -285,19 +302,11 @@ def normalize_validator_provider_payload_v3(value: Any) -> Optional[Dict[str, An
     prefix = encoded[:first_marker].strip()
     if prefix != f"{VALIDATOR_RESULT_VERSION}</parameter>":
         return None
-    if _DSML_TERMINAL.search(encoded) is None:
-        return None
-
     payload: Dict[str, Any] = {"schema_version": VALIDATOR_RESULT_VERSION}
     body = encoded[first_marker:]
-    matches = list(_DSML_PARAMETER.finditer(body))
-    if not matches:
-        return None
     cursor = 0
-    for match in matches:
-        between = body[cursor : match.start()].strip()
-        if between:
-            return None
+    # Match only the next parameter; searching later tags rescans malformed tails.
+    while match := _DSML_PARAMETER.match(body, cursor):
         cursor = match.end()
         name = str(match.group("name") or "")
         if name in payload or name not in _REQUIRED_FIELDS:
@@ -307,8 +316,8 @@ def normalize_validator_provider_payload_v3(value: Any) -> Optional[Dict[str, An
             payload[name] = raw
         else:
             try:
-                payload[name] = json.loads(raw)
-            except (TypeError, ValueError, json.JSONDecodeError):
+                payload[name] = decode_validator_json(raw)
+            except (ValueError, RecursionError):
                 return None
     tail = body[cursor:]
     if _DSML_TERMINAL.fullmatch(tail.strip()) is None:
@@ -329,62 +338,53 @@ class ValidatorResultV3:
     negative_evidence: Tuple[str, ...]
     evidence_refs: Tuple[str, ...]
     blocking_negative_evidence: bool
-    missing_fact_request: Optional[Dict[str, str]]
+    missing_fact_request: Optional[Mapping[str, str]]
     stop_reason: str
 
     def __post_init__(self) -> None:
-        if not _valid_required_string(self.candidate_uid):
-            raise ValueError("candidate_uid must be a non-empty string")
-        if not _valid_required_string(self.validation_cluster_uid):
-            raise ValueError("validation_cluster_uid must be a non-empty string")
+        for name in (
+            "candidate_uid",
+            "validation_cluster_uid",
+            "validation_pass",
+            "verdict",
+            "reasoning",
+            "stop_reason",
+        ):
+            value = _strict_string(
+                getattr(self, name), required=True, max_length=4000 if name == "reasoning" else None
+            )
+            if value is None:
+                raise ValueError(f"{name} violates the Validator v3 string contract")
         if self.validation_pass not in VALIDATOR_PASSES:
             raise ValueError("unsupported Validator v3 pass")
         if self.verdict not in VALIDATOR_VERDICTS:
             raise ValueError("unsupported Validator v3 verdict")
-        if not _valid_required_string(self.reasoning, max_length=4000):
-            raise ValueError("reasoning must be a 1..4000 character string")
-        if not _valid_string_tuple(self.positive_evidence, limit=12, max_length=1000):
-            raise ValueError("positive_evidence violates the Validator v3 schema")
-        if not _valid_string_tuple(self.negative_evidence, limit=12, max_length=1000):
-            raise ValueError("negative_evidence violates the Validator v3 schema")
-        if not _valid_string_tuple(self.evidence_refs, limit=32, max_length=512):
-            raise ValueError("evidence_refs violates the Validator v3 schema")
+        for name, (limit, max_length) in _EVIDENCE_LIMITS.items():
+            values = getattr(self, name)
+            if not _valid_string_tuple(values, limit=limit, max_length=max_length):
+                raise ValueError(f"{name} violates the Validator v3 schema")
         if not isinstance(self.blocking_negative_evidence, bool):
             raise ValueError("blocking_negative_evidence must be boolean")
-        if self.stop_reason not in VALIDATOR_STOP_REASONS:
-            raise ValueError("unsupported Validator v3 stop_reason")
         if self.missing_fact_request is not None:
-            if not _valid_missing_fact_request(self.missing_fact_request):
+            request = _normalize_missing_fact_request(self.missing_fact_request)
+            if request is None:
                 raise ValueError("missing_fact_request violates the Validator v3 schema")
-            if self.verdict != "uncertain" or self.stop_reason != "missing_fact":
-                raise ValueError(
-                    "missing_fact_request requires uncertain verdict and missing_fact stop_reason"
-                )
-        elif self.stop_reason == "missing_fact":
-            raise ValueError("missing_fact stop_reason requires missing_fact_request")
+            object.__setattr__(self, "missing_fact_request", MappingProxyType(request))
+        if not any(
+            self.verdict in verdicts
+            and (self.missing_fact_request is not None) == needs_fact
+            and self.stop_reason in reasons
+            for verdicts, needs_fact, reasons in _DECISION_STATES
+        ):
+            raise ValueError("inconsistent verdict, missing_fact_request and stop_reason")
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "schema_version": VALIDATOR_RESULT_VERSION,
-            "candidate_uid": self.candidate_uid,
-            "validation_cluster_uid": self.validation_cluster_uid,
-            "pass": self.validation_pass,
-            "verdict": self.verdict,
-            "reasoning": self.reasoning,
-            "positive_evidence": list(self.positive_evidence),
-            "negative_evidence": list(self.negative_evidence),
-            "evidence_refs": list(self.evidence_refs),
-            "blocking_negative_evidence": self.blocking_negative_evidence,
-            "missing_fact_request": (
-                dict(self.missing_fact_request) if self.missing_fact_request is not None else None
-            ),
-            "stop_reason": self.stop_reason,
-        }
+        return {"schema_version": VALIDATOR_RESULT_VERSION, **_wire_fields(self, ValidatorResultV3)}
 
 
 @dataclass(frozen=True)
 class DynamicReproductionRequest:
-    """Reserved V4 interface; no scheduler consumes it in this release."""
+    """V4 transport shape; execution is owned by dynamic reproduction policy."""
 
     request_id: str
     candidate_uid: str
@@ -396,25 +396,20 @@ class DynamicReproductionRequest:
     memory_limit_mb: int = 0
 
     def __post_init__(self) -> None:
-        if not self.request_id or not self.candidate_uid or not self.validation_cluster_uid:
-            raise ValueError("dynamic reproduction request identities must be non-empty")
-        if self.reproduction_kind not in {"asan", "ubsan", "tsan", "poc", "test"}:
+        _validate_dynamic_fields(
+            self,
+            ("request_id", "candidate_uid", "validation_cluster_uid", "target"),
+            ("timeout_seconds", "memory_limit_mb"),
+            ("evidence_refs",),
+        )
+        if _strict_string(self.reproduction_kind) not in {"asan", "ubsan", "tsan", "poc", "test"}:
             raise ValueError("unsupported dynamic reproduction kind")
-        if self.timeout_seconds < 0 or self.memory_limit_mb < 0:
-            raise ValueError("dynamic reproduction limits must be non-negative")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "schema_version": DYNAMIC_REPRODUCTION_REQUEST_VERSION,
-            "request_id": self.request_id,
-            "candidate_uid": self.candidate_uid,
-            "validation_cluster_uid": self.validation_cluster_uid,
+            **_wire_fields(self, DynamicReproductionRequest),
             "decision_level": "V4",
-            "reproduction_kind": self.reproduction_kind,
-            "target": self.target,
-            "evidence_refs": list(self.evidence_refs),
-            "timeout_seconds": self.timeout_seconds,
-            "memory_limit_mb": self.memory_limit_mb,
             "dispatch_status": "reserved_not_implemented",
         }
 
@@ -431,24 +426,54 @@ class DynamicReproductionResult:
     duration_ms: int = 0
 
     def __post_init__(self) -> None:
-        if not self.request_id or not self.reasoning:
-            raise ValueError("dynamic reproduction result identity/reasoning must be non-empty")
-        if self.outcome not in {"reproduced", "not_reproduced", "inconclusive", "failed"}:
+        _validate_dynamic_fields(
+            self, ("request_id", "reasoning"), ("duration_ms",), ("evidence_refs", "artifact_refs")
+        )
+        if _strict_string(self.outcome) not in {
+            "reproduced",
+            "not_reproduced",
+            "inconclusive",
+            "failed",
+        }:
             raise ValueError("unsupported dynamic reproduction outcome")
-        if self.duration_ms < 0:
-            raise ValueError("dynamic reproduction duration must be non-negative")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "schema_version": DYNAMIC_REPRODUCTION_RESULT_VERSION,
-            "request_id": self.request_id,
+            **_wire_fields(self, DynamicReproductionResult),
             "decision_level": "V4",
-            "outcome": self.outcome,
-            "reasoning": self.reasoning,
-            "evidence_refs": list(self.evidence_refs),
-            "artifact_refs": list(self.artifact_refs),
-            "duration_ms": self.duration_ms,
         }
+
+
+def _wire_fields(value: Any, contract: type) -> Dict[str, Any]:
+    """Project only declared contract fields, without deep-copying evidence."""
+    result = {}
+    for field in fields(contract):
+        item = getattr(value, field.name)
+        result["pass" if field.name == "validation_pass" else field.name] = (
+            list(item)
+            if isinstance(item, tuple)
+            else dict(item) if isinstance(item, Mapping) else item
+        )
+    return result
+
+
+def _validate_dynamic_fields(
+    value: Any, strings: Tuple[str, ...], limits: Tuple[str, ...], references: Tuple[str, ...]
+) -> None:
+    for name in strings:
+        if _strict_string(getattr(value, name), required=True) is None:
+            raise ValueError(f"{name} must be a non-empty string")
+    for name in limits:
+        number = getattr(value, name)
+        if type(number) is not int or number < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+    for name in references:
+        refs = getattr(value, name)
+        if not isinstance(refs, tuple) or any(
+            _strict_string(ref, required=True) is None for ref in refs
+        ):
+            raise ValueError(f"{name} must be a tuple of non-empty strings")
 
 
 def parse_validator_result_v3(
@@ -468,100 +493,85 @@ def parse_validator_result_v3(
     if value.get("schema_version") != VALIDATOR_RESULT_VERSION:
         return None
 
-    actual_candidate = _strict_string(value.get("candidate_uid"), required=True)
-    actual_cluster = _strict_string(value.get("validation_cluster_uid"), required=True)
-    validation_pass = _strict_string(value.get("pass"), required=True)
-    verdict = _strict_string(value.get("verdict"), required=True)
-    reasoning = _strict_string(value.get("reasoning"), required=True, max_length=4000)
-    stop_reason = _strict_string(value.get("stop_reason"), required=True)
-    if (
-        actual_candidate is None
-        or actual_cluster is None
-        or validation_pass is None
-        or verdict is None
-        or reasoning is None
-        or stop_reason is None
-    ):
-        return None
-    if candidate_uid and actual_candidate != candidate_uid:
-        return None
-    if validation_cluster_uid and actual_cluster != validation_cluster_uid:
-        return None
-    if validation_pass not in VALIDATOR_PASSES or (
-        expected_pass and validation_pass != expected_pass
-    ):
-        return None
-    if verdict not in VALIDATOR_VERDICTS or stop_reason not in VALIDATOR_STOP_REASONS:
-        return None
-
-    positive = _string_tuple(value.get("positive_evidence"), limit=12, max_length=1000)
-    negative = _string_tuple(value.get("negative_evidence"), limit=12, max_length=1000)
-    refs = _string_tuple(value.get("evidence_refs"), limit=32, max_length=512)
-    if positive is None or negative is None or refs is None:
-        return None
-    if allowed_evidence_refs is not None:
-        allowed = {str(item) for item in allowed_evidence_refs if str(item)}
-        if any(ref not in allowed for ref in refs):
+    # Validate the wire container types here; the result object owns all field
+    # limits and cross-field rules, including runtime-generated failure outcomes.
+    fields = {key: value[key] for key in _REQUIRED_FIELDS - {"schema_version", "pass"}}
+    fields["validation_pass"] = value["pass"]
+    for name in _EVIDENCE_LIMITS:
+        if not isinstance(fields[name], list):
             return None
-    blocking = value.get("blocking_negative_evidence")
-    if not isinstance(blocking, bool):
-        return None
-
-    request = value.get("missing_fact_request")
-    normalized_request: Optional[Dict[str, str]] = None
-    if request is not None:
-        if not isinstance(request, Mapping):
-            return None
-        if not {"fact_kind", "reason"}.issubset(request):
-            return None
-        if set(request) - {"fact_kind", "subject_uid", "function_uid", "reason"}:
-            return None
-        fact_kind = _strict_string(request.get("fact_kind"), required=True)
-        reason = _strict_string(request.get("reason"), required=True, max_length=1000)
-        subject_uid = _strict_string(request.get("subject_uid", ""), max_length=512)
-        function_uid = _strict_string(request.get("function_uid", ""), max_length=512)
-        if fact_kind is None or reason is None or subject_uid is None or function_uid is None:
-            return None
-        if fact_kind not in VALIDATOR_MISSING_FACT_KINDS:
-            return None
-        normalized_request = {
-            "fact_kind": fact_kind,
-            "subject_uid": subject_uid,
-            "function_uid": function_uid,
-            "reason": reason,
-        }
-    if verdict == "uncertain" and normalized_request is not None:
-        if stop_reason != "missing_fact":
-            return None
-    elif normalized_request is not None:
-        return None
-    if stop_reason == "missing_fact" and normalized_request is None:
-        return None
-    if verdict in {"verified", "rejected"} and stop_reason != "decision_complete":
-        return None
-    if (
-        verdict == "uncertain"
-        and normalized_request is None
-        and stop_reason not in VALIDATOR_UNCERTAIN_TERMINAL_REASONS
-    ):
-        return None
-
+        fields[name] = tuple(fields[name])
     try:
-        return ValidatorResultV3(
-            candidate_uid=actual_candidate,
-            validation_cluster_uid=actual_cluster,
-            validation_pass=validation_pass,
-            verdict=verdict,
-            reasoning=reasoning,
-            positive_evidence=positive,
-            negative_evidence=negative,
-            evidence_refs=refs,
-            blocking_negative_evidence=blocking,
-            missing_fact_request=normalized_request,
-            stop_reason=stop_reason,
-        )
+        result = ValidatorResultV3(**fields)
     except ValueError:
         return None
+    for expected, actual in (
+        (candidate_uid, result.candidate_uid),
+        (validation_cluster_uid, result.validation_cluster_uid),
+        (expected_pass, result.validation_pass),
+    ):
+        if expected and expected != actual:
+            return None
+    if allowed_evidence_refs is not None:
+        allowed = {item for item in allowed_evidence_refs if isinstance(item, str)}
+        if not set(result.evidence_refs).issubset(allowed):
+            return None
+    return result
+
+
+def bind_validator_decision(
+    value: Any,
+    *,
+    candidate_uid: str,
+    validation_cluster_uid: str,
+    expected_pass: str,
+    allowed_evidence_refs: Optional[Iterable[str]] = None,
+    allowed_missing_fact_kinds: Optional[Iterable[str]] = None,
+    subject_uid: str = "",
+    function_uid: str = "",
+) -> Optional[ValidatorResultV3]:
+    """Bind a compact decision, or validate a complete historical result unchanged."""
+    if not isinstance(value, Mapping) or any(
+        _strict_string(item, required=True) is None
+        for item in (candidate_uid, validation_cluster_uid, expected_pass)
+    ):
+        return None
+    if set(value) == _DECISION_FIELDS:
+        request = value["missing_fact_request"]
+        if request is not None:
+            if not isinstance(request, Mapping) or set(request) != {"fact_kind", "reason"}:
+                return None
+            request = {**request, "subject_uid": subject_uid, "function_uid": function_uid}
+        stop_reason = (
+            "decision_complete"
+            if value["verdict"] in ("verified", "rejected")
+            else "missing_fact" if request is not None else "no_evidence_gain"
+        )
+        value = {
+            **value,
+            "schema_version": VALIDATOR_RESULT_VERSION,
+            "candidate_uid": candidate_uid,
+            "validation_cluster_uid": validation_cluster_uid,
+            "pass": expected_pass,
+            "stop_reason": stop_reason,
+            "missing_fact_request": request,
+        }
+    # Never overwrite historical identities: the strict parser rejects mismatches
+    # and partial mixtures of compact decisions and complete result envelopes.
+    result = parse_validator_result_v3(
+        value,
+        candidate_uid=candidate_uid,
+        validation_cluster_uid=validation_cluster_uid,
+        expected_pass=expected_pass,
+        allowed_evidence_refs=allowed_evidence_refs,
+    )
+    if result is not None and result.missing_fact_request is not None:
+        if (
+            allowed_missing_fact_kinds is not None
+            and result.missing_fact_request["fact_kind"] not in allowed_missing_fact_kinds
+        ):
+            return None
+    return result
 
 
 def _strict_string(
@@ -572,16 +582,11 @@ def _strict_string(
 ) -> Optional[str]:
     if not isinstance(value, str):
         return None
-    normalized = value.strip()
-    if required and not normalized:
+    if required and not value.strip():
         return None
     if max_length is not None and len(value) > max_length:
         return None
-    return normalized
-
-
-def _valid_required_string(value: Any, *, max_length: Optional[int] = None) -> bool:
-    return _strict_string(value, required=True, max_length=max_length) is not None
+    return value
 
 
 def _valid_string_tuple(value: Any, *, limit: int, max_length: int) -> bool:
@@ -592,36 +597,19 @@ def _valid_string_tuple(value: Any, *, limit: int, max_length: int) -> bool:
     )
 
 
-def _valid_missing_fact_request(value: Any) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    if not {"fact_kind", "reason"}.issubset(value):
-        return False
-    if set(value) - {"fact_kind", "subject_uid", "function_uid", "reason"}:
-        return False
-    fact_kind = _strict_string(value.get("fact_kind"), required=True)
-    reason = _strict_string(value.get("reason"), required=True, max_length=1000)
-    subject_uid = _strict_string(value.get("subject_uid", ""), max_length=512)
-    function_uid = _strict_string(value.get("function_uid", ""), max_length=512)
-    return (
-        fact_kind in VALIDATOR_MISSING_FACT_KINDS
-        and reason is not None
-        and subject_uid is not None
-        and function_uid is not None
-    )
-
-
-def _string_tuple(
-    value: Any,
-    *,
-    limit: int,
-    max_length: int,
-) -> Optional[Tuple[str, ...]]:
-    if not isinstance(value, list) or len(value) > limit:
+def _normalize_missing_fact_request(value: Any) -> Optional[Dict[str, str]]:
+    if not isinstance(value, Mapping) or not {"fact_kind", "reason"}.issubset(value):
         return None
-    result = []
-    for item in value:
-        if not isinstance(item, str) or not item.strip() or len(item) > max_length:
+    if set(value) - {"fact_kind", "subject_uid", "function_uid", "reason"}:
+        return None
+    result = {}
+    for name in ("fact_kind", "reason", "subject_uid", "function_uid"):
+        item = _strict_string(
+            value.get(name, ""),
+            required=name in {"fact_kind", "reason"},
+            max_length=1000 if name == "reason" else 512,
+        )
+        if item is None or (name == "fact_kind" and item not in VALIDATOR_MISSING_FACT_KINDS):
             return None
-        result.append(item.strip())
-    return tuple(result)
+        result[name] = item
+    return result

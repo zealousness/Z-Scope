@@ -59,12 +59,12 @@ def _build_plan(tmp_path: Path) -> tuple[dict[str, Any], Path]:
     )
     config = tmp_path / "zscope.yaml"
     config.write_text(
-        "config_version: 2\n"
+        "config_version: 3\n"
         "project:\n"
         "  language: c_cpp\n"
         "  root: /zscope-input\n"
         "scan:\n"
-        "  depth: balanced\n"
+        "  preset: balanced\n"
         "  expected_max_tokens: 12000000\n",
         encoding="utf-8",
     )

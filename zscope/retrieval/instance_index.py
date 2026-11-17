@@ -1673,6 +1673,12 @@ class ScopedCodeIndex:
         # the base handle itself and applies the instance filter below, so no
         # unscoped store ever reaches a caller.
         base = self.__dict__["_base"]
+        backend = getattr(base, "_backend", None)
+        signal_owner = backend if backend is not None else base
+        current_signals = getattr(signal_owner, "svf_signals_current", None)
+        if not callable(current_signals) or not current_signals():
+            payload.update(status="unavailable", reason="svf_run_not_current")
+            return payload
         db = getattr(base, "db", None)
         if db is None:
             # Production ``CodeIndex`` owns the configured backend rather than

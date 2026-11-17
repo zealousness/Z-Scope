@@ -149,7 +149,7 @@
 
 ### 已完成 semantic_modeler effects 字段落地
 
-- 按 `snapshot_redesign.md` 的统一副作用建模方向，更新主路径 `DEFAULT_FUNCTION_SNAPSHOT_SCHEMA`。
+- 按[历史快照重构方案](../../docs/archive/design-plans/snapshot_redesign.md)的统一副作用建模方向，更新主路径 `DEFAULT_FUNCTION_SNAPSHOT_SCHEMA`。
 - 直接删除旧的顶层 schema 字段：
   - `memory`
   - `resources`
@@ -365,7 +365,7 @@
 
 ### 阶段 0：现状审计完成
 
-- 以 `new_docs/plan_docs/snapshot_redesign.md` 第十一节为实施基线。
+- 以[历史快照重构方案](../../docs/archive/design-plans/snapshot_redesign.md)第十一节为实施基线。
 - 确认当前工作树已有多项未提交改动；本轮在现有改动上增量实现，不回退或覆盖无关修改。
 - 确认 Semantic Modeler 当前有四条 LLM 建模入口：global model、entry model、premodel 和按需 snapshot。
 - 确认当前 `func_name` 来源不统一，`code` 主要来自 `CodeIndex.get_function_impl()`，`location` 由调用方拼接。
@@ -690,7 +690,7 @@
 - 删除 CodeIndex 对外结果中的 `is_extern` 和 `definition_kind`。
 - Clang extractor 和 KnowledgeDB 继续保留这两个内部索引字段，不修改内部数据库结构。
 - `get_function_info`、Semantic Modeler 输入与透传、静态 snapshot 继续沿用原有直接消费 CodeIndex 结果的实现，不增加额外投影或校验层。
-- 未修改 `tools_optimation_plan.md`、fallback、Semantic Modeler、静态 snapshot 或 SnapshotStore 生产代码。
+- 未修改[历史工具优化计划](../../docs/archive/design-plans/tools_optimation_plan.md)、fallback、Semantic Modeler、静态 snapshot 或 SnapshotStore 生产代码。
 
 ### 测试
 
@@ -703,7 +703,7 @@
 
 ### 阶段 0：现状审计完成
 
-- 以 `new_docs/plan_docs/snapshot_redesign.md` 第十二节为实施基线。
+- 以[历史快照重构方案](../../docs/archive/design-plans/snapshot_redesign.md)第十二节为实施基线。
 - 确认 `build_semantic_model_input()` 已向四条建模路径提供：
   - `callees`
   - `referenced_globals`
@@ -995,7 +995,7 @@
 
 ### 阶段 0：现状审计完成
 
-- 以 `new_docs/plan_docs/snapshot_redesign.md` 第十四节为实施基线。
+- 以[历史快照重构方案](../../docs/archive/design-plans/snapshot_redesign.md)第十四节为实施基线。
 - 确认当前 Semantic Modeler 使用 `require_structured_finalization=True`：先运行普通检索工具 conversation，再创建独立 `json_finalization=1` 会话强制调用 `emit_function_snapshot`。
 - 确认 global-model benchmark 中 234 个 LLM snapshot 对应 468 个 Semantic Modeler session；`platform_execute_task` 的探索与 finalization 分别生成 1,133 和 989 completion tokens，存在重复完整输出。
 - 确认 `LLMClient.run_conversation_with_tools()` 当前会把所有 function tool call 交给普通 `tool_executor`，没有 terminal tool 捕获与立即结束协议。

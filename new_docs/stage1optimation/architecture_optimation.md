@@ -199,7 +199,7 @@
 - `new_docs/architecture_optimation.md`
   - 本实施记录。
 
-没有修改 SQLite 表 schema、fallback 文件或用户已有的 `new_docs/plan_docs/architecture_optimation_plan.md`、`new_docs/v1_3optlog.md` 手工内容。
+没有修改 SQLite 表 schema、fallback 文件或用户已有的[历史架构优化计划](../../docs/archive/design-plans/architecture_optimation_plan.md)、`new_docs/v1_3optlog.md` 手工内容。
 
 #### 新增与调整的测试覆盖
 

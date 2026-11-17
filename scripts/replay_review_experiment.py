@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from zscope.benchmarking.review_experiment import ARMS, arm_flags
-from zscope.config.v2 import load_user_config_v2
+from zscope.config.config import ConfigLoader
 from zscope.core.validation.review_checkpoint import ReviewCheckpointStore
 from zscope.core.validation.runner import ValidationRunner
 from zscope.core.validation.pipeline import ValidationPipeline
@@ -111,7 +111,7 @@ def main():
             parser.error(
                 "checkpoint build dependencies are incomplete or stale; collect a new baseline"
             )
-    config = load_user_config_v2(str(args.config))
+    config = ConfigLoader.load(str(args.config), read_only=True)
     root = Path(config.project.project_root).resolve()
     if any(not Path(c["facts"]["source"]).resolve().is_relative_to(root) for c in checkpoints):
         parser.error("checkpoint source does not belong to the configured project")

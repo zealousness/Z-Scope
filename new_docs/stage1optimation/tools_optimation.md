@@ -37,7 +37,7 @@
 
 ### 已完成 新增 get_function_info 工具
 
-- 按 `tools_optimation_plan.md` 实现 `get_function_info`：
+- 按[历史工具优化计划](../../docs/archive/design-plans/tools_optimation_plan.md)实现 `get_function_info`：
   - 新增 `CodeIndex.find_function_infos()`，按 `func_name` 和可选 `file_path` 返回所有匹配函数。
   - 返回 `match_count` 与 `matches`，不返回 `ambiguous`，由调用方通过 `match_count` 判断同名/重载歧义。
   - 每个 match 返回 `function_name`、`file_path`、`index_name`、`start_line`、`end_line`、`signature`、`callers`、`callees`。

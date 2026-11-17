@@ -351,7 +351,7 @@ def test_shipped_source_reference_and_executable_semantics():
     root = Path(__file__).resolve().parents[1] / "test/range"
     document = validate_reviewed(load_project_semantics(root / "zscope.semantics.yaml"), root)
     assert not (root / "benchmark/interface_truth.json").exists()
-    assert len(document["interfaces"]) == 56
+    assert len(document["interfaces"]) == 60
     assert all(row["status"] == "confirmed" for row in document["interfaces"])
     assert score_discovery(document, document)["strict_recall"] == 1
     selected = {row["selector"]["name"]: row for row in document["interfaces"]}
@@ -481,3 +481,51 @@ def test_failed_trial_preserves_rebound_semantics_from_execution_copy(tmp_path, 
             runner.SPECS["c_cpp"], output, 1, mode="trial", work_directory=tmp_path / "work"
         )
     assert (output / "semantic-preparation/effective.yaml").read_text() == "current evidence"
+
+@pytest.mark.parametrize(
+    "identifier,carrier_kind",
+    [
+        ("range:net_recv_string:recv", "return"),
+        ("range:td_receive_string:recv", "return"),
+        ("range:lifecycle_recv_packet", "argument"),
+        ("range:td_receive_message", "argument"),
+    ],
+)
+def test_reviewed_receive_roles_keep_unknown_failures_and_reach_rule_consumer(
+    identifier, carrier_kind
+):
+    from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
+    from zscope.semantics.models import LocalPatternSemantics
+
+    root = Path(__file__).resolve().parents[1] / "test/range"
+    document = load_project_semantics(root / "zscope.semantics.yaml")
+    row = next(row for row in document["interfaces"] if row["id"] == identifier)
+    assert row["otherwise"] == "unknown"
+    assert all(case["effect"] != "no_effect" for case in row["cases"])
+    contracts = compiled_project_contracts(
+        document, build_context_id=row["variants"][0]["build_context_id"]
+    )
+    name = row["selector"]["name"]
+    effect = next(
+        c for c in contracts if c["symbol"]["name"] == name and c["role"] == "recv_source"
+    )
+    assert effect["carrier"]["kind"] == carrier_kind
+    assert effect["verification"]["effect_strength"] == "may"
+    semantics = LocalPatternSemantics()
+    overlay = {"api_contracts": contracts}
+    semantics.merge_overlay(overlay)
+    assert name in semantics.recv_sources
+    if carrier_kind == "argument":
+        assert effect["carrier"]["argument_index"] == 1
+        generator = ClangAstCfgCandidateGenerator(semantics, overlay)
+        issues = generator.generate_issues(
+            "caller",
+            "1 | void caller() {\n"
+            f"2 | int received = {name}(fd, dst, capacity);\n"
+            "3 | size_t count = (size_t)received;\n"
+            "4 | memcpy(out, dst, count);\n5 | }",
+            "caller.c",
+        )
+        assert any("negative_length_cast_to_size_t" in issue["rule"] for issue in issues)
+    # Return-carrier publication is verified above; this is deliberately not
+    # an assertion of complete unified return-buffer taint propagation.

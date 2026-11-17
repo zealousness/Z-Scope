@@ -19,7 +19,8 @@ class GetDeepCallContextTool(BaseTool):
             name="get_deep_call_context",
             description=(
                 "Get callers, callees, indirect callees, taint hints, and method info "
-                "in one call. Each section is capped at a fixed row limit; when a "
+                "in one call. Taint hints are a project-wide sample, not filtered "
+                "to this function. Each section is capped at a fixed row limit; when a "
                 "section is cut short the result sets truncated=true and lists the "
                 "affected truncated_sections."
             ),
@@ -40,7 +41,7 @@ class GetDeepCallContextTool(BaseTool):
             else []
         )
         raw_taint = (
-            backend.get_taint_bugs(func_name, limit=self.TAINT_LIMIT + probe)
+            backend.get_taint_bugs(limit=self.TAINT_LIMIT + probe)
             if backend and hasattr(backend, "get_taint_bugs")
             else []
         )
@@ -56,8 +57,20 @@ class GetDeepCallContextTool(BaseTool):
         data: Dict[str, Any] = {
             "function": func_name,
             "method_info": method,
+            "taint_scope": "project",
             **sections,
         }
+        unavailable = [
+            section
+            for section, method_name in (
+                ("indirect_callees", "get_indirect_callees"),
+                ("taint_bugs", "get_taint_bugs"),
+                ("method_info", "get_method"),
+            )
+            if backend is None or not hasattr(backend, method_name)
+        ]
+        if unavailable:
+            data["unavailable_sections"] = unavailable
         truncated_sections = sorted(
             section
             for section, rows in (
@@ -74,9 +87,7 @@ class GetDeepCallContextTool(BaseTool):
             data["note"] = (
                 "These sections were cut at their row limits: "
                 + ", ".join(truncated_sections)
-                + ". The neighborhood is incomplete; use the dedicated "
-                "per-section tools (get_callers, query_pointer_alias, "
-                "verify_taint_reachability) with a larger limit for the rest."
+                + ". These are bounded samples; omitted rows are not evidence of absence."
             )
         return {"success": True, "data": data}
 

@@ -1,11 +1,9 @@
-import logging
 from typing import Dict, Any, TYPE_CHECKING
 from ..framework.base import BaseTool
 
 if TYPE_CHECKING:
     from ..retrieval.code_index import CodeIndex
 
-logger = logging.getLogger(__name__)
 
 class FollowTaintTool(BaseTool):
     """
@@ -16,29 +14,25 @@ class FollowTaintTool(BaseTool):
     def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="follow_taint",
-            description="Follows the data flow (taint) of a specific variable backward or forward across function calls."
+            description=(
+                "Legacy DFG-slicing entry point; implementation is unavailable. "
+                "Use trace_data_flow for supported queries."
+            ),
         )
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         variable = arguments.get("variable")
         location = arguments.get("location")
-        depth = arguments.get("depth", 3)
-        direction = arguments.get("direction", "forward")
-
         if not variable or not location:
-            return {"error": "Missing required arguments: variable, location"}
+            return {"success": False, "error": "Missing required arguments: variable, location"}
 
-        if not hasattr(self.code_index, "backend_name") or self.code_index.backend_name not in ["svf", "joern", "unified"]:
-            return {
-                "error": "The current retrieval backend does not support DFG/Taint slicing.",
-                "hint": "Try using standard retrieve_function_snapshot or callers instead."
-            }
-
-        # TODO: Hook directly into SVF/Joern's taint extractor
+        # Keep the public compatibility entry without presenting a scaffold as evidence.
         return {
-            "status": "not_implemented",
-            "message": "DFG Slicing engine is currently being scaffolded."
+            "success": False,
+            "status": "unavailable",
+            "error": "DFG slicing is not implemented by this legacy tool.",
+            "hint": "Use trace_data_flow for supported backend analysis.",
         }
 
     def get_schema(self) -> Dict[str, Any]:
@@ -52,23 +46,23 @@ class FollowTaintTool(BaseTool):
                     "properties": {
                         "variable": {
                             "type": "string",
-                            "description": "The name of the variable to trace (e.g., 'req->buffer')"
+                            "description": "The name of the variable to trace (e.g., 'req->buffer')",
                         },
                         "location": {
                             "type": "string",
-                            "description": "The starting line locus where the variable is defined or used (e.g., '145' or 'main.c:145')"
+                            "description": "The starting line locus where the variable is defined or used (e.g., '145' or 'main.c:145')",
                         },
                         "direction": {
                             "type": "string",
                             "enum": ["forward", "backward", "both"],
-                            "description": "Direction of taint tracking"
+                            "description": "Direction of taint tracking",
                         },
                         "depth": {
                             "type": "integer",
-                            "description": "Maximum call depth to trace. Default is 3."
-                        }
+                            "description": "Maximum call depth to trace. Default is 3.",
+                        },
                     },
-                    "required": ["variable", "location", "direction"]
-                }
-            }
+                    "required": ["variable", "location", "direction"],
+                },
+            },
         }

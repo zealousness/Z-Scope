@@ -24,6 +24,12 @@ included in the constraints, release and two portable locks, with MIT licenses
 recorded in `license-policy.json`. Keep these pins aligned when updating the YAML
 runtime; a source install alone does not validate an offline bundle.
 
+Symbol searches use `regex` in Version 0 mode to retain Python `re` behavior
+while enforcing a shared timeout for a complete query. The dependency is
+included in all four runtime locks. Its distribution declares
+`Apache-2.0 AND CNRI-Python`; both licenses are recorded in the policy and
+must be included by the existing dependency-license packaging step.
+
 ## Security pins
 
 `urllib3` and `certifi` are transitive (requests / httpx / openai) but they ship in

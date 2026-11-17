@@ -1,0 +1,146 @@
+{
+  "checked_utc": "2026-11-06T01:12:13.881402+00:00",
+  "scope": "offline document/data integrity checks only; no benchmark, external model call, code/config change, installation or system change",
+  "checks": {
+    "truth_rows_141": true,
+    "truth_mode_rows_423": true,
+    "retained_and_current_input_files_69_match": true,
+    "unmatched_rows_91": true,
+    "effective_overlap_rows_24": true,
+    "candidate_rows_1554": true,
+    "candidate_index_unique": true,
+    "candidate_cost_rows_1554": true,
+    "candidate_cost_cluster_unique": true,
+    "fast_TP_FP_FN": true,
+    "fast_truth_TP_consistency": true,
+    "fast_stage_token_conservation": true,
+    "fast_response_tool_count_conservation": true,
+    "fast_no_duplicate_exchange_usage_id": true,
+    "fast_candidate_cost_matches_validator": true,
+    "fast_candidate_plus_shared_cost_conservation": true,
+    "balanced_TP_FP_FN": true,
+    "balanced_truth_TP_consistency": true,
+    "balanced_stage_token_conservation": true,
+    "balanced_response_tool_count_conservation": true,
+    "balanced_no_duplicate_exchange_usage_id": true,
+    "balanced_candidate_cost_matches_validator": true,
+    "balanced_candidate_plus_shared_cost_conservation": true,
+    "deep_TP_FP_FN": true,
+    "deep_truth_TP_consistency": true,
+    "deep_stage_token_conservation": true,
+    "deep_response_tool_count_conservation": true,
+    "deep_no_duplicate_exchange_usage_id": true,
+    "deep_candidate_cost_matches_validator": true,
+    "deep_candidate_plus_shared_cost_conservation": true,
+    "deep_known_plus_conservative": true,
+    "utf8_no_bom_LF_final_newline": true,
+    "local_links_exist": true,
+    "no_private_endpoint_or_key_pattern": true
+  },
+  "passed": true,
+  "encoding_errors": [],
+  "broken_links": [],
+  "sensitive_pattern_files": [],
+  "deliverables": [
+    {
+      "file": "README.md",
+      "bytes": 36003,
+      "sha256": "401e0b21c3e4d0e2df8e64d4fe9c8469f79e9686cb43258657a6260089387a4c"
+    },
+    {
+      "file": "analysis-statistics.json",
+      "bytes": 4997,
+      "sha256": "cc4903261d00dc4d10976ba6c3b920cae2e5ff89b005397261abcb16a5b6283d"
+    },
+    {
+      "file": "artifact-index.json",
+      "bytes": 5401,
+      "sha256": "fad859ee8c131655ce38b2d3272a60b82518232fb14b04ddd8d779531c90e3c5"
+    },
+    {
+      "file": "candidate-cost-summary.json",
+      "bytes": 20892,
+      "sha256": "4486f29c2f2ae5331939afe43106ad510b0628f8cff8478d6e6876264296a323"
+    },
+    {
+      "file": "candidate-costs.csv",
+      "bytes": 352506,
+      "sha256": "d5978da5d2267fd6af690421db245894a0b407e57ddd8cab7a3fdb38daab6c07"
+    },
+    {
+      "file": "candidate-evidence.jsonl",
+      "bytes": 12161910,
+      "sha256": "a91378ee5cd97ce648bf1c8b4e7ea883a1e484162cc1ad627b27763bd24a548f"
+    },
+    {
+      "file": "candidate-uid-collisions.json",
+      "bytes": 17920,
+      "sha256": "fdf102db43fa80f4aca42d321e424140cc6a70073093b3d8b4443fb1df0b4861"
+    },
+    {
+      "file": "case-evidence.md",
+      "bytes": 629958,
+      "sha256": "da14f499e2ac5c2ce50b34f40a7c3d4e23a1c5ed4d933b34a33772dc6a35d360"
+    },
+    {
+      "file": "changed-cases.csv",
+      "bytes": 9513,
+      "sha256": "852bfce73c997f51ee0d2e536a8ddb8b77d7c08c7c8911cae4778cc0adc61782"
+    },
+    {
+      "file": "conversation-call-statistics.json",
+      "bytes": 3168,
+      "sha256": "c68545a1a3d66c381d0370a3691bff021a73cf8dacd625d69934a2f2b7543b83"
+    },
+    {
+      "file": "false-positive-review.md",
+      "bytes": 11155,
+      "sha256": "bc586e1b9e3870fe616b5737eeff94126b99e182b7bab09d8b3ad81e751df8cd"
+    },
+    {
+      "file": "input-verification.csv",
+      "bytes": 15893,
+      "sha256": "4bc538d04b3bdd780ff9069d935cccd2e9f64e624320efea09a81a32ea98d157"
+    },
+    {
+      "file": "metrics.json",
+      "bytes": 7329,
+      "sha256": "6be36cd680042d41bbd2e908ebbaf0811164c56cfd5ba9e2958cfc80b3dbaa54"
+    },
+    {
+      "file": "source-index.json",
+      "bytes": 9070,
+      "sha256": "084feec6bb33efd870cb8d77bf244588635bf964349827e5e720adcff9808000"
+    },
+    {
+      "file": "truth-comparison.csv",
+      "bytes": 45661,
+      "sha256": "387a59f69ddf51c093ee5ba542679909d9be1864f8579509d1dce3b3f2dbaab3"
+    },
+    {
+      "file": "truth-evidence.csv",
+      "bytes": 154711,
+      "sha256": "a2c5b2628cc6f63e44a6b3999e4ca358270f1ee484adbee1d507c8d698b7ed1e"
+    },
+    {
+      "file": "truth-reference.json",
+      "bytes": 131018,
+      "sha256": "dd8f10d12ddde7674d690e704e49819b413bb1c2eeaaee10755630736c338e1b"
+    },
+    {
+      "file": "unmatched-findings.csv",
+      "bytes": 139430,
+      "sha256": "3094e470dab36610711694fdee2cbc8e64728f1410266a73de0c2ac2dd7fab18"
+    },
+    {
+      "file": "usage-breakdown.csv",
+      "bytes": 4877,
+      "sha256": "fe203aac4b4c89305ca5bbb017c99fb08ba3b026778486e07b10595832308c37"
+    },
+    {
+      "file": "usage-breakdown.json",
+      "bytes": 20977,
+      "sha256": "519a6da589c5a607dc298955ff599d6e5f65bfa6fae7ec579643803684fe2e58"
+    }
+  ]
+}

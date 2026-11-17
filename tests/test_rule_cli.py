@@ -11,7 +11,7 @@ from zscope.cli.rules import main as rules_main
 
 def _write_config(root: Path) -> Path:
     config: dict[str, Any] = {
-        "config_version": 2,
+        "config_version": 3,
         "llms": {
             "default": {
                 "base_urls": ["http://localhost/v1"],
@@ -20,6 +20,7 @@ def _write_config(root: Path) -> Path:
             }
         },
         "project": {
+            "targets": [{"id": "main", "compile_commands": "build/compile_commands.json"}],
             "language": "c_cpp",
             "entry_discovery": {
                 "enabled": True,

@@ -32,6 +32,9 @@ class _FakeDB:
     def get_all_tus(self):
         return []
 
+    def get_transitive_include_closures(self, source_files):
+        return {source: [source] for source in source_files}
+
     def mark_tu_pending(self, tu_id: int):
         self.pending.append(tu_id)
 
@@ -154,6 +157,34 @@ def _seed_indexed_tu(db: KnowledgeDB, source: Path) -> int:
     assert changed is True
     db.mark_tu_indexed(tu_id)
     return int(tu_id)
+
+
+def test_header_edit_refreshes_transitive_lsp_dependents_only(tmp_path, monkeypatch):
+    files = [tmp_path / name for name in ("flags.h", "bridge.h", "main.c", "unrelated.c")]
+    for path in files:
+        path.write_text("/* initial */\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        for path in files:
+            _seed_indexed_tu(db, path)
+        _set_base_versions_current(db)
+        db.insert_include_edges_batch(
+            [
+                ("main.c", "bridge.h", 1, 0),
+                ("bridge.h", "flags.h", 1, 0),
+            ]
+        )
+        db.commit()
+        files[0].write_text("#define FEATURE 1\n", encoding="utf-8")
+        extractor = _BackendSchedulingExtractor()
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, files)
+        backend._frontend = "lsp"
+        assert backend._run_full_extraction()
+        plan = extractor.base_calls[0]
+        assert all(plan[str(path.resolve())][1] for path in files[:3])
+        assert plan[str(files[3].resolve())][1] is False
+    finally:
+        db.close()
 
 
 def _set_base_versions_current(db: KnowledgeDB) -> None:

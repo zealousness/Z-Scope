@@ -4,17 +4,37 @@ import pytest
 import yaml
 
 from zscope.config.config import ConfigLoader
-from zscope.config.v3 import V3_TOP_LEVEL_KEYS, parse_user_config_v3
+from zscope.config.v3 import V3_TOP_LEVEL_KEYS, parse_user_config_v3, parse_user_config_v3_document
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize(
+    "filename",
+    [
+        "test/java_range/zscope.benchmark.yaml",
+        "test/llm_wiki_demo/zscope.benchmark.yaml",
+        "test/llm_wiki_demo/zscope.llm-wiki-active.yaml",
+        "test/llm_wiki_demo/zscope.llm-wiki-source-fallback.yaml",
+        "benchmarks/experiments/range_global_model/zscope.benchmark.yaml",
+    ],
+)
+def test_benchmark_templates_use_the_single_public_schema(filename):
+    path = REPO_ROOT / filename
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    model = parse_user_config_v3_document(path, document)
+    assert model.project.root == path.parent
+    assert model.scan.preset in {"fast", "balanced", "deep"}
+    if model.project.language == "c_cpp":
+        assert model.project.semantics_file is not None
+
+
+@pytest.mark.parametrize(
     ("filename", "language", "preset", "mapped_depth"),
     [
-        ("zscope.c_cpp.yaml", "c_cpp", "overnight", "deep"),
-        ("zscope.java.yaml", "java", "quick", "fast"),
+        ("zscope.c_cpp.yaml", "c_cpp", "fast", "fast"),
+        ("zscope.java.yaml", "java", "fast", "fast"),
     ],
 )
 def test_language_reference_config_loads_as_strict_v3(
@@ -48,15 +68,15 @@ def test_reference_configs_keep_language_specific_targets_separate() -> None:
 
     assert c_config["config_version"] == 3
     assert java_config["config_version"] == 3
-    assert set(c_config) == set(V3_TOP_LEVEL_KEYS)
-    assert set(java_config) == set(V3_TOP_LEVEL_KEYS)
+    assert set(c_config) <= set(V3_TOP_LEVEL_KEYS)
+    assert set(java_config) <= set(V3_TOP_LEVEL_KEYS)
     assert c_config["project"]["targets"] == [
         {"id": "main", "compile_commands": "build/compile_commands.json"}
     ]
     assert java_config["project"]["targets"] == [{"id": "main"}]
     assert "compile_commands" not in java_config["project"]["targets"][0]
-    assert c_config["scan"]["preset"] == "overnight"
-    assert java_config["scan"]["preset"] == "quick"
+    assert c_config["scan"]["preset"] == "fast"
+    assert java_config["scan"]["preset"] == "fast"
     assert not (REPO_ROOT / "zscope.yaml").exists()
 
 

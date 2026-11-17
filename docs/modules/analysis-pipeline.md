@@ -16,6 +16,8 @@ sources:
   - zscope/core/validation/pipeline.py
   - zscope/core/validation/protocol_assessment.py
   - zscope/core/validation/runner.py
+  - zscope/core/validation/investigation_reuse.py
+  - zscope/core/validation/condition_tasks.py
   - zscope/core/validation/proofs.py
   - zscope/core/validation/dynamic_reproduction.py
   - zscope/core/validation/reproduction_planner.py
@@ -33,6 +35,8 @@ sources:
   - zscope/rules/query.py
   - zscope/alerts/verifier.py
 tests:
+  - tests/test_investigation_reuse.py
+  - tests/test_condition_tasks.py
   - tests/test_hierarchical_discovery.py
   - tests/test_autonomous_validation.py
   - tests/test_mode_static_foundation.py
@@ -146,6 +150,16 @@ Validator，也不会改变 verdict。
 - 构建与运行都把计划内存限额传入 RSS 采样看门狗；这是采样边界，不能表述为内核硬限额。构建内存或输出超限记为 `engine_failed/build_resource_exhaustion`，不进入候选确认。stdout/stderr 分别经管道写入有硬字节上限的日志，达到上限后以一次有界读取区分真实 EOF 与超限；恰好等于上限且完整 EOF 的输出不误报截断。主进程退出后仍按原共享 deadline、取消和资源边界读取后代持有的管道，不另设延长计时；日志读取失败不能视为完整 EOF。结束时按启动时保存的自有进程组 ID 清理，包括已经关闭管道的后代，不依赖已退出主进程的 `getpgid`。
 
 ## 必须保持的不变量
+
+- 初始结构化裁决另有独立缓存，沿用 SnapshotStore 和现有容量开关，只复用无代码检索工具参与的 v3 `initial` 成功结果。冷调用与复用读取同一规范请求视图；候选、聚类和义务的运行编号使用任务内引用，结果再绑定当前候选。当前 BuildContext、完整证据与覆盖、实际 Prompt/输出协议及模型请求契约必须一致。只有明确完成且无需补充事实的裁决可写入，失败、模型回退和调查终态不进入该缓存。
+- 初始调用命中只省去该次模型任务：本轮事实准备、V0、证据引用解析、后续补证/调查、统一裁决和 Ledger 更新仍执行。旧完整验证结果缓存保持原 revision/index 隔离；balanced/deep 的调查结果仍不跨运行复用。程序 Proof 由当前检查器重放，历史 JSON 不恢复证明权限。
+- `validator_initial_reuse` 分别记录查询、命中、未命中、绕过、写入和原因，以及本轮初始模型任务与 Token。命中不重复累计历史 Token；物理请求、失败重试和后续调查仍以现有扫描 usage 账本为准。
+
+- balanced/deep 的普通 V3 调查支持跨版本只读查询计划复用。`investigation_reuse` 以逻辑编译命令、函数/位置/对象、规则及模型/Prompt/工具契约定位计划，沿用 SnapshotStore、缓存容量与已有复用关闭控制。计划只记录最多 8 个可独立重新执行的查询和观测，包含空结果；读取源码及符号/调用关系时仍使用本轮工具、构建范围、参数校验和查询覆盖。`zs1` 符号定位由当前目录重新解析，历史 BuildContext、fact/subject UID 和分页 view ID 不作为可重放参数。每个查询在当前代码上重跑，完整返回值变化单独计数，不把返回值相同解释为程序语义等价。
+- 查询重放在 V3 首个模型轮次前提供当前观测及变化提示。`condition_tasks` 从当前规则义务的 `positive_conditions` 建立见证条件，从全路径释放、全访问锁保护等反证类型建立覆盖条件，按条件分别记录 pending、evidence_ready、supported、refuted 和 scope_pending。事实登记可声明所支持或反驳的条件；剩余任务区分当前证据复核、新证据调查、新增成员检查和范围补齐，覆盖反证作为替代裁决分支展示。
+- 查询范围订阅记录实际参数、成员集合、空结果、分页和覆盖程度，新增与删除成员参与本轮任务生成。条件计划保存登记该条件时模型已读取的全部成功查询及当前任务输入；查询与输入匹配时生成可供本轮模型复核的条件提案。失败或不可用查询不提供见证证据，覆盖型条件仍保留这些查询的未闭合范围。源码及文本搜索的整文件 revision、当前搜索 view ID 保留在实际工具观测中，提案匹配比较完整源码、匹配成员、位置、分页和覆盖；源码行迁移或内容变化进入重新调查。条件提案展示当前工具证据，由本轮模型确认。模型可在终态引用 `CONDITION_R*`，程序在合法裁决解析后将确认提案登记为当前 `FACT_V3` 并绑定引用，合并事实登记与裁决轮次；新条件先通过常规事实登记处理，稳定条件在最终裁决时一并确认。
+- 初始裁决、候选发现、当前证据检查及 Ledger 路径照常执行，程序 Proof 仍由当前检查器生成。条件记录属于有当前证据的模型声明，不直接授予证明权限。查询及条件提案沿用 SnapshotStore 容量与关闭设置，旧查询协议自然失效；成功读取可以在调查未完成时保存，失败读取不进入计划。Review 专用会话及 V2b 保持原路径。当前实现覆盖规则目录中的条件与受支持查询，通用业务条件的自动提取作为后续扩展。
+- 报告的 `artifact_reuse.investigation_queries` 记录计划查询/命中/写入、本轮重放查询数、返回结果变化/未变/失败数及当前调查模型任务与 Token，并汇总成立条件数、复核就绪数、本轮确认复用数、重新调查数、范围增删及剩余任务。`validator_condition_table` 保留候选当前条件、订阅及任务明细。命中数与实际调用成本分别计量；测试可通过 `condition_tasks.ENABLED` 单独关闭条件续算，或通过 `investigation_reuse.ENABLED` 关闭整条查询计划复用路径。
 
 - `LifecyclePaths` 消费当前构建的原生函数、CFG 和类型收据，执行有步数/调用深度上限的具体 C 路径。同 TU 外的直接调用要求唯一已观察链接目标、精确 USR、被调 TU 的当前 BuildContext 和一致签名；const ops 表只在具体选择可求值且 native 目标集合封闭时执行所选分支，不把部分目标释放推广为全部释放。调用缓存、函数依赖、调用边及契约查询均保留各自构建身份；调用帧隔离局部变量，字段、池实例和 `ObjectRef` 获取代次随实际参数传播。重复抽取的同站点 call 只执行一次。未知入口/选择、无链接依据的外部调用、递归/循环不收敛、union、volatile/atomic 和未支持转换留下 gap，不用路径前缀宣布清理完成。
 - 实验性 `object_protocol_path` 记录成功留存、失败未转交、实际归还、同代重复尝试、错池与旧代指针命中新代对象。C 地址比较与分析代次分离；池 live 条件不成立时记录 no-effect，不能称为实际 double free。入口退出不是自动的业务责任终点，成功留存也不是所有权转移。候选显式携带已闭合路径/代次事实及仍缺的业务释放规范、责任终点或后续访问义务；一般 caller/cleanup provider 仅用于调查，不能替代这些专门事实。规则默认关闭，完整路径观察仍不授予证明权限。

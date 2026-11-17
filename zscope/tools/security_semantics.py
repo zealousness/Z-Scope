@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -33,7 +34,7 @@ class GetSecuritySemanticsTool(BaseTool):
         query = str(arguments.get("query") or "").strip().lower()
         try:
             limit = int(arguments.get("limit", 20))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return {"success": False, "error": "limit must be an integer"}
         if limit < 1 or limit > self.MAX_RESULTS:
             return {
@@ -47,10 +48,18 @@ class GetSecuritySemanticsTool(BaseTool):
                 "status": "missing",
                 "message": "No Security Semantic Map sidecar exists for this scan profile.",
             }
-        semantic_map = self._load_latest_map(
-            project_id=str(arguments.get("project_id") or ""),
-            revision=str(arguments.get("revision") or ""),
-        )
+        try:
+            semantic_map = self._load_latest_map(
+                project_id=str(arguments.get("project_id") or ""),
+                revision=str(arguments.get("revision") or ""),
+            )
+        except (sqlite3.Error, OSError, ValueError, TypeError, RecursionError) as exc:
+            return {
+                "success": False,
+                "status": "error",
+                "error": "Failed to read the Security Semantic Map sidecar.",
+                "error_type": type(exc).__name__,
+            }
         if semantic_map is None:
             return {
                 "success": True,
@@ -122,7 +131,9 @@ class GetSecuritySemanticsTool(BaseTool):
         *,
         project_id: str,
         revision: str,
-    ) -> Any:
+    ) -> SecuritySemanticMap | None:
+        if not self.db_path.exists():
+            return None
         clauses: List[str] = []
         values: List[str] = []
         if project_id:
@@ -133,22 +144,17 @@ class GetSecuritySemanticsTool(BaseTool):
             values.append(revision)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         uri = self.db_path.resolve().as_uri() + "?mode=ro"
-        try:
-            with sqlite3.connect(uri, uri=True, timeout=5) as conn:
-                row = conn.execute(
-                    "SELECT payload_json FROM security_maps"
-                    + where
-                    + " ORDER BY updated_at DESC LIMIT 1",
-                    tuple(values),
-                ).fetchone()
-        except (sqlite3.Error, OSError, ValueError):
-            return None
+        # A connection context commits/rolls back but does not close SQLite handles.
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM security_maps"
+                + where
+                + " ORDER BY updated_at DESC LIMIT 1",
+                tuple(values),
+            ).fetchone()
         if not row:
             return None
-        try:
-            return SecuritySemanticMap.from_dict(json.loads(str(row[0])))
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return None
+        return SecuritySemanticMap.from_dict(json.loads(str(row[0])))
 
     def get_schema(self) -> Dict[str, Any]:
         return {

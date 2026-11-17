@@ -15,3 +15,7 @@
 zscope/web/static/*.html text eol=lf
 zscope/web/static/*.js text eol=lf
 zscope/web/static/*.css text eol=lf
+
+# Range source-review receipts bind these inputs byte-for-byte.
+test/range/CMakeLists.txt text eol=lf
+test/range/internal/*.ph text eol=lf

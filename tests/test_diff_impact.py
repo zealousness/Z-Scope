@@ -193,7 +193,50 @@ diff --git a/src/removed.c b/src/removed.c
     assert [(item.file_path, item.start_line, item.end_line) for item in ranges] == [
         ("src/a.c", 11, 12),
         ("src/a.c", 32, 34),
+        ("src/removed.c", 1, 2),
     ]
+
+
+def test_pure_deletion_keeps_current_function_in_diff_plan(tmp_path):
+    (tmp_path / "api.c").write_text("void api(void) {\n    work();\n}\n", encoding="utf-8")
+    ranges = DiffImpactPlanner._parse_git_diff(
+        "--- a/api.c\n+++ b/api.c\n@@ -3,1 +2,0 @@\n-    if (n > 8) return;\n"
+    )
+    index = FakeCodeIndex(
+        tmp_path,
+        {
+            "api": {"file": "api.c", "start_line": 1, "end_line": 5},
+        },
+    )
+    planner = DiffImpactPlanner(index, repo_root=tmp_path, base_ref="HEAD~1")
+    assert [item.function_name for item in planner._map_changed_functions(ranges)] == ["api"]
+
+
+def test_pure_rename_maps_functions_at_new_path(tmp_path):
+    (tmp_path / "new.c").write_text("void api(void) {}\n", encoding="utf-8")
+    ranges = DiffImpactPlanner._parse_git_diff(
+        "diff --git a/old.c b/new.c\nsimilarity index 100%\n" "rename from old.c\nrename to new.c\n"
+    )
+    index = FakeCodeIndex(
+        tmp_path,
+        {
+            "api": {"file": "new.c", "start_line": 20, "end_line": 25},
+        },
+    )
+    planner = DiffImpactPlanner(index, repo_root=tmp_path, base_ref="HEAD~1")
+    assert [item.function_name for item in planner._map_changed_functions(ranges)] == ["api"]
+
+
+def test_deleted_file_remains_an_explicit_diff_gap(tmp_path, monkeypatch):
+    planner = DiffImpactPlanner(FakeCodeIndex(tmp_path, {}), repo_root=tmp_path, base_ref="HEAD~1")
+    ranges = DiffImpactPlanner._parse_git_diff(
+        "--- a/gone.c\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-int x;\n-int y;\n"
+    )
+    monkeypatch.setattr(planner, "_collect_changed_line_ranges", lambda: ranges)
+    plan = planner.plan()
+    assert plan.changed_files == ["gone.c"]
+    assert plan.coverage_summary["unmapped_change_count"] == 1
+    assert plan.analysis_obligations[0]["coverage_status"] == "unresolved"
 
 
 def test_collect_changed_line_ranges_runs_git_diff_from_git_root(tmp_path: Path, monkeypatch):
@@ -1325,7 +1368,7 @@ def test_diff_impact_config_defaults_and_is_not_public_v2(tmp_path: Path):
     config_path = tmp_path / "zscope.yaml"
     config_path.write_text(
         f"""
-config_version: 2
+config_version: 3
 llms:
   default:
     api_key: test
@@ -1333,6 +1376,9 @@ llms:
     models: [test-model]
 project:
   language: c_cpp
+  targets:
+    - id: main
+      compile_commands: build/compile_commands.json
   diff_impact:
     strategy: semantic_obligation
     llm_triage: off

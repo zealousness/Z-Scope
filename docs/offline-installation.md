@@ -23,7 +23,7 @@ zscope --help
 
 C/C++ 包不含 Java 专属依赖，Java 包不含 C/C++ 开发工具链或 Gradle。Git、证书及必要原生运行库随包提供。Java 工具默认使用预编译 JAR；Maven 种子缓存复制到 `~/.cache/zscope/maven`，与业务依赖导入共用目录，也可通过 `Z_SCOPE_MAVEN_REPO` 或 Maven 原生 `-Dmaven.repo.local` 指定工程缓存。
 
-两份语言模板和 `zscope-init` 只展示分析配置。工具字段仍保留在 public config v2 中，开发实验可手工覆盖，优先级为显式配置、包内资源，源码安装继续使用 PATH；错误显式覆盖会失败，不改用其他工具。CodeQL、业务工程依赖和 LLM 服务由用户提供。维护、构建、兼容性验证及签名命令见 [AGENTS.md 的 Linux Portable 发布路线](../AGENTS.md#linux-portable-发布路线)。
+两份语言模板和 `zscope-init` 只展示分析配置。工具字段仍保留在 public config v3 中，开发实验可手工覆盖，优先级为显式配置、包内资源，源码安装继续使用 PATH；错误显式覆盖会失败，不改用其他工具。CodeQL、业务工程依赖和 LLM 服务由用户提供。维护、构建、兼容性验证及签名命令见 [AGENTS.md 的 Linux Portable 发布路线](../AGENTS.md#linux-portable-发布路线)。
 
 ## 旧版分体资产兼容
 
@@ -102,7 +102,7 @@ scripts/build_release_assets.sh \
 
 ## 旧分体资产验收（兼容保留）
 
-CI 用伪 runtime 执行确定性构建、安装、签名/篡改校验、启动、升级布局和回滚 smoke；该结果必须标记为 synthetic，不能替代生产资产验收。正式发布须在外部强制断网的 Ubuntu 24.04 普通用户环境，用审批后的 C/Java smoke 脚本执行：
+旧分体资产的测试可用伪 runtime 覆盖确定性构建、安装、签名/篡改校验、启动、升级布局和回滚；这类结果须标记为 synthetic，不能替代真实资产验收。若仍交付旧分体资产，须在外部强制断网的 Ubuntu 24.04 普通用户环境，用审批后的 C/Java smoke 脚本执行：
 
 ```bash
 Z_SCOPE_NETWORK_ISOLATION_CONFIRMED=1 \
@@ -113,4 +113,4 @@ bash scripts/smoke_release_assets.sh \
   --evidence ./offline-smoke.json
 ```
 
-该证据绑定 `release-manifest.json` 的 SHA-256，并包含 doctor、C 扫描和 Java 扫描结果。缺少 SVF/Saber 或 Java 默认结构/信号后端的结果不得标为正式 benchmark。当前本地 WSL 只有 Python 3.12.3，且未配置审批后的 CPython 3.13 runtime、C/Java toolset、pip.pyz、许可证目录和发布私钥，因此只能执行 synthetic smoke，不能伪装成生产离线资产构建。
+该证据绑定 `release-manifest.json` 的 SHA-256，并包含 doctor、C 扫描和 Java 扫描结果。缺少 SVF/Saber 或 Java 默认结构/信号后端的结果不得标为正式 benchmark。执行真实资产验收需备齐 CPython 3.13 runtime、C/Java toolset、pip.pyz、许可证目录和发布密钥；缺少这些输入时，只能报告已完成的验证范围，不能将 synthetic smoke 当作真实离线资产验收。

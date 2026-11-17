@@ -40,6 +40,18 @@ def _json_values_equal(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
+def _json_identity(value: Any) -> Any:
+    """Hash JSON equality: object order is irrelevant, booleans are not numbers."""
+    if isinstance(value, dict):
+        return ("object", frozenset((key, _json_identity(item)) for key, item in value.items()))
+    if isinstance(value, list):
+        return ("array", tuple(_json_identity(item) for item in value))
+    kind = (
+        "number" if isinstance(value, (int, float)) and not isinstance(value, bool) else type(value)
+    )
+    return (kind, value)
+
+
 def _nonfinite_number_error(value: Any, path: str = "") -> Optional[str]:
     if isinstance(value, float) and not math.isfinite(value):
         return f"{path or '$'}: must be a finite number"
@@ -131,7 +143,7 @@ def _validate_json_value(schema: Dict[str, Any], value: Any, path: str) -> Optio
         if isinstance(max_items, int) and len(value) > max_items:
             return f"{path or '$'}: must contain at most {max_items} item(s)"
         if schema.get("uniqueItems") is True:
-            normalized = [repr(item) for item in value]
+            normalized = [_json_identity(item) for item in value]
             if len(set(normalized)) != len(normalized):
                 return f"{path or '$'}: items must be unique"
         item_schema = schema.get("items")

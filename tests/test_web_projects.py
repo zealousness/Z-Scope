@@ -495,7 +495,7 @@ def test_cpg_factory_is_lazy_project_scoped_and_released_on_config_change(
 def test_review_memory_workers_activate_once_per_verified_context_and_close(
     library, tmp_path, monkeypatch
 ):
-    from test_config_v2 import _config
+    from test_config_options import _config
 
     workers = []
 

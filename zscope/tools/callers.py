@@ -60,9 +60,7 @@ class GetCallersTool(BaseTool):
         if match_count > 1:
             return {
                 "success": False,
-                "error": (
-                    f"Function '{func_name}' is ambiguous; provide file_path or index_name"
-                ),
+                "error": (f"Function '{func_name}' is ambiguous; provide file_path or index_name"),
                 "reason": "ambiguous_function",
                 "match_count": match_count,
             }

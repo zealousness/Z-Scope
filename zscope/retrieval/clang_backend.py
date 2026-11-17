@@ -295,6 +295,22 @@ class ClangBackend(CodeBackend):
                         }
             deferred_tu_commits = bool(getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False))
             force_refresh_paths: set[str] = set()
+            # Read the previous include graph before deleting or replacing facts.
+            # A TU's own bytes can be unchanged while an included header changes
+            # its functions, macros, types and call edges.
+            changed_paths = {
+                path
+                for path, tu in existing_tus_by_path.items()
+                if path not in file_hashes
+                or file_hashes[path] != str(tu.get("file_hash") or "")
+                or tu.get("status") != "indexed"
+            }
+            changed_paths.update(set(current_files) - set(existing_tus_by_path))
+            if changed_paths and existing_tus:
+                closures = db.get_transitive_include_closures(current_files)
+                for source, dependencies in closures.items():
+                    if any(normalize_db_path(path) in changed_paths for path in dependencies):
+                        force_refresh_paths.add(normalize_db_path(source))
             compile_context = ""
             if self._compile_preparation is not None:
                 import json

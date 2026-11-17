@@ -349,7 +349,7 @@ class ScanConfig:
     # Runtime audit metadata for the public depth control.
     depth_source: str = "default"
     # Internal, read-only rollout audit state.  These fields are not accepted
-    # by public config v2 and are populated only after CLI/YAML precedence has
+    # by public config v3 and are populated only after CLI/YAML precedence has
     # been resolved.
     requested_depth: str = ""
     requested_depth_source: str = ""
@@ -575,7 +575,8 @@ class AnalysisConfig:
     subagent_skill_llm_refs: Dict[str, str] = field(default_factory=dict)
     subagent_skill_efforts: Dict[str, str] = field(default_factory=dict)
     tool_audit_log: str = ""  # Optional JSONL audit sink for tool/MCP policy events.
-    # Escalation-ladder rungs (new_docs/balanced_confirmed_tp_plan.md Phase 4).
+    # Escalation-ladder rungs; historical plan Phase 4:
+    # docs/archive/design-plans/balanced_confirmed_tp_plan.md
     # All default to off so the shipped pipeline behavior is unchanged; pilots
     # enable them individually so each rung's TP contribution stays measurable.
     validation_uncertain_confirm_threshold: Optional[float] = None
@@ -765,7 +766,7 @@ class ProjectConfig:
     entry_diff_focus: Optional[Dict[str, Any]] = None
     user_config_file: Optional[Path] = None
     # The only human-maintained C/C++ semantic authority.  The legacy
-    # ``user_config_file`` remains on the internal v2 model solely so the
+    # ``user_config_file`` remains on the internal model solely so the
     # explicit XLSX -> YAML migration command can read old projects; scanners
     # never compile effects from that workbook.
     semantics_file: Optional[Path] = None
@@ -866,14 +867,14 @@ class ZScopeConfig:
     reporting: ReportingConfig = field(default_factory=ReportingConfig)
     rules: RulesConfig = field(default_factory=RulesConfig)
     runtime_provenance: RuntimeSpecProvenance = field(default_factory=RuntimeSpecProvenance)
-    user_config_version: int = 2
-    # Formal v3 model (``zscope.config.v3.UserConfigV3``) attached when the
-    # document declares config_version 3; v2 loads leave it None.  Excluded
+    user_config_version: int = 3
+    # Formal public model attached by the loader. Internal programmatic
+    # configurations may leave it None. Excluded
     # from repr/equality because it carries the full LLM profile table.
     user_config_v3: Optional[UserConfigV3] = field(default=None, repr=False, compare=False)
     # Populated by the shared rule preflight before any indexer, external tool,
     # or LLM is started.  These are internal runtime objects rather than public
-    # v2 YAML fields, so they intentionally do not appear on ``UserConfigV2``.
+    # YAML fields, so they intentionally do not appear on ``UserConfigV3``.
     effective_rules: Any = field(default=None, repr=False, compare=False)
     rule_catalog_provenance: Any = field(default=None, repr=False, compare=False)
     rule_validation_warnings: List[str] = field(default_factory=list, repr=False)
@@ -882,19 +883,6 @@ class ZScopeConfig:
     # at the effective-config boundary.
     scan_token_usage_ledger: Any = field(default=None, repr=False, compare=False)
     config_path: Optional[Path] = field(default=None, repr=False, compare=False)
-
-
-# Public names used by the v2 loader and developer documentation.  The
-# effective type intentionally keeps the long-lived ``ZScopeConfig`` name for
-# Python integrations while exposing the split boundaries explicitly.
-@dataclass
-class UserConfigV2:
-    llms: Dict[str, LLMConfig]
-    project: ProjectConfig
-    scan: ScanConfig
-    indexing: IndexingConfig
-    concurrency: ConcurrencyConfig
-    rules: RulesConfig = field(default_factory=RulesConfig)
 
 
 @dataclass
@@ -912,7 +900,7 @@ EffectiveConfig = ZScopeConfig
 
 
 class ConfigLoader:
-    """Load the strict public v2 configuration and bundled runtime specification."""
+    """Load the strict public v3 configuration and bundled runtime specification."""
 
     DEFAULT_CONFIG_LOCATIONS = ["./zscope.yaml"]
 
@@ -923,19 +911,20 @@ class ConfigLoader:
         scan_depth: Optional[str] = None,
         read_only: bool = False,
     ) -> ZScopeConfig:
-        from .v2 import apply_scan_overrides, load_user_config_v2
+        from .support import apply_scan_overrides
+        from .v3 import compose_effective_config, parse_user_config_v3
         from ..framework.llm_usage import ScanTokenUsageLedger
         from ..orchestration.rollout import apply_persisted_rollout_policy
         from ..rules.extensions import preflight_rules
 
-        config = load_user_config_v2(config_path)
+        config = compose_effective_config(parse_user_config_v3(config_path))
         apply_scan_overrides(
             config,
             scan_depth=scan_depth,
         )
         if read_only:
             # Cached MCP does not execute providers, apply rollout control, or
-            # create usage state. Public Config v2 parsing remains strict.
+            # create usage state. Public Config v3 parsing remains strict.
             return config
         apply_persisted_rollout_policy(config)
         usage_event_path = Path(config.analysis.snapshot_dir) / (

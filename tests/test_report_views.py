@@ -576,3 +576,50 @@ def test_validator_v3_outcome_summary_reports_fact_success_and_transitions() -> 
     assert summary["validator_verdict_transitions"] == {
         "initial:uncertain->evidence_recheck:verified": 1
     }
+
+
+def test_combined_reuse_metrics_and_markdown_keep_stage_usage_separate(tmp_path) -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.max_workers = 1
+    analyzer._active_discovery_state = {
+        "reuse": {"lookups": 3, "hits": 2, "cross_build_hits": 1, "recomputed_units": 1},
+        "model_calls": 1,
+        "tokens": 13,
+        "tokens_complete": True,
+    }
+    analyzer._global_validation_state = {
+        "validator_query_reuse": {
+            "queries": 2, "hits": 1, "replayed_queries": 3, "changed_results": 1,
+            "unchanged_results": 2, "model_tasks": 2, "tokens": 9,
+            "condition_rows": 3, "ready_conditions": 2, "reconfirmed_conditions": 2,
+            "reopened_conditions": 1, "scope_added": 1, "remaining_tasks": 1,
+        },
+        "validator_initial_reuse": {
+            "queries": 5, "hits": 4, "misses": 1, "model_tasks": 1, "tokens": 5,
+            "miss_reasons": {"input_changed": 1},
+        }
+    }
+    result = ParallelAnalysisResult(
+        function_name="entry", verdict="no_issue_found",
+        metadata={"validator_initial_reuse": {
+            "queries": 2, "hits": 1, "misses": 1, "model_tasks": 1, "tokens": 7,
+            "miss_reasons": {"cold": 1},
+        }},
+    )
+    report = analyzer.generate_combined_report({"entry": result})
+    reuse = report["metadata"]["artifact_reuse"]
+    assert reuse["summaries"]["hits"] == 2
+    assert reuse["summaries"]["cross_build_hits"] == 1
+    assert reuse["summaries"]["tokens"] == 13
+    assert reuse["initial_validation"]["queries"] == 7
+    assert reuse["initial_validation"]["hits"] == 5
+    assert reuse["initial_validation"]["tokens"] == 12
+    assert reuse["initial_validation"]["miss_reasons"] == {"cold": 1, "input_changed": 1}
+    assert reuse["investigation_queries"]["replayed_queries"] == 3
+    assert reuse["investigation_queries"]["tokens"] == 9
+    content = analyzer._generate_markdown_from_combined_report(report, tmp_path / "reuse.md")
+    assert "| 分层摘要 | 3 | 2 | 1 | 13 |" in content
+    assert "| 初始裁决 | 7 | 5 | 2 | 12 |" in content
+    assert "返回结果变化 1 个" in content
+    assert "本轮确认复用 2 项" in content
+    assert "剩余验证任务 1 项" in content
