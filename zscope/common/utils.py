@@ -8,7 +8,6 @@ import re
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
-
 C_NON_CALL_IDENTIFIERS = {
     "if",
     "else",

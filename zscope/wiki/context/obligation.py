@@ -7,7 +7,6 @@ from pathlib import PurePosixPath
 import re
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-
 _FACT_KIND_TERMS = {
     "input_range": ("range", "min", "max", "limit", "bounds", "上限", "下限", "范围"),
     "input_format": ("format", "syntax", "encoding", "格式", "编码"),

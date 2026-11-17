@@ -411,8 +411,7 @@ def test_knowledge_db_migrates_complete_taint_identity_and_forces_reindex(
 ) -> None:
     db_path = tmp_path / "legacy-taint.db"
     with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -438,8 +437,7 @@ def test_knowledge_db_migrates_complete_taint_identity_and_forces_reindex(
                 ('svf_tool_status:saber:g1', '{"status": "success"}'),
                 ('svf_db_import:saber:g1', '{"generation": 7}'),
                 ('svf_db_generation', '7');
-            """
-        )
+            """)
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?, ?)",
             ("schema_version", legacy_schema_version),

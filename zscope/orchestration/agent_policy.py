@@ -10,7 +10,6 @@ from ..common.utils import extract_json_blocks
 from .skill_selection import SkillSelection
 from ..tools.policy import ToolPolicy, deny_sensitive_paths_hook
 
-
 SKILL_DESCRIPTIONS = {
     "resource_lifecycle": "allocation, ownership, cleanup, leaks, missing release",
     "bounds_and_integer": "buffer bounds, length validation, integer overflow/truncation",

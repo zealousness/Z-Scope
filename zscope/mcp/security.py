@@ -7,7 +7,6 @@ import ipaddress
 from typing import Any, Dict, List, Sequence
 from urllib.parse import urlsplit
 
-
 WEAK_REMOTE_SCOPES = {"*", "all", "admin", "root", "write", "read_write"}
 
 

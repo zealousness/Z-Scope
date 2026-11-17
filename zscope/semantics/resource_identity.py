@@ -8,7 +8,6 @@ from typing import Any, Mapping
 
 from .contracts import digest
 
-
 # Heap-allocating calls a sanitizer allocation frame may name. The frame carries
 # only file/line, so any second one of these on the allocation's own line makes
 # the allocation identity ambiguous.

@@ -13,7 +13,6 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

@@ -10,7 +10,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Dict, Mapping
 
-
 FUNCTION_FACT_SUMMARY_VERSION = "zscope.function-fact-summary.v1"
 
 

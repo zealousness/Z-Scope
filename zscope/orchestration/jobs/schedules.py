@@ -145,12 +145,10 @@ class ScanScheduleService:
         self.spawn_daemon = spawn_daemon
         self.clock = clock
         with self._db() as db:
-            db.executescript(
-                """CREATE TABLE IF NOT EXISTS schedules
+            db.executescript("""CREATE TABLE IF NOT EXISTS schedules
                 (id TEXT PRIMARY KEY, request_id TEXT UNIQUE, payload_hash TEXT, data TEXT);
                 CREATE TABLE IF NOT EXISTS commands
-                (request_id TEXT PRIMARY KEY, payload_hash TEXT, schedule_id TEXT);"""
-            )
+                (request_id TEXT PRIMARY KEY, payload_hash TEXT, schedule_id TEXT);""")
 
     @contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:

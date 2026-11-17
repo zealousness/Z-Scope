@@ -20,7 +20,6 @@ from zscope.retrieval.compiler_compat import (
 from zscope.retrieval.indexing_runtime import MeasuredProcess
 from zscope.retrieval.indexing_identity import command_identity, digest_json
 
-
 CASES = [
     (["-Werror", "-Werror=unused-variable"], []),
     (

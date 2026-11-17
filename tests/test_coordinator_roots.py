@@ -16,7 +16,6 @@ from zscope.framework.base import AgentResponse
 from zscope.orchestration.modeling_coordinator import scan_coordinator
 from zscope.snapshots.store import SnapshotStore
 
-
 CONTEXT = {
     "func_name": "f",
     "file_path": "a.c",

@@ -206,8 +206,7 @@ class KnowledgeDB:
             old_count = int(
                 conn.execute("SELECT COUNT(*) AS count FROM taint_signatures").fetchone()["count"]
             )
-            conn.execute(
-                f"""
+            conn.execute(f"""
                 CREATE TABLE "{replacement_table}" (
                     id          INTEGER PRIMARY KEY,
                     source_func TEXT NOT NULL DEFAULT '',
@@ -227,10 +226,8 @@ class KnowledgeDB:
                         svf_group
                     )
                 )
-                """
-            )
-            conn.execute(
-                f"""
+                """)
+            conn.execute(f"""
                 INSERT OR IGNORE INTO "{replacement_table}"
                     (id, source_func, sink_func, bug_type, file_path, line, tool, svf_group)
                 SELECT
@@ -244,8 +241,7 @@ class KnowledgeDB:
                     COALESCE(svf_group, 'default')
                 FROM taint_signatures
                 ORDER BY id
-                """
-            )
+                """)
             migrated_count = int(
                 conn.execute(f'SELECT COUNT(*) AS count FROM "{replacement_table}"').fetchone()[
                     "count"
@@ -388,8 +384,7 @@ class KnowledgeDB:
             old_taint_count = int(
                 conn.execute("SELECT COUNT(*) AS count FROM taint_signatures").fetchone()["count"]
             )
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE "_indirect_calls_schema_v18" (
                     id          INTEGER PRIMARY KEY,
                     caller_name TEXT NOT NULL,
@@ -411,10 +406,8 @@ class KnowledgeDB:
                     UNIQUE(caller_name, callee_name, call_file, call_line, callsite_id,
                            pointer_symbol, source, svf_group, command_id, attribution)
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 INSERT INTO "_indirect_calls_schema_v18"
                     (id, caller_name, callee_name, call_file, call_line, callsite_id,
                      pointer_symbol, pointer_kind, pointer_type, pointer_signature,
@@ -429,16 +422,14 @@ class KnowledgeDB:
                        COALESCE(svf_group, 'default'), '', 'unattributed'
                 FROM indirect_calls
                 ORDER BY id
-                """
-            )
+                """)
             conn.execute("DROP TABLE indirect_calls")
             conn.execute('ALTER TABLE "_indirect_calls_schema_v18" RENAME TO indirect_calls')
             conn.execute("CREATE INDEX idx_ic_caller ON indirect_calls(caller_name)")
             conn.execute("CREATE INDEX idx_ic_callee ON indirect_calls(callee_name)")
             conn.execute("CREATE INDEX idx_ic_file_line ON indirect_calls(call_file, call_line)")
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE "_taint_signatures_schema_v18" (
                     id          INTEGER PRIMARY KEY,
                     source_func TEXT NOT NULL DEFAULT '',
@@ -462,10 +453,8 @@ class KnowledgeDB:
                         attribution
                     )
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 INSERT INTO "_taint_signatures_schema_v18"
                     (id, source_func, sink_func, bug_type, file_path, line, tool, svf_group,
                      command_id, attribution)
@@ -474,8 +463,7 @@ class KnowledgeDB:
                        COALESCE(svf_group, 'default'), '', 'unattributed'
                 FROM taint_signatures
                 ORDER BY id
-                """
-            )
+                """)
             conn.execute("DROP TABLE taint_signatures")
             conn.execute('ALTER TABLE "_taint_signatures_schema_v18" RENAME TO taint_signatures')
             conn.execute("CREATE INDEX idx_taint_type ON taint_signatures(bug_type)")
@@ -517,8 +505,7 @@ class KnowledgeDB:
 
     def _create_tables(self):
         c = self._conn
-        c.executescript(
-            """
+        c.executescript("""
             CREATE TABLE IF NOT EXISTS compilation_instances (
                 context_id TEXT PRIMARY KEY,
                 command_id TEXT NOT NULL,
@@ -915,8 +902,7 @@ class KnowledgeDB:
                 return_semantics TEXT DEFAULT '',
                 updated_at  REAL DEFAULT 0
             );
-        """
-        )
+        """)
         c.commit()
 
         c.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('svf_db_generation', '0')")
@@ -956,8 +942,7 @@ class KnowledgeDB:
             "call_guard",
         }
         if not required_indirect_columns.issubset(indirect_columns):
-            c.executescript(
-                """
+            c.executescript("""
                 CREATE TABLE indirect_calls_v12 (
                     id INTEGER PRIMARY KEY,
                     caller_name TEXT NOT NULL,
@@ -991,8 +976,7 @@ class KnowledgeDB:
                 CREATE INDEX IF NOT EXISTS idx_ic_file_line ON indirect_calls(call_file, call_line);
                 CREATE INDEX IF NOT EXISTS idx_ic_callsite
                     ON indirect_calls(caller_name, callsite_id);
-                """
-            )
+                """)
             c.commit()
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_ic_callsite "
@@ -1095,8 +1079,7 @@ class KnowledgeDB:
         # while ensuring existing v14 databases receive the same purge/include indexes
         # as newly-created databases. This runs after compatibility columns/tables are
         # present (notably call_edges.callee_file and the taint table replacement).
-        c.executescript(
-            """
+        c.executescript("""
             CREATE INDEX IF NOT EXISTS idx_functions_tu ON functions(tu_id);
             CREATE INDEX IF NOT EXISTS idx_types_tu ON type_definitions(tu_id);
             CREATE INDEX IF NOT EXISTS idx_call_caller_file ON call_edges(caller_file);
@@ -1119,13 +1102,11 @@ class KnowledgeDB:
             CREATE INDEX IF NOT EXISTS idx_ir_shared_file ON ir_shared_accesses(file_path);
             CREATE INDEX IF NOT EXISTS idx_ir_path_source_stmt ON ir_path_slices(source_stmt);
             CREATE INDEX IF NOT EXISTS idx_ir_path_sink_stmt ON ir_path_slices(sink_stmt);
-            """
-        )
+            """)
         if "event_ordinal" not in {row[1] for row in c.execute("PRAGMA table_info(ir_statements)")}:
             # Rebuild the derived table without the old line/text uniqueness;
             # retain IDs so existing IR edges still refer to the same nodes.
-            c.executescript(
-                """
+            c.executescript("""
                 CREATE TABLE ir_statements_v16 (
                     id INTEGER PRIMARY KEY, file_path TEXT NOT NULL, line INTEGER NOT NULL,
                     function TEXT NOT NULL, kind TEXT DEFAULT '', normalized_code TEXT DEFAULT '',
@@ -1140,8 +1121,7 @@ class KnowledgeDB:
                 ALTER TABLE ir_statements_v16 RENAME TO ir_statements;
                 CREATE INDEX idx_ir_stmt_func ON ir_statements(function);
                 CREATE INDEX idx_ir_stmt_file_line ON ir_statements(file_path,line);
-            """
-            )
+            """)
         c.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             ("schema_version", self.SCHEMA_VERSION),

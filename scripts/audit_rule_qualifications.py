@@ -17,7 +17,6 @@ from zscope.benchmarking.protocol import finding_attribution, report_issues, sco
 from zscope.rules.catalog import RuleCatalog
 from zscope.rules.qualification import QualificationRegistry, qualification_rows
 
-
 _BENCHMARK_VIEWS = ("default", "with_needs_review")
 
 

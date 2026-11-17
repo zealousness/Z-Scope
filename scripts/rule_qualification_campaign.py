@@ -20,7 +20,6 @@ from zscope.rules.qualification_evidence import (
     load_qualification_evidence,
 )
 
-
 CAMPAIGN_SCHEMA = "zscope.rule-qualification-campaign.v1"
 REPORT_SCHEMA = "zscope.rule-qualification-campaign-report.v1"
 

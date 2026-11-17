@@ -12,7 +12,6 @@ from .catalog import (
     serialize_effective_rules,
 )
 
-
 EFFECTIVE_STATUSES = frozenset({"enabled", "disabled", "unavailable"})
 
 

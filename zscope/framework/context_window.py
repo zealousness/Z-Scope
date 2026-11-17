@@ -12,7 +12,6 @@ import hashlib
 import json
 from typing import Any, Callable, Mapping
 
-
 # Configured fallback capacities, not automatic endpoint/model detection.
 DEFAULT_CONTEXT_WINDOW = 192_000
 DEFAULT_MAX_TOKENS = 8192

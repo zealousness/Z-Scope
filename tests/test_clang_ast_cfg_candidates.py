@@ -97,15 +97,13 @@ def test_clang_ast_cfg_does_not_report_cleared_member_handed_to_pthread_worker()
 
 
 def test_clang_ast_cfg_detects_detached_container_member_without_transfer() -> None:
-    issues = _rules(
-        """
+    issues = _rules("""
 10 | void detach(struct list *head, struct session *session) {
 11 |     head->next = session->next;
 12 |     session->next = NULL;
 13 |     return;
 14 | }
-"""
-    )
+""")
 
     issue = next(
         item for item in issues if item["rule"] == "clang_cfg_container_unlink_without_release"
@@ -115,21 +113,18 @@ def test_clang_ast_cfg_detects_detached_container_member_without_transfer() -> N
 
 
 def test_clang_ast_cfg_does_not_report_container_member_released_after_unlink() -> None:
-    issues = _rules(
-        """
+    issues = _rules("""
 10 | void detach(struct list *head, struct session *session) {
 11 |     head->next = session->next;
 12 |     session_release(session);
 13 | }
-"""
-    )
+""")
 
     assert "clang_cfg_container_unlink_without_release" not in {item["rule"] for item in issues}
 
 
 def test_clang_ast_cfg_does_not_treat_intrusive_list_relink_as_ownership_loss() -> None:
-    issues = _rules(
-        """
+    issues = _rules("""
 10 | void LRU_Remove(struct Entry *e) {
 11 |     e->next->prev = e->prev;
 12 |     e->prev->next = e->next;
@@ -140,22 +135,19 @@ def test_clang_ast_cfg_does_not_treat_intrusive_list_relink_as_ownership_loss() 
 17 |     e->prev->next = e;
 18 |     e->next->prev = e;
 19 | }
-"""
-    )
+""")
 
     assert "clang_cfg_container_unlink_without_release" not in {item["rule"] for item in issues}
 
 
 def test_clang_ast_cfg_detects_partial_composite_owner_cleanup() -> None:
-    issues = _rules(
-        """
+    issues = _rules("""
 10 | void reset(struct cache *cache, const char *name) {
 11 |     cache->primary = duplicate(name);
 12 |     cache->scratch = duplicate(name);
 13 |     SAFE_FREE(cache->primary);
 14 | }
-"""
-    )
+""")
 
     issue = next(
         item for item in issues if item["rule"] == "clang_cfg_incomplete_owned_member_cleanup"

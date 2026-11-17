@@ -6,7 +6,6 @@ from zscope.core.validation.review_checks import ReviewClaimChecker, checked_rec
 from zscope.core.validation.proofs import deterministic_decision_proof
 from zscope.rules.catalog import RuleCatalog
 
-
 RULES = [
     "unsynchronized_shared_flag_or_counter",
     "clang_cfg_unsynchronized_shared_flag_or_counter",

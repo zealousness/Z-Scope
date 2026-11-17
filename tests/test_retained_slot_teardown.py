@@ -17,7 +17,6 @@ from zscope.semantics.contracts import ApiContract, ContractRegistry
 from zscope.semantics.defaults import default_local_pattern_semantics
 from zscope.semantics.single_slot_pool import verify_single_slot_pool
 
-
 RULE = "zscope.c_cpp.cpp_clang_cfg.retained_slot_release"
 CASES = {
     "copy_stale": "Node *n = queue->pending; if (n) pool_give(pool, n);",

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Explicitly resolve test image tags to architecture-specific immutable digests."""
+
 import argparse
 import json
 import subprocess

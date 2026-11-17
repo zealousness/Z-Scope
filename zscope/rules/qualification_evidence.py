@@ -17,7 +17,6 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .catalog import RuleCatalogError, RuleDescriptor
 
-
 QUALIFICATION_EVIDENCE_SCHEMA_VERSION = "zscope.rule-qualification-evidence.v1"
 METAMORPHIC_TRANSFORMATIONS = frozenset(
     {"identifier_rename", "wrapper_rewrite", "macro_rewrite", "branch_reorder"}

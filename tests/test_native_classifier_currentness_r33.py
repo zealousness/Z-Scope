@@ -12,7 +12,6 @@ from test_instance_currentness_revocation_r33 import (
 from zscope.orchestration.parallel_analyzer import _InstanceEntryLookupIndex
 from zscope.semantics import instance_semantics
 
-
 CHANGES = (
     [
         ("binary", "changed"),

@@ -9,7 +9,6 @@ import weakref
 from ...reporting.shared_objects import SharedDict
 from ...retrieval.validation_facts import walk_ast
 
-
 _INDEXES: Any = weakref.WeakKeyDictionary()
 _GUARD = threading.RLock()
 

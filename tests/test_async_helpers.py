@@ -15,10 +15,7 @@ from test_lifecycle_paths import candidates
 from zscope.core.validation.protocol_assessment import assess_protocol_candidate
 from zscope.semantics.defaults import default_local_pattern_semantics
 
-
-HELPER_SOURCE = (
-    CLEANUP_SOURCE
-    + """
+HELPER_SOURCE = CLEANUP_SOURCE + """
 static struct Item *take_one(struct Queue *q) {
   pthread_mutex_lock(&q->mu);
   while(!q->slot && !q->stop) pthread_cond_wait(&q->cv,&q->mu);
@@ -74,7 +71,6 @@ static void *alias_return_worker(void *raw) {
   struct Queue *q=raw; struct Item *p=take_one(q); struct Item *old=p; p=0; process_item(old); return 0;
 }
 """
-)
 HELPER_DRIVERS = {
     "nested_uaf": ("helper_worker", "submit(q,p); free(p); pthread_join(t,0);"),
     "nested_drained": ("helper_worker", "submit(q,p); pthread_join(t,0); free(p);"),

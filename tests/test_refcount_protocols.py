@@ -11,7 +11,6 @@ from zscope.semantics.contracts import ApiContract, ContractRegistry
 from zscope.semantics.refcount_protocols import verify_refcount_contract
 from zscope.semantics.single_slot_pool import verify_single_slot_pool
 
-
 HEADER = """typedef struct Node {int generation; int refs;} Node;
 typedef struct Pool {Node slot; int live; int duplicate_returns;} Pool;
 """

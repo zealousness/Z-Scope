@@ -19,7 +19,6 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, NoReturn, Optional, Sequence, Tuple
 
-
 ENVIRONMENT_KEYS = (
     "CPATH",
     "C_INCLUDE_PATH",

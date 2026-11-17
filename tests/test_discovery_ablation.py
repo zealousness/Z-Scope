@@ -33,7 +33,6 @@ from zscope.orchestration.active_discovery import (
 )
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
-
 SHA = "a" * 64
 
 

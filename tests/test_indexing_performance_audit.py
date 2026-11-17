@@ -36,9 +36,7 @@ assert read()
 worker.join(2)
 assert not worker.is_alive()
 cache.close()
-""".replace(
-        "NAMESPACE", repr(namespace)
-    )
+""".replace("NAMESPACE", repr(namespace))
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=10
     )

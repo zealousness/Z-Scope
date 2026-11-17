@@ -17,7 +17,6 @@ sys.path.insert(0, str(ROOT))
 
 from zscope.benchmarking.runner import SPECS, copy_scan_input  # noqa: E402
 
-
 FORBIDDEN_SUFFIXES = {".log", ".db", ".sqlite", ".sarif"}
 FORBIDDEN_NAMES = {
     "GROUND_TRUTH.md",

@@ -5,6 +5,7 @@ Normal fetch/build never calls this script or resolves moving release aliases.
 HTTPS provides origin authentication when creating a new lock; upstream package
 digests, when published, must also match. Review the resulting lock diff.
 """
+
 from __future__ import annotations
 
 import argparse

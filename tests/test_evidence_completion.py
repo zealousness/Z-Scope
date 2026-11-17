@@ -54,18 +54,14 @@ def test_evidence_completion_cannot_prove_unchecked_mutex_prefixes() -> None:
         "rule": "clang_cfg_global_state_written_with_and_without_lock",
         "resource_signature": "state.current",
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 pthread_mutex_lock(&state.lock);
 state.current = event;
 pthread_mutex_unlock(&state.lock);
 pthread_mutex_lock(&state.lock);
 state.current = NULL;
 pthread_mutex_unlock(&state.lock);
-"""
-        }
-    }
+"""}}
 
     queue.complete(
         issue,
@@ -85,16 +81,12 @@ def test_evidence_completion_refuses_lock_proof_when_one_write_is_unlocked() -> 
         "rule": "clang_cfg_global_state_written_with_and_without_lock",
         "resource_signature": "state.current",
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 pthread_mutex_lock(&state.lock);
 state.current = event;
 pthread_mutex_unlock(&state.lock);
 state.current = NULL;
-"""
-        }
-    }
+"""}}
 
     queue.complete(
         issue,
@@ -114,18 +106,14 @@ def test_legacy_unbound_evidence_completion_derives_terminating_null_guard_proof
         "source": "task = _safe_calloc(1, sizeof(*task));",
         "sink": "task->state = READY;",
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 task = _safe_calloc(1, sizeof(*task));
 if (!task || !frame) {
     free(task);
     return NULL;
 }
 task->state = READY;
-"""
-        }
-    }
+"""}}
 
     queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
 
@@ -516,17 +504,13 @@ def test_legacy_unbound_evidence_completion_rejects_matched_unlock_on_complete_l
         "rule": "clang_cfg_unlock_without_matching_lock",
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 void tick(void) {
     pthread_mutex_lock(&state.lock);
     update();
     pthread_mutex_unlock(&state.lock);
 }
-"""
-        }
-    }
+"""}}
 
     queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
 
@@ -543,9 +527,7 @@ def test_evidence_completion_confirms_failure_return_while_lock_is_held() -> Non
         "rule": "clang_cfg_return_with_lock_held",
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 int link(void) {
     pthread_mutex_lock(&state.lock);
     void *node = allocate();
@@ -555,9 +537,7 @@ int link(void) {
     pthread_mutex_unlock(&state.lock);
     return 0;
 }
-"""
-        }
-    }
+"""}}
 
     queue.complete(issue, validator_data={"verdict": "verified"}, validation_evidence=evidence)
 
@@ -577,9 +557,7 @@ def test_legacy_unbound_evidence_completion_rejects_parent_cleanup_when_member_a
         "sink": "free(proc);",
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 int attach(void) {
     proc->name = duplicate(input);
     if (!proc->name) {
@@ -588,9 +566,7 @@ int attach(void) {
     }
     return 0;
 }
-"""
-        }
-    }
+"""}}
 
     queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
 
@@ -616,17 +592,13 @@ def test_evidence_completion_confirms_detached_stack_thread_argument() -> None:
             },
         },
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 void start(void) {
     Job job;
     pthread_create(&tid, NULL, worker, &job);
     pthread_detach(tid);
 }
-"""
-        }
-    }
+"""}}
 
     queue.complete(issue, validator_data={"verdict": "verified"}, validation_evidence=evidence)
 
@@ -642,17 +614,13 @@ def test_evidence_completion_confirms_field_sensitive_incomplete_cleanup() -> No
         "category": "incomplete_cleanup",
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 void reset(Cache *cache) {
     cache->primary = duplicate(name);
     cache->scratch = duplicate(name);
     free(cache->primary);
 }
-"""
-        }
-    }
+"""}}
 
     queue.complete(issue, validator_data={"verdict": "verified"}, validation_evidence=evidence)
 
@@ -721,16 +689,12 @@ def test_container_unlink_without_ownership_authority_is_not_self_confirming() -
             },
         },
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 int remove_node(void) {
     registry.head = node->next;
     return 0;
 }
-"""
-        }
-    }
+"""}}
 
     queue.complete_prevalidation(issue, validation_evidence=evidence)
 
@@ -758,18 +722,14 @@ def test_container_unlink_unknown_callee_receiving_owner_blocks_confirmation() -
             },
         },
     }
-    evidence = {
-        "function_context": {
-            "code": """
+    evidence = {"function_context": {"code": """
 int remove_node(void) {
     registry.head = node->next;
     SAFE_FREE(node->payload);
     SAFE_FREE(node);
     return 0;
 }
-"""
-        }
-    }
+"""}}
 
     queue.complete_prevalidation(issue, validation_evidence=evidence)
 
@@ -1446,18 +1406,14 @@ def test_legacy_unbound_v12_rejects_reported_leak_when_same_resource_is_released
             },
         },
     }
-    evidence = {
-        "function_context": {
-            "code": """void *build(Owner *owner) {
+    evidence = {"function_context": {"code": """void *build(Owner *owner) {
 owner->items = allocate(count);
 if (!initialize(owner->items)) {
     free(owner->items);
     return NULL;
 }
 return owner;
-}"""
-        }
-    }
+}"""}}
 
     assert not queue.complete_prevalidation(issue, validation_evidence=evidence)
     proof = deterministic_decision_proof(issue, outcome="reject")
@@ -1511,16 +1467,12 @@ def test_v12_release_after_reported_early_exit_is_not_a_rejection_proof() -> Non
             },
         },
     }
-    evidence = {
-        "function_context": {
-            "code": """info->reserved = allocate(size);
+    evidence = {"function_context": {"code": """info->reserved = allocate(size);
 if (!ready) {
     return 0;
 }
 free(info->reserved);
-return 0;"""
-        }
-    }
+return 0;"""}}
 
     assert queue.complete_prevalidation(issue, validation_evidence=evidence) is False
     assert deterministic_decision_proof(issue, outcome="reject") is None
@@ -1544,17 +1496,13 @@ def test_v12_release_in_sibling_branch_does_not_prove_later_exit_safe() -> None:
             },
         },
     }
-    evidence = {
-        "function_context": {
-            "code": """node = allocate();
+    evidence = {"function_context": {"code": """node = allocate();
 if (failed) {
     free(node);
     return -1;
 }
 publish(node);
-return 0;"""
-        }
-    }
+return 0;"""}}
 
     assert queue.complete_prevalidation(issue, validation_evidence=evidence) is False
     assert deterministic_decision_proof(issue, outcome="reject") is None
@@ -1571,17 +1519,13 @@ def test_legacy_unbound_v12_rejects_parent_cleanup_when_member_acquisition_faile
             "ast_cfg": {"events": [{"kind": "owned_member_leak", "line": 8}]},
         },
     }
-    evidence = {
-        "function_context": {
-            "code": """Task *task = calloc(1, sizeof(*task));
+    evidence = {"function_context": {"code": """Task *task = calloc(1, sizeof(*task));
 task->payload.command = duplicate(text);
 if (!task->payload.command) {
     free(task);
     return NULL;
 }
-return task;"""
-        }
-    }
+return task;"""}}
 
     assert not queue.complete_prevalidation(issue, validation_evidence=evidence)
     proof = deterministic_decision_proof(issue, outcome="reject")
@@ -1663,16 +1607,12 @@ def test_legacy_unbound_v12_propagates_terminating_bound_to_derived_allocation_s
             },
         },
     }
-    evidence = {
-        "function_context": {
-            "code": """size_t cmd_len = strlen(command);
+    evidence = {"function_context": {"code": """size_t cmd_len = strlen(command);
 if (cmd_len > MAX_COMMAND_LEN) {
     return -1;
 }
 size_t total_len = sizeof(Header) + cmd_len + 1;
-void *buffer = allocate(total_len);"""
-        }
-    }
+void *buffer = allocate(total_len);"""}}
 
     assert not queue.complete_prevalidation(issue, validation_evidence=evidence)
     proof = deterministic_decision_proof(issue, outcome="reject")

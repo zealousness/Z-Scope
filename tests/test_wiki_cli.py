@@ -10,7 +10,6 @@ from click.testing import CliRunner
 from zscope.cli.wiki import main
 from zscope.wiki.store.revision_store import WikiStore
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "wiki_project"
 
 

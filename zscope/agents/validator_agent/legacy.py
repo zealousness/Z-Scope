@@ -11,7 +11,6 @@ from typing import Any, Dict, Optional
 from ..base import JsonOutputSpec
 from ...common.validator_protocol import VALIDATOR_MISSING_FACT_KINDS
 
-
 _VERDICT_ALIASES = {
     "verified": ("verified", "valid", "true", "confirmed", "true_positive", "tp"),
     "rejected": ("rejected", "invalid", "false", "reject", "false_positive", "fp"),

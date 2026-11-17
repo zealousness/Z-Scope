@@ -24,7 +24,6 @@ from ...rules.validation_obligations import (
     issue_fact_extensions,
 )
 
-
 DECISION_FACT_VERSION = "zscope.decision-facts.v1.6"
 SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.4"
 DECISION_CONTEXT_V31 = "zscope.decision-context.v3.1"

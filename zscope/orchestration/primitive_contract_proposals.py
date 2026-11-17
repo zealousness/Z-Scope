@@ -24,7 +24,6 @@ from ..config.project_semantics import (
 )
 from ..semantics.contract_conditions import predicate_errors, predicates_overlap, negate
 
-
 PROPOSAL_VERSION = "zscope.interface-proposals.v32"
 
 

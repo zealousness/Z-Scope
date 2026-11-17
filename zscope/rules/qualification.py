@@ -19,7 +19,6 @@ from .qualification_evidence import (
     qualification_evidence_filename,
 )
 
-
 QUALIFICATION_SCHEMA_VERSION = "zscope.rule-qualification.v1"
 QUALIFICATION_STATES = frozenset({"qualified", "pending", "failed"})
 LEGACY_POLICIES = frozenset({"legacy_stable_pending", "require_explicit"})

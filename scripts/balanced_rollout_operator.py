@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, NoReturn, Optional, Sequence, Tuple
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -29,7 +28,6 @@ from zscope.orchestration.rollout import (  # noqa: E402
     RolloutStateError,
     rollout_management_key_from_environment,
 )
-
 
 RESULT_SCHEMA_VERSION = "zscope.rollout-operator-result.v1"
 MAX_WINDOW_BYTES = 1024 * 1024

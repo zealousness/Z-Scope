@@ -9,7 +9,6 @@ from zscope.core.validation.pipeline import ValidationPipeline
 from zscope.core.validation.review_checks import ReviewClaimChecker, checked_receipt
 from zscope.retrieval.validation_facts import CompleteFactStore
 
-
 OPTIONAL = """
 #include <stdlib.h>
 #if __has_include("policy.h")

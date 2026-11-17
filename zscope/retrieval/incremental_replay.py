@@ -20,7 +20,6 @@ from typing import Any, Callable, Dict, Iterable, Optional
 from .indexing_identity import atomic_json, digest_json, file_digest
 from .indexing_inventory import compilation_contexts
 
-
 REPLAY_SCHEMA = "zscope.incremental-replay.v1"
 MUTATIONS = (
     "function_body",

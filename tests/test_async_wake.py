@@ -15,9 +15,7 @@ from test_lifecycle_paths import candidates
 from zscope.core.validation.protocol_assessment import assess_protocol_candidate
 from zscope.semantics.defaults import default_local_pattern_semantics
 
-WAKE_SOURCE = (
-    CLEANUP_SOURCE
-    + """
+WAKE_SOURCE = CLEANUP_SOURCE + """
 #include <errno.h>
 static void *spurious_access(void *raw) {
   struct Queue *q=raw;
@@ -64,7 +62,6 @@ static void timed_helper(struct Queue *q) {
 }
 static void *nested_timed(void *raw) {struct Queue *q=raw; timed_helper(q); return 0;}
 """
-)
 WAKE_DRIVERS = {
     "spurious_uaf": ("spurious_access", "cancel_pending(q); free(p); pthread_join(t,0);"),
     "spurious_recheck": ("spurious_guarded", "cancel_pending(q); free(p); pthread_join(t,0);"),

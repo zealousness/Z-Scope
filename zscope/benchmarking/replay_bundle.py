@@ -11,7 +11,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
-
 REPLAY_BUNDLE_SCHEMA_VERSION = "zscope.validator-replay-bundle.v1"
 _INITIAL_FACT_KEYS = (
     "facts",

@@ -79,8 +79,7 @@ class UserConfigStore:
     def _init_db(self) -> None:
         conn = self._connect()
         try:
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS config_warnings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     warning_type TEXT NOT NULL,
@@ -111,8 +110,7 @@ class UserConfigStore:
                     issue_json TEXT NOT NULL DEFAULT '{}',
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
-            """
-            )
+            """)
             self._ensure_column(
                 conn, "finding_baselines", "stable_fingerprint", "TEXT NOT NULL DEFAULT ''"
             )
@@ -449,11 +447,9 @@ class UserConfigStore:
                     result["match_strategy"] = "stable_fingerprint"
                     return result
 
-            rows = conn.execute(
-                """SELECT * FROM finding_baselines
+            rows = conn.execute("""SELECT * FROM finding_baselines
                    WHERE stable_fingerprint = ''
-                   ORDER BY updated_at DESC, id DESC"""
-            ).fetchall()
+                   ORDER BY updated_at DESC, id DESC""").fetchall()
             for old_row in rows:
                 old_issue = self._parse_json_value(old_row["issue_json"], {})
                 old_fingerprint = stable_issue_fingerprint(old_issue)

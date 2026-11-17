@@ -28,7 +28,6 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-
 DEFECT_CLASS_CWES: Mapping[str, Tuple[str, ...]] = {
     # --- memory lifecycle -------------------------------------------------
     "memory_leak": ("CWE-401", "CWE-772"),

@@ -13,7 +13,6 @@ import json
 import re
 from typing import Any, Mapping
 
-
 VIEW_VERSION = "zscope.hierarchical-reuse-view.v2"
 _TASK_ID = re.compile(r"(?<![A-Za-z0-9_])(?:FN|FEATURE|MODULE)_[0-9a-f]{32}(?![A-Za-z0-9_])")
 

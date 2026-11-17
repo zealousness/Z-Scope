@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "balanced_rollout_operator.py"
 MANAGEMENT_KEY_ENV = "Z_SCOPE_BALANCED_ROLLOUT_HMAC_KEY"

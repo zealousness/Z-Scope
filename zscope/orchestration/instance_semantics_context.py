@@ -47,7 +47,6 @@ from ..semantics.instance_semantics import (
     compose_linked_automatic_templates,
 )
 
-
 SEMANTICS_POLICY = "builtin_current_automatic_native_confirmed_project.v3"
 
 

@@ -23,7 +23,6 @@ from zscope.benchmarking.validator_replay import (
     write_validator_replay_run,
 )
 
-
 IDENTITY = {
     "executor_sha256": "d" * 64,
     "model_spec_sha256": "e" * 64,

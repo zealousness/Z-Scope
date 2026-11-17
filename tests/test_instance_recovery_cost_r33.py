@@ -34,7 +34,6 @@ from zscope.orchestration.entry_instances import plan_entry_instances
 from zscope.snapshots.modeling_input import SemanticModelInputError
 from zscope.orchestration.scan_session import ScanSessionRunner
 
-
 HISTORICAL = {
     "duration_seconds": 17017.0,
     "context_tokens": 1717,

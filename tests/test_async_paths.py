@@ -14,7 +14,6 @@ from zscope.core.candidates.decision_facts import attach_decision_facts
 from zscope.core.validation.protocol_assessment import assess_protocol_candidate
 from zscope.semantics.defaults import default_local_pattern_semantics
 
-
 DRIVERS = {
     "cancel_free_join": "pthread_cancel(t); free(p); pthread_join(t,0);",
     "free_join": "free(p); pthread_join(t,0);",
@@ -51,17 +50,14 @@ static void *with_cancel_point(void *raw) {pthread_testcancel(); struct Item *p=
 static void *with_loop(void *raw) {int k=1; while(k){} struct Item *p=raw; p->value=1; return 0;}
 static void *unused(void *raw) {return 0;}
 """
-        + "\n".join(
-            f"""void {name}(void) {{
+        + "\n".join(f"""void {name}(void) {{
 struct Item *p=malloc(sizeof *p);
 if(!p)return;
 pthread_t t;
 if(pthread_create(&t,0,{ {'cancel_point':'with_cancel_point','loop_callback':'with_loop','unused_context':'unused'}.get(name,'work') },p)!=0){{free(p);return;}}
 {body}
 }}
-"""
-            for name, body in DRIVERS.items()
-        )
+""" for name, body in DRIVERS.items())
     )
     cdb = root / "compile_commands.json"
     cdb.write_text(

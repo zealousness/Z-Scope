@@ -15,10 +15,7 @@ from zscope.core.candidates.cpp_domains.async_paths import AsyncLifecyclePaths
 from zscope.core.validation.protocol_assessment import assess_protocol_candidate
 from zscope.semantics.defaults import default_local_pattern_semantics
 
-
-CLEANUP_SOURCE = (
-    QUEUE_SOURCE.replace("int active;", "int active; struct Item *saved;")
-    + """
+CLEANUP_SOURCE = QUEUE_SOURCE.replace("int active;", "int active; struct Item *saved;") + """
 static void unlock_queue(void *raw) {struct Queue *q=raw; pthread_mutex_unlock(&q->mu);}
 static void touch_item(void *raw) {struct Item *p=raw; p->value=7;}
 static void release_item(void *raw) {free(raw);}
@@ -76,7 +73,6 @@ static void *early_exit(void *raw) {
 }
 static void *changed_mode(void *raw) {pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,0); return 0;}
 """
-)
 CLEANUP_DRIVERS = {
     "cancel_wait": (
         "wait_cleanup",

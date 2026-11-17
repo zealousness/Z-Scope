@@ -14,7 +14,6 @@ from typing import Any, Dict, Mapping, Optional
 
 from .policy import BenchmarkPolicy, DEFAULT_BENCHMARK_POLICY
 
-
 ATTESTATION_SCHEMA_VERSION = "zscope.balanced-default-attestation.v1"
 _FIELDS = frozenset(
     {

@@ -13,8 +13,7 @@ class ProtocolAnswerConflict(ValueError):
 
 
 def initialize(conn: Any) -> None:
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS protocol_assumption_answers (
+    conn.execute("""CREATE TABLE IF NOT EXISTS protocol_assumption_answers (
         subject_key TEXT NOT NULL,
         revision INTEGER NOT NULL,
         subject_json TEXT NOT NULL,
@@ -23,8 +22,7 @@ def initialize(conn: Any) -> None:
         origin TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(subject_key, revision)
-    )"""
-    )
+    )""")
 
 
 def latest(conn: Any, keys: list[str]) -> dict[str, dict[str, Any]]:

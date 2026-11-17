@@ -6,7 +6,6 @@ import json
 import uuid
 from typing import Any, Dict, List, cast
 
-
 RESOURCE_ACQUIRE_KINDS = {"allocator", "calloc", "reallocator", "resource", "resource_acquire"}
 
 

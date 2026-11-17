@@ -6,7 +6,6 @@ import yaml
 from zscope.config.config import ConfigLoader
 from zscope.config.v3 import V3_TOP_LEVEL_KEYS, parse_user_config_v3, parse_user_config_v3_document
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 

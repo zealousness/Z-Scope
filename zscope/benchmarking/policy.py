@@ -9,7 +9,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-
 POLICY_SCHEMA_VERSION = "zscope.benchmark-policy.v1"
 BENCHMARK_SCHEMA_VERSION = "zscope.benchmark.v4"
 FORMAL_SCHEMA_VERSION = "zscope.formal-benchmark.v3"

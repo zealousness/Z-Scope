@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-
 REVIEW_RECORD_SCHEMA = "zscope.review-record.v1"
 PATTERN_SCHEMA = "zscope.false-positive-pattern-proposal.v1"
 PATTERN_MATCH_SCHEMA = "zscope.review-pattern-match.v1"

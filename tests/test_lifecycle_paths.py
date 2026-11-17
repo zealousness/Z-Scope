@@ -12,7 +12,6 @@ from zscope.semantics.contracts import ApiContract, ContractRegistry
 from zscope.semantics.retention_protocols import verify_retention_contract
 from zscope.semantics.single_slot_pool import verify_single_slot_pool
 
-
 DRIVERS = {
     "aggregate_copy": "submit_b(&p, &q, 0); Queue copy = q; queue_complete(&q, &p); queue_complete(&copy, &p);",
     "union_values": "union { int a; int b; } x = {0}; x.a = 1; if (x.b) submit_a(&p, &q, 0); queue_complete(&q, &p);",

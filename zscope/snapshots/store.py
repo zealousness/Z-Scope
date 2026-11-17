@@ -546,8 +546,7 @@ class SnapshotStore:
 
     @staticmethod
     def _create_schema(conn: sqlite3.Connection, table_name: str = "snapshots") -> None:
-        conn.execute(
-            f"""
+        conn.execute(f"""
             CREATE TABLE {table_name} (
                 index_name TEXT PRIMARY KEY,
                 func_name TEXT NOT NULL,
@@ -564,13 +563,11 @@ class SnapshotStore:
                 snapshot_file TEXT NOT NULL,
                 final_report_file TEXT
             )
-            """
-        )
+            """)
 
     @staticmethod
     def _create_validation_cache_schema(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS validation_cache (
                 cache_key TEXT PRIMARY KEY,
                 protocol TEXT NOT NULL,
@@ -579,8 +576,7 @@ class SnapshotStore:
                 result_json TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
+            """)
 
     def _init_db(self) -> None:
         # Multiple Analyzers can open the same store before modeling joins its

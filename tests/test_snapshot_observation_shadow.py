@@ -22,7 +22,6 @@ from zscope.orchestration.snapshot_observations import (
 from zscope.semantics.contracts import SymbolIdentity, digest
 from test_investigation_evidence import case  # noqa: F401; shared real tool fixture
 
-
 SOURCE = "int demo(void) {\n  void *p = alloc();\n  return -1;\n}\n"
 
 

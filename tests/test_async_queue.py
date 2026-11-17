@@ -13,7 +13,6 @@ from test_lifecycle_paths import candidates
 from zscope.core.validation.protocol_assessment import assess_protocol_candidate
 from zscope.semantics.defaults import default_local_pattern_semantics
 
-
 QUEUE_SOURCE = """#include <pthread.h>
 #include <stdlib.h>
 struct Item { int value; };

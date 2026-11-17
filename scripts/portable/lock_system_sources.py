@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Freeze corresponding Ubuntu source archives using the signed apt snapshot."""
+
 from __future__ import annotations
 
 import argparse

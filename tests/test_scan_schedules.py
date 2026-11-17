@@ -255,8 +255,7 @@ def real_service(tmp_path):
     import time
 
     config = tmp_path / "zscope.yaml"
-    config.write_text(
-        """config_version: 3
+    config.write_text("""config_version: 3
 llms:
   default:
     base_urls: [http://127.0.0.1:9/v1]
@@ -268,8 +267,7 @@ project:
     - id: java
 scan:
   preset: fast
-"""
-    )
+""")
     (tmp_path / "Main.java").write_text("class Main {}\n")
     engine = ScanJobService(config, spawn_owner=False)
     clock = [time.time()]
@@ -378,8 +376,7 @@ def test_detached_coordinator_launches_real_owner_only_after_start(tmp_path):
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('explicit safe worker fixture')\n"
     )
     wrapper = value.root / "test-coordinator.py"
-    wrapper.write_text(
-        """import sys
+    wrapper.write_text("""import sys
 from zscope.orchestration.jobs import schedule_runner
 from zscope.orchestration.jobs.schedules import ScanScheduleService
 from zscope.orchestration.jobs.service import ScanJobService
@@ -388,8 +385,7 @@ engine=ScanJobService(config,scan_command_builder=lambda path,depth,python:[pyth
 schedule_runner.ScanScheduleService=lambda path,**kwargs:ScanScheduleService(path,engine=engine,spawn_daemon=False)
 sys.argv=[sys.argv[0],"--config",config]
 raise SystemExit(schedule_runner.main())
-"""
-    )
+""")
     start = (datetime.now(timezone.utc) + timedelta(seconds=4)).isoformat()
     reply = value.create(
         request_id="detached-safe-fixture", scan_depth="fast", end_mode="complete", start_at=start

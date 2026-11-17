@@ -41,7 +41,6 @@ from .validator_replay import (
     ValidatorReplayError,
 )
 
-
 PROVIDER_CONFIG_SCHEMA_VERSION = "zscope.validator-replay-provider.v1"
 BUILTIN_EXECUTOR_REVISION = 6
 _CONFIG_FIELDS = frozenset(

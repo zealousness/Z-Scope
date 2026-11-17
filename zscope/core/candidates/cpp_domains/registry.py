@@ -13,7 +13,6 @@ from . import (
 )
 from .models import DetectorEngine, DetectorPhase, DetectorStage
 
-
 _DOMAIN_MODULES = (
     resource_lifecycle,
     memory_bounds_integer,

@@ -13,9 +13,7 @@ from test_lifecycle_paths import candidates
 from zscope.core.validation.protocol_assessment import assess_protocol_candidate
 from zscope.semantics.defaults import default_local_pattern_semantics
 
-DRAIN_SOURCE = (
-    QUEUE_SOURCE
-    + """
+DRAIN_SOURCE = QUEUE_SOURCE + """
 static void drain(struct Queue *q) {
   pthread_mutex_lock(&q->mu);
   while(q->active) pthread_cond_wait(&q->cv,&q->mu);
@@ -92,7 +90,6 @@ static void *cancel_clean(void *raw) {
   pthread_cleanup_pop(1); pthread_cleanup_pop(1); return 0;
 }
 """
-)
 DRAIN_DRIVERS = {
     "drained": ("finished", "drain(q); free(p); pthread_join(t,0);"),
     "nested": ("finished", "nested_drain(q); free(p); pthread_join(t,0);"),

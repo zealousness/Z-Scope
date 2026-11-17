@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
-
 FINDING_ATTRIBUTION_SCHEMA_VERSION = "zscope.finding-attribution.v1"
 FINDING_DISCOVERY_SOURCES = frozenset(
     {

@@ -36,7 +36,6 @@ from zscope.core.candidates.cpp_domains.resource_lifecycle import (
 from zscope.core.candidates.graph import GraphCandidateGenerator
 from zscope.core.candidates.regex import RegexCandidateGenerator
 
-
 _ALL_DOMAINS = {
     "resource_lifecycle",
     "memory_bounds_integer",

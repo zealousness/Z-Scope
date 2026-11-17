@@ -20,7 +20,6 @@ from ..framework.llm_client import LLMClient
 from .scheduler import INVESTIGATOR_ROLE, ScanScheduler
 from .specs import SpecRegistry
 
-
 DEFAULT_SUBAGENT_SPAWN_ALLOWLIST = ("deep_worker",)
 
 

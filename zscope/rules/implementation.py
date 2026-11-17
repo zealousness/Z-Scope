@@ -20,7 +20,6 @@ from typing import Dict, Iterable, Mapping, MutableMapping, Sequence, Set, Tuple
 
 from .catalog import BUILTIN_ENGINES, RuleCatalog, RuleCatalogError
 
-
 _CPP_ENGINE_PREFIXES: Tuple[Tuple[str, str], ...] = (
     ("Regex", "cpp_regex"),
     ("Clang", "cpp_clang_cfg"),

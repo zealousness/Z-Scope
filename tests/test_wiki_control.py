@@ -10,7 +10,6 @@ from zscope.wiki.control import wiki_query, wiki_status
 from zscope.wiki.source_manifest import build_source_manifest
 from zscope.wiki.store.revision_store import WikiStore
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "wiki_project"
 
 

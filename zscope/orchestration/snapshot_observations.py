@@ -21,7 +21,6 @@ from ..semantics.contract_conditions import evaluate, predicate_errors
 from ..semantics.contracts import SymbolIdentity, code_tokens
 from ..tools.source_access import ProjectSourceAccess, SourceAccessError
 
-
 OBSERVATION_SCHEMA_VERSION = "zscope.snapshot_observation.v1"
 VIOLATED_PROPERTIES = (
     "resource_not_released",

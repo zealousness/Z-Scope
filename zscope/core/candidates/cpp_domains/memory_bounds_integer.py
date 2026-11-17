@@ -26,7 +26,6 @@ from .models import (
 
 from .models import DetectorStage
 
-
 STAGES = (
     DetectorStage(
         "regex",

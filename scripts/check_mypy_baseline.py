@@ -12,7 +12,6 @@ import subprocess
 import sys
 from typing import Counter as CounterType
 
-
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "requirements" / "mypy-baseline.json"
 ERROR_RE = re.compile(r"^(.*?):\d+(?::\d+)?: error: (.*)$")

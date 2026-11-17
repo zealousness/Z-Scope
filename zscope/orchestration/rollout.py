@@ -24,7 +24,6 @@ from typing import Any, BinaryIO, Callable, Dict, Iterator, Mapping, Optional, T
 
 from .._version import __version__
 
-
 ROLLOUT_STATE_SCHEMA_VERSION = "zscope.balanced-rollout-state.v1"
 ROLLOUT_WINDOW_SCHEMA_VERSION = "zscope.rollout-observation-window.v1"
 ROLLOUT_DECISION_SCHEMA_VERSION = "zscope.rollout-decision.v1"

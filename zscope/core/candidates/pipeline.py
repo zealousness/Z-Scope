@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
 
-
 CandidateDetector = Callable[[Dict[str, Any]], List[Dict[str, Any]]]
 CandidateMerger = Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]
 BudgetRefresher = Callable[..., Any]

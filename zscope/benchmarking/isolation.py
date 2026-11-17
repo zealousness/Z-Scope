@@ -14,7 +14,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
-
 ISOLATION_SCHEMA_VERSION = "zscope.benchmark-isolation.v1"
 _PINNED_IMAGE_RE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")

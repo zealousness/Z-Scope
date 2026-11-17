@@ -15,8 +15,7 @@ from zscope.core.validation.protocol_assessment import assess_protocol_candidate
 from zscope.semantics.defaults import default_local_pattern_semantics
 
 WAIT_SOURCE = (
-    QUEUE_SOURCE.replace("pthread_cond_t cv;", "pthread_cond_t cv; pthread_cond_t other_cv;")
-    + """
+    QUEUE_SOURCE.replace("pthread_cond_t cv;", "pthread_cond_t cv; pthread_cond_t other_cv;") + """
 static void *unowned_wait(void *raw) {
     struct Queue *q=raw; pthread_cond_wait(&q->cv,&q->mu); return 0;
 }

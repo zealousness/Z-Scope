@@ -11,7 +11,6 @@ import hashlib
 import json
 from typing import Any, Mapping
 
-
 PROJECTION_VERSION = "zscope.hierarchical-context.v4"
 
 

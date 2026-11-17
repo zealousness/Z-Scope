@@ -12,7 +12,6 @@ from zscope.config.v3 import parse_user_config_v3_document, compose_effective_co
 from zscope.orchestration.entry_discovery import EntryDiscovery
 from zscope.retrieval.code_index import CodeIndex
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "check_entry_coverage.py"
 BENCHMARK_CONFIG_PATH = REPO_ROOT / "test" / "range" / "zscope.benchmark.yaml"
@@ -38,8 +37,7 @@ def _build_db(
 ) -> None:
     connection = sqlite3.connect(path)
     try:
-        connection.executescript(
-            """
+        connection.executescript("""
             CREATE TABLE functions (
                 name TEXT NOT NULL,
                 file_path TEXT NOT NULL,
@@ -57,8 +55,7 @@ def _build_db(
                 callee_name TEXT NOT NULL,
                 call_file TEXT DEFAULT ''
             );
-            """
-        )
+            """)
         connection.executemany(
             "INSERT INTO functions(name, file_path, signature, is_declaration) "
             "VALUES (?, ?, ?, ?)",

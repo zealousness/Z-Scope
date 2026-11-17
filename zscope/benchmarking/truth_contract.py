@@ -9,7 +9,6 @@ import re
 from pathlib import PurePosixPath
 from typing import Any, Dict, Mapping, Sequence
 
-
 TRUTH_CONTRACT_SCHEMA_VERSION = "zscope.range-truth-contract.v1"
 TRUTH_CONTRACT_V2_SCHEMA_VERSION = "zscope.range-truth-contract.v2"
 TRUTH_CONTRACT_KINDS = frozenset(

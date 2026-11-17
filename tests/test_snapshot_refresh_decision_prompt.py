@@ -23,8 +23,7 @@ def _analyzer_with_refresh_llm(content: str) -> tuple[Analyzer, RefreshDecisionL
 
 
 def test_snapshot_refresh_uses_refresh_decision_contract() -> None:
-    analyzer, llm = _analyzer_with_refresh_llm(
-        """
+    analyzer, llm = _analyzer_with_refresh_llm("""
         ```json
         {
           "type": "snapshot_refresh_decision",
@@ -35,8 +34,7 @@ def test_snapshot_refresh_uses_refresh_decision_contract() -> None:
           "risk_if_not_refreshed": "low"
         }
         ```
-        """
-    )
+        """)
 
     decision = analyzer._ask_refresh_decision(
         "cache_get",
@@ -51,8 +49,7 @@ def test_snapshot_refresh_uses_refresh_decision_contract() -> None:
 
 
 def test_snapshot_refresh_rejects_function_snapshot_payload() -> None:
-    analyzer, _llm = _analyzer_with_refresh_llm(
-        """
+    analyzer, _llm = _analyzer_with_refresh_llm("""
         ```json
         {
           "type": "function_snapshot",
@@ -62,8 +59,7 @@ def test_snapshot_refresh_rejects_function_snapshot_payload() -> None:
           "inputs": []
         }
         ```
-        """
-    )
+        """)
 
     decision = analyzer._ask_refresh_decision(
         "cache_get",

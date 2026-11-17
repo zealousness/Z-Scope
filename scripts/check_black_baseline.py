@@ -11,7 +11,6 @@ import re
 import subprocess
 import sys
 
-
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "requirements" / "black-baseline.json"
 SCOPES = ("zscope", "scripts", "test", "tests", "tools")

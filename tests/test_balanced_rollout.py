@@ -21,7 +21,6 @@ from zscope.orchestration.rollout import (
     _rollout_release_identity,
 )
 
-
 TEST_MANAGEMENT_KEY = b"runtime-test-management-key-32-bytes"
 
 

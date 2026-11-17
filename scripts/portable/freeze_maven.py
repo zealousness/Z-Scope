@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Freeze a prepared Maven repository; normal fetch never resolves Maven versions."""
+
 import argparse
 import base64
 import hashlib

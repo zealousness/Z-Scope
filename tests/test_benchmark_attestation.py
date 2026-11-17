@@ -11,7 +11,6 @@ from zscope.benchmarking.attestation import (
 )
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
 
-
 RELEASE_SHA = "f" * 40
 
 
