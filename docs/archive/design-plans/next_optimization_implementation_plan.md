@@ -1,6 +1,6 @@
 # Z-SCOPE Next Optimization Implementation Plan
 
-> **历史文档，2026-11-17 归档。** 原位置：`docs/progress_docs/next_optimization_implementation_plan.md`。本规划已由[后续实施计划](../../Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md)及[实施状态](../../Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/21_IMPLEMENTATION_STATUS.md)接替。下文的“当前”、代码路径和待办描述保留编写时含义；现行职责与接口见[模块导航](../../modules/README.md)，不能将旧待办直接作为开发任务。
+> **历史文档，2026-11-17 归档。** 原位置：`docs/progress_docs/next_optimization_implementation_plan.md`。本规划已由[后续实施计划](../../plans/agent-scanning/README.md)及[实施状态](../../plans/agent-scanning/21_IMPLEMENTATION_STATUS.md)接替。下文的“当前”、代码路径和待办描述保留编写时含义；现行职责与接口见[模块导航](../../modules/README.md)，不能将旧待办直接作为开发任务。
 
 本文档用于跟踪 Z-SCOPE 下一阶段优化落地。依据包括：
 

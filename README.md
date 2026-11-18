@@ -1,5 +1,7 @@
 # Z-SCOPE v1.3.2
 
+[文档总导航](docs/README.md) · [使用指南](docs/guides/README.md) · [开发专题](docs/development/README.md) · [开发规划](docs/plans/README.md) · [历史归档](docs/archive/README.md)
+
 **Z-SCOPE** 是一款基于 **多智能体（Multi-Agent）** 协作的 C/C++ 静态分析平台，并提供 Java Preview。它把可插拔代码索引、确定性规则、结构/值流后端信号、项目语义配置、人工反馈记忆与大语言模型（LLM）验证结合起来，模拟资深安全研究员的审计过程。
 
 v1.3.2 在 v1.3.1 稳定线之上引入 LLM Wiki 项目知识层、自适应语义发现与 Validator v3 分层验证、跨语言规则治理和 Linux Portable 离线发布，并对 Clang 索引与 SVF 值流链路做系统性性能优化。当前主线采用 public config v3、独立的项目原语准备与审阅、分层 deep 发现及持久扫描计划；升级时需迁移旧工程根字段和语义工作簿，见[配置迁移](#配置迁移)。包内 `1.3.2` 是版本唯一真源，发布标签必须为 `v1.3.2`；`zscope.candidate.v3.3` 等字符串仅代表内部数据协议，不是产品版本。主线变更与历史发布说明见 [v1.3.2 发布说明](docs/releases/v1.3.2.md)。
@@ -113,7 +115,7 @@ export PATH="$PWD/zscope-1.3.2-linux-x86_64-cpp-portable/bin:$PATH"
 zscope-doctor --json-output
 ```
 
-构建基线为 glibc 2.38，运行时使用宿主 glibc；符号需求下限和实际测试下限分别记录在逐包 ABI 与 smoke 报告中。C/C++ 包包含 clangd 22.1.7，以及独立的 LLVM 18/SVF 3.2 bitcode 链路；Java 包包含 JDK 21、Maven、预编译分析 JAR 和 Joern Java 功能，不包含 Gradle。两份语言模板不展示工具路径，代码仍保留手工实验覆盖。发布目录支持移动和只读挂载。完整布局、源码安装、旧分体安装器兼容与制作流程见 [离线安装与发布](docs/offline-installation.md)。Windows 用户通过 WSL2 使用 Linux 包。
+构建基线为 glibc 2.38，运行时使用宿主 glibc；符号需求下限和实际测试下限分别记录在逐包 ABI 与 smoke 报告中。C/C++ 包包含 clangd 22.1.7，以及独立的 LLVM 18/SVF 3.2 bitcode 链路；Java 包包含 JDK 21、Maven、预编译分析 JAR 和 Joern Java 功能，不包含 Gradle。两份语言模板不展示工具路径，代码仍保留手工实验覆盖。发布目录支持移动和只读挂载。完整布局、源码安装、旧分体安装器兼容与制作流程见 [离线安装与发布](docs/guides/offline-installation.md)。Windows 用户通过 WSL2 使用 Linux 包。
 
 ### 2. 从源码安装
 
@@ -618,7 +620,7 @@ zscope-rules validate security-rules/acme.yaml
 zscope-rules test security-rules/acme.yaml
 ```
 
-`zscope-rules` 与 `zscope-config validate`、doctor、CLI、Web 和 MCP 共用同一套规则预检/序列化语义。规则目录、实现、禁用列表与扩展来源的 SHA-256 会进入配置、cache/Validator 身份和最终报告 provenance。扩展契约和开发测试见 [`docs/rule-development.md`](docs/rule-development.md)。
+`zscope-rules` 与 `zscope-config validate`、doctor、CLI、Web 和 MCP 共用同一套规则预检/序列化语义。规则目录、实现、禁用列表与扩展来源的 SHA-256 会进入配置、cache/Validator 身份和最终报告 provenance。扩展契约和开发测试见 [`docs/development/rules.md`](docs/development/rules.md)。
 
 ### Step 2：执行分析
 
@@ -633,7 +635,7 @@ zscope -c zscope.yaml --scan-depth balanced
 
 # --verbose 会把模型交互与工具调用录制到 .zscope_conversations/，
 # 供事后审计 llm_client 与工具行为（事件字典与调优指南见
-# new_docs/conversation_recorder_events.md）
+# docs/development/conversation-events.md）
 
 # 批量扫描模式：从 entry_functions_list JSON 开始
 zscope -c zscope.yaml
@@ -767,7 +769,7 @@ v3 配置页可编辑工程、全部 targets、模型 profiles、preset 和执�
 
 页面、任务及问题支持 URL 定位与刷新恢复。链接仅用于定位，仍需校验报告、作业运行和输入身份；失效链接不会自动借用当前报告写入。问题复核草稿在当前页面的切换与迟到响应中保留，关闭页面前仍应保存；配置密钥不写入导航链接。
 
-[新旧页面对照](docs/webui-redesign/index.html)提供匹配演示数据的桌面与手机截图、操作录屏、可点击原型和可导出的取舍清单。原型与截图使用合成数据，不代表真实扫描效果。
+[新旧页面对照](docs/design/webui/index.html)提供匹配演示数据的桌面与手机截图、操作录屏、可点击原型和可导出的取舍清单。原型与截图使用合成数据，不代表真实扫描效果。
 
 审计发现的详情采用连续 Markdown 报告，提供章节导航、独立纵向滚动、代码文件位置和行号。代码片段来源无法确认时标注“片段内行号”，证据记录编号不会被当成源码行号。
 
@@ -780,7 +782,7 @@ v3 配置页可编辑工程、全部 targets、模型 profiles、preset 和执�
 
 已应用的相同复核不会重复写入。导入只回写状态及本次说明，不导入修改过的证据或 Validator 正文；旧版单 HTML 请重新导出为 Markdown 包。单 `.md` 最大 16 MiB，单次导入总正文最大 128 MiB、最多 10000 条。
 
-完整契约及接口示例见 [离线复核](docs/offline-reviews.md)。
+完整契约及接口示例见 [离线复核](docs/guides/offline-reviews.md)。
 
 开发者可在 Linux/WSL 虚拟环境中安装 `python -m pip install -e '.[dev,browser-test]'`、运行 `python -m playwright install chromium`，再执行 `python -m pytest -q tests/test_issue_markdown.py tests/test_markdown_report_browser.py` 验证报告与离线交互。
 
@@ -797,7 +799,7 @@ v3 配置页可编辑工程、全部 targets、模型 profiles、preset 和执�
 
 推荐调用链是 `search_code → symbol_id → read/semantic/graph/flow`；已有 `symbol_id` 时必须原样复用。列表结果按 `page.next_offset` 分页。所有调用返回统一的 `success/status/data/coverage/page/warnings/next_actions/error` 信封；`partial`、`unsupported` 和 `unavailable` 都不能解释为“没有问题”，`may` 路径和未验证 finding 也不能提升为已证明结论。
 
-text/files 检索按返回 file/line 续读，分页还需原样携带 view_id；语料扫描完整度独立于结果页。只读消费可选择服务端 read_only/candidate_blind profile，具体语料许可、缓存限制、权限表与 Windows→WSL 项目级 Codex 配置见 [只读 MCP 接入](docs/mcp-read-only.md)。
+text/files 检索按返回 file/line 续读，分页还需原样携带 view_id；语料扫描完整度独立于结果页。只读消费可选择服务端 read_only/candidate_blind profile，具体语料许可、缓存限制、权限表与 Windows→WSL 项目级 Codex 配置见 [只读 MCP 接入](docs/guides/mcp-read-only.md)。
 
 MCP 的证据工具使用上表中的 namespaced 名称；管理工具按下列接口提供，不暴露 raw 名称或重复 alias。管理工具包括 `zscope.knowledge.query`、`zscope.entries.discover`、`zscope.scan.run`、`zscope.scan.status`、`zscope.wiki.status`、`zscope.wiki.query`，以及 `zscope.jobs.list`、`zscope.jobs.events`、`zscope.jobs.result`、`zscope.jobs.cancel`、`zscope.jobs.resume`。作业工具仅在 `default` profile 提供，要求 Linux 后台和已保存配置；`read_only`、`candidate_blind` 不构造作业服务。events 使用 `job_id` 和可选非负 `after_seq`；cancel/resume 必需 `job_id`、`base_revision`、`request_id`，冲突语义与 Web 相同。显式 null 不是省略字段。result 目前提供本轮报告绑定，尚无 MCP findings 投影。多目标配置仍可编辑、不可执行；完整扫描队列接线和只执行剩余项仍未完成。MCP `2025-06-18` 返回 `outputSchema` 与 `structuredContent`；兼容 `2024-11-05` 时仍使用原生 `name/inputSchema`，但结果仅保留 text content。此次工具面切换是 breaking change，不提供旧名称兼容层。
 
@@ -829,7 +831,7 @@ MCP 的证据工具使用上表中的 namespaced 名称；管理工具按下列�
 
 Web“项目原语”提供连续引导、六类常见原语模板、高级 YAML、后台发现任务、分页审阅和显式勾选的批量预检。它与 CLI 共用发现核心和 `ProjectSemanticsStore`，保留注释、顺序及扩展字段；相同证据下的人工决定可复用。保存绑定文档、条目和发现证据版本，冲突时保留浏览器草稿；发现与扫描同工程互斥。任务在关闭网页后继续，重新打开原工程可查看状态；关闭主机/WSL 不承诺继续执行。C/C++ 旧业务模型入口转至项目原语，支持工程内 XLSX 单向迁移并保留原工作簿。Java 显示“不适用”。Web 保存 finding 复核时仍维护独立的 `finding_suppressions` 与 `finding_baselines`，不能反向授予原语效果。
 
-源码、编译依赖、根原语或 native 工具改变后，从同一页面重新发现并审阅。旧收据只有在包含可核验输入时才允许补做完成确认，否则要求重新发现。高级 YAML 不用于改写机器收据，函数意图进入 Wiki。实际界面、新旧入口对照、操作录屏和可导出的取舍清单见 [项目原语对照](docs/webui-redesign/primitives.html)。
+源码、编译依赖、根原语或 native 工具改变后，从同一页面重新发现并审阅。旧收据只有在包含可核验输入时才允许补做完成确认，否则要求重新发现。高级 YAML 不用于改写机器收据，函数意图进入 Wiki。实际界面、新旧入口对照、操作录屏和可导出的取舍清单见 [项目原语对照](docs/design/webui/primitives.html)。
 
 ## 后端对比
 
@@ -846,7 +848,7 @@ Web“项目原语”提供连续引导、六类常见原语模板、高级 YAML
 | 规则目录/禁用 | Regex 规则受 `disabled_ids` 控制 | Java local 受控；Joern signal 不受控 | Clang CFG/matcher 与 Graph 规则受控 | 确定性规则受控；SVF/Saber 信号不受控 |
 | 内存占用 | 极低 | 高（JVM） | 中 | 中高 |
 
-大项目可安装独立的 `zscope-clang-indexer`，通过 `indexing.clang.frontend: auto|batch|lsp` 切换批量抽取与 clangd 回退。普通 bitcode 编译可直接使用与 SVF 配套的 Clang；覆盖盘点、资源预算、安装与测量命令见 [Clang 批量索引与 SVF 输入验收](docs/clang-batch-indexing.md)。
+大项目可安装独立的 `zscope-clang-indexer`，通过 `indexing.clang.frontend: auto|batch|lsp` 切换批量抽取与 clangd 回退。普通 bitcode 编译可直接使用与 SVF 配套的 Clang；覆盖盘点、资源预算、安装与测量命令见 [Clang 批量索引与 SVF 输入验收](docs/development/clang-batch-indexing.md)。
 
 ## 开发命令
 
@@ -925,7 +927,7 @@ Agent 实施计划的开发评测准备使用 `python scripts/agent_plan_evaluat
 - **确定性证据闭环**：新增 guard/边界、所有权/生命周期、锁/HB、调用契约等 proof provider。完整正向 proof 直接确认，完整反证才允许拒绝，证据冲突或缺失保守进入一个组级 `needs_review`。
 - **低噪声根因投影**：`FindingRoot v1` 按结构化对象、sink/exit、decision region、代码和 proof 上下文投影 primary/alias，保留全部 occurrence 与 provenance，不使用 LLM 文本去重隐藏告警。
 - **Validator token 收敛**：`ValidatorEvidenceSlice v2`、类型化补证、项目事实复用和最多两响应协议消除重复上下文及无边界浏览。五轮正式 Range 冷扫描 tokens 中位数为 1.324M。
-- **发布门禁与证据**：五轮 WSL、自动入口发现、unified+SVF、GLM-5.1 正式扫描均完成 88/88 入口并通过硬门槛；Confirmed TP 中位数 89、raw FP 中位数 2、含复核 TP 固定 134。聚合和哈希清单保存在 `docs/range_reports/v33_release_final2_glm51_20260810/`。
+- **发布门禁与证据**：五轮 WSL、自动入口发现、unified+SVF、GLM-5.1 正式扫描均完成 88/88 入口并通过硬门槛；Confirmed TP 中位数 89、raw FP 中位数 2、含复核 TP 固定 134。聚合和哈希清单保存在 `docs/reports/benchmarks/v33_release_final2_glm51_20260810/`。
 
 ### v1.2
 - **版本号刷新**：包版本、README、架构文档和 Web 默认展示同步到 `1.2`。

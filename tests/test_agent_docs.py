@@ -19,9 +19,23 @@ MODULE_DIR = ROOT / "docs" / "modules"
 MODULE_DOCS = tuple(MODULE_DIR / name for name in MODULE_DOC_NAMES)
 HANDOFF_DOCS = (
     ROOT / "AGENTS.md",
+    ROOT / "docs" / "README.md",
+    *(
+        ROOT / "docs" / folder / "README.md"
+        for folder in (
+            "guides",
+            "development",
+            "plans",
+            "benchmarks",
+            "design",
+            "research",
+            "reports",
+            "archive",
+        )
+    ),
     MODULE_DIR / "README.md",
     *MODULE_DOCS,
-    ROOT / "docs" / "range-benchmark.md",
+    ROOT / "docs" / "benchmarks" / "range.md",
 )
 MOJIBAKE_MARKERS = (
     "锛",
@@ -116,7 +130,7 @@ def test_root_config_and_runtime_agent_boundaries_are_explicit() -> None:
 
 
 def test_range_plan_distinguishes_linux_wsl_and_windows() -> None:
-    text = _read_utf8(ROOT / "docs" / "range-benchmark.md")
+    text = _read_utf8(ROOT / "docs" / "benchmarks" / "range.md")
     for phrase in (
         "Linux",
         "Windows",

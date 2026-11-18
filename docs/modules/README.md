@@ -2,6 +2,8 @@
 
 本目录按稳定子系统说明 Z-SCOPE 的代码所有权、主数据流、关键不变量和测试入口。模块文档用于快速定位，不替代源码、测试、[`docs/architecture.md`](../architecture.md) 或根目录 [`AGENTS.md`](../../AGENTS.md)。
 
+其他类别从[文档总导航](../README.md)进入，深入实现参考见[开发专题](../development/README.md)。
+
 ## 顶层包映射
 
 每个 `zscope/` 顶层包必须且只能归属一份模块文档：
@@ -27,6 +29,6 @@
 
 ## 后续开发规划
 
-[Agent 与专业扫描实施计划](../Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md) 记录本地能力核对、内存/资源扫描改进、夜间自主运行与用户体验路线。该包是未来设计，不替代本目录的当前行为说明；实施相关工作包时再同步对应模块、用户指南和配置。新建顶层包仍须在上表及唯一一份模块文档的 `covers` 中登记。
+[Agent 与专业扫描实施计划](../plans/agent-scanning/README.md)记录本地能力核对、内存/资源扫描改进、夜间自主运行与用户体验路线，区分待开发目标和已实施切片；实际进度见[实施记录](../plans/agent-scanning/21_IMPLEMENTATION_STATUS.md)。该包不替代本目录的当前行为说明；实施相关工作包时同步对应模块、用户指南和配置。新建顶层包仍须在上表及唯一一份模块文档的 `covers` 中登记。
 
 已被替代的方案见[历史文档归档](../archive/README.md)，日期化交接与验证记录见[历史交接包](../handoffs/README.md)；这些文档用于追溯，不作为当前接口或待办清单。

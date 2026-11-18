@@ -1,0 +1,58 @@
+# 14 · 产品接入与轻量交付
+
+## 统一产品入口
+
+复用现有 CLI、WebUI、MCP 与 ScanSession 服务。先交付专业扫描准备/运行/验收，取消原“先独立 zscope-agent CLI，再做完整 UI”的前置顺序。
+
+当前命令和配置仍以仓库 README 为准。本包 proposed 的 prepare/start/status/events/cancel/resume/result 是逻辑服务接口，最终可接现有 CLI 命令与 Web route；不在实施前宣称已有新命令。
+
+| 服务 | 合同 |
+|---|---|
+| prepare | 检测工程/构建/模型/资料，返回画像、冲突和可执行计划 |
+| start | 绑定明确输入与本轮选择，返回 job/run |
+| status / events | 返回持久状态、进度、最近活动、缺口与游标 |
+| cancel / resume | 停止新工作并核对进程；恢复检查输入与证据有效性 |
+| result | 同一份四态根因报告、覆盖、产物和验收问题 |
+| accept_feedback | 记录人工裁定/模型补充，影响相应依赖 |
+
+UI 不另存一套扫描事实。JSON/JSONL 输出与普通日志分开；事件重读只重放展示，不重新执行工作。
+
+## 配置直接演进，不建设兼容层
+
+[12](12_SCHEMAS_AND_EXAMPLES.md) 的 public v3 已落地，CLI、Web、MCP 与 benchmark 仅接受 v3；工程根唯一取 YAML 所在目录，不再接受公共 `project.root` 或 `source_root`。当前模式统一为 fast/balanced/deep，旧 v2 及 quick/overnight 必须显式迁移。内部作业计划与尚未完成的执行消费者仍按[实施记录](21_IMPLEMENTATION_STATUS.md)推进，不能把配置可解析当作全部能力已实现。
+
+开发变更同步 loader、CLI/Web/MCP、模板、init、报错、测试及 README。旧自动缓存可重建，旧手工配置提供清晰改写/导入方法；无需保留双 parser、旧 alias 或复杂迁移框架。人工模型与反馈不静默丢弃。
+
+LLMClient、endpoint 容量和调用账本继续共用，不增加第二份凭据/重试实现。高级 backend/path 参数按实际需要保留到折叠区域，不要求普通用户理解 SVF scope 或证据轮次。
+
+## 夜间执行所有权
+
+S08 由一个本地作业 owner 持有 ScanSession、执行器与状态。UI/CLI 作为客户端断开时作业继续，取消才停止。没有完成 owner 解耦前，界面明确提示关闭客户端的真实影响。
+
+同一项目不同构建作业共享有效只读事实，但不能共享可变验证上下文或全局复现 plan provider。恢复后重核有副作用的执行，动态见证不能仅从旧 JSON 恢复确认。
+
+## MCP 与 Web 边界
+
+已有只读 MCP 可用于调查；新控制操作接同一个 job service。是否保留全部旧 namespaced 工具由当前消费者需要决定，不为了兼容复制接口。
+
+**WebUI 保留并改进，不增加 web 访问能力。**产品不提供网页搜索、HTTP 文档抓取、浏览器自动化或任意 URL reader；项目知识来自本地资料。模型 endpoint 是已有推理连接，不扩展成通用 HTTP 工具。
+
+## 可选依赖与打包
+
+Clang/SVF/Saber 当前基础继续使用，缺失的可选验证器只禁用相应 work item，并在启动/报告说明。S10 新后端有收益后才纳入安装/Portable；不让普通扫描等待所有求解器安装。
+
+新增包文件、Skill/schema、前端静态资源进入现有打包流程；资源变化按现有 web-assets 锁维护。真实 Linux/WSL/目标平台工具能力分别核实，源码 checkout 可运行不等于发行包包含全部文件。
+
+本次任务不构建发行包。正式 Portable 仍有独立路线；后续改其协议时同步代码/CI/文档，不能以本计划文字自动宣布旧门禁已取消或发行通过。
+
+## 删除冗余流程
+
+新开发不采用原 09、SEC 安全集、审批 API、宿主策略平台或强制容器执行器；不新增代码冻结、灰度签发和固定观察窗口。
+
+当前 managed balanced rollout/实验开关不作为新 overnight 产品默认的长期控制面。实现新 preset 时同步清理旧默认决策路径及相关消费者/测试；保留显式配置与一份清楚的运行策略。正式发布协议若仍引用旧状态，单独同步修改后再宣称新正式结果，不伪造旧状态文件。
+
+## 交付顺序
+
+每个 S/U 包完成相关正反例和实际验证即可交付；先真实小项目，再真实业务模块，按收益扩大范围。默认切换以质量/覆盖对照和明确用户行为为依据，不设长期冻结/多级审批。
+
+外部 SDK/多 Agent/通用修复能力后置；一个无使用者的 adapter 只保留设计决策，不预建空实现。

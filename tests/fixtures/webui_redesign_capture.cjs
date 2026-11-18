@@ -1,6 +1,6 @@
 /* Run in Linux/WSL. Deterministic synthetic APIs only; never reads project configuration or reports. */
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),crypto=require('node:crypto'),assert=require('node:assert/strict');
-const root=process.cwd(),out=path.join(root,'docs/webui-redesign/assets');fs.mkdirSync(out,{recursive:true});
+const root=process.cwd(),out=path.join(root,'docs/design/webui/assets');fs.mkdirSync(out,{recursive:true});
 const sha=x=>crypto.createHash('sha256').update(x).digest('hex');
 const config={config_version:3,llms:{default:{base_urls:['https://example.invalid/v1'],models:['demo-model'],api_key:''}},project:{language:'c_cpp',root:'/demo/order-service',platform:'linux_user',targets:[{id:'debug',compile_commands:'build/compile_commands.json'}]},scan:{preset:'quick',focus:['memory','resources'],reproduction:'off'},execution:{timezone:'Asia/Taipei'}};
 const preparation={config_path:'/demo/order-service/zscope.yaml',working_directory:'/demo/order-service',project:{root:'/demo/order-service',language:'c_cpp',backend:'unified'},build:{status:'available',sources:3,compilation_instances:4,link_targets:'unverified'},scan:{entry:'process_order',focus:'内存与资源',reproduction:'off',depth:'fast',artifact_directory:'/demo/order-service/.zscope/runs'},messages:[],tools:[{name:'clang-indexer',available_on_path:true},{name:'clangd',available_on_path:true},{name:'SVF/Saber',available_on_path:true}],models:[{profile:'default',configured:true,connection_checked:false}]};

@@ -78,7 +78,7 @@ deep 的 `ContractDiscoveryAgent` 使用同一 LLM 客户端、取消令牌和 R
 - Agent 输出回到分析/验证流水线，不能绕过统一 schema 和 issue identity 直接持久化最终报告。
 - `JsonOutputSpec.schema` 在本地终态、文本提取和兼容 fallback 三条路径共同执行；领域 validator 追加语义约束，不能替代公开 schema。修复提示携带实际字段错误，不向没有 `type` 字段的 schema 添加类型标签。Java 建模也校验其语言专属完整 schema。
 - `search_code` 的 text/files scope 与 `read_code` 共用 `ProjectSourceAccess`；符号搜索默认不变。字面检索独立于索引，以有界固定视图分页，文件版本变化要求重启；扫描覆盖与结果分页分开报告。源码读取缓存需重新核验文件身份、摘要及当前许可。
-- `get_semantic_context(refresh_policy=cache_only)` 独立读已提交状态，不经过建模 helper 或 resolver。服务端 read_only/candidate_blind profile 强制此路径；后者还隔离 findings、结论资源和语义 payload，类型化投影保留程序身份。完整输入身份不足时不能声明 current。参数、限制及消费方式见 [只读 MCP](../mcp-read-only.md)。
+- `get_semantic_context(refresh_policy=cache_only)` 独立读已提交状态，不经过建模 helper 或 resolver。服务端 read_only/candidate_blind profile 强制此路径；后者还隔离 findings、结论资源和语义 payload，类型化投影保留程序身份。完整输入身份不足时不能声明 current。参数、限制及消费方式见 [只读 MCP](../guides/mcp-read-only.md)。
 - Validator v3 的 V1/V2 使用无状态、严格 schema 的直接 chat completion；V1 不进入通用工具循环，V2 只携带原候选摘要和新增证据。V3 才能按档位使用有界只读工具轨迹。
 - Validator 的 `AGENT.md` 只维护共通裁决、证据和领域约束；闭合裁决、调查、V2b 与 Review 的差异由各自入口提供。旧格式指令只进入 legacy/V2 及其快速路径和格式修复，不进入 V3 请求。
 - 模型只生成 `verdict/reasoning/positive_evidence/negative_evidence/evidence_refs/blocking_negative_evidence/missing_fact_request`，补事实请求只含 `fact_kind/reason`。程序绑定版本、候选/簇、阶段和请求目标，按裁决与请求派生停止状态；运行失败状态仍由运行时产生。完整 `ValidatorResultV3` 和历史回放协议保持原形，完整旧响应校验其原始身份，拒绝新旧字段混搭。Review 同样由程序补版本和内层裁决身份，再经过既有反驳与正面案例验收。

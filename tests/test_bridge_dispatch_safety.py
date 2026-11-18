@@ -5,10 +5,7 @@ from pathlib import Path
 
 import pytest
 
-PATH = (
-    Path(__file__).parents[1]
-    / "docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/2026-10-14/dispatch_safety.py"
-)
+PATH = Path(__file__).parents[1] / "tests/fixtures/dispatch_safety.py"
 SPEC = importlib.util.spec_from_file_location("local_dispatch_safety", PATH)
 assert SPEC and SPEC.loader
 SAFE = importlib.util.module_from_spec(SPEC)

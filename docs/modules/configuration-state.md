@@ -150,7 +150,7 @@ v3 schema 由模型字段表和条件表生成，包含时窗依赖、语言与 
 
 人工 baseline 的精确键匹配和源码窗口/稳定指纹回退均要求相同构建身份；缺少身份不是通配符。Web 对已知构建的误报反馈只写入该构建的 baseline，不再额外生成按位置匹配的宽泛 suppression。旧位置 suppression 仅适用于未知构建的候选，不能覆盖已绑定编译实例的发现。不同构建的事实、缓存、去重和人工反馈隔离由 `tests/test_candidate_build_identity.py` 共同验证。
 
-只读 MCP 使用 ConfigLoader 的内部 read_only 加载路径，保留严格 Config v3 校验并跳过 rollout 持久态、扩展 provider 预检及 usage 注册。只读快照打开不创建目录或迁移表；checkpoint 后 SQLite 用 immutable/query_only 读取，活动 WAL 明确不可用。旧快照缺完整输入身份时返回 unverifiable，源码摘要匹配不代表头文件、构建或契约仍有效。正常扫描加载与默认刷新不变，详见 [只读 MCP](../mcp-read-only.md)。
+只读 MCP 使用 ConfigLoader 的内部 read_only 加载路径，保留严格 Config v3 校验并跳过 rollout 持久态、扩展 provider 预检及 usage 注册。只读快照打开不创建目录或迁移表；checkpoint 后 SQLite 用 immutable/query_only 读取，活动 WAL 明确不可用。旧快照缺完整输入身份时返回 unverifiable，源码摘要匹配不代表头文件、构建或契约仍有效。正常扫描加载与默认刷新不变，详见 [只读 MCP](../guides/mcp-read-only.md)。
 
 ## 职责与非职责
 

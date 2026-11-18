@@ -35,7 +35,7 @@ sources:
   - scripts/plan_discovery_ablation.py
   - scripts/run_discovery_ablation_request.py
   - scripts/score_discovery_ablation_experiment.py
-  - docs/range-benchmark.md
+  - docs/benchmarks/range.md
   - test/range/benchmark/check_entry_coverage.py
 tests:
   - tests/test_portable_release.py
@@ -85,7 +85,7 @@ tests:
 ## 主入口和数据流
 
 - C/C++ 的 `run --mode prepare --scan-depth fast|balanced|deep` 执行无模型的真实构建、链接、接口审阅决定重绑定和 doctor 检查。trial/formal 自动消费同一准备阶段；formal 的准备命令也通过 OCI executor。密封输入与执行项目分开，旧 BuildContext/机器证据不随人工决定复用。配置内 `benchmark_review` 只对源码及契约命题完全相同的审阅结果授权；变化必须重新审阅。
-- `zscope-benchmark semantics` 从 none_known 空配置调用产品发现命令，进程退出后由 host-only `semantic_scoring.py` 读取同一份源码独立审阅的扫描 YAML。正向效果的召回分母不受发现结果影响；规范化比较排除身份元数据和排列噪声，保留契约条件和责任差异。不再独立维护接口 truth JSON；范围外命题和非等价表达进入待审查，不能直接判误报。准备阶段只执行真实 native 重绑定，不用重新发现的结果替换审阅输入。入口、评分字段与证据归档见 `docs/range-benchmark.md`。
+- `zscope-benchmark semantics` 从 none_known 空配置调用产品发现命令，进程退出后由 host-only `semantic_scoring.py` 读取同一份源码独立审阅的扫描 YAML。正向效果的召回分母不受发现结果影响；规范化比较排除身份元数据和排列噪声，保留契约条件和责任差异。不再独立维护接口 truth JSON；范围外命题和非等价表达进入待审查，不能直接判误报。准备阶段只执行真实 native 重绑定，不用重新发现的结果替换审阅输入。入口、评分字段与证据归档见 `docs/benchmarks/range.md`。
 - 接口评测的 `reference_coverage` 将全部参照义务分为严格匹配、候选不合法、契约有差异和效果候选缺失；这些状态互斥，而旧 missing 与输出 invalid/mismatch 有重叠。`contract_proposals` 与旧 advisory 分开检查模型完成度，不把结构修正失败或未尝试的单位算作完成。新增有效但超出审阅范围的效果保留 unreviewed，严格一致率不等同最终语义准确率。相同对象的 allocator/calloc 子类变化只用于定位差异候选，不能算严格命中或完全未发现。
 - 范围外输出的逐项源码审阅是扫描后的补充报告，不成为新的参照或发现输入。分别统计真实新增边界、冗余提案、错误契约；保守 may 与精确契约分开解释。发现批次的证据去重不改变精确构建身份和调查单位，成本对照同时记录全部 provider usage、完成度和固定分母质量，保留失败的优化试验。
 
@@ -150,7 +150,7 @@ tests:
 - CLI harness、suite 准备和评估：`scripts/external_benchmark.py`。
 - 确定性 Range 回归：`scripts/evaluate_range_regression.py` 和对应测试。
 - Range fixture、入口或 truth：`test/range/`，必须同步映射、覆盖预检和版本化评测资产。
-- 正式运行协议和环境：`docs/range-benchmark.md` 与 `docs/java-benchmark.md`。
+- 正式运行协议和环境：`docs/benchmarks/range.md` 与 `docs/benchmarks/java.md`。
 
 ## 对应测试与验证命令
 
@@ -178,8 +178,8 @@ Review 实验由 `replay_review_experiment.py` 读取无答案的完整检查点
 ## 权威源码和关联文档
 
 - 稳定入口见本文 frontmatter 的 `sources`。
-- Range 执行、隔离和评分协议以 `docs/range-benchmark.md` 为准。
-- 外部 suite 协议见 `docs/progress_docs/external_benchmark_protocol.md`。
+- Range 执行、隔离和评分协议以 `docs/benchmarks/range.md` 为准。
+- 外部 suite 协议见 `docs/benchmarks/external.md`。
 - 历史结果只从当次 run 目录和 release 报告读取，不复制到本模块说明。
 
 ## Portable 发行验证

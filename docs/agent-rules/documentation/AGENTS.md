@@ -13,19 +13,24 @@
 
 ## 文档维护边界
 
-- Agent 与专业扫描后续开发以 [`docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md`](../../../docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md) 为规划入口。该包区分本地现状与待开发能力；其中新配置、命令和状态不是当前产品接口。
+- 项目级专题文档统一放在 `docs/`，总入口为 [`docs/README.md`](../../README.md)；根 README、AGENTS 和工具、fixture 的就近说明保留各自入口。使用流程放 `guides/`，深入实现参考放 `development/`，稳定职责放 `modules/`，待开发路线放 `plans/`；设计、研究、评测、报告、发布与历史资料各归对应分类。不再创建 `new_docs/`、`progress_docs/` 等平行目录，也不保留重复正文。
+- Agent 与专业扫描后续开发以 [`docs/plans/agent-scanning/README.md`](../../plans/agent-scanning/README.md) 为规划入口。该包区分本地现状与待开发能力；其中新配置、命令和状态不是当前产品接口。
 - 此路线优先级为低误报、高召回、扫描性能、项目理解、使用体验；专业扫描优先，通用 Coding 后置。默认面向非工作时间运行，交互集中于启动和验收；自动复现使用独立目录，默认不改业务源码。Linux 先闭环，再扩展嵌入式/RTOS。
 - 此路线不承担旧接口兼容负担，可替换冗余实现；采用相关正反例和实际验证，不新增代码冻结、多级审批或权限/沙箱平台。产品不增加网页搜索、抓取、浏览器或任意 URL 读取能力，本地 WebUI 与已有模型连接继续保留。
 - 实施时同步用户指南、配置模板/初始化器、对应模块与必要的规则/Skill 契约；不把计划文字直接当已实现行为，不改写历史 benchmark 或发行验证结果。
-- 此计划的实际落地状态见 [实施记录](../../../docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/21_IMPLEMENTATION_STATUS.md)。构建实例事实与旧函数导航投影必须区分；不能把新增实例存储当作全部扫描消费者已完成多变体隔离。
+- 此计划的实际落地状态见 [实施记录](../../plans/agent-scanning/21_IMPLEMENTATION_STATUS.md)。构建实例事实与旧函数导航投影必须区分；不能把新增实例存储当作全部扫描消费者已完成多变体隔离。
 
 - 模块文档记录稳定职责、入口、不变量和测试，不记录容易过期的文件数量、漏洞数量或历史 benchmark 成绩。
-- `docs/architecture.md` 负责端到端架构，`README.md` 负责用户使用，`docs/range-benchmark.md` 负责 Range 协议；模块文档不要重复维护这些全文。
+- `docs/architecture.md` 负责端到端架构，`README.md` 负责用户使用，`docs/benchmarks/range.md` 负责 Range 协议；模块文档不要重复维护这些全文。
 - 新增 `zscope/` 顶层包时，必须在 `docs/modules/README.md` 和某一份模块文档的 `covers` 元数据中登记，且只能登记一次。
 
 ## 计划与历史记录
 
 已被替代的设计与实施方案集中放在 `docs/archive/design-plans/`，归档索引记录原位置和当前替代入口，每篇开头明确标注“历史文档”。历史交接包保留在 `docs/handoffs/<日期>/`，由目录说明标明历史用途；移动文档时同步修复引用，不保留重复正文。仍有效的后续设计与当前实施状态不随旧方案整包归档。
+
+历史实施、旧评测、安全审计与协调产物分别放 `docs/archive/implementation/`、`benchmarks/`、`security/` 和 `coordination/`。原始 JSON、日志、回执、摘要和运行状态不为目录迁移改写；只调整阅读导航与真实仍在使用的代码引用。历史路径保留为记录，不冒充当前可执行入口。
+
+协调归档保留有独立信息的总结、契约、结论与必要复现材料，不继续提交队列消费标记、重复轮询请求或可由生成逻辑重建的大型合成输入。清理历史产物时可删除这些临时文件，并对内容完全相同的副本保留一份及位置映射，修复阅读引用；不改写保留的原始回执来冒充新的执行结果。仍被当前测试使用的辅助代码放到测试目录，避免测试依赖归档材料。
 
 实施计划、旧 handoff、coordination 记录中的提交号、哈希、快照、dry-run、签发记录和测试矩阵用于解释当时的工作，不自动成为新任务的前置条件。按当前用户目标和[开发者路线](../development/AGENTS.md)调整计划；不因偏离旧哈希或旧文件清单拒绝实现，不照抄历史多轮测试。保留原历史事实，不把旧测试改写成本轮通过，也不为普通文档调整制作冻结包或额外验收材料。
 

@@ -14,6 +14,7 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
 - `tests/`：Python 自动化测试。
 - `test/range/`：故意植入缺陷的 Range Benchmark fixture，不是普通示例项目。
 - `scripts/`：回归评测、外部 benchmark、发布聚合和维护脚本。
+- `docs/README.md`：唯一文档总入口，按使用、开发、规划、设计、研究、报告和归档分类。
 - `docs/modules/`：按稳定子系统组织的开发导航。
 - `README.md`：安装、配置、CLI、WebUI、MCP 和常用开发命令。
 

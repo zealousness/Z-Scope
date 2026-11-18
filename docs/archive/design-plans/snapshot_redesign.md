@@ -1,6 +1,6 @@
 # Snapshot Redesign
 
-> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage1optimation/snapshot_redesign.md`。本文保存已实施的多轮快照重构、被后续章节覆盖的旧方案及当时验证边界，不再作为新一轮重构清单。当前职责见[配置、语义与状态](../../modules/configuration-state.md)，当时实施过程见[上下文优化实施记录](../../../new_docs/stage1optimation/agent_optimation.md)。
+> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage1optimation/snapshot_redesign.md`。本文保存已实施的多轮快照重构、被后续章节覆盖的旧方案及当时验证边界，不再作为新一轮重构清单。当前职责见[配置、语义与状态](../../modules/configuration-state.md)，当时实施过程见[上下文优化实施记录](../implementation/agent-context.md)。
 
 本文记录 `semantic_modeler` 函数快照结构的设计、实施结果和后续计划。前八章所述方案均已实施；各章末记录实际偏差和已知问题。
 

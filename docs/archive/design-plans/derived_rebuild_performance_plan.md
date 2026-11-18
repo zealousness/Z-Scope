@@ -1,6 +1,6 @@
 # Derived Rebuild（function_symbol_context / function_type_refs）千万行规模性能优化计划
 
-> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage4optimation/derived_rebuild_performance_plan.md`。本文是核心实现之前的候选方案，“待评审”、代码行号和性能外推保留当时含义。最终采用的方案与尚未完成的规模验收见[clangd 派生索引优化说明](../../../new_docs/clangd_large_project_optimization_plan.md)，当前职责见[代码检索与后端](../../modules/retrieval-backends.md)。
+> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage4optimation/derived_rebuild_performance_plan.md`。本文是核心实现之前的候选方案，“待评审”、代码行号和性能外推保留当时含义。最终采用的方案与尚未完成的规模验收见[clangd 派生索引优化说明](../../development/clangd-derived-index.md)，当前职责见[代码检索与后端](../../modules/retrieval-backends.md)。
 
 > 状态：计划（待评审）
 > 范围：`zscope/retrieval/clang_extractor.py` 的组合式 derived 重建（`_rebuild_symbol_and_type_refs`，file-major pass）

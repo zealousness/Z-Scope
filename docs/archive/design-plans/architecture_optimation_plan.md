@@ -1,6 +1,6 @@
 # 一、 架构优化实施计划：过滤 LLVM intrinsic callee
 
-> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage1optimation/architecture_optimation_plan.md`。本文保留已完成的 intrinsic 过滤及后续 callee 分类、SVF 物化方案；旧待办和实施顺序需按当前源码重新确认，不直接作为开发要求。当前职责见[代码检索与后端](../../modules/retrieval-backends.md)，当时实现与偏差见[架构优化实施记录](../../../new_docs/stage1optimation/architecture_optimation.md)。
+> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage1optimation/architecture_optimation_plan.md`。本文保留已完成的 intrinsic 过滤及后续 callee 分类、SVF 物化方案；旧待办和实施顺序需按当前源码重新确认，不直接作为开发要求。当前职责见[代码检索与后端](../../modules/retrieval-backends.md)，当时实现与偏差见[架构优化实施记录](../implementation/architecture.md)。
 
 ## 1. 计划状态
 
@@ -209,7 +209,7 @@ llvm.memcpy.p0.p0.i64
 4. 已完成：补充 CodeIndex、function-info、GlobalModeler 与原始 DB 事实保留测试。
 5. 已完成：运行 focused regression、相关回归和全量回归。
 6. 待后续单独执行：对 benchmark 重新生成 Semantic Modeler prompt/工具 metrics，确认 intrinsic 查询失败数量下降；该步骤会产生外部 LLM API 成本。
-7. 已完成：在[架构优化实施记录](../../../new_docs/stage1optimation/architecture_optimation.md)记录最终行为、测试结果和计划偏差。
+7. 已完成：在[架构优化实施记录](../implementation/architecture.md)记录最终行为、测试结果和计划偏差。
 
 # 二、架构优化实施计划：函数指针调用分类、SVF 物化一致性与 Unified callee 归一化
 
@@ -854,7 +854,7 @@ Semantic Modeler program-owned input应包含候选 summary，Agent policy增加
 ### 7.3 文档与实施记录
 
 - `new_docs/tools_introduction.md`
-- [架构优化实施记录](../../../new_docs/stage1optimation/architecture_optimation.md)
+- [架构优化实施记录](../implementation/architecture.md)
 - 必要时更新数据库 schema/version说明
 - benchmark metrics/语义对比记录
 
@@ -1075,7 +1075,7 @@ Andersen分析可能返回超集候选。source/confidence和partial status保�
 12. 运行focused tests；如测试失败，仅修改测试与实施记录，不回退或擅自修改用户手工实现。
 13. 部分完成：已运行物化修复的相关与全量回归，并在原异常 KnowledgeDB 上完成端到端恢复；函数指针 schema 改造完成后，仍需额外运行干净 DB benchmark。
 14. 已完成（物化范围）：已模拟 TU purge 并在真实异常数据库上重复运行，验证 artifact replay 后 `indirect_calls=905`、`taint_signatures=13` 保持稳定。
-15. 已完成（物化范围）：[架构优化实施记录](../../../new_docs/stage1optimation/architecture_optimation.md)已记录实际改动、测试、benchmark 恢复结果和计划偏差；后续 schema 实施须继续追加记录。
+15. 已完成（物化范围）：[架构优化实施记录](../implementation/architecture.md)已记录实际改动、测试、benchmark 恢复结果和计划偏差；后续 schema 实施须继续追加记录。
 
 ## 13. 实施完成后的指标
 

@@ -226,4 +226,4 @@ python -m pytest -q tests/test_config_options.py tests/test_web_user_config_work
 - 稳定入口见本文 frontmatter 的 `sources`；架构位置见[架构文档](../architecture.md)。
 - 反馈接口见[接口与报告](interfaces-reporting.md)，Validator 决策边界见[分析流水线](analysis-pipeline.md)。
 - 既有 baseline/suppression 见[配置、语义与状态](configuration-state.md)；Wiki 语义见[LLM Wiki](wiki.md)。
-- [实施记录](../../new_docs/validator_review_memory_implementation.md)保留历史阶段，本模块文档以当前源码为准。
+- [实施记录](../archive/implementation/review-memory.md)保留历史阶段，本模块文档以当前源码为准。

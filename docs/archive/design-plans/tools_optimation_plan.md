@@ -1,6 +1,6 @@
 # 工具优化计划
 
-> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage1optimation/tools_optimation_plan.md`。本文保留早期工具接口与重构方案，已完成任务及旧字段不能直接作为当前开发要求；当前工具合同见[Agent 运行时](../../modules/agent-runtime.md)，当时实施过程见[工具优化实施记录](../../../new_docs/stage1optimation/tools_optimation.md)。
+> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage1optimation/tools_optimation_plan.md`。本文保留早期工具接口与重构方案，已完成任务及旧字段不能直接作为当前开发要求；当前工具合同见[Agent 运行时](../../modules/agent-runtime.md)，当时实施过程见[工具优化实施记录](../implementation/tool-runtime.md)。
 
 本文按以下五条工作流重新组织工具优化计划：一、新增 `get_function_info`；二、simple-name fallback；三、`is_static` 输出扩展；四、`get_callers` 重构；五、`get_type_info` 重构。除特别标注为“已实施”的章节外，其余内容均为实施计划；全程不修改任何 fallback 文件。
 

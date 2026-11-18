@@ -1,10 +1,10 @@
 # Z-SCOPE Karpathy LLM Wiki 接入实施计划
 
-> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage3-llm-wiki/llm_wiki_implementation_plan.md`。本文保留 Wiki 接入时的设计与遗留事项，不代表当前配置或接口；其中 v2 配置文件、测试路径及 `project.root` 均为历史引用。当前职责与入口见[LLM Wiki](../../modules/wiki.md)，当时实施过程见[Wiki 实施记录](../../../new_docs/stage3-llm-wiki/llm_wiki_implementation.md)。未完成目标需结合现行实现重新确认。
+> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage3-llm-wiki/llm_wiki_implementation_plan.md`。本文保留 Wiki 接入时的设计与遗留事项，不代表当前配置或接口；其中 v2 配置文件、测试路径及 `project.root` 均为历史引用。当前职责与入口见[LLM Wiki](../../modules/wiki.md)，当时实施过程见[Wiki 实施记录](../implementation/llm-wiki.md)。未完成目标需结合现行实现重新确认。
 
 **状态**：架构与实施计划
 
-**方法论**：[`llm-wiki.md`](../../../new_docs/stage3-llm-wiki/llm-wiki.md) 中的 Karpathy LLM Wiki 方法论
+**方法论**：[`llm-wiki.md`](../../research/llm-wiki-method.md) 中的 Karpathy LLM Wiki 方法论
 
 **首期输入**：从配置解析后的 project.root 递归发现的 Markdown 说明性文档
 

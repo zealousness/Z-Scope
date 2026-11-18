@@ -1,6 +1,6 @@
 # Architecture Optimation Plan
 
-> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage1optimation/global modeling.md`。本文保留早期全局建模方案，旧 `analysis.*` 公共配置不再适用；当前行为见[执行与编排](../../modules/execution-orchestration.md)，后续开发见[现行实施计划](../../Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md)。下文的“当前”、待办及验收要求均指编写时状态。
+> **历史文档，2026-11-17 归档。** 原位置：`new_docs/stage1optimation/global modeling.md`。本文保留早期全局建模方案，旧 `analysis.*` 公共配置不再适用；当前行为见[执行与编排](../../modules/execution-orchestration.md)，后续开发见[现行实施计划](../../plans/agent-scanning/README.md)。下文的“当前”、待办及验收要求均指编写时状态。
 
 ## 目标
 

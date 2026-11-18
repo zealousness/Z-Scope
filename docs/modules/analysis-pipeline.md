@@ -230,7 +230,7 @@ RuleDriven/Joern 与 SARIF alert-verify 也遵循统一验证边界。RuleDriven
 ## 常见变更应落到哪里
 
 - 规则 descriptor、ID/alias、能力与 provenance：`zscope/rules/`；检测算法本身仍位于对应 Python 引擎。
-- 简单扩展规则：显式 YAML pack；复杂第三方规则：严格 `zscope.rule_providers` V2；完整契约见 `docs/rule-development.md`。
+- 简单扩展规则：显式 YAML pack；复杂第三方规则：严格 `zscope.rule_providers` V2；完整契约见 `docs/development/rules.md`。
 - 候选收集/合并：`pipeline.py`、ledger 和 adapters，避免在 `Analyzer` 中堆叠局部规则。
 - Validator 输入、重试或评分：`zscope/core/validation/`。
 - Joern 规则或规则驱动扫描：`zscope/rules/`。
@@ -281,7 +281,7 @@ Review 程序收据绑定当前契约注册表版本、候选的结构化获取�
 
 - 稳定入口见本文 frontmatter 的 `sources`。
 - 分层关系见 `docs/architecture.md` 的“证据平面”“智能体平面”和“验证平面”。
-- Range 上的行为变更还必须遵循 `docs/range-benchmark.md`。
+- Range 上的行为变更还必须遵循 `docs/benchmarks/range.md`。
 
 ## 完整源码、事件与验证上下文
 

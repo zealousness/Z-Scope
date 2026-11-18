@@ -45,7 +45,7 @@ def test_semantics_ui_review_drafts_navigation_and_layout(project, monkeypatch):
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     root = Path(__file__).resolve().parents[1]
-    output = root / "docs/webui-redesign/assets/primitives"
+    output = root / "docs/design/webui/assets/primitives"
     output.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(

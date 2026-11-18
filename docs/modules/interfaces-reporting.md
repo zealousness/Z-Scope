@@ -108,7 +108,7 @@ evidence references or source identity.
 - 离线目录读写需浏览器授权；不支持时选择 Markdown/ZIP 并下载修改包。只保存修改过的文件，保存前比较磁盘内容，失败保留草稿。单 Markdown 上限 16 MiB，导入总正文上限 128 MiB、最多 10000 条；超限报错，不截断复核内容。
 - MCP stdio/HTTP server 复用工具与资源 provider；远程 HTTP 额外经过 token、allowlist 和绑定地址校验。
 - MCP `zscope.config.prepare` 工具（空参数对象）与 `zscope://config/preparation` 资源复用正式 `v3_preparation.prepare_saved_config`，返回与 CLI/Web 相同的已保存配置准备投影，包括 v3 字段 wiring 与 start capability。provider 按正式 loader 的顺序先展开用户主目录，再固定绝对配置路径；每次请求重读该路径，default profile 自动创建的懒作业 adapter 也复用同一路径，不在构造时启动 service；不接受客户端另选配置、target 或执行参数。default/read_only 的列举和访问仍与 ToolPolicy 取交集；candidate_blind 不披露或开放该工具、资源。准备不启动索引、模型或扫描，不验证工具运行与模型连通性；MCP 启动仍先组合单 target 配置，已构造 provider 可检查后来保存的多目标文档，但多目标执行仍拒绝。
-- MCP 启动 profile 为 default/read_only/candidate_blind，与 ToolPolicy 在列举和执行两端取交集。只读工厂跳过后端、迁移、项目语义写入和扫描服务；盲调查额外拒绝 findings、报告、任意 SQL 和结论资源。stdio 支持换行 JSON 和旧 Content-Length，协议输出与 stderr 日志隔离；只读请求按序有界调度并接入请求级协作取消。接入示例与缓存限制见 [只读 MCP](../mcp-read-only.md)。
+- MCP 启动 profile 为 default/read_only/candidate_blind，与 ToolPolicy 在列举和执行两端取交集。只读工厂跳过后端、迁移、项目语义写入和扫描服务；盲调查额外拒绝 findings、报告、任意 SQL 和结论资源。stdio 支持换行 JSON 和旧 Content-Length，协议输出与 stderr 日志隔离；只读请求按序有界调度并接入请求级协作取消。接入示例与缓存限制见 [只读 MCP](../guides/mcp-read-only.md)。
 - MCP `zscope.knowledge.query` 按页返回：`offset` 起始、`has_more` 标记是否还有剩余行；工具结果超过 `max_result_chars` 硬上限时保留头部 preview 和截断元数据，而不是整体替换为空桩。
 - Web/MCP 扫描请求接受 `scan_depth`，响应回显 effective depth 与 usage 摘要；CLI/YAML/API 最终都走同一严格配置校验。
 
@@ -170,7 +170,7 @@ python -m pytest -q tests/test_issue_markdown.py tests/test_report_views.py
 
 - 稳定入口见本文 frontmatter 的 `sources`。
 - 用户可见输出、WebUI 和 MCP 命令见 `README.md`。
-- Markdown 契约、离线复核操作及接口示例见 [离线复核](../offline-reviews.md)。
+- Markdown 契约、离线复核操作及接口示例见 [离线复核](../guides/offline-reviews.md)。
 - 接口与持久化关系见 `docs/architecture.md` 的“对外接口”和“持久化与反馈平面”。
 
 完整事实的函数索引可在同一不可变对象版本间复用。索引只保存编码后的引用，每次返回独立可修改视图；局部修改过的 AST 重新遍历，事实或依赖变化不能复用旧版本。该优化不恢复证明权限，也不删去任何证据。
@@ -211,7 +211,7 @@ Dashboard 默认进入项目概览，以扫描任务、问题工作台、覆盖�
 
 新建扫描统一由模式选择与单个启动按钮发起，显式停止时间同样应用于快速检查。Java、多目标、未保存配置与后台 capabilities 的原门禁保持。重新尝试仍创建新 run，不继承旧截止窗口。未知工作量与覆盖保持未测量，已记录缺口数不宣称完整覆盖。
 
-`dashboard_redesign.css` 提供本地自有样式；新模块进入静态资源摘要锁。桌面问题页采用列表与详情两栏，低于 1100px 切换列表/详情，手机使用抽屉导航。原报告 Markdown、离线导入导出与业务模型能力保留。`docs/webui-redesign/` 的原型、匹配截图、录屏和取舍清单使用显式合成数据，与真实 HTTP/SQLite 的回归证据分开记录。
+`dashboard_redesign.css` 提供本地自有样式；新模块进入静态资源摘要锁。桌面问题页采用列表与详情两栏，低于 1100px 切换列表/详情，手机使用抽屉导航。原报告 Markdown、离线导入导出与业务模型能力保留。`docs/design/webui/` 的原型、匹配截图、录屏和取舍清单使用显式合成数据，与真实 HTTP/SQLite 的回归证据分开记录。
 
 ### 工程选择与时间计划（2026-10-24）
 
@@ -225,7 +225,7 @@ Dashboard 默认进入项目概览，以扫描任务、问题工作台、覆盖�
 
 执行仍由 `ScanJobService` 与独立 owner 负责，日历协调器只在有效窗口保留／启动动作；下一窗口同 job 使用新 run、owner token 和未来截止，旧窗口不继承。启动与消费前核对实际输入，外部 rearm 或源码／构建变化阻止自动接管。请求幂等、计划版本、取消竞争和本轮 job/run/input 身份共同约束操作；默认取消同时请求停止仍匹配的当前运行，显式 `stop_running=false` 只撤未来窗口。续作只承诺复用经核对的可恢复状态，不承诺精确仅剩余队列。日历／后台细节见[执行与编排](execution-orchestration.md)。
 
-问题工作台保留首轮已接入能力，本轮仍待用户取舍，没有作为本轮重新设计完成。追加原型 `docs/webui-redesign/followup.html` 与实际产品、历史对照截图分别标注；原型不发 API 或执行扫描。2026-10-24 的真实 native 双宏 fixture 已通过 ScanSession → detached owner → SQLite → HTTP → 桌面／手机链路，证据在 `artifacts/ui-redesign-validation/py313/native-current/`；它不等于全工程扫描、模型效果或正式 benchmark 验收。历史失败记录保留于首轮交付文档，本轮结果见 [FOLLOWUP-VALIDATION](../webui-redesign/FOLLOWUP-VALIDATION.md)。
+问题工作台保留首轮已接入能力，本轮仍待用户取舍，没有作为本轮重新设计完成。追加原型 `docs/design/webui/followup.html` 与实际产品、历史对照截图分别标注；原型不发 API 或执行扫描。2026-10-24 的真实 native 双宏 fixture 已通过 ScanSession → detached owner → SQLite → HTTP → 桌面／手机链路，证据在 `artifacts/ui-redesign-validation/py313/native-current/`；它不等于全工程扫描、模型效果或正式 benchmark 验收。历史失败记录保留于首轮交付文档，本轮结果见 [FOLLOWUP-VALIDATION](../design/webui/FOLLOWUP-VALIDATION.md)。
 
 Dashboard 从当前报告投影中的 `metadata.entry_instances` 展示精确 BuildContext 与 native USR 对应的实例结果；作业结果始终来自同轮绑定快照，不能借当前报告补齐旧任务的数据。轻量投影保留固定的实例与 `metadata.job` 字段，展示元数据不替代外层 job/run/input/report 绑定权限。
 

@@ -159,6 +159,8 @@ artifacts/
 
 # coordination run state: dispatch journals and job-runtime databases are
 # mutable execution records, not source, and were never tracked
-docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/**/*.sqlite
-docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/**/*.db
+docs/archive/coordination/**/*.sqlite
+docs/archive/coordination/**/*.db
+docs/archive/coordination/**/*.consumed
+docs/archive/coordination/**/review-repro/s09-large-envelope/synthetic-report.json
 .zscope_jobs/

@@ -1,6 +1,6 @@
 # Z-SCOPE 架构优化计划
 
-> **历史文档，2026-11-17 归档。** 原位置：`docs/progress_docs/architecture_optimization_plan.md`。本文保留早期阶段拆分、身份统一和服务拆分方案及当时实施结果，不再作为当前优化待办。当前职责见[模块导航](../../modules/README.md)，后续工作见[现行实施计划](../../Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md)。
+> **历史文档，2026-11-17 归档。** 原位置：`docs/progress_docs/architecture_optimization_plan.md`。本文保留早期阶段拆分、身份统一和服务拆分方案及当时实施结果，不再作为当前优化待办。当前职责见[模块导航](../../modules/README.md)，后续工作见[现行实施计划](../../plans/agent-scanning/README.md)。
 
 本文档把当前审阅结论整理为可执行的优化路线，目标是在不牺牲现有 benchmark 能力的前提下，降低主流程复杂度，稳定用户反馈/baseline 语义，并让候选、验证、报告三个阶段可以独立演进。
 

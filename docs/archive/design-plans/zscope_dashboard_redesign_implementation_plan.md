@@ -1,11 +1,11 @@
 # Z-SCOPE Web 看板重设计落地方案
 
-> **历史文档，2026-11-17 归档。** 原位置：`docs/progress_docs/zscope_dashboard_redesign_implementation_plan.md`。本文保留早期导航、三栏布局及交互方案，不作为当前界面验收清单；当前接口职责见[接口与报告](../../modules/interfaces-reporting.md)，后续实际交付与待决设计见[WebUI 对照记录](../../webui-redesign/README.md)。
+> **历史文档，2026-11-17 归档。** 原位置：`docs/progress_docs/zscope_dashboard_redesign_implementation_plan.md`。本文保留早期导航、三栏布局及交互方案，不作为当前界面验收清单；当前接口职责见[接口与报告](../../modules/interfaces-reporting.md)，后续实际交付与待决设计见[WebUI 对照记录](../../design/webui/README.md)。
 
 适用对象：Codex / 前端实现者  
 目标仓库：`zealousness/Z-Scope`  
 目标文件：`zscope/web/static/index.html`，必要时可新增静态 CSS/JS 文件  
-参考视觉 Demo：[历史视觉稿](../../progress_docs/zscope_dashboard_redesign_demo.html)
+参考视觉 Demo：[历史视觉稿](assets/dashboard-redesign-demo.html)
 
 ---
 

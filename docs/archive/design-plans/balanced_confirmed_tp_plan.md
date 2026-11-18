@@ -1,6 +1,6 @@
 # Balanced 模式 confirmed TP 提升总体计划
 
-> **历史文档，2026-11-17 归档。** 原位置：`new_docs/balanced_confirmed_tp_plan.md`。本文保留 2026-09 固定 trial 上的诊断、实验路线及已实施记录；当时的开关默认值、阶段计划和“单一事实源”声明不再作为现行要求。未完成实验及预期收益不视为已交付。当前验证路径见[分析流水线](../../modules/analysis-pipeline.md)，评测入口与资格见[Benchmark](../../modules/benchmarking.md)，后续开发见[现行实施计划](../../Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md)。
+> **历史文档，2026-11-17 归档。** 原位置：`new_docs/balanced_confirmed_tp_plan.md`。本文保留 2026-09 固定 trial 上的诊断、实验路线及已实施记录；当时的开关默认值、阶段计划和“单一事实源”声明不再作为现行要求。未完成实验及预期收益不视为已交付。当前验证路径见[分析流水线](../../modules/analysis-pipeline.md)，评测入口与资格见[Benchmark](../../modules/benchmarking.md)，后续开发见[现行实施计划](../../plans/agent-scanning/README.md)。
 
 > 基线：range trial `benchmark-artifacts/c_cpp/trial/20260904T094432Z`（fast 档，分支 `v1.3.1_feat/llm-wiki @ 977226c`，模型 `deepseek-v4-flash`，endpoint volceapi 网关）。
 > 本计划为开发与验收的单一事实源；执行中的产出物路径、门禁数值以本文为准，代码以实现为准。

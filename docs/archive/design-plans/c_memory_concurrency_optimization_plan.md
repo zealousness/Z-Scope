@@ -1,6 +1,6 @@
 # C Memory And Concurrency Optimization Plan
 
-> **历史文档，2026-11-17 归档。** 原位置：`docs/progress_docs/c_memory_concurrency_optimization_plan.md`。本文保存早期 C 内存与并发优化路线及当时的评测记录；“current”、指标、门槛和 remaining work 不代表现行状态或新增任务。当前行为见[分析流水线](../../modules/analysis-pipeline.md)，后续设计见[专业扫描规划](../../Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/19_PROFESSIONAL_SCANNING.md)，评测规则见[Range 协议](../../range-benchmark.md)。
+> **历史文档，2026-11-17 归档。** 原位置：`docs/progress_docs/c_memory_concurrency_optimization_plan.md`。本文保存早期 C 内存与并发优化路线及当时的评测记录；“current”、指标、门槛和 remaining work 不代表现行状态或新增任务。当前行为见[分析流水线](../../modules/analysis-pipeline.md)，后续设计见[专业扫描规划](../../plans/agent-scanning/19_PROFESSIONAL_SCANNING.md)，评测规则见[Range 协议](../../benchmarks/range.md)。
 
 This plan turns Z-SCOPE from a prompt-heavy reviewer into an evidence-first C
 memory and concurrency scanner. The near-term acceptance target is:
@@ -371,6 +371,3 @@ Remaining implementation plan:
 - Add sanitizer harness generation for high-confidence memory candidates.
 - Keep `test/range` broad, but add additional real-project-style fixtures for
   ring buffers, callback cancellation, RCU/epoch lifetime and custom allocators.
-
-
-
