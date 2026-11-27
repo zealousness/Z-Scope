@@ -18,9 +18,9 @@ Usage:
 
 Options:
   --source   Source Git repository path (clean committed repo) or URL.
-  --workdir  Empty/new directory where the backup bundle and cleaned mirror
+  --workdir  Empty/new directory where the backup bundle and cleaned mirro
              clone will be written. Must be outside the source repository.
-  --mailmap  Optional git-filter-repo mailmap file to remap author/committer
+  --mailmap  Optional git-filter-repo mailmap file to remap author/committe
              emails (e.g. personal emails -> GitHub noreply addresses):
                Your Name <id+username@users.noreply.github.com> <old@email>
 
@@ -125,12 +125,17 @@ filter_args=(
   --path docs/design/webui/assets/primitives/primitives-flow.webm
   --path test/junior/
   --path cpg.bin
+  --path conversation_export.md
+  --path 'docs/Z-SCOPE 面向 C 语言 AI 代码检视工具深度评估报告.pdf'
+  --path docs/range_reports/v33_shadow_evaluation.json
+  --path tests/fixtures/p2_proof_kernel/corpus.json
+  --path test/range/test/range/
+  --path test/range/current_eval.json
+  --path test/range/benchmark/v16/
   --path test/range/zscope_batch_report.json.pre_llm_reasoning.bak
   --path test/range/metrics.json
-  --path test/llm_wiki_demo/zscope_batch_report_llm-wiki-off-balanced-fixture-v2.json
-  --path test/llm_wiki_demo/zscope_batch_report_llm-wiki-active-balanced-fixture-v2.json
-  --path test/llm_wiki_demo/zscope_batch_report_llm-wiki-active-compiler-balanced-fixture-v2.json
-  --path test/llm_wiki_demo/zscope_batch_report_llm-wiki-active-compiler-unlimited-balanced-fixture-v2.json
+  --path test/llm_wiki_demo/output/
+  --path-glob 'test/llm_wiki_demo/zscope_batch_report*.json'
   --path callback_registry.plist
   --path caller.plist
   --path command_runner.plist
