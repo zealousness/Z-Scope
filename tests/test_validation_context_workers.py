@@ -52,14 +52,9 @@ needs_native = pytest.mark.skipif(
 # --- controlled model boundary -----------------------------------------------------
 
 
-def _v3_uncertain_result(issue, fact_kind="lockset"):
-    # The strict v3 parser rejects any additional property; the field set is
-    # exactly the provider-facing schema's required list.
+def _v3_uncertain_result():
+    # The model supplies the decision. The runtime binds the current candidate and pass.
     return {
-        "schema_version": "zscope.validator-result.v3",
-        "candidate_uid": str(issue.get("candidate_uid") or ""),
-        "validation_cluster_uid": str(issue.get("validation_cluster_uid") or ""),
-        "pass": "initial",
         "verdict": "uncertain",
         "reasoning": "需要确定性事实闭环（受控模型边界响应）。",
         "positive_evidence": [],
@@ -67,12 +62,9 @@ def _v3_uncertain_result(issue, fact_kind="lockset"):
         "evidence_refs": [],
         "blocking_negative_evidence": False,
         "missing_fact_request": {
-            "fact_kind": fact_kind,
-            "subject_uid": str(issue.get("resource_identity") or ""),
-            "function_uid": str(issue.get("function") or ""),
+            "fact_kind": "lockset",
             "reason": "obligation requires a deterministic lockset fact",
         },
-        "stop_reason": "missing_fact",
     }
 
 
@@ -86,22 +78,10 @@ class ControlledModelBoundary:
     scope.
     """
 
-    def __init__(self, issues):
-        self._by_cluster = {
-            str(issue.get("validation_cluster_uid")): _v3_uncertain_result(issue)
-            for issue in issues
-        }
+    def __init__(self):
+        self.content = json.dumps(_v3_uncertain_result(), ensure_ascii=False)
         self.calls: list[ExecutionContext] = []
         self.lock = threading.Lock()
-
-    # -- shared selection -------------------------------------------------------
-
-    def _next_response(self, messages):
-        text = json.dumps(messages, ensure_ascii=False, default=str)
-        for cluster, response in self._by_cluster.items():
-            if cluster and cluster in text:
-                return response
-        return next(iter(self._by_cluster.values()))
 
     def _record(self):
         with self.lock:
@@ -111,13 +91,11 @@ class ControlledModelBoundary:
 
     def chat_completion(self, messages, **kwargs):
         self._record()
-        payload = self._next_response(messages)
-        content = json.dumps(payload, ensure_ascii=False)
         return {
             "choices": [
                 {
                     "finish_reason": "stop",
-                    "message": {"role": "assistant", "content": content},
+                    "message": {"role": "assistant", "content": self.content},
                 }
             ],
             "model": "controlled-boundary",
@@ -129,11 +107,10 @@ class ControlledModelBoundary:
     def run_conversation_with_tools(self, **kwargs):
         self._record()
         conversation = kwargs.get("messages") or []
-        content = json.dumps(self._next_response(conversation), ensure_ascii=False)
         return {
-            "content": content,
+            "content": self.content,
             "conversation": list(conversation),
-            "message": {"role": "assistant", "content": content},
+            "message": {"role": "assistant", "content": self.content},
             "terminal_tool_payload": None,
             "terminal_tool_name": None,
             "terminal_tool_valid": False,
@@ -156,14 +133,13 @@ class ControlledModelBoundary:
 
 
 def _make_real_runner(
-    issues,
     *,
     code_index,
     queue=None,
     validator_workers=2,
     scheduler=None,
 ):
-    model = ControlledModelBoundary(issues)
+    model = ControlledModelBoundary()
     llm = LLMClient(api_key="test", base_url="http://example.invalid", models=["unit-model"])
     llm.chat_completion = model.chat_completion
     llm.run_conversation_with_tools = model.run_conversation_with_tools
@@ -236,6 +212,7 @@ def _issues(count, prefix, build=""):
             candidate_uid=f"CAND_{prefix}{index}",
             validation_cluster_uid=f"VAL_{prefix}{index}",
             rule="unsynchronized_shared_access",
+            allowed_missing_fact_kinds=["lockset"],
             function="release_owner",
             entry_function="release_owner",
             probe_marker=f"frozen-{prefix}{index}",
@@ -593,7 +570,7 @@ def test_real_chain_binds_exact_variant_scope_through_agent_and_providers(native
         recordings = []
         _instrument_queue(queue, recordings)
         issues = _issues(2, label, build=build)
-        runner, model = _make_real_runner(issues, code_index=scoped, queue=queue)
+        runner, model = _make_real_runner(code_index=scoped, queue=queue)
         state = _multi_state(issues)
         try:
             runner.run(state)
@@ -625,7 +602,7 @@ def test_two_concurrent_runners_share_one_provider_pool_without_cross_binding(na
     for label, instance in instances.items():
         scoped = ScopedCodeIndex(index, InstanceScope.from_entry_instance(instance))
         issues = _issues(3, label, build=instance.build_context_id)
-        runner, model = _make_real_runner(issues, code_index=scoped, queue=shared_queue)
+        runner, model = _make_real_runner(code_index=scoped, queue=shared_queue)
         runners[label] = (runner, _multi_state(issues), instance)
         models[label] = model
 
@@ -686,7 +663,7 @@ def test_scoped_runner_rejects_wrong_and_unknown_builds_on_the_real_chain(native
     _instrument_queue(queue, recordings)
     foreign = _issues(1, "FOREIGN", build=alt.build_context_id)
     unknown = _issues(1, "UNKNOWN", build="")
-    runner, model = _make_real_runner(foreign + unknown, code_index=scoped, queue=queue)
+    runner, model = _make_real_runner(code_index=scoped, queue=queue)
     state = _multi_state(foreign + unknown)
     try:
         runner.run(state)
@@ -710,7 +687,7 @@ def test_unscoped_runner_clears_ambient_variant_on_the_real_chain(native_variant
     queue = EvidenceCompletionQueue(enabled=True, max_workers=1, fact_timeout_seconds=30.0)
     recordings = []
     _instrument_queue(queue, recordings)
-    runner, model = _make_real_runner(issues, code_index=FakeCodeIndex(), queue=queue)
+    runner, model = _make_real_runner(code_index=FakeCodeIndex(), queue=queue)
     state = _multi_state(issues)
     try:
         with bind_build_scope({"build_context_id": "AMBIENT-" + alt.build_context_id}):
@@ -847,6 +824,7 @@ def test_same_entry_call_facts_carry_into_the_real_provider_thread(native_overlo
     _queue_observing_callees(queue, registry, observed)
     issue = {
         "validation_cluster_uid": "VAL_CARRY",
+        "allowed_missing_fact_kinds": ["lockset"],
         "probe_marker": "carry",
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
@@ -883,6 +861,7 @@ def test_mixed_caller_stays_unknown_in_the_real_provider_thread(native_overloads
     _queue_observing_callees(queue, registry, observed)
     issue = {
         "validation_cluster_uid": "VAL_MIXED",
+        "allowed_missing_fact_kinds": ["lockset"],
         "probe_marker": "mixed",
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
@@ -940,6 +919,7 @@ def test_switching_entry_clears_the_prior_native_callee_map_in_providers(native_
     queue._requested_completion_proofs = switched_provider
     issue = {
         "validation_cluster_uid": "VAL_SWITCH",
+        "allowed_missing_fact_kinds": ["lockset"],
         "probe_marker": "switch",
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
@@ -982,7 +962,7 @@ def test_runner_workers_do_not_borrow_caller_ambient_callee_map(native_variants)
     recordings = []
     _instrument_queue(queue, recordings)
     issues = _issues(2, "AMBC", build=base.build_context_id)
-    runner, model = _make_real_runner(issues, code_index=scoped, queue=queue)
+    runner, model = _make_real_runner(code_index=scoped, queue=queue)
 
     # A verified call context for the release_owner entry, bound by the
     # caller around the whole run — the runner must not let its workers
@@ -1141,6 +1121,7 @@ def test_real_provider_path_returns_non_empty_valid_values(native_overloads):
     queue._requested_completion_proofs = provider
     issue = {
         "validation_cluster_uid": "VAL_VALUES",
+        "allowed_missing_fact_kinds": ["lockset"],
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
     try:
@@ -1205,6 +1186,7 @@ def test_same_pool_concurrent_snapshots_are_independent(native_overloads):
                     queue.resolve_requested_fact(
                         {
                             "validation_cluster_uid": f"VAL_{label}",
+                            "allowed_missing_fact_kinds": ["lockset"],
                             "evidence_pack": {"path": {"complete_in_function": True}},
                         },
                         validator_data={
@@ -1268,7 +1250,7 @@ def test_cross_variant_concurrent_providers_share_pool_without_callee_leak(nativ
     for label, instance in instances.items():
         scoped = ScopedCodeIndex(index, InstanceScope.from_entry_instance(instance))
         issues = _issues(2, label, build=instance.build_context_id)
-        runner, _ = _make_real_runner(issues, code_index=scoped, queue=shared_queue)
+        runner, _ = _make_real_runner(code_index=scoped, queue=shared_queue)
         runners[label] = (runner, _multi_state(issues), instance)
 
     errors = []

@@ -10,7 +10,9 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
+
+from ...common.validator_protocol import ValidatorResultV3
 
 PROTOCOL = "zscope.validator-conditions.v1"
 ENABLED = True  # Internal paired-experiment switch.
@@ -117,6 +119,20 @@ def scope_view(result: Mapping[str, Any]) -> dict[str, Any]:
 
 def _members(values: list[Any]) -> dict[str, Any]:
     return {json.dumps(value, sort_keys=True, ensure_ascii=False): value for value in values}
+
+
+def refuted_positive_conditions(
+    facts: Iterable[Mapping[str, Any]], required: Iterable[str]
+) -> set[str]:
+    """Read current claim directions; later records replace the same condition."""
+    required = set(required)
+    outcomes = {
+        cid: fact.get("condition_outcome", "supported")
+        for fact in facts
+        for cid in fact.get("condition_ids") or []
+        if cid in required
+    }
+    return {cid for cid, outcome in outcomes.items() if outcome == "refuted"}
 
 
 class ConditionTable:
@@ -329,6 +345,21 @@ class ConditionTable:
             row["status"] == "evidence_ready" for row in self.rows.values()
         )
         self.counts["reopened_conditions"] = len(reopened)
+
+    def contradicts_verdict(self, decision: ValidatorResultV3, facts: list[dict[str, Any]]) -> bool:
+        """Unselected replay recipes are suggestions, not current admitted claims."""
+        if decision.verdict != "verified":
+            return False
+        required = {cid for cid, row in self.rows.items() if row["purpose"] == "confirm"}
+        selected = set(decision.evidence_refs)
+        staged = [
+            recipe for recipe in self.ready.values() if recipe["confirmation_ref"] in selected
+        ]
+        cited = [fact for fact in facts if fact["fact_uid"] in selected]
+        return bool(
+            refuted_positive_conditions([*facts, *staged], required)
+            or refuted_positive_conditions([*cited, *staged], required)
+        )
 
     def remaining(self) -> list[dict[str, Any]]:
         tasks = []

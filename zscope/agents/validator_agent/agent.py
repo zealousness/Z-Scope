@@ -1,4 +1,4 @@
-"""Validator model orchestration with shared strict V3 decision contracts."""
+"""安排一次告警复核，让模型回答，再检查答案能否用于报告。"""
 
 import hashlib
 import json
@@ -18,6 +18,7 @@ from ...common.validator_protocol import (
     VALIDATOR_PROTOCOL_VERSION as VALIDATOR_PROTOCOL_V3,
     ValidatorResultV3,
     bind_validator_decision,
+    decode_validator_json,
     validator_decision_schema_v3,
 )
 
@@ -35,11 +36,11 @@ _RESULT_COUNTERS = (
 
 
 class ValidatorAgent(JsonToolAgent):
-    """Agent for verifying and triaging findings."""
+    """复核一条可疑告警，给出确认、排除或待查的结论。"""
 
     @staticmethod
     def _execution_context_metadata() -> Dict[str, Any]:
-        """Capture live build/entry scope for admission, ignoring candidate self-reports."""
+        """从本次任务取编译设置的编号和检查起点，避免把别处的证据算到这条告警上。"""
         from ...core.validation.execution_context import current_execution_context
 
         context = current_execution_context()
@@ -66,17 +67,12 @@ class ValidatorAgent(JsonToolAgent):
 
     def _new_metadata(self, input_data: Dict[str, Any], **counters: int) -> Dict[str, Any]:
         return {
-            **dict.fromkeys(
-                (
-                    *_RESULT_COUNTERS,
-                    "validator_api_call_count",
-                    "validator_fast_path_attempted",
-                    "validator_fast_path_accepted",
-                    "validator_final_tool_call_count",
-                    "validator_length_retry_count",
-                ),
-                0,
-            ),
+            **dict.fromkeys(_RESULT_COUNTERS, 0),
+            "validator_api_call_count": 0,
+            "validator_fast_path_attempted": 0,
+            "validator_fast_path_accepted": 0,
+            "validator_final_tool_call_count": 0,
+            "validator_length_retry_count": 0,
             "validator_session_count": 1,
             "evidence_slice_token_count": int(input_data.get("evidence_slice_token_count") or 0),
             **self._execution_context_metadata(),
@@ -96,17 +92,16 @@ class ValidatorAgent(JsonToolAgent):
 
     def _run_legacy_protocol(self, input_data: Dict[str, Any], max_retries: int) -> AgentResponse:
         finding = input_data.get("finding")
-        context_code = input_data.get("context_code")
         evidence_pack = input_data.get("evidence_pack")
-        evidence_text = ""
-        if evidence_pack:
-            evidence_text = "\n\nCompact Evidence Pack:\n" + json.dumps(
-                evidence_pack, ensure_ascii=False, indent=2
-            )
+        evidence_text = (
+            "\n\nCompact Evidence Pack:\n" + json.dumps(evidence_pack, ensure_ascii=False, indent=2)
+            if evidence_pack
+            else ""
+        )
         prompt = (
             f"Suspected Finding:\n{finding}"
             f"{evidence_text}"
-            f"\n\nRelevant Code Context:\n{context_code}"
+            f"\n\nRelevant Code Context:\n{input_data.get('context_code')}"
         )
         last_error = ""
         token_metadata = self._new_metadata(input_data)
@@ -117,9 +112,7 @@ class ValidatorAgent(JsonToolAgent):
                 fast_data = self._run_fast_path(messages, finding, token_metadata)
                 if fast_data:
                     return AgentResponse(
-                        success=True,
-                        data=fast_data,
-                        metadata=dict(token_metadata),
+                        success=True, data=fast_data, metadata=dict(token_metadata)
                     )
             if attempt > 1:
                 messages.append(
@@ -221,7 +214,7 @@ class ValidatorAgent(JsonToolAgent):
         )
 
     def _run_validator_v3_protocol(self, input_data: Dict[str, Any]) -> AgentResponse:
-        """One closed decision, followed by at most one fresh protocol repair."""
+        """先用现有材料问一次。答案写错格式或被截断时，最多请模型重答一次。"""
         evidence = input_data["evidence_slice"]
         obligation = evidence.get("obligation") or {}
         scope = {
@@ -284,7 +277,7 @@ class ValidatorAgent(JsonToolAgent):
             )
         parsed, audit = self._read_v3_response(result, scope)
         if parsed is None:
-            # A fresh, compact request repairs framing; partial JSON is never reconstructed.
+            # 让模型重新交一份完整答案。从半句话猜结尾，可能会改变它的原意。
             metadata["validator_first_attempt_audit"] = audit
             repair = "length" if result.get("finish_reason") == "length" else "protocol"
             if repair == "length":
@@ -378,13 +371,13 @@ class ValidatorAgent(JsonToolAgent):
                 )
             )
             kwargs["trace_iteration"] = 1
-            # Omission preserves the configured output ceiling on the initial call.
+            # 第一次提问沿用模型原有的回答长度限制。
             if max_tokens is not None:
                 kwargs["max_tokens"] = max_tokens
             if thinking:
                 kwargs["thinking"] = dict(thinking)
         else:
-            # Older clients get only the terminal tool, never repository tools.
+            # 旧客户端也只收到提交答案的工具，保证这一步只用题目附带的材料。
             spec = self._validation_json_output_spec_v3(
                 allowed_missing_fact_kinds=allowed_missing_fact_kinds,
                 allowed_evidence_refs=allowed_evidence_refs,
@@ -411,9 +404,8 @@ class ValidatorAgent(JsonToolAgent):
         except CancellationError:
             raise
         except Exception as exc:
-            # Fix wire mode before dispatch: a provider error must not add an
-            # unplanned HTTP fallback. Log request shape and exception category,
-            # never the provider's response body.
+            # 服务报错就结束这次请求，避免换种方式再发一遍。
+            # 日志只记请求设置和错误类别，因为服务返回的原文可能含有敏感信息。
             logger.warning(
                 "Validator v3 completion failed: %s | compatibility_adapter=%s "
                 "structured_output=%s response_format=%s tool_choice=%s max_tokens=%s",
@@ -461,7 +453,7 @@ class ValidatorAgent(JsonToolAgent):
         allowed_missing_fact_kinds: Optional[set[str]] = None,
         allowed_evidence_refs: Optional[set[str]] = None,
     ) -> Dict[str, Any]:
-        """One source for the actual direct request and its reuse identity."""
+        """发出请求和判断旧答案能否沿用，都从这里读取设置，避免两处规则走样。"""
         spec = self._validation_json_output_spec_v3(
             allowed_missing_fact_kinds=allowed_missing_fact_kinds,
             allowed_evidence_refs=allowed_evidence_refs,
@@ -473,12 +465,11 @@ class ValidatorAgent(JsonToolAgent):
             options["response_format"] = response_format
         else:
             options["tools"] = [self._final_json_tool_schema(spec)]
-            # Only the terminal result tool is present; no repository tool can run.
             options["tool_choice"] = "required"
         return options
 
     def initial_reuse_descriptor(self, input_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Describe the complete closed request; compatibility clients are excluded."""
+        """记下这次初审的问题、模型和设置，供下次比较两次提问是否相同。"""
         evidence = input_data.get("evidence_slice")
         if (
             not isinstance(evidence, dict)
@@ -509,7 +500,7 @@ class ValidatorAgent(JsonToolAgent):
                 + "."
                 + type(self.llm_client).__qualname__,
                 "models": models,
-                # Persist only a route digest, never credentials or private URLs.
+                # 只保存由地址算出的识别码，以后仍能比对两次使用的服务地址是否相同。
                 "route_digest": hashlib.sha256(json.dumps(endpoints).encode("utf-8")).hexdigest(),
                 **{
                     name: getattr(self.llm_client, name, None)
@@ -526,15 +517,14 @@ class ValidatorAgent(JsonToolAgent):
         }
 
     def _v3_length_retry_max_tokens(self) -> int:
-        """Doubled output ceiling for the single v3 length-truncation retry."""
+        """回答写到一半就超长时，给重答留出更多篇幅。"""
 
-        configured = getattr(self.llm_client, "max_tokens", None)
         try:
-            configured = int(configured or 0)
+            configured = int(getattr(self.llm_client, "max_tokens", None) or 0)
         except (TypeError, ValueError):
             configured = 0
         if configured <= 0:
-            # Mirrors the LLMClient/LLMConfig default output ceiling.
+            # 与模型客户端约定的默认长度一致。
             configured = 8192
         return max(2 * configured, 8192)
 
@@ -568,7 +558,7 @@ class ValidatorAgent(JsonToolAgent):
                 "cumulative_prompt_tokens": prompt_tokens,
                 "cumulative_completion_tokens": completion_tokens,
                 "iterations": 1,
-                "api_call_count": 0,  # Counted before dispatch, including failed requests.
+                "api_call_count": 0,  # 请求发出前已计数，失败也算一次。
             },
         )
         metadata["cumulative_total_tokens"] = (
@@ -632,10 +622,7 @@ class ValidatorAgent(JsonToolAgent):
         max_iterations: int = 50,
         pass_kind: str = "investigation_synthesis",
     ) -> AgentResponse:
-        """Run a bounded tool-backed V3 investigation.
-
-        v2b_adjudication independently audits a rejection without deterministic proof.
-        """
+        """在限定轮数内查代码。若先前排除了一条告警却缺少证明，也可在这里独立复查。"""
         if pass_kind not in VALIDATOR_PASSES:
             return AgentResponse(
                 success=False, data={}, error=f"Unsupported validation pass: {pass_kind}"
@@ -691,6 +678,7 @@ class ValidatorAgent(JsonToolAgent):
                 ],
                 terminal_tool_name=spec.final_tool_name,
                 terminal_tool_handler=session.accept_result,
+                terminal_tool_json_decoder=decode_validator_json,
                 terminal_tool_required=True,
                 tool_executor=session,
                 preserve_reasoning_metadata=True,
@@ -709,11 +697,10 @@ class ValidatorAgent(JsonToolAgent):
         result: Dict[str, Any],
         aggregate: Dict[str, Any],
     ) -> AgentResponse:
-        """Retain observations and usage even when the session cannot yield a decision."""
+        """调查即使停在“待查”，也要留下已经查到的材料和模型用量。"""
         output = session.terminal_output
         if output is None:
-            # Compatibility clients may not invoke the handler. Only their current
-            # public response is eligible, never a claimed terminal_tool_payload.
+            # 有些客户端只返回对话。此时从本轮公开回答取结论，避免误用旧答案或未经检查的结果。
             output = DecisionOutput.from_result(result)
             if output.payload is not None:
                 session.accept_result(output)
@@ -774,7 +761,7 @@ class ValidatorAgent(JsonToolAgent):
         self,
         input_data: Dict[str, Any],
     ) -> AgentResponse:
-        """Close one Validator session in at most two no-browsing responses."""
+        """只看已有材料回答，必要时再给一次改正答案格式的机会。"""
 
         evidence_slice = input_data["evidence_slice"]
         finding_uid = str(input_data.get("finding_uid") or "unknown")
@@ -841,7 +828,7 @@ class ValidatorAgent(JsonToolAgent):
         finding: Any,
         token_metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Try one no-tool validation pass from the compact evidence pack."""
+        """先用手头的材料问一次，省去查询代码的开销。"""
         fast_messages = list(messages)
         fast_messages.append(
             {
@@ -872,7 +859,7 @@ class ValidatorAgent(JsonToolAgent):
             result,
             result.get("conversation", []),
         )
-        if not parsed or not LegacyResult.accept_fast_path(parsed):
+        if parsed is None:
             return None
         token_metadata["validator_fast_path_accepted"] += 1
         parsed["validator_fast_path"] = True
@@ -888,7 +875,7 @@ class ValidatorAgent(JsonToolAgent):
         finding: Any,
         token_metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Run one final no-retrieval pass whose only job is validator JSON."""
+        """给模型最后一次按格式重写答案的机会，只用已有材料。"""
         if result.get("finish_reason") == "context_window_exceeded":
             return None
         repair_seed = dict(result)
@@ -909,7 +896,7 @@ class ValidatorAgent(JsonToolAgent):
             parse_label="validation_result JSON",
             error_type=error_type,
             max_json_retries=1,
-            post_process=lambda data: LegacyResult.parse(data) or data,
+            post_process=LegacyResult.with_validity,
         )
         self._merge_result_metadata(token_metadata, response.metadata or {})
         if response.success:
@@ -930,7 +917,7 @@ class ValidatorAgent(JsonToolAgent):
         result: Dict[str, Any],
         json_output_spec: JsonOutputSpec,
     ) -> str:
-        # Reuse the current-turn decoder; the generic prose recovery scans history.
+        # 只从本次回答找格式问题，翻看更早的对话可能会误取旧答案。
         payload = terminal_payload(result, json_output_spec.final_tool_name)
         diagnostics = {"error_type": error_type, "finish_reason": result.get("finish_reason")}
         if payload is not None:
@@ -951,7 +938,7 @@ class ValidatorAgent(JsonToolAgent):
         deltas["validator_api_call_count"] = result.get(
             "api_call_count", result.get("iterations", 0)
         )
-        # A prefixed repair counter and the generic terminal counter describe the same calls.
+        # 这两个名称统计的是同一批提交答案的操作，只能计一次。
         deltas["validator_final_tool_call_count"] = result.get(
             "validator_final_tool_call_count", result.get("final_tool_call_count", 0)
         )
@@ -975,12 +962,11 @@ class ValidatorAgent(JsonToolAgent):
         result: Dict[str, Any],
         conversation: Iterable[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        return LegacyResult.parse(
-            terminal_payload(
-                {**result, "content": content, "conversation": list(conversation)},
-                "emit_validation_result",
-            )
+        payload = terminal_payload(
+            {**result, "content": content, "conversation": list(conversation)},
+            "emit_validation_result",
         )
+        return LegacyResult.parse(payload)
 
     def _json_candidate_count(
         self,
@@ -991,19 +977,17 @@ class ValidatorAgent(JsonToolAgent):
         json_output_spec: Optional[JsonOutputSpec] = None,
     ) -> int:
         spec = json_output_spec or LegacyResult.output_spec()
-        return int(
-            terminal_payload(
-                {**result, "content": content, "conversation": list(conversation)},
-                spec.final_tool_name,
-            )
-            is not None
+        payload = terminal_payload(
+            {**result, "content": content, "conversation": list(conversation)},
+            spec.final_tool_name,
         )
+        return int(payload is not None)
 
     @staticmethod
     def _text_sources(
         content: str, result: Dict[str, Any], conversation: Iterable[Dict[str, Any]]
     ) -> List[str]:
-        """Keep private reasoning and superseded turns out of legacy repair diagnostics."""
+        """查格式问题时只取本轮公开回答，避免带入旧答案或模型的内部推理。"""
         text = current_message(
             {**result, "content": content, "conversation": list(conversation)}
         ).get("content")

@@ -157,7 +157,7 @@ def test_agent_terminal_wrapper_is_enforced_and_raw_results_are_preserved():
             "candidate_uid"
             not in final["function"]["parameters"]["properties"]["decision"]["properties"]
         )
-        result = kwargs["tool_executor"]("read", {"func_name": "f"})
+        result = kwargs["tool_executor"]("read_code", {"file_path": "a.c", "start_line": 1})
         ref = result["evidence_ref"]
         accepted = kwargs["terminal_tool_handler"](envelope(refs=[ref]))
         assert accepted["valid"] and accepted["payload"]["verdict"] == "uncertain"
@@ -166,7 +166,7 @@ def test_agent_terminal_wrapper_is_enforced_and_raw_results_are_preserved():
     agent._run_tool_conversation = conversation
     agent._tool_executor = lambda *_: {
         "success": True,
-        "data": {"function": "f", "code": "malloc(n);"},
+        "data": {"source": {"file": "a.c", "start_line": 1, "code": "malloc(n);"}},
     }
     response = agent.investigate(
         {
@@ -182,7 +182,8 @@ def test_agent_terminal_wrapper_is_enforced_and_raw_results_are_preserved():
     )
     assert response.data["verdict"] == "uncertain"
     assert response.metadata["review_disposition_reason"] == "rejection_refuted_unconfirmed"
-    assert response.metadata["review_tool_results"][0]["result"]["data"]["code"] == "malloc(n);"
+    observed = response.metadata["review_tool_results"][0]["result"]["data"]["source"]
+    assert observed["code"] == "malloc(n);"
 
 
 def test_checkpoint_integrity_answer_isolation_and_proposal_recovery(tmp_path):

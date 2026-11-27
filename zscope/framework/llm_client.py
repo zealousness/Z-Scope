@@ -2477,6 +2477,7 @@ class LLMClient:
         preserve_reasoning_metadata: bool = True,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        terminal_tool_json_decoder: Optional[Callable[[str], Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run a conversation loop with tool calling support.
@@ -2948,13 +2949,22 @@ class LLMClient:
                     terminal_function = terminal_call.get("function", {})
                     raw_terminal_args = terminal_function.get("arguments", "{}")
                     try:
-                        terminal_args = self._parse_tool_args(raw_terminal_args)
+                        terminal_args = (
+                            terminal_tool_json_decoder(raw_terminal_args)
+                            if terminal_tool_json_decoder is not None
+                            and isinstance(raw_terminal_args, str)
+                            else self._parse_tool_args(raw_terminal_args)
+                        )
+                        if not isinstance(terminal_args, dict):
+                            raise ValueError("Terminal tool arguments must be a JSON object")
                         terminal_args = self._restore_portable_tool_args(
                             str(terminal_tool_name), terminal_args, tools_schema
                         )
                         terminal_function["arguments"] = json.dumps(
                             terminal_args, ensure_ascii=False
                         )
+                    except CancellationError:
+                        raise
                     except Exception as exc:
                         terminal_args = {}
                         terminal_function["arguments"] = json.dumps(terminal_args)

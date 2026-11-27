@@ -87,7 +87,11 @@ def test_validator_v2_protocol_accepts_one_response_without_tools(monkeypatch) -
         "negative_evidence": [],
         "blocking_negative_evidence": False,
         "missing_context": ["value_range"],
-        "missing_fact_request": {"fact_kind": "value_range", "subject_uid": "wire_len"},
+        "missing_fact_request": {
+            "fact_kind": "value_range",
+            "subject_uid": "wire_len",
+            "reason": "Need the upper bound of wire_len",
+        },
     }
 
     def run(messages, **kwargs):

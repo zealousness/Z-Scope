@@ -8,6 +8,9 @@ import pytest
 from zscope.agents.validator_agent.agent import ValidatorAgent
 from zscope.agents.validator_agent.investigation import InvestigationSession
 from zscope.core.validation import condition_tasks, investigation_reuse
+from zscope.core.validation.runner import ValidationRunner
+from zscope.core.validation.claims import replay_positive_claim
+from test_validation_claims import _issue
 from test_investigation_reuse import CurrentCallers, request, setup_runner
 from test_validator_v3_protocol import _result
 
@@ -513,3 +516,185 @@ def test_new_condition_outcome_is_progress_and_repeated_outcomes_are_not():
         )["success"]
     assert session._zscope_start_iteration(5)
     assert len(session.fact_progress) == 2
+
+
+def refute_condition(session, condition="resource_acquired", outcome="refuted"):
+    read = next(iter(session.tool_fact_catalog), None)
+    if read is None:
+        read = session("get_callers", {"func_name": "f"})["evidence_ref"]
+    result = session.record_fact(
+        {
+            "fact_kind": "ownership_transfer",
+            "summary": "当前必要条件的证据结论。",
+            "evidence_refs": [read],
+            "condition_ids": [condition],
+            "condition_outcome": outcome,
+        }
+    )
+    assert result["success"]
+    return result["fact"]
+
+
+@pytest.mark.parametrize("replayed", [False, True])
+def test_refuted_required_condition_cannot_admit_verified_or_publish_confirmations(replayed):
+    tool = CurrentCallers()
+    seed = make_session(tool)
+    fact = refute_condition(seed)
+    current = make_session(tool, saved_plan(seed), "build-b") if replayed else seed
+    if replayed:
+        current.replay_queries([])
+        refs = [recipe["confirmation_ref"] for recipe in current.conditions.ready.values()]
+        assert refs
+    else:
+        refs = [fact["fact_uid"]]
+    before = fact_state(current)
+    result = current.accept_result(terminal(current, refs))
+    assert not result["valid"]
+    assert "refuted" in result["error"]
+    assert current.accepted_result is None
+    assert fact_state(current) == before
+    uncertain = terminal(current, refs)
+    uncertain.update(verdict="uncertain", stop_reason="no_evidence_gain")
+    assert current.accept_result(uncertain)["valid"]
+
+
+def test_refuting_a_rejection_branch_does_not_refute_the_required_witness():
+    current = make_session(CurrentCallers())
+    fact = refute_condition(current, "same_lock_covers_all_accesses")
+    assert current.accept_result(terminal(current, [fact["fact_uid"]]))["valid"]
+
+
+def test_current_supported_condition_supersedes_an_earlier_refutation():
+    current = make_session(CurrentCallers())
+    refute_condition(current)
+    fact = refute_condition(current, outcome="supported")
+    assert current.accept_result(terminal(current, [fact["fact_uid"]]))["valid"]
+
+
+@pytest.mark.parametrize("cited_refutation", [True, False])
+def test_downstream_refuted_witness_never_closes_or_promotes_a_verified_claim(cited_refutation):
+    current = make_session(CurrentCallers(), build="build-current")
+    supported = refute_condition(current, outcome="supported")
+    fact = refute_condition(current)
+    # Exercise the independent runner guard, bypassing the session's terminal admission.
+    data = terminal(
+        current,
+        [
+            "FACT_SOURCE",
+            "FACT_SINK",
+            fact["fact_uid"] if cited_refutation else supported["fact_uid"],
+        ],
+    )
+    issue = _issue()
+    issue.update(
+        candidate_uid=current.candidate_uid,
+        validation_cluster_uid=current.cluster_uid,
+        obligation_positive_conditions=["resource_acquired"],
+        missing_fact_kinds=["ownership_transfer"],
+        candidate_promotion_eligible=True,
+    )
+    metadata = {
+        "validator_investigation_facts": current.investigation_facts,
+        "validator_tool_fact_catalog": current.tool_fact_catalog,
+    }
+    control = deepcopy(issue)
+    control_data = terminal(current, ["FACT_SOURCE", "FACT_SINK", supported["fact_uid"]])
+    ValidationRunner._apply_v3_investigation_facts(
+        control,
+        control_data,
+        {
+            **metadata,
+            # An orphaned history entry cannot supersede an identified fact.
+            "validator_investigation_facts": [supported, {**fact, "fact_uid": ""}],
+        },
+    )
+    assert replay_positive_claim(control, control_data).accepted
+    ValidationRunner._apply_v3_investigation_facts(issue, data, metadata)
+    assert issue["v3_evidence_closure"]["complete"] is False
+    assert issue["missing_fact_kinds"] == ["ownership_transfer"]
+    assert issue["decision_fact_coverage"] == "partial"
+    assert issue["candidate_promotion_eligible"] is False
+    assert issue["v3_evidence_closure"]["reason"] == "required_condition_refuted"
+    replay = replay_positive_claim(issue, data)
+    assert not replay.accepted
+    assert "investigation_evidence_closure_incomplete" in replay.failures
+
+
+@pytest.mark.parametrize("cite_old_refutation", [False, True])
+def test_downstream_uses_current_direction_and_cannot_relabel_an_old_negative_fact(
+    cite_old_refutation,
+):
+    current = make_session(CurrentCallers(), build="build-current")
+    old = refute_condition(current)
+    latest = refute_condition(current, outcome="supported")
+    refs = [old["fact_uid"]] if cite_old_refutation else [latest["fact_uid"]]
+    assert current.accept_result(terminal(current, refs))["valid"] is (not cite_old_refutation)
+    issue = {
+        "obligation_positive_conditions": ["resource_acquired"],
+        "missing_fact_kinds": ["ownership_transfer"],
+    }
+    ValidationRunner._apply_v3_investigation_facts(
+        issue,
+        terminal(current, refs),
+        {
+            "validator_investigation_facts": current.investigation_facts,
+            "validator_tool_fact_catalog": current.tool_fact_catalog,
+        },
+    )
+    assert issue["v3_evidence_closure"]["complete"] is (not cite_old_refutation)
+    assert issue["candidate_promotion_eligible"] is (not cite_old_refutation)
+
+
+def test_unselected_refuted_replay_recipe_is_not_a_current_claim():
+    tool = CurrentCallers()
+    seed = make_session(tool)
+    refute_condition(seed)
+    current = make_session(tool, saved_plan(seed), "build-b")
+    current.replay_queries([])
+    assert current.conditions.ready
+    result = current.accept_result(terminal(current, []))
+    assert result["valid"]
+    assert not current.investigation_facts
+    assert current.conditions.ready  # The unselected claim was never confirmed.
+
+
+def test_corrected_direction_is_consistent_when_both_historical_fact_refs_are_cited():
+    current = make_session(CurrentCallers(), build="build-current")
+    old = refute_condition(current)
+    latest = refute_condition(current, outcome="supported")
+    refs = [old["fact_uid"], latest["fact_uid"]]
+    assert current.accept_result(terminal(current, refs))["valid"]
+    issue = {
+        "obligation_positive_conditions": ["resource_acquired"],
+        "missing_fact_kinds": ["ownership_transfer"],
+    }
+    ValidationRunner._apply_v3_investigation_facts(
+        issue,
+        terminal(current, refs),
+        {
+            "validator_investigation_facts": current.investigation_facts,
+            "validator_tool_fact_catalog": current.tool_fact_catalog,
+        },
+    )
+    assert issue["v3_evidence_closure"]["complete"] is True
+
+
+def test_refuted_witness_can_still_support_a_semantic_rejection():
+    current = make_session(CurrentCallers())
+    fact = refute_condition(current)
+    rejected = terminal(current, [fact["fact_uid"]])
+    rejected.update(verdict="rejected", blocking_negative_evidence=True)
+    assert current.accept_result(rejected)["valid"]
+    issue = {
+        "obligation_positive_conditions": ["resource_acquired"],
+        "missing_fact_kinds": ["ownership_transfer"],
+    }
+    ValidationRunner._apply_v3_investigation_facts(
+        issue,
+        rejected,
+        {
+            "validator_investigation_facts": current.investigation_facts,
+            "validator_tool_fact_catalog": current.tool_fact_catalog,
+        },
+    )
+    assert issue["v3_evidence_closure"]["complete"] is True

@@ -33,8 +33,8 @@ mitigation is insufficient. Refuting a prior rejection does not prove a defect.
 Use readable, current evidence from the supplied catalog and permitted session
 records. A UID or hash without its payload is not evidence. For a completed
 decision, cite the records supporting the path or concrete counter-claim;
-include at least one readable current `decision_fact`, `path_edge`, `proof_fact`
-or `evidence_delta_fact`, together with its supporting catalog references.
+include at least one readable current `decision_fact`, `decision_edge`,
+`path_edge`, `proof_fact` or `evidence_delta_fact`, with supporting catalog refs.
 Unvalidated findings, `may` flows and hierarchical contracts are context, not
 proof. Check contract requirements against actual behavior and independently
 verify object, path and build identity. Evidence from one macro configuration
@@ -69,7 +69,7 @@ guard or lifetime counter-evidence from narrower caller/design assumptions for
 `alignment`, `held_lock_callback`, `size_limit_mismatch`, and `memory_leak`.
 
 An overflow guard must bound operands before the multiplication, addition or
-cast, or apply a mathematically safe precondition such as `a <= SIZE_MAX / b`
+cast, or apply a safe unsigned precondition such as `b == 0 || a <= SIZE_MAX / b`
 before `a * b`. For concurrency, distinguish a shared-state protocol violation
 from single-threaded initialization or accesses proven protected by the same
 compatible lock/atomic protocol. Shared locking does not itself exclude UAF.

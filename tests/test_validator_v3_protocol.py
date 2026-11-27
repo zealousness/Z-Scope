@@ -167,9 +167,13 @@ class _ReadOnlyEvidenceTool(BaseTool):
                 "file_path": "src/demo.c",
                 "function": "sink",
                 "start_line": 10 if query == "path" else 20,
-                "statement": (
-                    "entry reaches sink" if query == "path" else "len may exceed capacity"
-                ),
+                "records": [
+                    {
+                        "statement": (
+                            "entry reaches sink" if query == "path" else "len may exceed capacity"
+                        )
+                    }
+                ],
             },
         }
 

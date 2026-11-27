@@ -1,7 +1,6 @@
-"""Candidate-local V3 evidence, progress and terminal validation.
+"""保存一条告警在本次调查里查到的材料、来源和进展。
 
-The agent owns model calls; this session owns only the evidence acquired during
-one investigation. Registered facts remain claims, never program proof authority.
+提问由外层程序负责。这里记下模型的解释和它引用的材料，供程序独立核查。
 """
 
 import hashlib
@@ -13,114 +12,94 @@ from ...common.validator_protocol import VALIDATOR_MISSING_FACT_KINDS, bind_vali
 from ...framework.base import validate_function_arguments
 from .output import DecisionOutput
 
-_NON_EVIDENCE_TOOL_RESULT_KEYS = frozenset(
-    {
-        "args",
-        "arguments",
-        "coverage",
-        "duration",
-        "duration_ms",
-        "elapsed",
-        "elapsed_ms",
-        "error",
-        "message",
-        "metadata",
-        "provenance",
-        "next_actions",
-        "page",
-        "query",
-        "request",
-        "status",
-        "success",
-        "timestamp",
-        "tool",
-        "tool_name",
-        "trace",
-        "warnings",
-    }
-)
+# 复核工具中，只有下面三种会返回与代码有关的材料。其他工具的回执只说明操作已执行。
+_REVIEW_EVIDENCE_TOOLS = {
+    "query_guard_coverage",
+    "query_validation_facts",
+    "check_validation_claim",
+}
+
+# 每种查询只取表中列出的内容。比如搜索取匹配项，空页没有新证据。
+# 自定义读取工具可以把查到的内容放在 data.records。
+_RECORD_COLLECTIONS = {
+    "search_code": ("symbols", "matches"),
+    "query_code_graph": ("edges",),
+    "trace_data_flow": ("paths",),
+    "query_static_findings": ("findings",),
+    "query_guard_coverage": ("rows",),
+    "query_validation_facts": ("items",),
+    "get_callers": ("callers",),
+    "get_function_info": ("matches",),
+    "list_known_functions": ("functions",),
+    "find_function_pointers": ("references",),
+    "query_pointer_alias": ("indirect_callees",),
+}
 
 
 def _digest(value: Any) -> str:
-    """Use one canonical JSON encoding for session-local evidence identities."""
+    """先按名称排好各项，再算编号。同一条记录即使颠倒了字段顺序，也能认出来。"""
     payload = json.dumps(
         value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _tool_result_evidence_atoms(value: Any) -> set[str]:
-    """Hash complete result-body records, retaining values and associations.
-
-    Skip wrappers and cache diagnostics; zero/false, arguments and source
-    whitespace remain evidence.
-    """
-    if isinstance(value, Mapping):
+def _evidence_records(name: str, data: Mapping[str, Any]) -> Iterable[tuple[str, Any]]:
+    """只取工具实际读到的内容。例如读代码取原文和位置，查询耗时留在记录里。"""
+    if name in {"read_code", "get_file_snippet"}:
+        source = data.get("source", data)
+        body = {key: data[key] for key in ("symbol", "macro", "members") if key in data}
+        body["contract"] = (data.get("definition") or {}).get("contract")
+        if isinstance(source, Mapping) and isinstance(source.get("code"), str) and source["code"]:
+            body["source"] = {
+                key: source[key]
+                for key in ("code", "file", "file_path", "start_line", "end_line", "revision")
+                if key in source
+            }
+        yield "data", body
+    elif name == "check_validation_claim":
         if (
-            value.get("success") is False
-            or value.get("status", "ok") not in {"ok", "partial"}
-            or value.get("error")
+            data.get("status") == "supported"
+            and data.get("claim_kind")
+            and data.get("evidence_refs")
         ):
-            return set()
-        value = value.get("data", value)
-    if not isinstance(value, Mapping):
-        return set()
-    collections = value.keys() & {
-        "records",
-        "edges",
-        "paths",
-        "findings",
-        "symbols",
-        "matches",
-        "files",
-        "results",
-        "items",
-        "rows",
-    }
-    if collections:
-        records = [(key, record) for key in sorted(collections) for record in value[key]]
-    elif (
-        value.get("complete") is False
-        and "reason" in value
-        or ("claim_kind" in value and value.get("status") == "unknown")
+            yield "claim", {
+                key: data.get(key)
+                for key in (
+                    "claim_kind",
+                    "reason",
+                    "coverage",
+                    "checked_functions",
+                    "evidence_refs",
+                )
+            }
+    elif name == "get_semantic_context" and "snapshot" in data:
+        snapshot = data.get("snapshot") or {}
+        if snapshot.get("status") == "current":
+            yield "snapshot", snapshot.get("data")
+            yield "contract", data.get("contract")
+        semantics = data.get("security_semantics") or {}
+        if semantics.get("status") == "current":
+            for record in semantics.get("records", []):
+                yield "security_semantics", record
+    else:
+        for key in _RECORD_COLLECTIONS.get(name, ("records",)):
+            collection = data.get(key)
+            if isinstance(collection, list):
+                for record in collection:
+                    yield key, record
+
+
+def _tool_result_evidence_atoms(name: str, result: Mapping[str, Any]) -> set[str]:
+    """按整条记录识别重复项，保留字段之间的关系。查到 0 或“否”也算查到了值。"""
+    data = result.get("data")
+    if (
+        result.get("success") is not True
+        or result.get("status", "ok") not in {"ok", "partial"}
+        or result.get("error")
+        or not isinstance(data, Mapping)
     ):
         return set()
-    elif "snapshot" in value or "security_semantics" in value:
-        snapshot, semantics = value.get("snapshot") or {}, value.get("security_semantics") or {}
-        body = {
-            "snapshot": snapshot.get("data") if snapshot.get("status") == "current" else None,
-            "contract": value.get("contract"),
-        }
-        records = [(key, record) for key, record in body.items() if record]
-        if semantics.get("status") == "current":
-            records.extend(("security_semantics", record) for record in semantics["records"])
-    elif "source" in value or "symbol" in value:
-        source = value.get("source")
-        records = [
-            (
-                "data",
-                {
-                    "source": (
-                        source if isinstance(source, Mapping) and source.get("code") else None
-                    ),
-                    "symbol": value.get("symbol"),
-                    "contract": (value.get("definition") or {}).get("contract"),
-                    "macro": value.get("macro"),
-                    "members": value.get("members"),
-                },
-            )
-        ]
-    else:
-        records = [
-            (
-                "data",
-                {
-                    key: nested
-                    for key, nested in value.items()
-                    if key not in _NON_EVIDENCE_TOOL_RESULT_KEYS and key != "summary"
-                },
-            )
-        ]
 
     def present(record: Any) -> bool:
         if isinstance(record, Mapping):
@@ -130,14 +109,25 @@ def _tool_result_evidence_atoms(value: Any) -> set[str]:
         return record is not None and record != ""
 
     return {
-        _digest([key, value.get("subject"), value.get("build_context_id"), record])
-        for key, record in records
+        _digest([key, data.get("subject"), data.get("build_context_id"), record])
+        for key, record in _evidence_records(name, data)
         if present(record)
     }
 
 
+def _build_context_ids(value: Any) -> Iterable[str]:
+    if isinstance(value, dict):
+        if value.get("build_context_id"):
+            yield value["build_context_id"]
+        value = value.values()
+    elif not isinstance(value, list):
+        return
+    for nested in value:
+        yield from _build_context_ids(nested)
+
+
 class InvestigationSession:
-    """A callable tool executor with an explicit, isolated investigation lifetime."""
+    """一次调查用一份记录本，防止把另一条告警查到的材料混进来。"""
 
     def __init__(
         self,
@@ -147,8 +137,7 @@ class InvestigationSession:
         tools_schema: List[Dict[str, Any]],
         pass_kind: str,
     ) -> None:
-        # The validation package exports a runner that imports ValidatorAgent.
-        # Resolve the query-plan helpers only after agent initialization.
+        # 查询模块启动时也会用到这里的代码。等调查开始再加载它，两边就都能准备好。
         from ...core.validation import condition_tasks, investigation_reuse
 
         self.query_plans = investigation_reuse
@@ -197,8 +186,7 @@ class InvestigationSession:
         if not self.allowed_fact_kinds and not candidate_policy_present:
             self.allowed_fact_kinds = set(VALIDATOR_MISSING_FACT_KINDS)
         if self.input_data.get("autonomous_validation") is True:
-            # Providers remain accelerators, not a limit on the questions a
-            # Validator may resolve from current read-only source evidence.
+            # 自动检查能回答一部分问题，其余允许的问题也可以从本次读到的源码中找答案。
             from ...core.validation.evidence_completion import SUPPORTED_FACT_KINDS
 
             self.allowed_fact_kinds |= set(SUPPORTED_FACT_KINDS) | {
@@ -214,7 +202,7 @@ class InvestigationSession:
         self.review_schemas = (
             self.review_session.schemas() if self.review_session is not None else []
         )
-        self.review_tools = {value["function"]["name"] for value in self.review_schemas}
+        self.review_tools = {schema["function"]["name"]: schema for schema in self.review_schemas}
         self.accepted_review: Dict[str, Any] = {}
         self.terminal_output: DecisionOutput | None = None
         self.terminal_schema: Dict[str, Any] | None = None
@@ -338,6 +326,7 @@ class InvestigationSession:
                 "defect_case and refuted prior_rejection cite only current TOOLFACT or FACT_V3 "
                 "refs, not input-catalog refs. Every defect_case ref must also appear in "
                 "decision.evidence_refs. "
+                "A related-candidate proposal returns an audit receipt and supplies no evidence. "
                 "The final tool carries decision, prior_rejection and defect_case.\n"
             )
         if self.input_data.get("review_positive_case") is True:
@@ -351,11 +340,7 @@ class InvestigationSession:
                 "When recording a fact, name the condition_ids it supports or refutes and its "
                 "condition_outcome. Confirmation requires the witness conditions together; "
                 "coverage counterclaims are alternative rejection branches, not a mandatory checklist. "
-                "Check supplied evidence-ready recipes against current observations. Cite their "
-                "CONDITION_R* confirmation_refs directly in the final decision to reconfirm them "
-                "and register fresh FACT_V3 refs in that same turn. Use this direct final route for "
-                "unchanged conditions; investigate and record only new or contradicted conditions. "
-                "This creates current claims, not proof authority.\n"
+                "Confirmed conditions remain claims, not program proof.\n"
                 + json.dumps(
                     {
                         "condition_requirements": [
@@ -369,11 +354,10 @@ class InvestigationSession:
                 + "\n"
             )
         registration = (
-            "For evidence-ready conditions, check their current observations and cite the supplied "
-            "confirmation_refs in the final tool; this performs current fact registration in that "
-            "same turn. For additional or changed conditions, use " + self.fact_tool_name + " with "
-            "current TOOLFACT refs. Final evidence_refs accept CONDITION_R* confirmation refs, "
-            "registered FACT_V3 refs and input-catalog refs. "
+            "For an unchanged condition, check the current observations and cite its CONDITION_R* "
+            "confirmation_ref in the final tool to register a fresh FACT_V3 in the same turn. "
+            f"For new or changed conditions, use {self.fact_tool_name} with current TOOLFACT refs. "
+            "The final tool also accepts registered FACT_V3 refs and input-catalog refs. "
             if self.conditions is not None
             else f"Record each resolved condition through {self.fact_tool_name} with its TOOLFACT "
             "refs. Non-Review final decisions cite input-catalog or registered FACT_V3 refs, "
@@ -383,8 +367,9 @@ class InvestigationSession:
             f"Use the supplied read-only tools within {iteration_limit} model iterations; "
             "there is no independent tool-query quota. Read for a specific candidate condition. "
             + registration
-            + "Failed/empty reads "
-            "cannot support facts. Fact kinds are a vocabulary, not a checklist. Rephrasing or "
+            + "Only new code or fact records from successful reads and checks earn a TOOLFACT. "
+            "Partial results support only the records returned. Errors, empty reads and diagnostics "
+            "supply no evidence. Fact kinds are a vocabulary, not a checklist. Rephrasing or "
             "rebundling existing support is not progress. After two completed rounds without "
             "new evidence or condition support, finish with what is established. Query further "
             "only for a remaining condition or contradiction; stop when the decision is supported "
@@ -462,7 +447,7 @@ class InvestigationSession:
         return prepared
 
     def _prepare_fact(self, args: Any) -> Dict[str, Any]:
-        """Validate and construct a claim without changing session or condition state."""
+        """先核对这条说法及其来源。核对通过后，调用方才会把它记入调查记录。"""
         error = validate_function_arguments(self.fact_tool_schema["function"]["parameters"], args)
         if error:
             return {"success": False, "error": error}
@@ -535,7 +520,7 @@ class InvestigationSession:
             self.investigation_facts.append(fact)
             if self.conditions is not None:
                 self.conditions.record(fact, self.tool_fact_catalog)
-        # New conditions/outcomes are progress; rephrasing or rebundling old support is not.
+        # 同一份材料换个说法只算一次。它若回答了新问题，或改变了之前的判断，就算新进展。
         self.fact_progress.update(
             (
                 fact["fact_kind"],
@@ -555,7 +540,7 @@ class InvestigationSession:
             )
 
     def _prepare_confirmations(self, recipes: list[Dict[str, Any]]) -> Dict[str, Any]:
-        """Prepare the whole terminal batch before publishing any current fact."""
+        """先把整组材料都核对一遍，避免最后一项出错时，前几项已经被当作事实。"""
         prepared = []
         for recipe in recipes:
             fact_args = {
@@ -584,32 +569,31 @@ class InvestigationSession:
             return self.record_fact(args)
         signature = _digest([name, args])
         if signature in self.tool_call_signatures:
-            return {
-                "success": False,
-                "error": "validator_v3_duplicate_tool_query",
-            }
+            return {"success": False, "error": "validator_v3_duplicate_tool_query"}
         if self.no_new_evidence_fact_stop:
             return {
                 "success": False,
                 "error": "validator_v3_no_new_evidence_fact_stop; emit the final result",
             }
-        if name == "propose_related_candidate":
-            refs = args.get("evidence_refs", []) if isinstance(args, dict) else []
-            if not refs or any(
-                ref not in self.tool_fact_catalog and ref not in self.fact_ids for ref in refs
+        if self.review_session is not None and name in self.review_tools:
+            error = validate_function_arguments(self.review_tools[name], args)
+            if error:
+                return {"success": False, "error": error}
+            if name == "propose_related_candidate" and any(
+                ref not in self.tool_fact_catalog and ref not in self.fact_ids
+                for ref in args["evidence_refs"]
             ):
                 return {
                     "success": False,
                     "error": "related proposal requires recorded tool evidence",
                 }
-        tool_result = (
-            self.review_session.execute(name, args)
-            if self.review_session is not None and name in self.review_tools
-            else self.execute_tool(name, args)
-        )
+            tool_result = self.review_session.execute(name, args)
+        else:
+            tool_result = self.execute_tool(name, args)
         if token is not None:
             token.raise_if_cancelled()
-        if self.query_plans.query_succeeded(tool_result):
+        succeeded = self.query_plans.query_succeeded(tool_result)
+        if succeeded:
             self.tool_call_signatures.add(signature)
         self.query_plans.remember_query(self.observed_queries, name, args, tool_result)
         qid = ""
@@ -621,79 +605,75 @@ class InvestigationSession:
             self.review_tool_results.append(
                 {"name": name, "arguments": args, "result": tool_result}
             )
-        result_atoms = _tool_result_evidence_atoms(tool_result)
-        new_atoms = result_atoms - self.evidence_atoms
         result = dict(tool_result)
-        if not new_atoms:
-            result["validator_new_evidence"] = False
-            result["instruction"] = (
-                "This result adds no source evidence. Use existing TOOLFACT refs for "
-                "supported facts; do not infer safety from an empty observation."
-                if self.query_plans.query_succeeded(tool_result)
-                else "The query failed and supplied no evidence. Correct the indicated "
-                "arguments if this read is still needed. Do not record a fact from "
-                "this error; if the condition cannot be resolved, finish uncertain."
+        if name in self.review_tools and name not in _REVIEW_EVIDENCE_TOOLS:
+            result.update(
+                validator_new_evidence=False,
+                instruction="This action receipt is not code evidence.",
             )
         else:
-            fingerprint = _digest(tool_result)
-            self.evidence_atoms.update(new_atoms)
-            ref = (
-                "TOOLFACT_"
-                + _digest(
-                    [
-                        self.candidate_uid,
-                        self.cluster_uid,
-                        self.build_context_id,
-                        name,
-                        args,
-                        fingerprint,
-                    ]
-                )[:32]
-            )
-
-            def builds(value: Any) -> set[str]:
-                if isinstance(value, dict):
-                    found = {value["build_context_id"]} if value.get("build_context_id") else set()
-                    return found.union(*(builds(nested) for nested in value.values()))
-                if isinstance(value, list):
-                    return set().union(*(builds(nested) for nested in value))
-                return set()
-
-            record: Dict[str, Any] = {
-                "evidence_ref": ref,
-                "tool_name": name,
-                "arguments_hash": _digest(args),
-                "result_hash": fingerprint,
-                "dependency_code_hash": fingerprint,
-                "build_context_ids": sorted(builds(args) | builds(tool_result.get("data"))),
-                "location": self.evidence_location(args, tool_result),
-            }
-            self.tool_fact_catalog[ref] = record
-            if self.conditions is not None:
-                record["query_id"] = qid
-                self.conditions.bind_evidence(qid, ref)
-            if self.review_enabled:
-                self.allowed_refs.add(ref)
-            result["evidence_ref"] = ref
-            result["validator_new_evidence"] = True
-            result["instruction"] = (
-                f"If this resolves a required condition, call {self.fact_tool_name} now, citing {ref}. "
-                "This TOOLFACT is raw evidence, not a final FACT_V3 reference. "
-                "Do not defer supported fact registration until the iteration budget is exhausted."
-            )
-            if self.conditions is not None:
-                result["instruction"] = (
-                    "Use this CURRENT evidence to check the condition tasks. Evidence-ready recipes "
-                    "can be reconfirmed by citing their confirmation_ref directly in the final tool. "
-                    f"Record only newly resolved or changed conditions through {self.fact_tool_name}."
-                )
+            result.update(self._admit_observation(name, args, tool_result, qid, succeeded))
         if self.review_session is not None:
             self.review_session.record_result(name, args, result)
         return result
 
+    def _admit_observation(
+        self, name: str, args: Any, tool_result: Dict[str, Any], qid: str, succeeded: bool
+    ) -> Dict[str, Any]:
+        """工具确实带回新材料时才给它编号，后续可以凭编号找回来源。"""
+        new_atoms = _tool_result_evidence_atoms(name, tool_result) - self.evidence_atoms
+        if not new_atoms:
+            instruction = (
+                "This result adds no source evidence. Use existing TOOLFACT refs for "
+                "supported facts; do not infer safety from an empty observation."
+                if succeeded
+                else "The query failed and supplied no evidence. Correct the indicated "
+                "arguments if this read is still needed. Do not record a fact from "
+                "this error; if the condition cannot be resolved, finish uncertain."
+            )
+            return {"validator_new_evidence": False, "instruction": instruction}
+
+        fingerprint = _digest(tool_result)
+        identity = [
+            self.candidate_uid,
+            self.cluster_uid,
+            self.build_context_id,
+            name,
+            args,
+            fingerprint,
+        ]
+        ref = "TOOLFACT_" + _digest(identity)[:32]
+        record = {
+            "evidence_ref": ref,
+            "tool_name": name,
+            "arguments_hash": _digest(args),
+            "result_hash": fingerprint,
+            "dependency_code_hash": fingerprint,
+            "build_context_ids": sorted(set(_build_context_ids([args, tool_result.get("data")]))),
+            "location": self.evidence_location(args, tool_result),
+        }
+        self.evidence_atoms.update(new_atoms)
+        self.tool_fact_catalog[ref] = record
+        if self.conditions is not None:
+            record["query_id"] = qid
+            self.conditions.bind_evidence(qid, ref)
+            instruction = (
+                "Use this CURRENT evidence to check the condition tasks. Evidence-ready recipes "
+                "can be reconfirmed by citing their confirmation_ref directly in the final tool. "
+                f"Record only newly resolved or changed conditions through {self.fact_tool_name}."
+            )
+        else:
+            instruction = (
+                f"If this resolves a required condition, call {self.fact_tool_name} now, citing {ref}. "
+                "This TOOLFACT is raw evidence, not a final FACT_V3 reference. "
+                "Do not defer supported fact registration until the iteration budget is exhausted."
+            )
+        if self.review_enabled:
+            self.allowed_refs.add(ref)
+        return {"evidence_ref": ref, "validator_new_evidence": True, "instruction": instruction}
+
     def _zscope_start_iteration(self, iteration: int) -> bool:
-        """Stop after two rounds with no new evidence or condition support."""
-        # Read observations advance progress without granting proof authority.
+        """连续两轮既没读到新材料，也没查清新条件，就请模型用已有材料收尾。"""
         if self.terminal_schema is not None:
             refs = self.allowed_refs | {
                 value["confirmation_ref"]
@@ -719,8 +699,7 @@ class InvestigationSession:
         return self.no_new_evidence_fact_stop
 
     def replay_queries(self, messages: List[Dict[str, Any]]) -> None:
-        # Re-execute a prior read-only plan before the first model turn. No old
-        # answer, FACT_V3 record, terminal decision or proof is restored.
+        # 提问前用上次的查法重读当前代码。旧答案和旧证明可能已经过时。
         prefetched = []
         available_tools = {schema["function"]["name"] for schema in self.tools_schema}
         for step in self.prior_queries:
@@ -817,7 +796,7 @@ class InvestigationSession:
             )
 
     def accept_result(self, payload: Any) -> Dict[str, Any]:
-        # Retain this attempt's decoded output; an invalid retry cannot reuse an old verdict.
+        # 先清掉上次结论，免得这次回答失败时还显示上次的成功结果。
         self.accepted_result = None
         self.accepted_review.clear()
         self.terminal_output = (
@@ -836,6 +815,7 @@ class InvestigationSession:
             else []
         )
         if raw_refs and not self.review_enabled:
+            # 普通调查要先写清“这条材料说明了什么”，交答案时才能引用登记好的事实。
             return {
                 "valid": False,
                 "error": (
@@ -876,6 +856,11 @@ class InvestigationSession:
                     "otherwise use JSON null. Historical result identities must match this request."
                 ),
             }
+        # 如果本轮证据推翻了问题成立的必要条件，这次就不能接受“已确认”。
+        if self.conditions and self.conditions.contradicts_verdict(
+            parsed, self.investigation_facts
+        ):
+            return {"valid": False, "error": "Verified contradicts refuted required conditions."}
         if self.review_enabled:
             from ...core.validation.review_protocol import (
                 REVIEW_VERSION,
@@ -884,7 +869,7 @@ class InvestigationSession:
             )
 
             adapted = {**payload, "decision": parsed.to_dict()}
-            # Only compact decisions use the new unversioned wire envelope.
+            # 简短格式由程序补上版本号。旧格式自己带版本号，后面会核对。
             if "schema_version" not in decision and "schema_version" not in payload:
                 adapted["schema_version"] = REVIEW_VERSION
             envelope = parse_review_result(

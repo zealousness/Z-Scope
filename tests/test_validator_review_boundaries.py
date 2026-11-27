@@ -6,7 +6,6 @@ import pytest
 
 from test_validator_v3_protocol import _DirectLLM, _result, _slice
 from zscope.agents.validator_agent.agent import ValidatorAgent
-from zscope.agents.validator_agent.legacy import LegacyResult
 from zscope.agents.validator_agent.output import DecisionOutput, terminal_payload
 from zscope.core.validation.execution_context import ExecutionContext, rebound_execution_context
 from zscope.core.validation import investigation_reuse
@@ -77,15 +76,26 @@ def test_empty_choices_preserve_usage_and_get_only_one_repair():
     ],
 )
 def test_legacy_cannot_recover_a_decision_from_an_unfinished_response(result):
-    content = json.dumps({"verdict": "verified", "reasoning": "old answer"})
+    content = _public_validation_result()
     assert (
         ValidatorAgent.__new__(ValidatorAgent)._extract_validation_payload(content, result, [])
         is None
     )
 
 
+def _public_validation_result():
+    return json.dumps(
+        {
+            "type": "validation_result",
+            "verdict": "verified",
+            "reasoning": "current evidence",
+            "blocking_negative_evidence": False,
+        }
+    )
+
+
 def test_only_current_public_assistant_content_can_become_a_decision():
-    public = json.dumps({"verdict": "verified", "reasoning": "old answer"})
+    public = _public_validation_result()
     agent = ValidatorAgent.__new__(ValidatorAgent)
     history = [
         {"role": "assistant", "content": public},
@@ -203,7 +213,14 @@ def test_legacy_result_finalizes_turn_distribution():
     class LegacyLLM:
         def run_conversation_with_tools(self, **kwargs):
             return {
-                "content": '{"verdict":"verified","reasoning":"current facts"}',
+                "content": json.dumps(
+                    {
+                        "type": "validation_result",
+                        "verdict": "verified",
+                        "reasoning": "current facts",
+                        "blocking_negative_evidence": False,
+                    }
+                ),
                 "iterations": 3,
                 "api_call_count": 2,
             }
@@ -214,31 +231,26 @@ def test_legacy_result_finalizes_turn_distribution():
     assert response.metadata["validator_api_call_count"] == 2
 
 
-def test_legacy_fast_path_can_decode_deep_known_envelopes():
+def test_fast_path_retries_a_nested_verdict_and_accepts_the_current_result():
+    current = {
+        "type": "validation_result",
+        "verdict": "uncertain",
+        "reasoning": "missing context",
+        "blocking_negative_evidence": False,
+    }
+    messages = iter([{"result": {**current, "verdict": "verified"}}, current])
+
     class LegacyLLM:
         def run_conversation_with_tools(self, **kwargs):
-            return {
-                "content": '{"result":' * 2000
-                + '{"verdict":"verified","reasoning":"current facts"}'
-                + "}" * 2000,
-                "iterations": 1,
-            }
+            return {"content": json.dumps(next(messages)), "iterations": 1}
 
     response = ValidatorAgent(LegacyLLM(), []).run(
         {"finding": "demo", "evidence_pack": {"source": "current code"}}
     )
     assert response.success
-    assert response.data["verdict"] == "verified"
-    assert response.metadata["validator_fast_path_accepted"] == 1
-    assert response.metadata["validator_api_call_count"] == 1
-
-
-def test_legacy_iteration_preserves_depth_first_envelope_order():
-    first = {"verdict": "uncertain", "reasoning": "first"}
-    later = {"verdict": "verified", "reasoning": "later"}
-    parsed = LegacyResult.parse({"results": [{"result": first}, later], "data": later})
-    assert parsed["verdict"] == "uncertain"
-    assert parsed["reasoning"] == "first"
+    assert response.data["verdict"] == "uncertain"
+    assert response.metadata["validator_fast_path_accepted"] == 0
+    assert response.metadata["validator_api_call_count"] == 2
 
 
 def test_query_replay_exception_retains_evidence_and_live_execution_identity(monkeypatch):

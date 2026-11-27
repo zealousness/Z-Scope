@@ -175,6 +175,7 @@ class ToolCallingAgent(BaseAgent):
         additional_tools_schema: Optional[List[Dict[str, Any]]] = None,
         terminal_tool_name: Optional[str] = None,
         terminal_tool_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        terminal_tool_json_decoder: Optional[Callable[[str], Any]] = None,
         terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_required: bool = False,
         tool_executor: Optional[Callable[[str, Any], Dict[str, Any]]] = None,
@@ -193,6 +194,8 @@ class ToolCallingAgent(BaseAgent):
         }
         if preserve_reasoning_metadata:
             call_kwargs["preserve_reasoning_metadata"] = True
+        if terminal_tool_json_decoder is not None:
+            call_kwargs["terminal_tool_json_decoder"] = terminal_tool_json_decoder
         if (
             terminal_tool_name
             or terminal_tool_handler
@@ -735,6 +738,7 @@ class JsonToolAgent(ToolCallingAgent):
                 trace_label=f"{trace_label}; {trace_phase}={attempt}",
                 trace_iteration=attempt,
                 force_final_tool=True,
+                metadata=metadata,
             )
             if response is None:
                 last_error = "finalization_call_failed"
@@ -898,6 +902,7 @@ class JsonToolAgent(ToolCallingAgent):
                 trace_label=f"{trace_label}; json_repair={retry}; error={last_error}",
                 trace_iteration=retry,
                 force_final_tool=True,
+                metadata=metadata,
             )
             if response is None:
                 last_error = "repair_call_failed"
@@ -990,7 +995,26 @@ class JsonToolAgent(ToolCallingAgent):
         trace_label: str,
         trace_iteration: int,
         force_final_tool: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
+        def dispatch(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+            # Count dispatches even when a request fails before producing usage.
+            if metadata is not None:
+                metadata["api_call_count"] = int(metadata.get("api_call_count", 0) or 0) + 1
+            return chat_completion(prompt_messages, **kwargs)
+
+        def complete(**kwargs: Any) -> Dict[str, Any]:
+            try:
+                return dispatch(kwargs)
+            except TypeError:
+                legacy_kwargs = {
+                    key: value
+                    for key, value in kwargs.items()
+                    if key not in {"response_format", "tool_choice"}
+                }
+                legacy_kwargs["tools"] = [final_tool_schema]
+                return dispatch(legacy_kwargs)
+
         response_format = (
             self._json_response_format(json_output_spec)
             if bool(getattr(self.llm_client, "supports_structured_output", False))
@@ -1005,19 +1029,10 @@ class JsonToolAgent(ToolCallingAgent):
             # carries exactly one tool, so "required" forces the same call.
             tool_choice = "required" if force_final_tool else "auto"
         try:
-            return chat_completion(
-                prompt_messages,
+            return complete(
                 tools=tools,
                 tool_choice=tool_choice,
                 response_format=response_format,
-                trace_agent=self.name,
-                trace_label=trace_label,
-                trace_iteration=trace_iteration,
-            )
-        except TypeError:
-            return chat_completion(
-                prompt_messages,
-                tools=[final_tool_schema],
                 trace_agent=self.name,
                 trace_label=trace_label,
                 trace_iteration=trace_iteration,
@@ -1033,18 +1048,9 @@ class JsonToolAgent(ToolCallingAgent):
                 )
                 return None
             try:
-                return chat_completion(
-                    prompt_messages,
+                return complete(
                     tools=[final_tool_schema],
                     tool_choice="required" if force_final_tool else "auto",
-                    trace_agent=self.name,
-                    trace_label=f"{trace_label}; structured_fallback=tool",
-                    trace_iteration=trace_iteration,
-                )
-            except TypeError:
-                return chat_completion(
-                    prompt_messages,
-                    tools=[final_tool_schema],
                     trace_agent=self.name,
                     trace_label=f"{trace_label}; structured_fallback=tool",
                     trace_iteration=trace_iteration,
@@ -1253,7 +1259,6 @@ class JsonToolAgent(ToolCallingAgent):
         metadata["context_tokens"] = int(
             metadata.get("context_tokens", 0) or 0
         ) + LLMClient.estimate_tokens(messages)
-        metadata["api_call_count"] = int(metadata.get("api_call_count", 0) or 0) + 1
         metadata["cumulative_prompt_tokens"] = (
             int(metadata.get("cumulative_prompt_tokens", 0) or 0) + prompt_tokens
         )

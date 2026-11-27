@@ -1,4 +1,4 @@
-"""Read one complete public decision from the current assistant turn."""
+"""从模型这一轮公开交出的回答里，读出一份完整结论。"""
 
 from dataclasses import dataclass
 import hashlib
@@ -12,7 +12,7 @@ from ...common.validator_protocol import (
 
 
 def is_incomplete(result: dict[str, Any]) -> bool:
-    # Generic conversations report valid=False/name=None when no terminal was required.
+    # 普通对话可以直接用文字作答。这时即使工具显示“未通过”，文字答案仍可能完整。
     rejected = result.get("terminal_tool_valid") is False and result.get(
         "terminal_tool_name", "required"
     )
@@ -45,7 +45,7 @@ def _decode_object(value: Any) -> dict[str, Any] | None:
 
 
 def terminal_payload(result: dict[str, Any], tool_name: str) -> dict[str, Any] | None:
-    """Reject mixed/duplicate tool calls, ambiguous text, and unfinished responses."""
+    """只收一份完整明确的回答，同时交几份就无法确定哪份算数。"""
     if is_incomplete(result):
         return None
     message = current_message(result)
@@ -72,14 +72,13 @@ def terminal_payload(result: dict[str, Any], tool_name: str) -> dict[str, Any] |
         ):
             return None
         text = body[:-3]
-    # Parse the entire object. Arrays, quoted JSON, and incomplete outer structures
-    # cannot turn an embedded fragment into a decision; fenced objects remain supported.
+    # 从头到尾读整份回答，避免从残缺内容里捡出一个看似完整的答案。
     return _decode_object(text)
 
 
 @dataclass(frozen=True)
 class DecisionOutput:
-    """Decode once; admission and audit observe the same public response."""
+    """同一份答案只读一次，检查结论和事后查错都用这次读到的内容。"""
 
     raw: dict[str, Any] | None
     normalized: dict[str, Any] | None
@@ -123,7 +122,7 @@ class DecisionOutput:
 
     @staticmethod
     def _bounded(payload: dict[str, Any]) -> dict[str, Any]:
-        # Full conversations belong to the recorder; reports keep bounded diagnostics.
+        # 回答超过 65,536 字节时，报告只存大小和校验码，凭它们仍能核对原文。
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8", errors="replace")
         if len(encoded) <= 65536:
             return payload

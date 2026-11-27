@@ -1,7 +1,6 @@
-"""Strict Validator V3 contracts and reserved V4 transport shapes.
+"""规定一份复核答案怎样填写、怎样检查。
 
-Models own decisions; the runtime binds identity and stop metadata.
-Reporting policy remains in the validation pipeline.
+模型给出判断和理由，程序补上告警编号和停止原因。这里也定义了预留的 V4 表单。
 """
 
 from __future__ import annotations
@@ -15,9 +14,9 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 VALIDATOR_RESULT_VERSION = "zscope.validator-result.v3"
 VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v3"
-# Runtime decision policy, separate from the model's response schema.
+# 程序更改判断规则时，可以单独更新这个版本号。
 VALIDATION_POLICY_VERSION = "zscope.validation-policy.v3"
-# v2b_adjudication independently audits a rejection without deterministic proof.
+# 若一条告警被排除却缺少程序核实的证明，v2b_adjudication 表示再做一次独立复核。
 VALIDATOR_PASSES = frozenset(
     {"initial", "evidence_recheck", "investigation_synthesis", "v2b_adjudication"}
 )
@@ -50,8 +49,7 @@ VALIDATOR_UNCERTAIN_TERMINAL_REASONS = frozenset(
         "investigation_exhausted",
     }
 )
-# One decision table drives schema generation and runtime validation. A completed
-# investigation keeps its existing spelling; exhaustion never completes a verdict.
+# 告诉模型怎样填，以及收到答案后怎样查，都用这张表。用尽轮数而没有结论时，只能填“待查”。
 _DECISION_STATES = (
     ({"verified", "rejected"}, False, {"decision_complete", "investigation_complete"}),
     ({"uncertain"}, True, {"missing_fact"}),
@@ -82,7 +80,7 @@ def _finite_number(value: str) -> float:
 
 
 def decode_validator_json(value: str) -> Any:
-    """Decode public JSON and provider fragments with the same unambiguous syntax."""
+    """按同一套规则读取回答。同一个名称写了两个值，程序会拒收，避免猜错。"""
     return json.loads(
         value,
         object_pairs_hook=_unique_object,
@@ -99,7 +97,7 @@ def _string_schema(*, max_length: Optional[int] = None) -> Dict[str, Any]:
 
 
 def validator_result_schema_v3() -> Dict[str, Any]:
-    """Return the complete conditional ValidatorResult v3 contract."""
+    """列出完整答案的填写要求，包括哪些项目能同时出现。"""
 
     properties = {
         "schema_version": {
@@ -164,8 +162,7 @@ def validator_result_schema_v3() -> Dict[str, Any]:
         "type": "object",
         "properties": properties,
         "required": list(properties),
-        # Field-level schemas alone cannot exclude a completed verdict that
-        # simultaneously requests missing evidence.
+        # 分开看每一栏都可能合格，合起来却可能矛盾。例如一边填“确认”，一边又说还缺关键证据。
         "oneOf": [
             {
                 "type": "object",
@@ -187,9 +184,9 @@ def validator_result_provider_schema_v3(
     allowed_missing_fact_kinds: Optional[Iterable[str]] = None,
     allowed_evidence_refs: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
-    """Flatten the historical result for gateways that truncate required via oneOf.
+    """把必填项直接列给模型。有些模型服务读到分支规则时会漏掉必填项。
 
-    Keep conditional validation local; generation gets the complete field set.
+    各项合起来是否说得通，由本程序在收到答案后检查。
     """
 
     schema = validator_result_schema_v3()
@@ -227,8 +224,7 @@ def validator_result_provider_schema_v3(
             schema["properties"]["stop_reason"]["enum"].remove("missing_fact")
             return schema
         request["properties"]["fact_kind"]["enum"] = allowed
-    # An explicit null branch avoids object-shaped placeholder requests at
-    # compatible providers. The parser still enforces verdict/stop pairing.
+    # 允许“还要查什么”留空，避免模型为填满表单编造请求。
     schema["properties"]["missing_fact_request"] = {
         "description": (
             "Use JSON null for verified/rejected or when no fact is requested. "
@@ -255,7 +251,7 @@ def validator_decision_schema_v3(
     allowed_missing_fact_kinds: Optional[Iterable[str]] = None,
     allowed_evidence_refs: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
-    """Expose model decisions while keeping invocation metadata program-owned."""
+    """给模型的表单只留需要它判断的部分。告警编号和检查阶段由程序填写。"""
     schema = validator_result_provider_schema_v3(
         allowed_missing_fact_kinds=allowed_missing_fact_kinds,
         allowed_evidence_refs=allowed_evidence_refs,
@@ -285,10 +281,9 @@ _DSML_TERMINAL = re.compile(r"<｜DSML｜\s*invoke>\s*$", re.DOTALL)
 
 
 def normalize_validator_provider_payload_v3(value: Any) -> Optional[Dict[str, Any]]:
-    """Recover the known one-key DSML terminal envelope, never general markup.
+    """处理一种已知的服务错误。有时整份答案被塞进了版本号一栏。
 
-    A gateway defect places all terminal arguments under schema_version.
-    Require its exact version, terminal marker and complete V3 field set.
+    只有版本号、结尾标记和所有必填项都对得上，才还原这份答案。
     """
 
     if not isinstance(value, Mapping) or set(value) != {"schema_version"}:
@@ -305,7 +300,7 @@ def normalize_validator_provider_payload_v3(value: Any) -> Optional[Dict[str, An
     payload: Dict[str, Any] = {"schema_version": VALIDATOR_RESULT_VERSION}
     body = encoded[first_marker:]
     cursor = 0
-    # Match only the next parameter; searching later tags rescans malformed tails.
+    # 从上次读到的位置接着看，遇到坏格式就停，避免在同一段残缺文字里反复查找。
     while match := _DSML_PARAMETER.match(body, cursor):
         cursor = match.end()
         name = str(match.group("name") or "")
@@ -384,7 +379,7 @@ class ValidatorResultV3:
 
 @dataclass(frozen=True)
 class DynamicReproductionRequest:
-    """V4 transport shape; execution is owned by dynamic reproduction policy."""
+    """预留的 V4 请求表，只描述要检查什么。是否执行由其他模块决定。"""
 
     request_id: str
     candidate_uid: str
@@ -416,7 +411,7 @@ class DynamicReproductionRequest:
 
 @dataclass(frozen=True)
 class DynamicReproductionResult:
-    """Reserved V4 result shape kept separate from ValidatorResult v3."""
+    """预留的 V4 结果表，与本次代码复核的结论分别记录。"""
 
     request_id: str
     outcome: str
@@ -446,7 +441,7 @@ class DynamicReproductionResult:
 
 
 def _wire_fields(value: Any, contract: type) -> Dict[str, Any]:
-    """Project only declared contract fields, without deep-copying evidence."""
+    """只导出表单列出的项目，已有证据不必整份再复制一遍。"""
     result = {}
     for field in fields(contract):
         item = getattr(value, field.name)
@@ -484,7 +479,7 @@ def parse_validator_result_v3(
     expected_pass: str = "",
     allowed_evidence_refs: Optional[Iterable[str]] = None,
 ) -> Optional[ValidatorResultV3]:
-    """Validate a model payload without accepting coercive legacy aliases."""
+    """按当前格式核对整份结果，包括判定用词、告警编号和可引用的证据。"""
 
     if not isinstance(value, Mapping):
         return None
@@ -493,8 +488,8 @@ def parse_validator_result_v3(
     if value.get("schema_version") != VALIDATOR_RESULT_VERSION:
         return None
 
-    # Validate the wire container types here; the result object owns all field
-    # limits and cross-field rules, including runtime-generated failure outcomes.
+    # 先检查证据是否按列表提交。创建结果时统一检查长度和各项之间的关系，
+    # 这样程序自己填的“待查”也会经过相同的检查。
     fields = {key: value[key] for key in _REQUIRED_FIELDS - {"schema_version", "pass"}}
     fields["validation_pass"] = value["pass"]
     for name in _EVIDENCE_LIMITS:
@@ -530,7 +525,7 @@ def bind_validator_decision(
     subject_uid: str = "",
     function_uid: str = "",
 ) -> Optional[ValidatorResultV3]:
-    """Bind a compact decision, or validate a complete historical result unchanged."""
+    """给简短答案补上本次告警的信息。保存过的完整 V3 答案自带编号，核对时要用原编号。"""
     if not isinstance(value, Mapping) or any(
         _strict_string(item, required=True) is None
         for item in (candidate_uid, validation_cluster_uid, expected_pass)
@@ -556,8 +551,7 @@ def bind_validator_decision(
             "stop_reason": stop_reason,
             "missing_fact_request": request,
         }
-    # Never overwrite historical identities: the strict parser rejects mismatches
-    # and partial mixtures of compact decisions and complete result envelopes.
+    # 保留旧答案上的原编号，后续才能查出它是否属于另一条告警。
     result = parse_validator_result_v3(
         value,
         candidate_uid=candidate_uid,

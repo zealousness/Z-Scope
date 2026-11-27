@@ -81,6 +81,7 @@ from .initial_reuse import (
     reusable_initial_response,
 )
 from . import investigation_reuse
+from .condition_tasks import refuted_positive_conditions
 
 logger = logging.getLogger(__name__)
 
@@ -3180,6 +3181,7 @@ class ValidationRunner:
             if isinstance(value, str) and value
         }
         accepted = []
+        admitted = []
         for fact in facts:
             fact_uid = str(fact.get("fact_uid") or "")
             backing_refs = fact.get("evidence_refs")
@@ -3200,21 +3202,34 @@ class ValidationRunner:
                 )
             )
             if (
-                fact_uid in cited
+                fact_uid
                 and str(fact.get("producer_engine") or "") == "validator_readonly_tool_session"
                 and str(fact.get("dependency_code_hash") or "")
                 and backing_refs
                 and all(ref in tool_catalog for ref in backing_refs)
                 and has_locations
             ):
-                accepted.append(fact)
+                admitted.append(fact)
+                if fact_uid in cited:
+                    accepted.append(fact)
+        conflicts: set[str] = set()
+        if val_data.get("verdict") == "verified":
+            required = issue.get("obligation_positive_conditions") or []
+            # A verdict cannot ignore a newer refutation or cite an old refutation as support.
+            conflicts = refuted_positive_conditions(admitted, required)
+            conflicts.update(refuted_positive_conditions(accepted, required))
+        if conflicts:
+            issue["candidate_promotion_eligible"] = False
+            issue["candidate_promotion_reason"] = "v3_required_condition_refuted"
         issue["v3_investigation_fact_count"] = len(facts)
         issue["v3_investigation_cited_fact_count"] = len(accepted)
         issue["v3_tool_fact_catalog"] = tool_catalog
         if not accepted:
             issue["v3_evidence_closure"] = {
                 "complete": False,
-                "reason": "no_cited_tool_backed_fact",
+                "reason": (
+                    "required_condition_refuted" if conflicts else "no_cited_tool_backed_fact"
+                ),
                 "resolved_fact_kinds": [],
             }
             return
@@ -3262,7 +3277,11 @@ class ValidationRunner:
         fact_slice = dict(fact_slice) if isinstance(fact_slice, dict) else {}
         raw_missing = issue.get("missing_fact_kinds") or fact_slice.get("missing_fact_kinds") or []
         missing = set(normalize_missing_fact_kinds(raw_missing))
-        resolved = {str(fact.get("fact_kind") or "") for fact in accepted if fact.get("fact_kind")}
+        resolved = {
+            str(fact["fact_kind"])
+            for fact in accepted
+            if fact.get("fact_kind") and conflicts.isdisjoint(fact.get("condition_ids") or ())
+        }
         remaining = sorted(missing - resolved)
         fact_uids = {str(value) for value in fact_slice.get("fact_uids") or [] if str(value)}
         fact_payloads = [
@@ -3298,10 +3317,14 @@ class ValidationRunner:
         issue["decision_fact_slice"] = fact_slice
         issue["missing_fact_kinds"] = remaining
         issue["decision_fact_coverage"] = fact_slice["coverage"]
-        complete = bool(not remaining and code_hashes and accepted)
+        complete = bool(not remaining and code_hashes and accepted and not conflicts)
         issue["v3_evidence_closure"] = {
             "complete": complete,
-            "reason": "required_facts_closed" if complete else "required_facts_still_missing",
+            "reason": (
+                "required_condition_refuted"
+                if conflicts
+                else "required_facts_closed" if complete else "required_facts_still_missing"
+            ),
             "resolved_fact_kinds": sorted(resolved),
             "remaining_fact_kinds": remaining,
             "fact_uids": sorted(

@@ -189,7 +189,10 @@ def validate_function_arguments(
         return "tool schema is missing"
     if not isinstance(arguments, dict):
         return "Tool arguments must be a JSON object"
-    number_error = _nonfinite_number_error(arguments)
+    try:
+        number_error = _nonfinite_number_error(arguments)
+    except RecursionError:
+        return "Tool arguments exceed the supported nesting depth"
     if number_error:
         return number_error
 

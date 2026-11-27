@@ -6,198 +6,75 @@ import pytest
 from zscope.agents.validator_agent.agent import ValidatorAgent
 from zscope.agents.validator_agent.legacy import LegacyResult
 from zscope.agents.validator_agent.investigation import _tool_result_evidence_atoms
-from zscope.common.validator_protocol import parse_validator_result_v3
 
 
 def _agent() -> ValidatorAgent:
     return ValidatorAgent.__new__(ValidatorAgent)
 
 
-def test_v3_tool_evidence_atoms_ignore_empty_and_request_echoes() -> None:
-    assert (
-        _tool_result_evidence_atoms(
-            {"success": True, "query": "different symbol", "results": [], "duration_ms": 2}
-        )
-        == set()
+def test_v3_tool_evidence_atoms_ignore_empty_and_failed_reads() -> None:
+    assert not _tool_result_evidence_atoms(
+        "query_code_graph", {"success": True, "data": {"edges": []}, "duration_ms": 2}
     )
-    assert (
-        _tool_result_evidence_atoms(
-            {"success": False, "error": "not found", "results": ["misleading"]}
-        )
-        == set()
+    assert not _tool_result_evidence_atoms(
+        "query_code_graph", {"success": False, "data": {"edges": [{"site": "demo.c:12"}]}}
     )
 
 
-def test_v3_tool_evidence_atoms_detect_new_program_facts() -> None:
-    first = _tool_result_evidence_atoms(
-        {"success": True, "results": [{"file": "src/demo.c", "line": 12, "code": "sink(x);"}]}
-    )
-    rewrapped = _tool_result_evidence_atoms(
-        {
-            "success": True,
-            "query": "another request",
-            "metadata": {"timestamp": "later"},
-            "results": [{"file": "src/demo.c", "line": 12, "code": "sink(x);"}],
-        }
-    )
-
-    assert first
-    assert rewrapped == first
-
-
-def test_validator_agent_accepts_wrapped_validation_result() -> None:
-    content = """```json
-{
-  "validation_result": {
-    "issue_id": "ISSUE_1",
-    "verdict": "verified",
-    "confidence_score": 0.91,
-    "reasoning": "evidence proves the path"
-  }
-}
-```"""
-
-    parsed = _agent()._extract_validation_payload(content, {}, [])
-
-    assert parsed == {
+def _result(verdict="verified", **changes):
+    return {
         "type": "validation_result",
-        "issue_id": "ISSUE_1",
-        "verdict": "verified",
-        "confidence_score": 0.91,
-        "reasoning": "evidence proves the path",
-        "is_valid": True,
+        "verdict": verdict,
+        "reasoning": "current evidence",
+        "blocking_negative_evidence": False,
+        **changes,
     }
 
 
-def test_validator_agent_accepts_result_wrapper_and_verdict_alias() -> None:
-    content = '{"result": {"issue_id": "ISSUE_2", "verdict": "needs_review"}}'
-
-    parsed = _agent()._extract_validation_payload(content, {}, [])
-
-    assert parsed["type"] == "validation_result"
-    assert parsed["verdict"] == "uncertain"
-    assert parsed["is_valid"] is False
+def test_model_schema_requests_the_verdict_once():
+    fields = LegacyResult.output_spec().schema["properties"]
+    assert set(fields["verdict"]["enum"]) == {"verified", "rejected", "uncertain"}
+    assert "is_valid" not in fields
 
 
-def test_validator_agent_normalizes_legacy_boolean_result() -> None:
-    content = '{"is_valid": "false", "reasoning": "guard disproves it"}'
-
-    parsed = _agent()._extract_validation_payload(content, {}, [])
-
-    assert parsed["type"] == "validation_result"
-    assert parsed["verdict"] == "rejected"
-    assert parsed["is_valid"] is False
+@pytest.mark.parametrize("verdict", ["verified", "rejected", "uncertain"])
+def test_validation_result_preserves_fields_and_derives_is_valid(verdict):
+    original = _result(verdict, is_valid=verdict != "verified", issue_id="ISSUE_1")
+    content = "```json\n" + json.dumps(original) + "\n```"
+    assert _agent()._extract_validation_payload(content, {}, []) == {
+        **original,
+        "is_valid": verdict == "verified",
+    }
+    assert original["is_valid"] is (verdict != "verified")
 
 
 @pytest.mark.parametrize(
-    "canonical,spellings",
-    [
-        ("verified", ("verified", "valid", "true", "confirmed", "true_positive", "tp")),
-        ("rejected", ("rejected", "invalid", "false", "reject", "false_positive", "fp")),
-        ("uncertain", ("uncertain", "needs_review", "need_review", "unknown", "inconclusive")),
-    ],
+    "verdict", ["tp", "fp", "needs_review", "confirmed", "true", "VERIFIED", None, []]
 )
-def test_legacy_spellings_preserve_verdict_precedence_and_input(canonical, spellings):
-    for spelling in spellings:
-        original = {
-            "verdict": f" {spelling.upper()} ",
-            "is_valid": canonical != "verified",
-            "reasoning": "historical evidence",
-        }
-        parsed = LegacyResult.parse({"result": original})
-        assert parsed == {
-            **original,
-            "type": "validation_result",
-            "verdict": canonical,
-            "is_valid": canonical == "verified",
-        }
-        assert original["verdict"] == f" {spelling.upper()} "
-        assert original["is_valid"] is (canonical != "verified")
-
-
-def test_validator_agent_does_not_accept_embedded_finding_verdict() -> None:
-    content = (
-        '{"finding": {"id": "ISSUE_3", "verdict": "verified"}, "notes": "not a validator result"}'
-    )
-
-    assert _agent()._extract_validation_payload(content, {}, []) is None
-
-
-def test_validator_agent_accepts_validation_result_list_wrapper() -> None:
-    content = '{"validation_results": [{"issue_id": "ISSUE_4", "verdict": "confirmed"}]}'
-
-    parsed = _agent()._extract_validation_payload(content, {}, [])
-
-    assert parsed["type"] == "validation_result"
-    assert parsed["issue_id"] == "ISSUE_4"
-    assert parsed["verdict"] == "verified"
-    assert parsed["is_valid"] is True
+def test_validation_rejects_noncanonical_verdict_even_with_is_valid(verdict):
+    assert LegacyResult.parse(_result(verdict, is_valid=True)) is None
 
 
 @pytest.mark.parametrize(
-    "wrapper",
+    "body",
     [
-        "answer",
-        "data",
-        "decision",
-        "decisions",
-        "output",
-        "outputs",
-        "payload",
-        "response",
-        "responses",
-        "result",
-        "results",
-        "validation",
-        "validation_result",
-        "validation_results",
-        "Validation-Result",
+        {"is_valid": True, "reasoning": "old representation"},
+        {"validation_result": "verified"},
+        {"result": _result()},
+        {"validation_results": [_result()]},
+        {"finding": _result()},
+        _result(type="unrelated"),
+        _result(reasoning="  "),
     ],
 )
-def test_legacy_wrapper_allowlist_preserves_replay_without_weakening_v3(wrapper):
-    result = {"issue_id": "OLD_1", "verdict": "needs_review"}
-    wrapped = {wrapper: [result]}
-    parsed = LegacyResult.parse(wrapped)
-    assert parsed["issue_id"] == "OLD_1"
-    assert parsed["verdict"] == "uncertain"
-    from test_validator_v3_protocol import _result
-
-    assert parse_validator_result_v3({wrapper: _result()}) is None
+def test_validation_rejects_undeclared_result_shapes(body):
+    assert _agent()._extract_validation_payload(json.dumps(body), {}, []) is None
 
 
-@pytest.mark.parametrize("wrapper", ["finding", "context", "notes", "arbitrary"])
-def test_legacy_parser_does_not_search_arbitrary_nested_objects(wrapper):
-    assert (
-        LegacyResult.parse(
-            {
-                wrapper: {"issue_id": "UNRELATED", "verdict": "verified"},
-            }
-        )
-        is None
-    )
-
-
-@pytest.mark.parametrize(
-    "detail",
-    [
-        "confidence_score",
-        "blocking_negative_evidence",
-        "control_of_source",
-        "exploit_scenario",
-        "finding_kind",
-        "guard_analysis",
-        "issue_id",
-        "missing_context",
-        "negative_evidence",
-        "positive_evidence",
-        "reasoning",
-        "sink",
-        "source",
-    ],
-)
-def test_legacy_result_details_keep_their_existing_shape_recognition(detail):
-    assert LegacyResult.recognizes({"verdict": "verified", detail: "legacy value"})
-    assert not LegacyResult.recognizes({"verdict": "verified", "unrelated": "value"})
+def test_deep_unexpected_metadata_is_a_format_failure():
+    nested = '{"item":' * 2000 + "null" + "}" * 2000
+    text = json.dumps(_result())[:-1] + ',"extra":' + nested + "}"
+    assert _agent()._extract_validation_payload(text, {}, []) is None
 
 
 @pytest.mark.parametrize("route", ["legacy", "fast_path", "v2"])
@@ -248,7 +125,7 @@ def test_failed_legacy_format_repair_logs_only_error_categories(caplog, structur
     assert marker not in json.dumps(calls)
 
 
-def test_validator_agent_run_does_not_retry_for_recoverable_wrapper() -> None:
+def test_validator_agent_run_accepts_the_declared_result_on_first_try() -> None:
     class FakeLLM:
         def __init__(self) -> None:
             self.calls = 0
@@ -256,7 +133,7 @@ def test_validator_agent_run_does_not_retry_for_recoverable_wrapper() -> None:
         def run_conversation_with_tools(self, **kwargs):
             self.calls += 1
             return {
-                "content": '{"data": {"issue_id": "ISSUE_5", "verdict": "verified"}}',
+                "content": json.dumps(_result(issue_id="ISSUE_5")),
                 "conversation": [],
                 "context_tokens": 10,
                 "cumulative_prompt_tokens": 20,
@@ -291,6 +168,7 @@ def test_validator_agent_run_accepts_high_confidence_fast_path() -> None:
 {
   "type": "validation_result",
   "issue_id": "ISSUE_6",
+  "blocking_negative_evidence": false,
   "verdict": "verified",
   "confidence_score": 0.91,
   "reasoning": "证据包已经证明 source 到 sink",
@@ -346,6 +224,7 @@ def test_validator_agent_run_accepts_uncertain_fast_path_as_terminal_review() ->
                     {
                         "type": "validation_result",
                         "issue_id": "ISSUE_REVIEW",
+                        "blocking_negative_evidence": False,
                         "verdict": "uncertain",
                         "confidence_score": 0.62,
                         "reasoning": "The compact evidence does not prove the guard contract.",
@@ -387,34 +266,9 @@ def test_validator_agent_run_accepts_uncertain_fast_path_as_terminal_review() ->
     assert response.metadata["validator_fast_path_accepted"] == 1
 
 
-def test_validator_agent_uncertain_fast_path_requires_reasoning() -> None:
-    assert (
-        LegacyResult.accept_fast_path(
-            {
-                "type": "validation_result",
-                "verdict": "uncertain",
-                "reasoning": "  ",
-                "missing_context": ["callee guard contract"],
-            }
-        )
-        is False
-    )
-
-
-def test_validator_agent_fast_path_defers_confidence_policy_to_pipeline() -> None:
-    for verdict in ("verified", "rejected"):
-        assert (
-            LegacyResult.accept_fast_path(
-                {
-                    "type": "validation_result",
-                    "verdict": verdict,
-                    "confidence_score": 0.42,
-                    "reasoning": "The structured evidence supports a terminal triage decision.",
-                    "missing_context": ["additional contract evidence"],
-                }
-            )
-            is True
-        )
+@pytest.mark.parametrize("verdict", ["verified", "rejected"])
+def test_validator_parser_defers_confidence_policy_to_pipeline(verdict):
+    assert LegacyResult.parse(_result(verdict, confidence_score=0.42))["verdict"] == verdict
 
 
 def test_validator_agent_repairs_prose_without_json() -> None:

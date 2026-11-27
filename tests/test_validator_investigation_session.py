@@ -8,6 +8,7 @@ from zscope.common.cancellation import CancellationError, CancellationToken, bin
 from zscope.common.validator_protocol import ValidatorResultV3
 from zscope.tools.contracts import tool_result
 from zscope.core.validation.review_protocol import REVIEW_VERSION
+from zscope.core.validation.review_session import ReviewSession
 
 
 def _session(execute=None, **overrides):
@@ -172,6 +173,48 @@ def test_partial_coverage_preserves_concrete_source_evidence(status):
     assert session(session.fact_tool_name, _fact(session))["success"]
 
 
+@pytest.mark.parametrize(
+    "name,data",
+    [
+        ("read_code", {"latency_ms": 12}),
+        ("read_code", {"source": {"latency_ms": 12}}),
+        ("query_code_graph", {"edges": "not a record list", "latency_ms": 12}),
+        ("query_code_graph", {"rows": [{"latency_ms": 12}]}),
+        ("get_callers", {"callers": [], "caller_count": 0, "truncated": False}),
+        ("custom_read", {"latency_ms": 12}),
+    ],
+)
+def test_diagnostics_and_unrelated_fields_do_not_advance_an_investigation(name, data):
+    session = _session(lambda *_: tool_result(data=data))
+    assert not session(name, {})["validator_new_evidence"]
+    assert not session.tool_fact_catalog
+
+
+def test_same_source_at_different_latency_is_a_single_observation():
+    session = _session(
+        lambda name, args: tool_result(
+            data={
+                "source": {
+                    "code": "n < 8",
+                    "file": "demo.c",
+                    "start_line": 1,
+                    "latency_ms": args["max_lines"],
+                },
+                "latency_ms": args["max_lines"],
+            }
+        )
+    )
+    assert session("read_code", {"max_lines": 1})["validator_new_evidence"]
+    assert not session("read_code", {"max_lines": 2})["validator_new_evidence"]
+
+
+def test_supported_review_check_needs_backing_refs_to_become_an_observation():
+    data = {"status": "supported", "claim_kind": "guard_bounds", "reason": "checked bound"}
+    session = _session(lambda name, args: tool_result(data={**data, "evidence_refs": args["refs"]}))
+    assert not session("check_validation_claim", {"refs": []})["validator_new_evidence"]
+    assert session("check_validation_claim", {"refs": ["current-store"]})["validator_new_evidence"]
+
+
 def test_error_body_cannot_authorize_an_otherwise_successful_payload():
     session = _session(
         lambda name, args: tool_result(
@@ -183,10 +226,21 @@ def test_error_body_cannot_authorize_an_otherwise_successful_payload():
 
 
 @pytest.mark.parametrize(
-    "collection", ["records", "edges", "paths", "findings", "symbols", "matches", "files"]
+    "tool,collection",
+    [
+        ("get_semantic_context", "records"),
+        ("query_code_graph", "edges"),
+        ("trace_data_flow", "paths"),
+        ("query_static_findings", "findings"),
+        ("search_code", "symbols"),
+        ("search_code", "matches"),
+        ("query_guard_coverage", "rows"),
+        ("query_validation_facts", "items"),
+        ("get_callers", "callers"),
+    ],
 )
 @pytest.mark.parametrize("has_records", [False, True])
-def test_collection_metadata_cannot_replace_missing_records(collection, has_records):
+def test_collection_metadata_cannot_replace_missing_records(tool, collection, has_records):
     session = _session(
         lambda name, args: tool_result(
             status="partial",
@@ -200,7 +254,7 @@ def test_collection_metadata_cannot_replace_missing_records(collection, has_reco
             },
         )
     )
-    result = session("read_code", {"file_path": "demo.c"})
+    result = session(tool, {"file_path": "demo.c"})
     assert result["validator_new_evidence"] is has_records
     assert bool(session.tool_fact_catalog) is has_records
 
@@ -275,6 +329,61 @@ def test_review_receives_registered_fact_with_the_fact_tool_name():
     name, result = records[-1]
     assert name == session.fact_tool_name
     assert result["fact"]["fact_uid"] in session.fact_ids
+
+
+@pytest.mark.parametrize("bad_field", [{"limit": 101}, {"extra": 1}])
+def test_review_query_checks_its_declared_schema_before_dispatch(bad_field):
+    calls = []
+
+    def query(uid, **arguments):
+        calls.append(arguments)
+        return {"complete": True, "items": [{"value": 8}]}
+
+    review = ReviewSession(SimpleNamespace(store=SimpleNamespace(query=query)), {"function": "f"})
+    session = _session(_review_session=review)
+    args = {"kind": "types", "symbol": "f", "offset": 0, "limit": 100}
+    rejected = session("query_validation_facts", args | bad_field)
+    assert rejected["success"] is False and next(iter(bad_field)) in rejected["error"]
+    assert not calls and not session.tool_fact_catalog
+    accepted = session("query_validation_facts", args)
+    assert calls == [args] and accepted["evidence_ref"] in session.tool_fact_catalog
+
+
+@pytest.mark.parametrize("at_limit", [False, True])
+def test_proposal_receipt_is_audited_but_never_becomes_evidence(tmp_path, at_limit):
+    source = tmp_path / "subject.c"
+    source.write_text("int f(void) { return 1; }\n", encoding="utf-8")
+    fn = {"name": "f", "loc": {"file": str(source), "line": 1}, "range": {"end": {"line": 1}}}
+    checker = SimpleNamespace(
+        store=SimpleNamespace(load=lambda _: {"complete": True, "source": str(source)}),
+        _functions=lambda _: {"f": fn},
+    )
+    issue = {
+        "function": "f",
+        "review_related_proposals": [{} for _ in range(16 if at_limit else 0)],
+    }
+    review = ReviewSession(checker, issue, related=True)
+    session = _session(_review_session=review, review_protocol_enabled=True)
+    ref = _fact(session)["evidence_refs"][0]
+    args = dict(
+        function="f",
+        category="review",
+        source="value",
+        sink="return",
+        line=1,
+        description="Review a neighboring claim",
+        trigger_condition="call f",
+        analysis_scope="current_build",
+        evidence_refs=[ref],
+    )
+    session._zscope_start_iteration(1)
+    receipt = session("propose_related_candidate", args)
+    assert receipt["data"]["accepted"] is (not at_limit)
+    assert issue["review_tool_results"][-1]["result"] == receipt
+    assert not receipt["validator_new_evidence"] and "evidence_ref" not in receipt
+    session._zscope_start_iteration(2)
+    assert session.consecutive_no_evidence_fact_iterations == 1
+    assert session.allowed_refs == session.tool_fact_catalog.keys() == {ref}
 
 
 def _terminal(**changes):
@@ -503,7 +612,8 @@ def test_progress_preserves_record_associations_and_source_whitespace():
     )
     session = _session(lambda name, args: tool_result(data=next(bodies)))
     for index in range(4):
-        assert session("read_code", {"start_line": index + 1})["validator_new_evidence"]
+        name = "get_semantic_context" if index < 2 else "read_code"
+        assert session(name, {"start_line": index + 1})["validator_new_evidence"]
 
 
 def test_record_reordering_and_pagination_metadata_are_not_progress():
@@ -648,14 +758,7 @@ def test_redundant_fact_refs_do_not_create_a_second_claim():
 def test_fact_cannot_relabel_evidence_from_another_build():
     session = _session(
         lambda name, args: tool_result(
-            data={
-                "records": [
-                    {
-                        "build_context_id": "BUILD_2",
-                        "value": 8,
-                    }
-                ]
-            }
+            data={"source": {"code": "n < 8", "build_context_id": "BUILD_2"}}
         )
     )
     args = _fact(session)
@@ -673,14 +776,7 @@ def test_raw_evidence_identity_is_bound_to_the_current_candidate_build():
 def test_fact_can_use_current_build_evidence():
     session = _session(
         lambda name, args: tool_result(
-            data={
-                "records": [
-                    {
-                        "build_context_id": "BUILD_1",
-                        "value": 8,
-                    }
-                ]
-            }
+            data={"source": {"code": "n < 8", "build_context_id": "BUILD_1"}}
         )
     )
     result = session(session.fact_tool_name, _fact(session))
@@ -690,7 +786,7 @@ def test_fact_can_use_current_build_evidence():
 
 def test_query_build_cannot_be_hidden_by_a_result_without_build_ids():
     session = _session()
-    read = session("get_semantic_context", {"build_context_id": "BUILD_2"})
+    read = session("read_code", {"file_path": "demo.c", "build_context_id": "BUILD_2"})
     result = session(
         session.fact_tool_name,
         {
