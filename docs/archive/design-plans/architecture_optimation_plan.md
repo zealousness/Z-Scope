@@ -943,7 +943,7 @@ void run(Ops* ops, Callback local) {
 
 ### 9.4 SVF cache/materialization测试
 
-物化一致性测试已完成并通过。实际覆盖：marker/status/artifact 全有效时无工具调用和重复导入；marker 缺失时重放旧 DOT；TU purge 后 generation 失效并自动 replay；零行导入的合法缓存命中；hash 不匹配或 artifact 丢失时重跑；Saber JSON replay；savepoint rollback；多 group 只恢复失效 group；以及真实 `td_init -> _packet_receiver_thread -> _net_accept_connection` 离线恢复。相关回归 113 passed，聚焦回归 73 passed，`PYTHONPATH=/home/jager/Z-Scope pytest -q` 全量 811 passed。
+物化一致性测试已完成并通过。实际覆盖：marker/status/artifact 全有效时无工具调用和重复导入；marker 缺失时重放旧 DOT；TU purge 后 generation 失效并自动 replay；零行导入的合法缓存命中；hash 不匹配或 artifact 丢失时重跑；Saber JSON replay；savepoint rollback；多 group 只恢复失效 group；以及真实 `td_init -> _packet_receiver_thread -> _net_accept_connection` 离线恢复。相关回归 113 passed，聚焦回归 73 passed，`PYTHONPATH=<repo> pytest -q` 全量 811 passed。
 
 后续仅在 parser/version 语义改变时扩展下列兼容矩阵：
 

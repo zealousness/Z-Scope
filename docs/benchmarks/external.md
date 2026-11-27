@@ -128,11 +128,13 @@ SV-COMP raw corpus layout.
 
 `run-prepared --mode zscope` reads `test/range/zscope.local.env` by default, and
 also accepts `--env-file`. Both `Z_SCOPE_API_KEY=...` and
-`export Z_SCOPE_API_KEY=...` are supported. If unset, the generated external
-benchmark config defaults to:
+`export Z_SCOPE_API_KEY=...` are supported. Configure your OpenAI-compatible
+endpoint and model explicitly via environment variables (no vendor default is
+hardcoded):
 
-- `Z_SCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1`
-- `Z_SCOPE_MODEL=glm-5`
+- `Z_SCOPE_LLM_BASE_URL` (or legacy `Z_SCOPE_BASE_URL`), e.g. `https://provider.example/v1`
+- `Z_SCOPE_LLM_MODEL` (or legacy `Z_SCOPE_MODEL`), e.g. `your-model-id`
+- `Z_SCOPE_API_KEY`
 
 ## Pure Model Comparison
 

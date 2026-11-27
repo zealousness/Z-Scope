@@ -38,7 +38,7 @@
 
 ## 验证结果
 
-2026 年 10 月 23 日在 WSL Ubuntu 中执行。有效 Python 环境为 `/home/zeal/.venvs/zscope-fix-validation-20261022/bin/python`，版本 3.13.15；从仓库外确认 editable 安装指向当前 checkout。早期 Python 3.12 环境不满足项目版本要求，其结果不作为本次验收依据。
+2026 年 10 月 23 日在 WSL Ubuntu 中执行。有效 Python 环境为 `<venv>/bin/python`，版本 3.13.15；从仓库外确认 editable 安装指向当前 checkout。早期 Python 3.12 环境不满足项目版本要求，其结果不作为本次验收依据。
 
 | 检查 | 结果 | 能证明的范围 |
 |---|---|---|
@@ -56,14 +56,14 @@
 主要命令在 WSL 项目根目录执行：
 
 ```bash
-export ZSCOPE_UI_PLAYWRIGHT_MODULE=/mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright
-export ZSCOPE_UI_CHROMIUM=/home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome
+export ZSCOPE_UI_PLAYWRIGHT_MODULE=<playwright-module>
+export ZSCOPE_UI_CHROMIUM=<chromium-path>
 export ZSCOPE_UI_MULTI_TARGET_EDITING=1
 export ZSCOPE_UI_CONFIG_EVIDENCE=artifacts/ui-redesign-validation/py313/config
 export ZSCOPE_UI_EVIDENCE=artifacts/ui-redesign-validation/py313/workbench
 export ZSCOPE_UI_JOB_EVIDENCE=artifacts/ui-redesign-validation/py313/jobs
 export ZSCOPE_UX_BOUNDARY_EVIDENCE=artifacts/ui-redesign-validation/py313/ux
-validation_python=/home/zeal/.venvs/zscope-fix-validation-20261022/bin/python
+validation_python=<venv>/bin/python
 
 "$validation_python" -m pytest -q tests/test_agent_workbench_ui.py tests/test_ux_capability_boundaries_ui.py --tb=short
 "$validation_python" -m pytest -q tests/test_web_dashboard_server.py tests/test_web_rules_api.py tests/test_web_user_config_workbook_api.py tests/test_web_wiki_api.py tests/test_portable_release.py tests/test_dashboard_navigation.py

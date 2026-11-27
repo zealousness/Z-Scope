@@ -22,14 +22,14 @@
 
 ## 验证
 
-所有质量检查在 WSL Ubuntu 的 `/home/zeal/venv313` 执行。初次发现已安装 native 工具仍输出旧程序事件版本，已使用当前 checkout 的 native 源码和系统 LLVM/Clang 18.1.3 重新构建测试工具：
+所有质量检查在 WSL Ubuntu 的 `<venv>` 执行。初次发现已安装 native 工具仍输出旧程序事件版本，已使用当前 checkout 的 native 源码和系统 LLVM/Clang 18.1.3 重新构建测试工具：
 
 ```bash
 python scripts/build_clang_indexer.py \
   --llvm-prefix /usr/lib/llvm-18 \
-  --build-dir /home/zeal/.cache/zscope-build-context/build \
-  --prefix /home/zeal/.cache/zscope-build-context/install --jobs 2
-export Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer
+  --build-dir $HOME/.cache/zscope-build-context/build \
+  --prefix $HOME/.cache/zscope-build-context/install --jobs 2
+export Z_SCOPE_TEST_CLANG_INDEXER=$HOME/.cache/zscope-build-context/install/bin/zscope-clang-indexer
 ```
 
 这是开发机真实 native 验证工具，不是 portable 发布包，不替代锁定发行工具链。没有运行客户项目扫描、真实 LLM 分析、Sanitizer 自动复现、正式准确率 benchmark 或 portable smoke。
@@ -257,7 +257,7 @@ RAPI01–RAPI05 的本批观察结果：
 - **RAPI04 pass（受限消费范围）**：共享消费者观察同一个输出指针和未知/已满足条件；复用错误池、schema-only、构建隔离、协议重放和规则 disabled/backend signal 回归。KnowledgeDB 和 SecurityMap 只传递契约/上下文，不能作为生命周期安全证明。未支持载体/模式/转换在覆盖诊断中显示。
 - **RAPI05 pass**：实际 native → GlobalModeler 冷建模只核验一次，同输入热命中不再调用包装器核验器；源码/guard、头文件及编译参数变化使缓存失效并绑定新 BuildContext。根契约降为 schema-only 不能继续派生可信外层契约；既有 incremental/contract-chain 测试覆盖根变化传播。契约编译器升级为 v21，使旧自动证明失效。
 
-实际运行环境为 WSL Ubuntu 的 `/home/zeal/venv313/bin/python`。native 测试显式设置 `Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer`；工具报告 Clang **18.1.3**、clang-facts.v2，二进制 SHA-256 为 `88a1df53454d29732cdbe297a18959b4f25dfd7a648f9b3e5a2e2cc0321951e9`。这是已有本地开发工具，不是锁定 Clang 18.1.0 的 portable 发布验收。新 native 用例实际编译提取 C 函数，没有把合成事实当提取结果；模型缓存测试中的 RecordingAgent 是受控响应，不是真实 LLM。
+实际运行环境为 WSL Ubuntu 的 `<venv>/bin/python`。native 测试显式设置 `Z_SCOPE_TEST_CLANG_INDEXER=$HOME/.cache/zscope-build-context/install/bin/zscope-clang-indexer`；工具报告 Clang **18.1.3**、clang-facts.v2，二进制 SHA-256 为 `88a1df53454d29732cdbe297a18959b4f25dfd7a648f9b3e5a2e2cc0321951e9`。这是已有本地开发工具，不是锁定 Clang 18.1.0 的 portable 发布验收。新 native 用例实际编译提取 C 函数，没有把合成事实当提取结果；模型缓存测试中的 RecordingAgent 是受控响应，不是真实 LLM。
 
 | 验证集合 | 实际结果 | 说明 |
 |---|---|---|
@@ -287,7 +287,7 @@ RAPI01–RAPI05 的本批观察结果：
 
 RAPI06 在上述切片内 **pass**：真实 TU-A 获取、TU-B 失败清理与遗漏清理可追溯；成功留存、cancel→complete、实际归还及未释放分支保留对象身份。两 executable 共用调用者、同名 static、宏变体、缺失实例、变更头文件/对象/输出不能串线。const 表中的释放与不释放目标分别按具体选择解释；选择未知时不把部分目标的释放效果推广到全体。重写表后实际重新链接会改变目标身份并撤销旧消费者。新增 `#pragma pack` 反例验证同名参数类型和相同签名仍须匹配真实布局；位域、布局预算耗尽或不完整类型不授予闭合证据。const 初始化即使经编译器诊断降级接受，也必须核对精确函数指针类型；不兼容的隐式转换不生成封闭目标收据。损坏或类型错误的链接 JSON 只产生覆盖缺口，不中断整个扫描。
 
-native 新增 `zscope.c-linkage.v1` 与 `zscope.const-call-targets.v1` 附加收据，保留原 program-events.v5 等协议。最终源码在 WSL 使用 Clang SDK **18.1.3** 真实重编译、安装并重跑回归；工具为 `/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer`，SHA-256 为 `e7e97e5c3cadfdfb083e358586df53b4ab5ed087b236a11b27b20e72b19b7624`。这是本地开发工具，不能冒充 portable 锁定 SDK 18.1.0 的发布产物。新增脚本入口为 `zscope-link-record`；本轮实际验收模块命令，包括含空格路径，安装后才有新控制台入口。
+native 新增 `zscope.c-linkage.v1` 与 `zscope.const-call-targets.v1` 附加收据，保留原 program-events.v5 等协议。最终源码在 WSL 使用 Clang SDK **18.1.3** 真实重编译、安装并重跑回归；工具为 `$HOME/.cache/zscope-build-context/install/bin/zscope-clang-indexer`，SHA-256 为 `e7e97e5c3cadfdfb083e358586df53b4ab5ed087b236a11b27b20e72b19b7624`。这是本地开发工具，不能冒充 portable 锁定 SDK 18.1.0 的发布产物。新增脚本入口为 `zscope-link-record`；本轮实际验收模块命令，包括含空格路径，安装后才有新控制台入口。
 
 | 验证集合 | 最终实际结果 | 说明 |
 |---|---|---|
@@ -299,7 +299,7 @@ native 新增 `zscope.c-linkage.v1` 与 `zscope.const-call-targets.v1` 附加收
 
 本节收尾另运行 `tests/test_agent_docs.py`：**6 pass / 0 fail / 0 skip**；四个本轮新 Python 文件的 Black 检查通过。
 
-测试均使用 WSL `/home/zeal/venv313/bin/python`，native 用例显式设置 `Z_SCOPE_TEST_CLANG_INDEXER` 并执行真实编译、链接和事实提取。各集合有交集，不累计为独立用例总数。开发中首轮 **11 pass / 51 fail** 暴露缺少 native 被调函数签名收据，补齐真实提取并重建；随后 **64 pass / 1 fail** 为旧缺口原因断言，更新为精确的链接目标缺失原因。扩展反例的 **8 pass / 2 fail** 分别是缺失编译命令导致严格索引提前拒绝、fixture 使用未支持算术；改为真实索引后移除成员实例，以及可解释的局部变量路径，未放宽生产守卫。最终各集合失败已归零。此前 85、139、232 项阶段回归不另外累计。
+测试均使用 WSL `<venv>/bin/python`，native 用例显式设置 `Z_SCOPE_TEST_CLANG_INDEXER` 并执行真实编译、链接和事实提取。各集合有交集，不累计为独立用例总数。开发中首轮 **11 pass / 51 fail** 暴露缺少 native 被调函数签名收据，补齐真实提取并重建；随后 **64 pass / 1 fail** 为旧缺口原因断言，更新为精确的链接目标缺失原因。扩展反例的 **8 pass / 2 fail** 分别是缺失编译命令导致严格索引提前拒绝、fixture 使用未支持算术；改为真实索引后移除成员实例，以及可解释的局部变量路径，未放宽生产守卫。最终各集合失败已归零。此前 85、139、232 项阶段回归不另外累计。
 
 能力边界：仅 Linux ELF、C 直接对象组成的一个可核验 executable；成员编译器须与 native SDK 的 Clang 版本匹配，并有兼容目录/参数、ABI 和依赖。GCC 可记录构建，但尚不能为此 native 跨 TU 消费授权。静态/共享库、复杂链接脚本、LTO、weak/common/ifunc、动态可变目标、任意函数指针、跨目标及完整变体调度仍未支持；不能把 BuildContext 中任意 `link_target` 字典视作授权。路径只扩展已有单槽池/引用留存解释，不包含一般堆资源路径求解、跨 TU 自动包装器契约推导、refcount、锁/RAII 或异步调度。扫描覆盖报告区分已观察目标及无收据/不兼容成员，不声称已扫描全部变体或入口外清理。路径输入核验仅在一次解析内复用摘要，重放时重新核验。
 
@@ -321,7 +321,7 @@ native 新增 `zscope.c-linkage.v1` 与 `zscope.const-call-targets.v1` 附加收
 
 native 在已有值元数据中补充字段写入的位宽/符号/限定信息和位域标记，源码核验拒绝缺失事实、atomic/volatile、unsigned、位域、union、其他位宽、宏改写、额外副作用和属性不明等形态。路径增减按当前 native 类型的整数边界执行；计数或业务 generation 发生溢出时保留技术缺口，不使用 Python 无界整数模拟 C 回绕，也不使用溢出前的部分路径签发结论。现阶段不实现 unsigned 回绕语义。
 
-实际在 WSL 重编译并安装 native 开发工具，Clang SDK 为 **18.1.3**，二进制 `/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer` 的 SHA-256 为 `b9b4d3d8297a8e487538cd6f5dcdc925c809b714925c8d1c9faf765140901cd6`。这不是 portable 锁定 SDK 18.1.0 的发布产物。契约编译器 **v22**、对象路径 **v4**、协议核验 **v3** 撤销旧语义收据的复用；`object_protocol_path` 规则 revision **5** 增加 CWE-911，仍为 **experimental / default-disabled**，显式 disabled 优先。`retained_slot_release` 默认开关不变。
+实际在 WSL 重编译并安装 native 开发工具，Clang SDK 为 **18.1.3**，二进制 `$HOME/.cache/zscope-build-context/install/bin/zscope-clang-indexer` 的 SHA-256 为 `b9b4d3d8297a8e487538cd6f5dcdc925c809b714925c8d1c9faf765140901cd6`。这不是 portable 锁定 SDK 18.1.0 的发布产物。契约编译器 **v22**、对象路径 **v4**、协议核验 **v3** 撤销旧语义收据的复用；`object_protocol_path` 规则 revision **5** 增加 CWE-911，仍为 **experimental / default-disabled**，显式 disabled 优先。`retained_slot_release` 默认开关不变。
 
 | 验证集合 | 最终实际结果 | 说明 |
 |---|---|---|
@@ -333,7 +333,7 @@ native 在已有值元数据中补充字段写入的位宽/符号/限定信息�
 | `python -m mypy zscope` | **pass，324 个源文件** | Linux 虚拟环境 |
 | `python -m compileall -f -q zscope scripts test tests` | **pass，exit 0** | Linux 虚拟环境 |
 
-各测试集合有交集，不累加为独立用例总数。所有质量命令使用 WSL `/home/zeal/venv313/bin/python`；native 用例显式设置真实工具路径。最终 pytest JUnit 为 `/tmp/zscope-s02r07-final-20261013.xml`。开发中节点一曾 **56 pass / 5 fail**：四项暴露 native 字段写入缺少整数类型事实，补齐真实提取并重建；另一个发布 fixture 改用当前函数行号。节点二曾 **120 pass / 1 fail**，溢出 fixture 原用了尚未支持的嵌套字段赋值，改为已有指针字段路径，不放宽生产守卫。节点三曾 **25 pass / 1 fail**，发现撤销非并发声明后缺口清单丢失新义务，已修复并保留撤回反例。最终失败均归零。
+各测试集合有交集，不累加为独立用例总数。所有质量命令使用 WSL `<venv>/bin/python`；native 用例显式设置真实工具路径。最终 pytest JUnit 为 `/tmp/zscope-s02r07-final-20261013.xml`。开发中节点一曾 **56 pass / 5 fail**：四项暴露 native 字段写入缺少整数类型事实，补齐真实提取并重建；另一个发布 fixture 改用当前函数行号。节点二曾 **120 pass / 1 fail**，溢出 fixture 原用了尚未支持的嵌套字段赋值，改为已有指针字段路径，不放宽生产守卫。节点三曾 **25 pass / 1 fail**，发现撤销非并发声明后缺口清单丢失新义务，已修复并保留撤回反例。最终失败均归零。
 
 能力边界：源码核验只接受明确列出的有界 C 语句形态，计数为单个 signed 32-bit 成员；具体对象消费只覆盖已有内嵌单槽池，callback 须由当前同 TU 或受支持真实链接路径解释。没有通用堆析构证明、任意引用计数形态、原子/并发/重入计数证明、任意 C++、句柄 close/dup/同值重开或 arena/reset。序列化路径本身不证明线程安全，非并发前提仍需验收；未知调用、输入、算术、递归或预算超限保留技术缺口。剩余 S02-R07 子域、S06-R01、S02-R08、S06-R02 和 S07-R01 保留待办。
 
@@ -355,7 +355,7 @@ AGENTS、README、架构、配置/分析/后端模块及计划索引同步；Mod
 
 新增反例暴露表本身的寿命缺口：返回局部表地址后旧解释器仍会读存留的分析内存。现由 native 的 `function_scope_local` 确认 VarDecl 直接属于函数体，具体路径再要求已零初始化且所属调用帧仍活跃。过期函数表、内层块表，以及内部函数退出时从其局部表导出活句柄都保留 `handle_namespace_lifetime_unclosed`；未知技术寿命不能用顺序独占声明代替。当前支持函数作用域局部表传给被调函数；堆、全局、成员/数组表和任意块作用域寿命仍未支持。
 
-native 同时补齐调用结果目标与局部写入的类型事实，未再读取的变量也能核对载体位宽；不是由返回类型猜测变量类型。最终实际在 WSL 重编译、安装的工具为 `/home/zeal/.cache/zscope-build-context/install/bin/zscope-clang-indexer`，SDK **Clang 18.1.3**，SHA-256 为 `2366e041e48b2ced67ffdb4fe6cc384131e2af372d3706d28f3d626d3f173e55`。这不是 portable 锁定 SDK 18.1.0 的发行验收。契约编译器 **v23**、标准 API **v4**、对象路径 **v5**、协议核验 **v4** 使旧相关语义收据失效；`object_protocol_path` revision **6** 继续 **experimental / default-disabled**，其他实验规则默认值不变。
+native 同时补齐调用结果目标与局部写入的类型事实，未再读取的变量也能核对载体位宽；不是由返回类型猜测变量类型。最终实际在 WSL 重编译、安装的工具为 `$HOME/.cache/zscope-build-context/install/bin/zscope-clang-indexer`，SDK **Clang 18.1.3**，SHA-256 为 `2366e041e48b2ced67ffdb4fe6cc384131e2af372d3706d28f3d626d3f173e55`。这不是 portable 锁定 SDK 18.1.0 的发行验收。契约编译器 **v23**、标准 API **v4**、对象路径 **v5**、协议核验 **v4** 使旧相关语义收据失效；`object_protocol_path` revision **6** 继续 **experimental / default-disabled**，其他实验规则默认值不变。
 
 | 验证集合 | 实际结果 | 说明 |
 |---|---|---|
@@ -368,7 +368,7 @@ native 同时补齐调用结果目标与局部写入的类型事实，未再读�
 | `python -m mypy zscope` | **pass，326 个源文件** | 最终 Linux 虚拟环境检查 |
 | `python -m compileall -f -q zscope scripts test tests` | **pass，exit 0** | 最终 Linux 虚拟环境检查 |
 
-各集合有交集，不累计为独立用例总数。全部产品质量命令在 WSL `/home/zeal/venv313/bin/python` 执行；native 测试显式指定真实工具。表寿命修正前的一次跨模块回归为 **774 pass / 0 fail / 0 skip**，保存在 `/tmp/zscope-handles-pre-lifetime-20261013.xml`，不能代替最终版本验收。开发中首轮 13 errors 来自 fixture 重复定义，随后修复；路径首轮 **36 pass / 6 fail** 暴露未读取结果变量缺类型，修复 native 并真实重建。扩展 **59 pass / 2 fail** 来自 fixture 同一行混合函数正文，分行后通过而不放宽生产守卫；另一个真实过期表反例曾 **1 fail**，完成上述寿命修正后专项失败归零。mypy 中两处 Value 联合类型适配也已修正。
+各集合有交集，不累计为独立用例总数。全部产品质量命令在 WSL `<venv>/bin/python` 执行；native 测试显式指定真实工具。表寿命修正前的一次跨模块回归为 **774 pass / 0 fail / 0 skip**，保存在 `/tmp/zscope-handles-pre-lifetime-20261013.xml`，不能代替最终版本验收。开发中首轮 13 errors 来自 fixture 重复定义，随后修复；路径首轮 **36 pass / 6 fail** 暴露未读取结果变量缺类型，修复 native 并真实重建。扩展 **59 pass / 2 fail** 来自 fixture 同一行混合函数正文，分行后通过而不放宽生产守卫；另一个真实过期表反例曾 **1 fail**，完成上述寿命修正后专项失败归零。mypy 中两处 Value 联合类型适配也已修正。
 
 边界与后续：仅有明确源码形态的 C 自定义表、已知具体输入和当前可核验的直接/有限 const ops 路径；没有 OS fd 行为重放、dup2/dup3 的目标替换、errno/平台变体、动态/数组/堆/全局句柄表、并发关闭/重开、外部进程干预、通用 C++ 或物理析构证明。S02-R07 的通用/平台子域及其他原待办保持开放。AGENTS、README、架构、模块及计划索引同步，提案 schema/prompt 只增加该协议证据合同。未运行真实 LLM、正式准确率/性能 benchmark、完整 Sanitizer 矩阵或 portable 实物 smoke，均为 **未运行/skip（非 pytest 跳过）**；无新增 public YAML、web 访问或夜间交互。
 
@@ -401,7 +401,7 @@ native 同时补齐调用结果目标与局部写入的类型事实，未再读�
 | `python -m compileall -f -q zscope scripts test tests` | **pass，exit 0** | Linux 虚拟环境 |
 | 新增三个 Python 文件 Black 检查 | **pass** | 已有文件只格式化本轮变更范围 |
 
-各集合有交集，不累加为独立用例总数。全部质量命令在 WSL `/home/zeal/venv313/bin/python` 执行。开发中一次节点集合为 **208 pass / 9 fail**：六项为新测试误用目录构造 API，三项暴露旧 provider 调用源码解析时遗漏函数身份，均修复；定向复验 **54 pass**。随后 **225 pass / 1 fail** 为 cond_wait 转换增加模式后旧精确快照断言未更新，已同步。首次大集合 **1059 pass / 1 fail** 的唯一失败是旧测试仍要求未检查 mutex 返回值授予文本强反证，已改为应保留未决，并在最终完整集合归零。旧结果单独保留，不覆盖成通过记录。
+各集合有交集，不累加为独立用例总数。全部质量命令在 WSL `<venv>/bin/python` 执行。开发中一次节点集合为 **208 pass / 9 fail**：六项为新测试误用目录构造 API，三项暴露旧 provider 调用源码解析时遗漏函数身份，均修复；定向复验 **54 pass**。随后 **225 pass / 1 fail** 为 cond_wait 转换增加模式后旧精确快照断言未更新，已同步。首次大集合 **1059 pass / 1 fail** 的唯一失败是旧测试仍要求未检查 mutex 返回值授予文本强反证，已改为应保留未决，并在最终完整集合归零。旧结果单独保留，不覆盖成通过记录。
 
 本轮未修改 native 提取代码，复用并实际执行已有批量工具，SHA-256 `2366e041e48b2ced67ffdb4fe6cc384131e2af372d3706d28f3d626d3f173e55`；批量 SDK 和本次 CompleteFactStore 使用的 WSL Clang 均为 **18.1.3**。没有冒充 portable 锁定 SDK 18.1.0 的发行验收。最终 JUnit 为 `/tmp/zscope-locks-final-20261013.xml`，逐轮 JUnit、增量 diff、工具/源码摘要及实际 pass/fail/skip 记录位于 `/tmp/zscope-locks-acceptance-20261013/`。
 
@@ -426,7 +426,7 @@ native `cxx-lifetime-facts.v1` 补充管理器、构造/析构 USR、定义位�
 
 开发中保留真实失败记录：新测试 proof API 参数错误，catch(...) 空参数占位和 PointerToBoolean 处理遗漏；native 对尚无析构声明的普通结构体空目标解引用（107 pass / 1 fail）；真实候选未走目录 enrichment 的测试错误及中文对象选择未衔接。均修复并包含于上述收尾回归。一次命令测试文件名错误、exit 4、零用例，未计通过。集合有交集，不累加独立用例数。
 
-批量工具实际重编译两次，最终 SHA-256 `7cd43795443358cd2d6501c296da4b48292644fc5fa9955d909ef98d50ae78c2`，开发 SDK 18.1.3，不冒充 portable SDK 18.1.0 验收。全部测试/质量命令使用 WSL `/home/zeal/venv313/bin/python`；JUnit `/tmp/zscope-raii-final-20261013.xml`、`/tmp/zscope-raii-closeout-20261013.xml`。未运行真实 LLM、正式准确率/性能 benchmark、完整 Sanitizer 或 portable 实物 smoke；这些不是通过。AGENTS、用户指南、架构、模块与计划索引同步，无新 public YAML、Web 能力、运行时 prompt 或默认实验开关变更。
+批量工具实际重编译两次，最终 SHA-256 `7cd43795443358cd2d6501c296da4b48292644fc5fa9955d909ef98d50ae78c2`，开发 SDK 18.1.3，不冒充 portable SDK 18.1.0 验收。全部测试/质量命令使用 WSL `<venv>/bin/python`；JUnit `/tmp/zscope-raii-final-20261013.xml`、`/tmp/zscope-raii-closeout-20261013.xml`。未运行真实 LLM、正式准确率/性能 benchmark、完整 Sanitizer 或 portable 实物 smoke；这些不是通过。AGENTS、用户指南、架构、模块与计划索引同步，无新 public YAML、Web 能力、运行时 prompt 或默认实验开关变更。
 
 本切片验收后继续 **S07-R01 当前协议增量证据与否定性依赖**。S04 回答 revision 失效、native 输入/链接清单和语义建模缓存直接复用。S06-R02 实际异步清理协议、复杂 RAII/锁 guard 和平台子域仍待办。
 
@@ -476,7 +476,7 @@ S02-R08 切片通过后继续依赖已满足的 S07-R01，阶段基线另存 774
 
 开发中首轮 **6 pass / 18 fail**，主要暴露解释器拒绝未初始化 pthread_t 声明与函数指针纯衰变；按真实 native 类型/事件补齐后通过，没有用合成事实替代 native。一次错误测试文件名导致零用例，未计通过。后续增量首轮 **54 pass / 2 fail**：一项测试误期望另一构建的手工覆盖可恢复 builtin（原 Registry 按设计保守屏蔽），另一项复用 fixture 的 shared.h 未被任何 TU 包含导致严格 batch 拒绝；修正测试保留原生产守卫。各测试集合有交集，不累加独立用例数；失败 JUnit 保留。
 
-真实 native 工具未改动、未重编译，复用并执行 SDK 18.1.3 工具，SHA-256 `f17b876f92c82508994475c6796d0513adb2c98ef2f69d2c7d8c6eff9cd97246`。不是 portable SDK 18.1.0 的发行验收。全部质量命令使用 WSL `/home/zeal/venv313/bin/python`；阶段 JUnit `/tmp/zscope-async-stage1-20261013.xml`。本轮没有执行真实 pthread 程序、ASan/TSan、LLM 或正式准确率/性能 benchmark，不将静态 native 重放称为动态复现。
+真实 native 工具未改动、未重编译，复用并执行 SDK 18.1.3 工具，SHA-256 `f17b876f92c82508994475c6796d0513adb2c98ef2f69d2c7d8c6eff9cd97246`。不是 portable SDK 18.1.0 的发行验收。全部质量命令使用 WSL `<venv>/bin/python`；阶段 JUnit `/tmp/zscope-async-stage1-20261013.xml`。本轮没有执行真实 pthread 程序、ASan/TSan、LLM 或正式准确率/性能 benchmark，不将静态 native 重放称为动态复现。
 
 覆盖边界：`complete` 只表示所选路径或首个非法访问见证闭合，全部交错/失败分支/无观察安全证明三个标记均为 false。完整 queue/unregister/drain、锁保护下串行 UAF、多个工作者、并发引用计数、动态回调集合和跨 TU 异步均未完成。S07-R01 可继续消费本切片已有事实开展失效与独立冷/热对照，不重做原缓存/业务答案链。
 
@@ -510,7 +510,7 @@ AGENTS、用户指南、架构、分析/配置模块与计划 11/16/21/22/README
 
 阶段结果：首轮 **35 pass / 17 fail / 0 skip**（新同步根的 canonical signature 预期错误）；依据真实 native 签名修正后，队列/直接回调/旧路径 **83 pass / 0 fail / 0 skip**。后续队列/增量/目录/coverage **46 pass / 1 fail / 0 skip**：反例期待检查首次 UAF 之后才会执行的 stop 访问，调整为先让回调继续读取该字段再释放，以验证真正的未同步访问；没有放松生产守卫。包括回答撤回、JSON 无授权、根契约改变和 native 缺收据的接续回归 **93 pass / 0 fail / 0 skip**。JUnit 保存在 `/tmp/zscope-queue-node1-20261013.xml` 至 `node4`（文件名沿用开工日期）。集合有交集，不累加独立用例数。
 
-修改 `ProgramEvents.h` 后已执行真实 CMake build/install，工具 SHA-256 为 `aee71c55fb55cd206c0bd0ef31bd6638781ab7d85c2bf1a0a43d328391994ab7`，SDK 18.1.3；这不是 portable 18.1.0 发行验收。测试与质量命令均在 WSL `/home/zeal/venv313/bin/python` 中执行，并指向该实际工具。mypy 初次发现 generator 返回 Any 的一处类型问题，以明确 Value 类型修复后 **329 个源文件通过**；compileall 通过。范围回归与文档/diff 收尾见后续记录。
+修改 `ProgramEvents.h` 后已执行真实 CMake build/install，工具 SHA-256 为 `aee71c55fb55cd206c0bd0ef31bd6638781ab7d85c2bf1a0a43d328391994ab7`，SDK 18.1.3；这不是 portable 18.1.0 发行验收。测试与质量命令均在 WSL `<venv>/bin/python` 中执行，并指向该实际工具。mypy 初次发现 generator 返回 Any 的一处类型问题，以明确 Value 类型修复后 **329 个源文件通过**；compileall 通过。范围回归与文档/diff 收尾见后续记录。
 
 S04 assessment v6 和 `object_protocol_path` revision 8 保留原规则 ID、主/附加 CWE、业务问题与撤回机制，仍 experimental/default-disabled。当前只是 Linux glibc LP64、同 TU、默认属性、堆上下文/单槽队列和成功分配/创建/同步结果的选定调度；实际条件等待/唤醒、取消点/cleanup、工作者 helper、通用 unregister/drain、多工作者、跨 TU 异步、失败结果和完整调度均未完成。complete 不等于所有交错覆盖，无观察不证明安全。
 

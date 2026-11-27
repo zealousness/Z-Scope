@@ -30,7 +30,7 @@ DEPRECATED_TEXT = (
     "scripts/run_formal_benchmark.py",
     "--build-cpg",
 )
-PERSONAL_PATH = re.compile(r"(?:/home/(?:zeal|jager)/|/mnt/c/Users/|[A-Za-z]:\\Users\\)")
+PERSONAL_PATH = re.compile(r"(?:/home/[A-Za-z0-9._-]+/|/mnt/[a-z]/Users/|[A-Za-z]:\\Users\\)")
 
 
 def _tracked_test_files() -> List[Path]:

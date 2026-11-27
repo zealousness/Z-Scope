@@ -206,3 +206,78 @@ def test_download_never_accepts_truncated_response(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="Truncated"):
         download.fetch_file(entry, tmp_path)
     assert not (tmp_path / entry["filename"]).exists()
+
+
+def test_spdx_uses_public_namespace_and_declares_locked_toolchain_licenses(tmp_path):
+    from scripts.portable import spdx
+
+    root = Path(__file__).resolve().parents[1]
+    bundle = tmp_path / "zscope-1.3.2-linux-x86_64-cpp-portable"
+    (bundle / "share").mkdir(parents=True)
+    (bundle / "bundle.json").write_text(
+        json.dumps({"arch": "x86_64", "profile": "cpp"}), encoding="utf-8"
+    )
+    (bundle / "share/toolchain.lock.json").write_text(
+        (root / "requirements/portable/toolchain.lock.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (bundle / "share/license-policy.json").write_text(
+        (root / "requirements/license-policy.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    dist_info = (
+        bundle / "runtime/python/lib/python3.13/site-packages/ruamel_yaml-0.18.17.dist-info"
+    )
+    dist_info.mkdir(parents=True)
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: ruamel.yaml\nVersion: 0.18.17\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "bundle.spdx.json"
+    spdx.generate(bundle, out, version="1.3.2", epoch=1_700_000_000, source_snapshot="a" * 64)
+    doc = json.loads(out.read_text(encoding="utf-8"))
+
+    assert doc["documentNamespace"].startswith("https://github.com/zealousness/Z-Scope/spdx/")
+    assert "zscope.local" not in doc["documentNamespace"]
+
+    by_name = {pkg["name"]: pkg for pkg in doc["packages"]}
+    assert by_name["zscope"]["copyrightText"] == "Copyright (c) 2026 Z-SCOPE Team"
+    assert by_name["svf"]["licenseDeclared"] == "GPL-3.0-only"
+    assert by_name["llvm"]["licenseDeclared"] == "Apache-2.0 WITH LLVM-exception"
+    assert by_name["clangd"]["licenseDeclared"] == "Apache-2.0 WITH LLVM-exception"
+    assert by_name["python"]["licenseDeclared"] == "PSF-2.0"
+    assert by_name["gllvm"]["licenseDeclared"] == "BSD-3-Clause"
+    assert by_name["ruamel.yaml"]["licenseDeclared"] == "MIT"
+
+    java_bundle = tmp_path / "zscope-1.3.2-linux-x86_64-java-portable"
+    (java_bundle / "share").mkdir(parents=True)
+    (java_bundle / "tools/java-jars").mkdir(parents=True)
+    (java_bundle / "tools/java-jars/zscope-java-signal-sootup.jar").write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    (java_bundle / "tools/java-jars/zscope-java-signal-wala.jar").write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    (java_bundle / "bundle.json").write_text(
+        json.dumps({"arch": "x86_64", "profile": "java"}), encoding="utf-8"
+    )
+    (java_bundle / "share/toolchain.lock.json").write_text(
+        (root / "requirements/portable/toolchain.lock.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    java_out = tmp_path / "java.spdx.json"
+    spdx.generate(
+        java_bundle, java_out, version="1.3.2", epoch=1_700_000_000, source_snapshot="b" * 64
+    )
+    java_doc = json.loads(java_out.read_text(encoding="utf-8"))
+    java_by_name = {pkg["name"]: pkg for pkg in java_doc["packages"]}
+    assert java_by_name["jdk-x86_64"]["licenseDeclared"] == "GPL-2.0-only WITH Classpath-exception-2.0"
+    assert java_by_name["joern-x86_64"]["licenseDeclared"] == "Apache-2.0"
+    assert java_by_name["maven"]["licenseDeclared"] == "Apache-2.0"
+    assert java_by_name["zscope-java-signal-sootup"]["licenseDeclared"] == "MIT AND LGPL-2.1-only"
+    assert java_by_name["zscope-java-signal-wala"]["licenseDeclared"] == "MIT AND EPL-2.0"
+
+
+def test_license_and_third_party_notices_present_and_dated():
+    root = Path(__file__).resolve().parents[1]
+    license_text = (root / "LICENSE").read_text(encoding="utf-8")
+    assert "Copyright (c) 2026 Z-SCOPE Team" in license_text
+    notices_text = (root / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    for required in ("GPL-3.0-only", "LGPL-2.1-only", "EPL-2.0", "Classpath-exception-2.0", "CodeQL"):
+        assert required in notices_text

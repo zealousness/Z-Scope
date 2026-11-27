@@ -1152,7 +1152,7 @@ Semantic Modeler 当前会在 user prompt 中看到全部 `callees`，同时 Age
 - 不通过删除调用边隐藏 `system`、`memcpy`、`open` 等安全相关事实。
 - 不在本期实施 `get_function_snapshot` 的 project-callee runtime allowlist 或 `callee_snapshot_not_allowed` 拒绝路径；现有工具访问行为保持不变。
 - 不修改任何 fallback 文件，也不为旧字段增加生产 fallback。
-- 所有实施、测试、文档和 benchmark 产物改动严格限制在 `/home/jager/Z-Scope` 工作树；`/home/jager/Z-Scope-baseline` 仅作为只读 Baseline 对照和历史证据，不修改其中任何文件。
+- 所有实施、测试、文档和 benchmark 产物改动严格限制在 `<repo>` 工作树；`<baseline-repo>` 仅作为只读 Baseline 对照和历史证据，不修改其中任何文件。
 
 ### 4.3 最终数据契约
 
@@ -1436,7 +1436,7 @@ SnapshotStore 的 dependency-context hash 必须投影两个数组和两个 trun
 
 - 不在本计划中删除 `project_callees`、`external_callees` 或其他程序生成上下文；第四章负责其输入分流，本章负责最终输出时机。
 - 不在本计划中实现第四章明确排除的 `get_function_snapshot` project-callee runtime allowlist 或 `callee_snapshot_not_allowed` 拒绝路径。
-- 不修改 fallback 文件，不修改 `/home/jager/Z-Scope-baseline` 中的任何文件。
+- 不修改 fallback 文件，不修改 `<baseline-repo>` 中的任何文件。
 - 不保证每个函数只发生一次 HTTP/API request；探索工具调用和必要 repair 仍可能产生多次 API request。本计划保证的是一次成功 final payload 和一个主 conversation session。
 - 不把初始模型的自由文本强制转换为最终 snapshot；旧的自由文本只作为 conversation context，最终结果必须来自 validated final tool payload。
 
@@ -1605,7 +1605,7 @@ Benchmark 指标必须同时报告：
 - 普通工具调用、terminal tool 调用、API calls 和 token 指标可分离统计；`final_tool_call_count` 成功路径为 1。
 - Validator 等非 Semantic Modeler Agent 的默认行为和测试保持不变。
 - global-model benchmark 对比显示：每个成功 LLM snapshot 的 session 数从约 2 降至 1，Completion Tokens、Total Tokens 和独立 finalization API calls 有可重复的下降测量；若 token 未下降，必须记录 provider/schema/reasoning 等原因，不得仅以调用次数下降宣称成本优化。
-- 不修改任何 fallback 文件或 `/home/jager/Z-Scope-baseline` 文件。
+- 不修改任何 fallback 文件或 `<baseline-repo>` 文件。
 
 ### 5.11 计划偏差
 
@@ -1820,7 +1820,7 @@ API、网络或模型服务失败时，已成功 snapshot 保留；恢复后重�
 - new_docs/tools_introduction.md
 - [本历史快照方案](snapshot_redesign.md)
 
-不修改 fallback 文件，不修改 /home/jager/Z-Scope-baseline，不回退用户手动修改的 schema 字段。
+不修改 fallback 文件，不修改 <baseline-repo>，不回退用户手动修改的 schema 字段。
 
 ### 6.11 验证结果
 
@@ -1858,7 +1858,7 @@ API、网络或模型服务失败时，已成功 snapshot 保留；恢复后重�
 
 > 实施状态：已实施（2026-07-23）。
 >
-> 计划基线：2026-07-23 `global_model_20260723_090135`。本章采用完整实现：在索引层建立精确的函数到类型引用关系，将直接 `referenced_types` 作为 program-owned context 注入并持久化，并使类型定义变化参与 snapshot refresh。本轮不修改 `get_type_info` Tool 的参数、查询、fallback、返回结构或错误语义；除非用户另行明确要求，不修改任何 fallback 文件，不修改 `/home/jager/Z-Scope-baseline`，不回退用户手动修改的文件。
+> 计划基线：2026-07-23 `global_model_20260723_090135`。本章采用完整实现：在索引层建立精确的函数到类型引用关系，将直接 `referenced_types` 作为 program-owned context 注入并持久化，并使类型定义变化参与 snapshot refresh。本轮不修改 `get_type_info` Tool 的参数、查询、fallback、返回结构或错误语义；除非用户另行明确要求，不修改任何 fallback 文件，不修改 `<baseline-repo>`，不回退用户手动修改的文件。
 
 ### 7.1 背景、现状与问题证据
 

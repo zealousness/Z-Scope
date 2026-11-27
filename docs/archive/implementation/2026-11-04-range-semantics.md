@@ -6,7 +6,7 @@
 
 ## 第一阶段已完成
 
-仓库：`C:\Users\10273\home\work\Z-Scope`，WSL 对应 `/mnt/c/Users/10273/home/work/Z-Scope`。验证从 `/home/zeal` 使用 `/home/zeal/.venvs/zscope-audit-fixes-20261104/bin/python` 执行。
+仓库：`<repo>`，WSL 对应 `<repo>`。验证从 `$HOME` 使用 `<venv>/bin/python` 执行。
 
 四个文件存在 CRLF：`test/range/CMakeLists.txt`（62 处）、`internal/lifecycle.ph`（135 处）、`internal/network.ph`（9 处）、`src/lifecycle.c`（2623 处）。仅把 CRLF 换成 LF 后，四者分别与原清单记录的字节 SHA-256 完全一致。未修改源码逻辑、source 摘要或校验函数；新增 `.gitattributes` 路径规则约束 CMakeLists 和 `.ph`，`.c` 原有 LF 规则继续保留。
 

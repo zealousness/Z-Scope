@@ -8,8 +8,8 @@
 
 分析基准为：
 
-- 运行目录：`/home/jager/Z-Scope-benchmark/test/range/benchmark_runs/auto_unified_wsl_20260805_173639`
-- 会话目录：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536`
+- 运行目录：`<benchmark-repo>/test/range/benchmark_runs/auto_unified_wsl_20260805_173639`
+- 会话目录：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536`
 - 去重后终态 Candidate：305 个
 - `clang_ast_cfg`：235 个终态 Candidate
 - `graph_rule`：57 个终态 Candidate
@@ -18,9 +18,9 @@
 
 三类示例对话：
 
-- `clang_ast_cfg`：zscope-validator-3-validator_agent-0079.md（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0079.md:119`）
-- `graph_rule`：zscope-validator-3-validator_agent-0065.md（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0065.md:119`）
-- `svf_value_flow`：zscope-validator-3-validator_agent-0006.md（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0006.md:120`）
+- `clang_ast_cfg`：zscope-validator-3-validator_agent-0079.md（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0079.md:119`）
+- `graph_rule`：zscope-validator-3-validator_agent-0065.md（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0065.md:119`）
+- `svf_value_flow`：zscope-validator-3-validator_agent-0006.md（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0006.md:120`）
 
 当前 Validator Prompt 的共同组织为：
 
@@ -34,7 +34,7 @@ Fast-path instruction
 Final-iteration instruction
 ```
 
-其中前三个用户内容块由 `ValidatorAgent.run()`（历史定位：`/home/jager/Z-Scope-benchmark/zscope/agents/validator_agent/agent.py:31`） 固定拼接：
+其中前三个用户内容块由 `ValidatorAgent.run()`（历史定位：`<benchmark-repo>/zscope/agents/validator_agent/agent.py:31`） 固定拼接：
 
 ```text
 Suspected Finding:
@@ -81,8 +81,8 @@ Relevant Code Context:
 
 | 结构 | Candidate | 函数和位置 | Suspected Finding | Compact Evidence Pack |
 |---|---|---|---|---|
-| 普通单函数 | `CLANG_CFG_USE_AFTER_FREE_9576ecb390` | `_lifecycle_unload_rules`，`src/lifecycle.c:417` | 对话位置（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-1-validator_agent-0061.md:119`） | 对话位置（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-1-validator_agent-0061.md:254`） |
-| 入口到内部 Sink | `CLANG_CFG_MEMORY_LEAK_0c6426ef07` | `_serialize_task`，`src/parser.c:244` | 对话位置（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0079.md:119`） | 对话位置（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0079.md:429`） |
+| 普通单函数 | `CLANG_CFG_USE_AFTER_FREE_9576ecb390` | `_lifecycle_unload_rules`，`src/lifecycle.c:417` | 对话位置（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-1-validator_agent-0061.md:119`） | 对话位置（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-1-validator_agent-0061.md:254`） |
+| 入口到内部 Sink | `CLANG_CFG_MEMORY_LEAK_0c6426ef07` | `_serialize_task`，`src/parser.c:244` | 对话位置（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0079.md:119`） | 对话位置（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0079.md:429`） |
 
 ### 1.1 `Suspected Finding` + `Compact Evidence Pack` 原始字段
 
@@ -890,8 +890,8 @@ Relevant Code Context:
 - Candidate：`GRAPH_MEMORY_LEAK_821b1ec058`
 - 函数：`_runtime_release_reader_channel`
 - 位置：`src/lifecycle.c:1295`
-- Suspected Finding（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0065.md:119`）
-- Compact Evidence Pack（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0065.md:245`）
+- Suspected Finding（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0065.md:119`）
+- Compact Evidence Pack（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0065.md:245`）
 
 ### 2.1 `Suspected Finding` + `Compact Evidence Pack` 原始字段
 
@@ -1339,8 +1339,8 @@ Graph 与 Clang 使用同一 `_compact_candidate_evidence()` 白名单。Graph �
 - Candidate：`SVF_VALUE_FLOW_bbbaa268e158`
 - 函数：`td_init`
 - 位置：`src/main.c:188`
-- Suspected Finding（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0006.md:120`）
-- Compact Evidence Pack（历史定位：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0006.md:282`）
+- Suspected Finding（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0006.md:120`）
+- Compact Evidence Pack（历史定位：`<benchmark-repo>/test/range/.zscope_conversations/run_20260805_173936_72536/zscope-validator-3-validator_agent-0006.md:282`）
 
 ### 3.1 `Suspected Finding` + `Compact Evidence Pack` 原始字段
 

@@ -6,7 +6,7 @@ import runpy
 import pytest
 
 EXPERIMENT = (
-    Path(__file__).resolve().parents[1] / "benchmarks/experiments/validator_prompt_compaction"
+    Path(__file__).resolve().parent / "fixtures/validator_prompt_compaction"
 )
 SCORER = runpy.run_path(str(EXPERIMENT / "score.py"))
 

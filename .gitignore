@@ -157,10 +157,7 @@ artifacts/
 # local coordinator scratch: workspace snapshots, bridge transcripts, run state
 .coordination/
 
-# coordination run state: dispatch journals and job-runtime databases are
-# mutable execution records, not source, and were never tracked
-docs/archive/coordination/**/*.sqlite
-docs/archive/coordination/**/*.db
-docs/archive/coordination/**/*.consumed
-docs/archive/coordination/**/review-repro/s09-large-envelope/synthetic-report.json
+# Clang static analyzer plist outputs
+*.plist
+
 .zscope_jobs/

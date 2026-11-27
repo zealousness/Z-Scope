@@ -29,7 +29,7 @@ commit.
 Materialize command:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd <repo>
 python3 scripts/materialize_magma_full_sources.py \
   --magma-root /mnt/c/tmp/zscope_external_sources/magma \
   --output-root /mnt/c/tmp/zscope_external_sources/magma_full \
@@ -82,7 +82,7 @@ sqlite3: SQL001
 ## Recreate
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd <repo>
 for target in libpng libsndfile libtiff libxml2 lua openssl php poppler sqlite3; do
   python3 scripts/external_benchmark.py prepare-magma \
     --magma-root /mnt/c/tmp/zscope_external_sources/magma \
@@ -104,7 +104,7 @@ paths in their Z-SCOPE configs.
 Candidate-only run for one target:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd <repo>
 python3 scripts/external_benchmark.py run-prepared \
   --suite-root benchmarks/external/workspace/magma_libpng \
   --mode candidates
@@ -113,7 +113,7 @@ python3 scripts/external_benchmark.py run-prepared \
 Full Z-SCOPE LLM-backed run for one target:
 
 ```bash
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd <repo>
 python3 scripts/external_benchmark.py run-prepared \
   --suite-root benchmarks/external/workspace/magma_libpng \
   --mode zscope \

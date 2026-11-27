@@ -15,16 +15,16 @@
   "scan_exit_semantics": "valid_complete_scan_with_actionable_findings",
   "scan_wall_seconds": 2341,
   "mode": "wsl_auto_discover_entries_unified_backend_with_svf_required",
-  "config": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/zscope.auto_unified.yaml",
+  "config": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/zscope.auto_unified.yaml",
   "artifacts": {
-    "report_json": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/zscope_batch_report.json",
-    "report_md": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/zscope_batch_report.md",
-    "evaluation_default": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/evaluation.json",
-    "evaluation_with_needs_review": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/evaluation.with_needs_review.json",
-    "entries": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/entry_functions_list.json",
-    "entry_coverage": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/entry_coverage.json",
-    "build_cpg_log": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/build_cpg.log",
-    "zscope_run_log": "/home/zeal/zscope_v33_release_20260809/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/zscope_run.log"
+    "report_json": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/zscope_batch_report.json",
+    "report_md": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/zscope_batch_report.md",
+    "evaluation_default": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/evaluation.json",
+    "evaluation_with_needs_review": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/evaluation.with_needs_review.json",
+    "entries": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/entry_functions_list.json",
+    "entry_coverage": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/entry_coverage.json",
+    "build_cpg_log": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/build_cpg.log",
+    "zscope_run_log": "<workspace>/test/range/benchmark_runs/v33_release_final2_glm51_20260810_05/zscope_run.log"
   },
   "entry_discovery": {
     "entries_discovered": 88,

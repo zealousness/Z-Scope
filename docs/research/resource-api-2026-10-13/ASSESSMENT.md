@@ -13,7 +13,7 @@
 | 项目 | 实际观察 |
 |---|---|
 | 命令执行主机 | PowerShell 的 `COMPUTERNAME=CINDALA` |
-| 执行目录 | `C:\Users\10273\home\work\Z-Scope_1.31\Z-Scope`；`Get-Location` 与命令执行记录一致 |
+| 执行目录 | `<repo>`；`Get-Location` 与命令执行记录一致 |
 | 分支 | `v1.3.1_feat/llm-wiki` |
 | HEAD | `010f40210b54ba0f79a088312ce5d8be3a82ace0` |
 | 首次取证时钟 | `2026-10-13T02:30:31.1965960Z` |

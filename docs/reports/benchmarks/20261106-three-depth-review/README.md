@@ -1,6 +1,6 @@
 # Range 三档 cold trial 系统分析
 
-日期：2026-11-06 UTC。范围：Fast、Balanced 的 20261104-03 批次和 Deep 的已完成重试 20261105-01 批次。本文是离线分析报告，不改变原评分，不代表 formal/release 验收。
+日期：2026-11-06 UTC。范围：Fast、Balanced 的 20261104-03 批次和 Deep 的已完成重试 20261105-01 批次。本文是离线分析报告，不改变原评分，不代表 formal/release 验收。（为控制开源仓库体积，超大逐候选原始文件如 `candidate-evidence.jsonl`、`case-evidence.md`、`candidate-costs.csv` 等已移出源码仓库。）
 
 ## 结论
 
@@ -19,7 +19,7 @@
 
 |项目|Fast|Balanced|Deep|
 |---|---|---|---|
-|结果目录前缀|`/home/zeal/range-baseline-20261104-03/results/fast`|同批次 `results/balanced`|`/home/zeal/range-baseline-20261105-01/results/deep`|
+|结果目录前缀|`<benchmark-dir>/results/fast`|同批次 `results/balanced`|`<benchmark-dir>/results/deep`|
 |轮次|单次 cold trial|单次 cold trial|单次 cold trial 重试|
 |最终状态|completed|completed|completed，launcher exit 0|
 |模型|`volcengine/deepseek-v4.1-flash`|相同|相同|
@@ -240,7 +240,7 @@ Fast 是“确定性候选 + 有限验证”的产品档位，不是零 LLM 的�
 
 ## 运行资源与中断的边界
 
-本次完成的 Deep 重试记录了 1428 个有效资源样本，最大单调时钟采样间隔 60.357 秒，无 >90 秒缺口；WSL boot ID 与 Windows 启动时间未变。OOM=0，swap=0；最低 WSL 可用内存约 26.94 GiB，Windows 可用约 30.32 GiB，最低 WSL home 可用磁盘约 354.27 GiB；最大单进程 RSS 约 3.15 GiB。32 CPU 总体 CPU 峰值约 3.29%，不支持“CPU/内存耗尽导致这次 Deep 长达一天”的解释。资源摘要位于 `/home/zeal/range-baseline-20261105-01/resource-monitor/summary.json`，SHA-256 `65291d176c59e1f087a7b1e69aa87f6af8bc7ddd0ab0ab7f6a46448da7e7f7b1`。
+本次完成的 Deep 重试记录了 1428 个有效资源样本，最大单调时钟采样间隔 60.357 秒，无 >90 秒缺口；WSL boot ID 与 Windows 启动时间未变。OOM=0，swap=0；最低 WSL 可用内存约 26.94 GiB，Windows 可用约 30.32 GiB，最低 WSL home 可用磁盘约 354.27 GiB；最大单进程 RSS 约 3.15 GiB。32 CPU 总体 CPU 峰值约 3.29%，不支持“CPU/内存耗尽导致这次 Deep 长达一天”的解释。资源摘要位于 `<benchmark-dir>/resource-monitor/summary.json`，SHA-256 `65291d176c59e1f087a7b1e69aa87f6af8bc7ddd0ab0ab7f6a46448da7e7f7b1`。
 
 本次 observer 的多次 transport 断连不等于扫描中止，原进程和采样在恢复后仍连续。更早 batch-03 的 Deep 中断曾有 Windows Application Hang 1002 / WER 1001（wslhost）证据，未证明 Windows 重启或 OOM；不能用完成重试的健康资源反证之前的故障原因。受限 Hyper-V 通道未重试，本轮没有读取旧中断扫描内容。UTC 与单调时钟曾存在速率差异，耗时比较采用 benchmark 的 scan/end-to-end 计量，不混用墙钟字符串相减。
 

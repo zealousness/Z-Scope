@@ -1078,7 +1078,7 @@
 - 核心集合：`pytest -q tests/test_json_output_agents.py tests/test_llm_client_tokens.py tests/test_json_agent_loop_guard.py tests/test_conversation_recorder.py tests/test_semantic_model_input.py tests/test_global_modeler.py tests/test_snapshot_store.py tests/test_snapshot_tool.py tests/test_analyzer_semantics.py`，结果 `105 passed`。
 - 全量 `pytest -q` 因缺少 `scripts` 包而在两个 benchmark 测试收集阶段停止；排除 `test_benchmark_protocol.py` 和 `test_range_benchmark_regression.py` 后，结果 `716 passed`。
 - `python -m compileall -q zscope` 与 `git diff --check` 通过。
-- 未修改 fallback 文件、未触碰 `/home/jager/Z-Scope-baseline`，并保留了工作区中既有的 project/external callee 及其他用户改动。
+- 未修改 fallback 文件、未触碰 `<baseline-repo>`，并保留了工作区中既有的 project/external callee 及其他用户改动。
 
 ### 本计划偏差
 
@@ -1305,7 +1305,7 @@
 - 非 benchmark 全回归：`751 passed`。
 - `python -m compileall -q zscope` 与全工作树 `git diff --check` 通过。
 - 完整 pytest 两次均在 range benchmark regression 子流程开始附近无 pytest summary 异常终止；遵循用户“不运行全量 benchmark”的后续要求，不再运行这两个 benchmark 文件，也未修改生产代码规避该测试进程行为。
-- `zscope/tools/type_info.py` 保持未修改；未修改 fallback 文件和 `/home/jager/Z-Scope-baseline`。
+- `zscope/tools/type_info.py` 保持未修改；未修改 fallback 文件和 `<baseline-repo>`。
 
 ### 计划偏差
 

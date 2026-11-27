@@ -546,6 +546,12 @@ def assemble(args):
     template = "zscope.c_cpp.yaml" if args.profile == "cpp" else "zscope.java.yaml"
     copy_file(args.source / template, root / "examples" / template)
     copy_file(args.source / "LICENSE", root / "LICENSE")
+    notices = args.source / "THIRD_PARTY_NOTICES.md"
+    if notices.is_file():
+        copy_file(notices, root / "THIRD_PARTY_NOTICES.md")
+    license_policy = args.source / "requirements/license-policy.json"
+    if license_policy.is_file():
+        copy_file(license_policy, root / "share/license-policy.json")
     copy_file(args.lock, root / "share/toolchain.lock.json")
     copy_file(
         args.source / "requirements/portable/web-assets.lock.json",

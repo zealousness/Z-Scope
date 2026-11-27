@@ -225,7 +225,7 @@
     },
     {
       "command": "pytest -q tests/test_compilation_symbols.py",
-      "environment": "Linux; Z_SCOPE_TEST_CLANG_INDEXER=/home/zeal/.cache/zscope-main-sync-20261102/native/bin/zscope-clang-indexer; LLVM 18 PATH",
+      "environment": "Linux; Z_SCOPE_TEST_CLANG_INDEXER=$HOME/.cache/zscope-main-sync-20261102/native/bin/zscope-clang-indexer; LLVM 18 PATH",
       "result": "4 passed in 24.33s; earlier missing-binary skips resolved"
     },
     {

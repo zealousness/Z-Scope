@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
         "test/llm_wiki_demo/zscope.benchmark.yaml",
         "test/llm_wiki_demo/zscope.llm-wiki-active.yaml",
         "test/llm_wiki_demo/zscope.llm-wiki-source-fallback.yaml",
-        "benchmarks/experiments/range_global_model/zscope.benchmark.yaml",
+        "tests/fixtures/reference_configs/range_global_model.benchmark.yaml",
     ],
 )
 def test_benchmark_templates_use_the_single_public_schema(filename):

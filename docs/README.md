@@ -12,7 +12,7 @@
 | 查看 WebUI 交互方案及实际对照 | [产品设计](design/README.md) |
 | 阅读概念设计、方法论和调研 | [研究资料](research/README.md) |
 | 查阅某一次审查、评测或发布记录 | [报告与审查](reports/README.md)、[发布记录](releases/README.md) |
-| 追溯旧方案、实施记录、交接或协调过程 | [历史归档](archive/README.md)、[历史交接包](handoffs/README.md) |
+| 追溯旧方案、历史实施与评测记录 | [历史归档](archive/README.md) |
 
 ## 内容边界
 

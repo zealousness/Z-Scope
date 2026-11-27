@@ -2,7 +2,7 @@
   "schema": "zscope.independent-resource-api-assessment.v1",
   "scope": "Read-only code/test inspection and primary-source comparison; independent planning only.",
   "host": "CINDALA",
-  "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+  "cwd": "<repo>",
   "branch": "v1.3.1_feat/llm-wiki",
   "head": "010f40210b54ba0f79a088312ce5d8be3a82ace0",
   "task_id": "01a13318-80b6-7592-bb2d-0d1296cd50aa",

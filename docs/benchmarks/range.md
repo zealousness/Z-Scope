@@ -202,4 +202,4 @@ zscope-benchmark clean --scope c_cpp --apply --include-runs
 | formal Python script | `zscope-benchmark run --language c_cpp --mode formal --runs 5` |
 | background/alert/rebuild runner | 已删除；使用 foreground artifact 或专用产品命令 |
 
-Global-model 诊断保存在 `benchmarks/experiments/range_global_model/`，明确为非发布实验。
+Global-model 诊断参考配置保留在 `tests/fixtures/reference_configs/range_global_model.benchmark.yaml`，仅用于配置契约回归，不是发布评测入口。

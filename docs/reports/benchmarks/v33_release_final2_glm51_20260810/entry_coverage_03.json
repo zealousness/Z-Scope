@@ -13,7 +13,7 @@
   "require_all_functions": false,
   "root_nodes": 88,
   "reachable_function_nodes": 404,
-  "knowledge_db": "/home/zeal/zscope_v33_release_20260809/test/range/.zscope_knowledge_auto_unified_wsl/code_knowledge.db",
+  "knowledge_db": "<workspace>/test/range/.zscope_knowledge_auto_unified_wsl/code_knowledge.db",
   "call_graph": {
     "direct_edges": 1134,
     "indirect_edges": 15,

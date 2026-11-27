@@ -6,8 +6,8 @@
 - [历史实施与问题记录](implementation/README.md)：原专题优化、Wiki、Review Memory、实验与语义基线的实施过程。
 - [历史工作区与评测](benchmarks/README.md)：Juliet、SV-COMP、Magma 与早期 smoke 记录。
 - [历史安全审计](security/README.md)：对应版本的审计结论。
-- [历史协调产物](coordination/README.md)：原分派、检查点、回执、脚本和执行证据。
-- [历史交接包](../handoffs/README.md)：按交接日期独立保存，保留原路径、包内链接及验证记录。
+
+（原内部多智能体协调日志 `coordination/` 与历史交接包 `handoffs/` 已在开源清理阶段移出主仓库。）
 
 当前开发从[仓库协作说明](../../AGENTS.md)、[模块导航](../modules/README.md)和[现行实施计划](../plans/agent-scanning/README.md)进入；用户配置以[根 README](../../README.md)及源码为准。
 

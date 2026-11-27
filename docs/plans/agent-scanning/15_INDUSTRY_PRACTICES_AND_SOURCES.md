@@ -53,7 +53,7 @@
 
 ## 本轮实际验证
 
-环境：WSL Ubuntu，`/home/zeal/venv313/bin/python`；核对 editable import 指向本次 checkout。没有使用 Windows Python 形成测试结论。
+环境：WSL Ubuntu，`<venv>/bin/python`；核对 editable import 指向本次 checkout。没有使用 Windows Python 形成测试结论。
 
 第一组现状核验：
 

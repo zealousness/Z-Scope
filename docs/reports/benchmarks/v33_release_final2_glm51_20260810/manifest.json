@@ -10,7 +10,7 @@
     "truth_sha256": "5d14c94a4baebf65f161762f6bf124563197f2ba97175b5106975c1275050ec5",
     "scorer_sha256": "c069e5edaf8396d385b688eb506dfc19a1013c01c52d81f6fd103d35af0ebe9c",
     "fp_audit_rules_sha256": "90597b5af00a582040d86c1e78545bc70c8b62e6d612faaaad8d085574f49df1",
-    "config_sha256": "923fca55252927317b391ccf8cf2a66c493202ec01d0a437feede16bd4f26b8e",
+    "config_sha256": "a7ea336e29d7d8ce48802e44bdde3d0d7ae998f6d889f93811b9315b3f02526f",
     "base_url": "https://open.bigmodel.cn/api/paas/v4/",
     "trace_model": "glm-5.1",
     "entry_mode": "yaml automatic discovery",
@@ -20,11 +20,11 @@
     "aggregate_sha256": "3b8ea6cb37cdd5e58b5fcc43448caba19a7a02d4af2021df44a8ae907b3f4d71",
     "entry_coverage_sha256": "89123518b944cd4ac1de0cffd51a0116b6948b2668e441438cdf613b99d5ea87",
     "run_summary_sha256": {
-      "01": "f46aba3c6ef40dc0da10b625ab20804a271e9f8448a7f6600078ac1c55260356",
-      "02": "724d65706c628e06edff176fa520aeaf23413755fc01f27527a8b645cd0bea76",
-      "03": "e85bbbf9cf147c325bc8d59c129e631e5aeaaf9407af15b852e2249ba3753d5d",
-      "04": "7139404fa85247759004549db91ec6b35ac80f195216df2cdbbbb69709992186",
-      "05": "72aad5b053ca3768992d304a1b8a519829763493946b3041b126a4f43e5b77c4"
+      "01": "ec6c4692c99ae71987c81c32a5d87fe78b2a1c7fc113d27206d9719c15f4edb2",
+      "02": "2cee75588fd219d54f839fee0e93e71ed1e136aba1ad83cf8e2421d345cb71e4",
+      "03": "db9423d3deb8058b0031997d881f89e88470fc65fd25bdb7dc435687e3bdbb47",
+      "04": "499cf775d5f888f486e279a911bb7ebf7be6f03ba774588dda964af197349727",
+      "05": "e8f17bbca90d25f09a96a8fc2f3fae17075c71b27a0a46fec075f8734f99f334"
     }
   },
   "original_artifact_sha256": {
@@ -70,8 +70,14 @@
     }
   },
   "verification": {
-    "windows_pytest": {"passed": 1115, "duration_seconds": 130.47},
-    "wsl_pytest": {"passed": 1115, "duration_seconds": 85.68},
+    "windows_pytest": {
+      "passed": 1115,
+      "duration_seconds": 130.47
+    },
+    "wsl_pytest": {
+      "passed": 1115,
+      "duration_seconds": 85.68
+    },
     "formal_runs": 5,
     "all_formal_runs_release_gate_passed": true
   },
@@ -79,5 +85,6 @@
     "anonymous_sealed_set_available_in_repository": false,
     "sealed_set_quality_regression_verified": false,
     "reason": "repository contains only the Range development truth set"
-  }
+  },
+  "paths_sanitized_for_public_repo": true
 }

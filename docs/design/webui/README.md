@@ -31,7 +31,7 @@
 /usr/local/bin/node docs/design/webui/verify.cjs
 ```
 
-可通过 `ZSCOPE_UI_PLAYWRIGHT_MODULE` 与 `ZSCOPE_UI_CHROMIUM` 指定 Playwright 模块与 Chromium 可执行文件；默认路径匹配当前 WSL 开发环境。截图脚本支持 `--before-only` / `--after-only` 更新单边；两侧使用同一个内置合成 fixture，不能传入真实工程数据。
+可通过 `ZSCOPE_UI_PLAYWRIGHT_MODULE` 与 `ZSCOPE_UI_CHROMIUM` 指定 Playwright 模块与 Chromium 可执行文件；未设置时默认使用环境中的 `playwright` 包。截图脚本支持 `--before-only` / `--after-only` 更新单边；两侧使用同一个内置合成 fixture，不能传入真实工程数据。为控制开源仓库体积，`.webm` 录屏已移出仓库，保留截图与清单。
 
 已在 WSL Chromium 验证：原型 6 个状态 × 5 页 × 2 个窗口共 60 个组合、24 张匹配截图的加载、桌面与手机对照布局、偏好刷新恢复、JSON / Markdown 导出；无页面异常或外部网络请求。实际页面采集未执行 API 写入，报告 Markdown 正常渲染。截图与录屏摘要见 `assets/capture-manifest.json`。产品后端回归结果见 [验证记录](VALIDATION.md)，模拟 API 检查不作为后端通过依据。
 

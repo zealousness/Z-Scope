@@ -11,10 +11,12 @@
 *.h text eol=lf
 *.java text eol=lf
 *.xml text eol=lf
-# First-party WebUI assets are hashed byte-for-byte in the portable lock.
+LICENSE text eol=lf
+# First-party and vendored WebUI assets are hashed byte-for-byte in the portable lock.
 zscope/web/static/*.html text eol=lf
 zscope/web/static/*.js text eol=lf
 zscope/web/static/*.css text eol=lf
+zscope/web/static/vendor/* text eol=lf
 
 # Range source-review receipts bind these inputs byte-for-byte.
 test/range/CMakeLists.txt text eol=lf

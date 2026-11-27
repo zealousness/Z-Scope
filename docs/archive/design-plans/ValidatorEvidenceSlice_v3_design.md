@@ -6,7 +6,7 @@
 
 分析样本为：
 
-- 会话：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260810_113158_1355930/zscope-validator-0-validator_agent-0001`
+- 会话：`<benchmark-repo>/test/range/.zscope_conversations/run_20260810_113158_1355930/zscope-validator-0-validator_agent-0001`
 - Candidate：`CAND_7929fabdcd425d114cd543ac`
 - Candidate 来源：`clang_ast_cfg`
 - 缺陷类型：`memory_leak`

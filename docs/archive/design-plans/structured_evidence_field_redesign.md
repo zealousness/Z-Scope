@@ -6,7 +6,7 @@
 
 分析基准为：
 
-- 会话目录：`/home/jager/Z-Scope-benchmark/test/range/.zscope_conversations/run_20260721_145040_359477`
+- 会话目录：`<benchmark-repo>/test/range/.zscope_conversations/run_20260721_145040_359477`
 - 原始运行日期：2026-07-21
 - 逻辑 Ticket 数：1172
 - Candidate 来源：`source_rule`、`semantic_snapshot`、`graph_rule`、`clang_ast_cfg`、`svf_value_flow`

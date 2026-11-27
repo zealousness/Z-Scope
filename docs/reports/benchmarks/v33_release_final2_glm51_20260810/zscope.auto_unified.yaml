@@ -93,7 +93,7 @@ project:
 
 indexing:
   backend: unified
-  joern_path: /mnt/c/tmp/joern/joern-cli/joern
+  joern_path: joern
   joern_server_host: 127.0.0.1
   joern_server_port: 8080
   joern_heap_size: 4g
@@ -104,7 +104,7 @@ indexing:
   gclang_path: gclang
   get_bc_path: get-bc
   llvm_link_path: llvm-link
-  svf_bin_dir: /home/zeal/.local/svf/SVF-linux-x86_64/bin
+  svf_bin_dir: $HOME/.local/svf/SVF-linux-x86_64/bin
   svf_heap_limit_mb: 8192
   svf_timeout: 600
 

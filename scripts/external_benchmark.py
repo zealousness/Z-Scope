@@ -1360,11 +1360,13 @@ def _formal_oci_environment(run_env: Mapping[str, str]) -> dict[str, str]:
         if "GROUND_TRUTH" not in str(key).upper() and "BENCHMARK_TRUTH" not in str(key).upper()
     }
     if not environment.get("Z_SCOPE_LLM_BASE_URL", "").strip():
-        environment["Z_SCOPE_LLM_BASE_URL"] = environment.get(
-            "Z_SCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        )
+        fallback_base_url = environment.get("Z_SCOPE_BASE_URL", "").strip()
+        if fallback_base_url:
+            environment["Z_SCOPE_LLM_BASE_URL"] = fallback_base_url
     if not environment.get("Z_SCOPE_LLM_MODEL", "").strip():
-        environment["Z_SCOPE_LLM_MODEL"] = environment.get("Z_SCOPE_MODEL", "glm-5")
+        fallback_model = environment.get("Z_SCOPE_MODEL", "").strip()
+        if fallback_model:
+            environment["Z_SCOPE_LLM_MODEL"] = fallback_model
     return environment
 
 
@@ -1733,8 +1735,14 @@ def run_pure_llm(args: argparse.Namespace, *, repo_context: bool) -> dict[str, A
     env = os.environ.copy()
     env_file = Path(args.env_file) if args.env_file else Path("test/range/zscope.local.env")
     env.update(_load_env_file(env_file))
-    base_url = env.get("Z_SCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    model = env.get("Z_SCOPE_MODEL", "glm-5")
+    base_url = (
+        env.get("Z_SCOPE_LLM_BASE_URL") or env.get("Z_SCOPE_BASE_URL") or ""
+    ).strip()
+    model = (env.get("Z_SCOPE_LLM_MODEL") or env.get("Z_SCOPE_MODEL") or "").strip()
+    if not base_url or not model:
+        raise ValueError(
+            "Set Z_SCOPE_LLM_BASE_URL (or Z_SCOPE_BASE_URL) and Z_SCOPE_LLM_MODEL (or Z_SCOPE_MODEL)"
+        )
     client = LLMClient(
         api_key=env.get("Z_SCOPE_API_KEY", ""),
         base_url=base_url,
@@ -2030,8 +2038,10 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
     run_env = os.environ.copy()
     env_file = Path(args.env_file) if args.env_file else Path("test/range/zscope.local.env")
     run_env.update(_load_env_file(env_file))
-    run_env.setdefault("Z_SCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    run_env.setdefault("Z_SCOPE_MODEL", "glm-5")
+    if run_env.get("Z_SCOPE_LLM_BASE_URL") and not run_env.get("Z_SCOPE_BASE_URL"):
+        run_env["Z_SCOPE_BASE_URL"] = run_env["Z_SCOPE_LLM_BASE_URL"]
+    if run_env.get("Z_SCOPE_LLM_MODEL") and not run_env.get("Z_SCOPE_MODEL"):
+        run_env["Z_SCOPE_MODEL"] = run_env["Z_SCOPE_LLM_MODEL"]
     if cold_snapshot_cache and run_kind != "formal":
         run_env["Z_SCOPE_DEVELOPER_MODE"] = "1"
         run_env["Z_SCOPE_RUNTIME_SPEC"] = str((run_dir / "runtime.cold.override.yaml").resolve())

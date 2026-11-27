@@ -23,7 +23,7 @@
 
 ## 已确认验证
 
-全部 Python 测试在 WSL Linux 用户态、Python 3.13 环境 `/home/zeal/.venvs/zscope-fix-validation-20261022/bin/python` 执行。各组可能重叠，不能相加作为独立用例总数；最终集成结果单独记录，不与已有分组重复计数。
+全部 Python 测试在 WSL Linux 用户态、Python 3.13 环境 `<venv>/bin/python` 执行。各组可能重叠，不能相加作为独立用例总数；最终集成结果单独记录，不与已有分组重复计数。
 
 | 检查 | 已确认结果 | 证据与范围 |
 |---|---|---|
@@ -54,7 +54,7 @@
 可复现的后端命令：
 
 ```bash
-validation_python=/home/zeal/.venvs/zscope-fix-validation-20261022/bin/python
+validation_python=<venv>/bin/python
 "$validation_python" -m pytest -q tests/test_scan_schedules.py tests/test_scan_jobs.py tests/test_scan_jobs_http_api.py
 "$validation_python" -m mypy zscope/orchestration/jobs zscope/web/scan_jobs_service.py
 "$validation_python" -m compileall -f -q zscope/orchestration/jobs zscope/web/scan_jobs_service.py scripts/night_watchman.py tests/test_scan_schedules.py tests/test_scan_jobs.py

@@ -266,8 +266,8 @@ def test_explicit_work_directory_must_be_new_absolute_and_native(monkeypatch, tm
 
 def test_windows_forwarding_keeps_explicit_linux_workspace(monkeypatch):
     monkeypatch.setattr(benchmark_cli.subprocess, "check_output", lambda *a, **kw: "/mnt/c/repo\n")
-    argv = benchmark_cli._wsl_argv(["run", "--work-directory", "/home/zeal/benchmark-runs/cold-01"])
-    assert "/home/zeal/benchmark-runs/cold-01" in argv[-1]
+    argv = benchmark_cli._wsl_argv(["run", "--work-directory", "/home/runner/benchmark-runs/cold-01"])
+    assert "/home/runner/benchmark-runs/cold-01" in argv[-1]
 
 
 def test_score_exposes_confirmed_and_with_review_views(monkeypatch, tmp_path: Path) -> None:

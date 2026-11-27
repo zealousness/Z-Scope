@@ -69,10 +69,10 @@ async function browserRoutes() {
     res.setHeader('Content-Type',({'.html':'text/html','.css':'text/css','.js':'text/javascript'})[path.extname(file)]||'application/octet-stream');res.end(fs.readFileSync(file));
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  const {chromium}=require(process.env.ZSCOPE_UI_PLAYWRIGHT_MODULE||'/mnt/c/Users/10273/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+  const {chromium}=require(process.env.ZSCOPE_UI_PLAYWRIGHT_MODULE||'playwright');
   let browser;
   try {
-    browser=await chromium.launch({headless:true,executablePath:process.env.ZSCOPE_UI_CHROMIUM||'/home/zeal/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome'});
+    browser=await chromium.launch({headless:true,executablePath:process.env.ZSCOPE_UI_CHROMIUM||undefined});
     const page=await browser.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
     const base='http://127.0.0.1:'+server.address().port;
     await page.goto(base+'/#tab=findings&report=inner-report&issue=issue-a&view=with_needs_review');

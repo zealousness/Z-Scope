@@ -223,7 +223,7 @@
 - 相关回归（SVF cache、KnowledgeDB、GlobalModeler、scan-session、value-flow、Clang incremental、CodeIndex）：113 个测试通过。
 - 最终聚焦回归：73 个测试通过，耗时 1.27 秒。
 - 完整回归第一次直接执行 `pytest -q` 时，收集阶段因当前 shell 未将仓库根目录加入 import path，`tests/test_benchmark_protocol.py` 和 `tests/test_range_benchmark_regression.py` 无法导入 `scripts`；没有测试用例实际失败。
-- 使用明确环境 `PYTHONPATH=/home/jager/Z-Scope pytest -q` 后完整回归通过：811 个测试，耗时 155.29 秒。
+- 使用明确环境 `PYTHONPATH=<repo> pytest -q` 后完整回归通过：811 个测试，耗时 155.29 秒。
 - `git diff --check`：通过。
 
 #### 真实 benchmark 数据库升级验证
@@ -367,7 +367,7 @@
 - 公开 schema 不再包含 `call_type`。直接调用只写入 `direct_callsite_lines`；间接调用只有在具有 source 行、pointer identity/kind/type/signature 和 callsite expression 的完整底层证据时才写入 `indirect_callsites`。未映射的 SVF 函数级候选仍只保留在底层，避免伪造 LLM 证据。
 - `Semantic Modeler` 输入、默认 snapshot schema、确定性 snapshot 规范化和 snapshot symbol-context hash 已同步新字段。`unresolved_callees` 被修正为真正按需透传字段，而不是所有模型输入的必填字段。
 - 新增三类 schema 的正向用例：project 间接调用点、带签名 external、unresolved direct target；同时将旧 `call_type/callsite_lines` 测试迁移为新字段契约，并以间接调用点变化验证 snapshot refresh。
-- `PYTHONPATH=/home/jager/Z-Scope python -m pytest` 覆盖 function-info、KnowledgeDB、SVF cache、Semantic Modeler 输入、snapshot store、确定性 snapshot、JSON agent、GlobalModeler 和 scan-session：200 passed。相关模块 `py_compile` 与 `git diff --check` 通过。
+- `PYTHONPATH=<repo> python -m pytest` 覆盖 function-info、KnowledgeDB、SVF cache、Semantic Modeler 输入、snapshot store、确定性 snapshot、JSON agent、GlobalModeler 和 scan-session：200 passed。相关模块 `py_compile` 与 `git diff --check` 通过。
 
 ### 剩余限制
 
