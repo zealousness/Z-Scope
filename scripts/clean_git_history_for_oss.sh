@@ -76,7 +76,7 @@ if [[ -d "${source_repo}" ]]; then
       exit 2
       ;;
   esac
-  if [[ -n "$(git -C "${source_repo}" status --porcelain)" ]]; then
+  if [[ -n "$(git -C "${source_repo}" -c core.fileMode=false status --porcelain)" ]]; then
     echo "Warning: ${source_repo} has uncommitted working-tree changes." >&2
     echo "         Mirror cloning commits only; commit/stash first if you want them included." >&2
   fi
@@ -120,9 +120,15 @@ filter_args=(
   --path docs/reports/benchmarks/20261106-three-depth-review/truth-reference.json
   --path docs/reports/benchmarks/20261106-three-depth-review/artifact-index.json
   --path docs/reports/benchmarks/20261106-three-depth-review/candidate-cost-summary.json
-  --path docs/design/webui/assets/before-flow.webm
-  --path docs/design/webui/assets/after-flow.webm
-  --path docs/design/webui/assets/primitives/primitives-flow.webm
+  --path docs/range_reports/20261106-three-depth-review/candidate-evidence.jsonl
+  --path docs/range_reports/20261106-three-depth-review/case-evidence.md
+  --path docs/range_reports/20261106-three-depth-review/candidate-costs.csv
+  --path docs/range_reports/20261106-three-depth-review/truth-evidence.csv
+  --path docs/range_reports/20261106-three-depth-review/unmatched-findings.csv
+  --path docs/range_reports/20261106-three-depth-review/truth-reference.json
+  --path docs/range_reports/20261106-three-depth-review/artifact-index.json
+  --path docs/range_reports/20261106-three-depth-review/candidate-cost-summary.json
+  --path-glob '*.webm'
   --path test/junior/
   --path cpg.bin
   --path conversation_export.md
@@ -162,7 +168,7 @@ git -C "${mirror_dir}" rev-list --objects --all \
   | git -C "${mirror_dir}" cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
   | awk '$1 == "blob" {print $3, $4}' \
   | sort -nr \
-  | head -n 15
+  | awk 'NR <= 15'
 
 echo "==> Step 6: Verifying cleaned history secret scan on main"
 verify_dir="${workdir}/verify-checkout"
